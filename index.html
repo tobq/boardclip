@@ -335,6 +335,12 @@ function applyFilter() {
   if (!filtered.length) listEl.innerHTML = `<div class="empty">${q || activeFilters.size ? 'No matches' : 'Copy something to get started'}</div>`;
 }
 
+function rerenderList() {
+  renderGroupFilters();
+  applyFilter();
+  updateCount();
+}
+
 function loadBatch() {
   const end = Math.min(rendered + BATCH, filtered.length);
   const nmap = numpadMap();
@@ -448,9 +454,7 @@ document.addEventListener('click', async (e) => {
       else if (f === '__numbered__') activeFilters.delete('__pinned__');
       activeFilters.add(f);
     }
-    renderGroupFilters();
-    applyFilter();
-    updateCount();
+    rerenderList();
     return;
   }
   // Group filter tags
@@ -459,9 +463,7 @@ document.addEventListener('click', async (e) => {
     const g = gtag.dataset.group;
     if (activeFilters.has(g)) activeFilters.delete(g);
     else activeFilters.add(g);
-    renderGroupFilters();
-    applyFilter();
-    updateCount();
+    rerenderList();
     return;
   }
   // Group picker buttons
@@ -469,11 +471,14 @@ document.addEventListener('click', async (e) => {
   if (gpBtn) {
     e.stopPropagation();
     if (gpBtn.dataset.action === 'add-group') {
+      const item = gpBtn.closest('.item');
+      if (!item) return;
+      const ri = +item.dataset.i;
       const name = await promptDialog('New group name');
       if (name) {
         await window.api.groupCreate(name);
-        await refreshGroups();
-        await refresh();
+        if (items[ri] && !isInGroup(items[ri], name)) await window.api.groupAssign(ri, name);
+        await refreshGroupsAndList();
       }
     } else {
       const item = gpBtn.closest('.item');
@@ -577,8 +582,7 @@ document.getElementById('confirmYes').addEventListener('click', async () => {
       const g = pendingAssign.deleteGroup;
       activeFilters.delete(g);
       await window.api.groupDelete(g);
-      await refreshGroups();
-      await refresh();
+      await refreshGroupsAndList();
     } else {
       await window.api.numpadAssign(pendingAssign.itemIdx, pendingAssign.slot);
       await refresh();
@@ -681,8 +685,7 @@ document.getElementById('addGroupBtn').addEventListener('click', async () => {
   const name = await promptDialog('New group name');
   if (name) {
     await window.api.groupCreate(name);
-    await refreshGroups();
-    await refresh();
+    await refreshGroupsAndList();
     openSettings();
   }
 });
@@ -786,8 +789,7 @@ async function openSettings() {
       const g = btn.dataset.group;
       activeFilters.delete(g);
       await window.api.groupDelete(g);
-      await refreshGroups();
-      await refresh();
+      await refreshGroupsAndList();
       openSettings();
     });
   });
@@ -804,36 +806,38 @@ function closeSettings() {
 
 
 // --- Groups refresh ---
-async function refreshGroups() {
+async function refreshGroups({render = true} = {}) {
   try {
     const s = await window.api.getSettings();
     groups = s.groups || [];
-    renderGroupFilters();
+    if (render) renderGroupFilters();
   } catch {}
 }
 
+async function refreshGroupsAndList() {
+  await refreshGroups({render: false});
+  await refresh({force: true});
+}
+
 // --- Data refresh ---
-async function refresh() {
+async function refresh({force = false} = {}) {
   try {
     const data = await window.api.getHistory();
-    if (JSON.stringify(data) !== JSON.stringify(items)) {
+    const changed = JSON.stringify(data) !== JSON.stringify(items);
+    if (changed) {
       items = data;
-      renderGroupFilters();
-      applyFilter();
-      updateCount();
     }
+    if (changed || force) rerenderList();
   } catch {}
 }
 
 // Initial load + poll
-refreshGroups();
-refresh();
+refreshGroupsAndList();
 setInterval(refresh, 1000);
 
 // --- Focus/blur integration ---
 window.addEventListener('focus', () => {
-  refreshGroups();
-  refresh();
+  refreshGroupsAndList();
   setTimeout(() => searchEl.focus(), 50);
 });
 window.addEventListener('blur', () => {

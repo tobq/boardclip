@@ -160,6 +160,8 @@
   .sync-btn:hover { border-color:var(--accent); color:var(--accent); }
   .sync-status { font-size:10px; color:var(--text-dim); margin-top:2px; }
   .sync-status.active { color:var(--green); }
+  .sync-path { font-size:10px; color:var(--text-dim); margin-top:3px; word-break:break-all; font-family:'Cascadia Code','Consolas',monospace; }
+  .build-info { font-size:10px; color:var(--text-dim); margin-top:12px; font-family:'Cascadia Code','Consolas',monospace; }
 </style></head><body>
 
 <div class="main-view" id="mainView">
@@ -205,6 +207,7 @@
         <button class="sync-btn" id="syncNow" title="Sync now"><span class="mi" style="font-size:14px;vertical-align:middle">sync</span></button>
       </div>
       <div class="sync-status" id="syncStatus"></div>
+      <div class="sync-path" id="syncPath"></div>
     </div>
     <div class="settings-section">
       <h3>Groups</h3>
@@ -213,6 +216,7 @@
     </div>
     <div class="settings-footer">
       <button class="settings-clear" id="clearAll">Clear All</button>
+      <div class="build-info" id="buildInfo"></div>
     </div>
   </div>
 </div>
@@ -726,6 +730,8 @@ async function openSettings() {
   const syncStatus = document.getElementById('syncStatus');
   syncStatus.textContent = s.sync_path ? 'Syncs on change + every 30s' : '';
   syncStatus.className = 'sync-status' + (s.sync_path ? ' active' : '');
+  document.getElementById('syncPath').textContent = s.sync_path || '';
+  document.getElementById('buildInfo').textContent = s.build_info ? `Build ${s.build_info.label}` : '';
 
   // Numpad slots
   const slotsEl = document.getElementById('numpadSlots');

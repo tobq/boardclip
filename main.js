@@ -9,6 +9,7 @@ const { exec, spawn } = require('child_process');
 // Windows-specific fast input (keybd_event, Get/SetForegroundWindow).
 // Module is a no-op on non-Windows platforms so it's safe to require unconditionally.
 const winPaste = require('./lib/windows-paste');
+const getBuildInfo = require('./lib/build-info');
 
 app.setName('Clipboard Tray');
 
@@ -19,6 +20,8 @@ const SETTINGS_PATH = path.join(SCRIPT_DIR, 'clipboard-settings.json');
 const IMG_DIR = path.join(SCRIPT_DIR, 'clipboard-images');
 
 if (!fs.existsSync(IMG_DIR)) fs.mkdirSync(IMG_DIR, { recursive: true });
+
+const BUILD_INFO = getBuildInfo(SCRIPT_DIR);
 
 // --- AHK presets for first-run seeding ---
 const AHK_PRESETS = {
@@ -651,10 +654,12 @@ function createTray() {
   if (process.platform === 'darwin') trayIcon.setTemplateImage(true);
 
   tray = new Tray(trayIcon);
-  tray.setToolTip('Clipboard History');
+  tray.setToolTip(`Clipboard Tray ${BUILD_INFO.label}`);
 
   const contextMenu = Menu.buildFromTemplate([
     { label: 'Open', click: showPopup },
+    { type: 'separator' },
+    { label: `Build ${BUILD_INFO.label}`, enabled: false },
     { type: 'separator' },
     { label: 'Quit', click: () => { app.isQuitting = true; app.quit(); } },
   ]);
@@ -699,6 +704,7 @@ function setupIPC() {
     ...settings,
     storage_bytes: getStorageBytes(),
     item_count: history.length,
+    build_info: BUILD_INFO,
   }));
 
   ipcMain.handle('paste', (_, index) => {

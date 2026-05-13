@@ -10,7 +10,9 @@ git pull --rebase --autostash
 after="$(git rev-parse HEAD 2>/dev/null || true)"
 
 need_install=0
-if [ ! -x "node_modules/electron/dist/electron" ] && [ ! -f "node_modules/electron/dist/electron.exe" ]; then
+if [ ! -x "node_modules/electron/dist/electron" ] &&
+   [ ! -x "node_modules/electron/dist/Electron.app/Contents/MacOS/Electron" ] &&
+   [ ! -f "node_modules/electron/dist/electron.exe" ]; then
   need_install=1
 fi
 

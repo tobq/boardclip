@@ -11,5 +11,15 @@ if pgrep -f "$(pwd)/node_modules/electron" >/dev/null 2>&1; then
 fi
 
 # Start in background
-nohup npx electron . > /dev/null 2>&1 &
-echo "Clipboard tray started (PID $!)."
+if [ "$(uname)" = "Darwin" ] && [ -d "node_modules/electron/dist/Electron.app" ]; then
+  open -na "$(pwd)/node_modules/electron/dist/Electron.app" --args "$(pwd)"
+  sleep 0.5
+  if ! pgrep -f "$(pwd)/node_modules/electron" >/dev/null 2>&1; then
+    echo "ERROR: Failed to start clipboard tray."
+    exit 1
+  fi
+  echo "Clipboard tray started."
+else
+  nohup npx electron . > /dev/null 2>&1 &
+  echo "Clipboard tray started (PID $!)."
+fi

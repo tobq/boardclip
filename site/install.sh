@@ -33,4 +33,4 @@ chmod +x install.sh update.sh start.sh kill.sh 2>/dev/null || true
 echo ""
 echo "Clippy is running."
 echo "Update later with:"
-echo "  curl -fsSL https://clippy.sh/update.sh | sh"
+echo "  curl -fsSL https://clippy-sh.netlify.app/update.sh | sh"

@@ -1,2 +1,2 @@
 @echo off
-powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://clippy.sh/install.ps1 | iex"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://clippy-sh.netlify.app/install.ps1 | iex"

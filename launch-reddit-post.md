@@ -27,17 +27,17 @@ What it does:
 Install:
 
 ```sh
-curl -fsSL https://clippy.sh/install.sh | sh
+curl -fsSL https://clippy-sh.netlify.app/install.sh | sh
 ```
 
 Windows:
 
 ```powershell
-irm https://clippy.sh/install.ps1 | iex
+irm https://clippy-sh.netlify.app/install.ps1 | iex
 ```
 
 GitHub: https://github.com/tobq/clippy
-Site: https://clippy.sh
+Site: https://clippy-sh.netlify.app
 
 It is an Electron app, mostly because I wanted a tiny tray UI plus platform-specific shortcut behavior without building two totally separate apps. The Windows implementation uses a low-level keyboard hook so Win+V can open Clippy instead of the default Windows clipboard history.
 

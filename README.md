@@ -7,19 +7,19 @@ Fast cross-platform clipboard history for desktop. Clippy runs as a tray app, op
 macOS / Linux:
 
 ```sh
-curl -fsSL https://clippy.sh/install.sh | sh
+curl -fsSL https://clippy-sh.netlify.app/install.sh | sh
 ```
 
 Windows PowerShell:
 
 ```powershell
-irm https://clippy.sh/install.ps1 | iex
+irm https://clippy-sh.netlify.app/install.ps1 | iex
 ```
 
 Prefer to inspect first? Open the script URL in your browser, or download it before running:
 
 ```sh
-curl -fsSLO https://clippy.sh/install.sh
+curl -fsSLO https://clippy-sh.netlify.app/install.sh
 sh install.sh
 ```
 
@@ -28,13 +28,13 @@ sh install.sh
 macOS / Linux:
 
 ```sh
-curl -fsSL https://clippy.sh/update.sh | sh
+curl -fsSL https://clippy-sh.netlify.app/update.sh | sh
 ```
 
 Windows PowerShell:
 
 ```powershell
-irm https://clippy.sh/update.ps1 | iex
+irm https://clippy-sh.netlify.app/update.ps1 | iex
 ```
 
 Local checkout update scripts are also available:
@@ -105,7 +105,7 @@ kill.bat
 - `lib/clipboard-model.js`: shared pure history/pin/group merge logic.
 - `lib/cloud-accounts.js`: Google Drive, OneDrive, and iCloud folder discovery.
 - `lib/windows-hook*`: Windows low-level keyboard hook for Win+V / Win+Numpad.
-- `site/`: static clippy.sh landing page and remote install/update scripts.
+- `site/`: static landing page and remote install/update scripts.
 
 ## Data
 

@@ -29,4 +29,4 @@ npm install
 Write-Host ""
 Write-Host "Clippy is running."
 Write-Host "Update later with:"
-Write-Host "  irm https://clippy.sh/update.ps1 | iex"
+Write-Host "  irm https://clippy-sh.netlify.app/update.ps1 | iex"

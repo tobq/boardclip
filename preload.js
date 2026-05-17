@@ -27,6 +27,7 @@ contextBridge.exposeInMainWorld('api', {
   openImage: (id) => ipcRenderer.invoke('open-image', id),
   platform: process.platform,
   setSyncPath: (path) => ipcRenderer.invoke('set-sync-path', path),
+  setSyncPathEnabled: (path, enabled) => ipcRenderer.invoke('set-sync-path-enabled', path, enabled),
   getCloudAccounts: () => ipcRenderer.invoke('get-cloud-accounts'),
   syncNow: () => ipcRenderer.invoke('sync-now'),
   getAutoLaunch: () => ipcRenderer.invoke('get-auto-launch'),

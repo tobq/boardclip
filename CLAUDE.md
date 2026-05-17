@@ -10,9 +10,11 @@
 
 ## Key Data Model
 
-- **`pinned` field** on history items: `false` (not pinned), `true` (pinned, no numpad), or `1-9` (integer, numpad assigned)
-- In JS, `typeof true === 'boolean'` and `typeof 1 === 'number'` — no Python `True == 1` gotcha. `hasNumpadSlot()` uses `typeof item.pinned === 'number'`.
-- **`group` field** on history items: string group name or absent. Groups list stored in `settings.groups`.
+- **History item ids**: text items use a sha256 content key (`txt:{hash}`); image items use their content-addressed image filename (`img:{file}`).
+- **`pin` field** on history items: `null`/absent means unpinned; an object means pinned. Shape is `{ number?: 1-9, groups?: string[], updatedAt?: number }`.
+- **Legacy migration**: `lib/clipboard-model.js` migrates old `pinned`/`group` fields into the unified `pin` object before merging or rendering.
+- **Groups**: group names live in `settings.groups`; item membership lives in `item.pin.groups`.
+- **Tombstones**: deleted items and groups are retained for 30 days in settings so sync cannot resurrect removals from stale providers.
 - **Content-addressed images**: filenames are md5 hash of PNG content (`{hash}.png`), naturally deduplicates.
 
 ## Clipboard Operations
@@ -54,17 +56,19 @@ Otherwise the key passes through so normal numpad typing works. Main thread call
 - **`app.dock.hide()`** hides dock icon — tray-only app
 - **Template tray icon**: `trayIcon.setTemplateImage(true)` for menu bar dark/light mode
 
-## Google Drive Sync
+## Native Cloud Sync
 
-- **Merge algorithm**: `mergeHistories()` unions both sides by content key (md5 of text, or image filename). On conflict, picks item with higher `metadataScore()` (numpad > pinned > unpinned, +1 for group). Tie-break by newer `ts`.
-- **`syncMerge()`** runs on startup + every 30s + debounced 500ms after local changes
-- **`insideSync` flag** prevents `saveHistory()`/`saveSettingsFile()` from re-triggering sync
-- **Only writes if changed** — compares JSON.stringify of merged vs current to skip no-op writes
-- **Images synced bidirectionally** — content-addressed filenames mean no conflicts
-- **`sync_path` not synced** — excluded from remote settings write (per-machine config)
+- **Default-on providers**: detected Google Drive, OneDrive, iCloud, and any legacy custom `sync_path` folder are enabled automatically. Settings stores only local opt-outs in `sync_disabled_paths`; provider choices are not synced between machines.
+- **Multi-target convergence**: `syncMerge()` reads every enabled provider, folds all remote states into one canonical local state, then writes that canonical state back to every enabled provider. This makes multiple providers useful redundancy instead of separate silos.
+- **Merge algorithm**: shared pure helpers in `lib/clipboard-model.js` merge histories by stable item id/content key, merge pin/group metadata, preserve tombstones, and dedupe numpad slots.
+- **`syncMerge()`** runs on startup + every 30s + debounced 500ms after local changes.
+- **`insideSync` flag** prevents overlapping sync passes and prevents `saveHistory()`/`saveSettingsFile()` from re-triggering sync while a merge is already running.
+- **Only writes if changed** — compares JSON strings of remote files before atomic writes to skip no-op churn.
+- **Images synced bidirectionally** — content-addressed filenames mean no conflicts.
+- **Remote settings exclusions**: `sync_path`, `sync_disabled_paths`, and legacy `numpad_slots` are excluded from remote settings writes.
 - **Cloud account discovery** lives in `lib/cloud-accounts.js`.
-- **macOS**: detects accounts from `~/Library/CloudStorage/GoogleDrive-*/`
-- **Windows**: scans mounted DriveFS letters for `My Drive`, then resolves labels from PSDrive descriptions, DriveFS `root_preference_sqlite.db`/WAL strings, and recent DriveFS logs. The cache/log fallbacks are intentional because some Windows setups expose blank drive descriptions.
+- **macOS**: detects Google Drive and OneDrive from `~/Library/CloudStorage/`, plus iCloud Drive from `~/Library/Mobile Documents/com~apple~CloudDocs`.
+- **Windows**: scans Google DriveFS mount letters and labels from PSDrive descriptions, DriveFS preference cache/WAL strings, and recent DriveFS logs; also detects OneDrive environment folders and common iCloud Drive folders.
 
 ## Scripts & Process Management
 

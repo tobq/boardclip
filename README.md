@@ -9,7 +9,7 @@ Cross-platform clipboard history manager. Runs as a system tray app with a frame
 - **Numpad quick-paste (1-9)** — assign clipboard items to numpad slots, paste from anywhere
 - **Pin system** — star items to prevent auto-pruning, optionally assign a numpad shortcut
 - **Custom groups** — label/tag items, filter by group
-- **Google Drive sync** — merge-based sync across machines, no data loss
+- **Native cloud sync** — merge-based sync across Google Drive, OneDrive, and iCloud folders
 - **Regex search** — toggle regex mode in the search bar
 - **Open in editor** — edit text items externally, changes saved back
 - **Save image to Downloads** — one-click copy with path on clipboard

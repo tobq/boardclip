@@ -111,6 +111,7 @@ function loadSettings() {
 }
 
 function saveSettingsFile() {
+  migrateSyncSettings();
   const s = { ...settings };
   s.tombstones = normalizeTombstones(s.tombstones);
   s.group_tombstones = normalizeGroupTombstones(s.group_tombstones);
@@ -125,6 +126,18 @@ function saveSettingsFile() {
 
 let settings = loadSettings();
 let dataRevision = 0;
+let cloudAccountsCache = [];
+
+function normalizeSyncPath(syncPath) {
+  return path.normalize(String(syncPath || ''));
+}
+
+function migrateSyncSettings() {
+  if (!Array.isArray(settings.sync_disabled_paths)) settings.sync_disabled_paths = [];
+  settings.sync_disabled_paths = [...new Set(settings.sync_disabled_paths.map(normalizeSyncPath).filter(Boolean))];
+}
+
+migrateSyncSettings();
 
 function notifyDataChanged() {
   if (!win || win.isDestroyed() || !win.webContents || win.webContents.isDestroyed()) return;
@@ -382,11 +395,50 @@ function remoteSettingsPayload() {
   };
   delete remoteSave.numpad_slots;
   delete remoteSave.sync_path;
+  delete remoteSave.sync_disabled_paths;
   return remoteSave;
 }
 
+async function refreshCloudAccounts() {
+  cloudAccountsCache = await getCloudAccounts();
+  return cloudAccountsCache;
+}
+
+function syncAccountsWithLegacy(accounts) {
+  const result = [...accounts];
+  const legacyPath = normalizeSyncPath(settings.sync_path);
+  const legacyAvailable = legacyPath && (fs.existsSync(legacyPath) || fs.existsSync(path.dirname(legacyPath)));
+  if (legacyAvailable && !result.some(acc => normalizeSyncPath(acc.path) === legacyPath)) {
+    result.push({
+      provider: 'custom',
+      label: 'Custom sync folder',
+      email: 'Custom sync folder',
+      path: legacyPath,
+    });
+  }
+  return result;
+}
+
+async function getCloudAccountsForSettings() {
+  const accounts = syncAccountsWithLegacy(await refreshCloudAccounts());
+  const disabled = new Set((settings.sync_disabled_paths || []).map(normalizeSyncPath));
+  return accounts.map(acc => ({ ...acc, enabled: !disabled.has(normalizeSyncPath(acc.path)) }));
+}
+
+async function getEnabledSyncPaths() {
+  const accounts = syncAccountsWithLegacy(cloudAccountsCache.length ? cloudAccountsCache : await refreshCloudAccounts());
+  const disabled = new Set((settings.sync_disabled_paths || []).map(normalizeSyncPath));
+  return accounts
+    .map(acc => normalizeSyncPath(acc.path))
+    .filter(syncPath => syncPath && !disabled.has(syncPath));
+}
+
 function syncImages(remoteImgDir) {
-  if (!fs.existsSync(remoteImgDir)) fs.mkdirSync(remoteImgDir, { recursive: true });
+  try {
+    if (!fs.existsSync(remoteImgDir)) fs.mkdirSync(remoteImgDir, { recursive: true });
+  } catch {
+    return;
+  }
 
   // Copy remote -> local (missing locally)
   try {
@@ -409,124 +461,85 @@ function syncImages(remoteImgDir) {
   } catch {}
 }
 
-let lastSyncMtime = 0;
 let syncDebounceTimer = null;
 let insideSync = false;
 
 function scheduleSyncMerge() {
-  if (!settings.sync_path || insideSync) return;
+  if (insideSync) return;
   if (syncDebounceTimer) clearTimeout(syncDebounceTimer);
-  // DO NOT reset lastSyncMtime here — that would force the merge path on
-  // every scheduled sync, breaking the local-only-wins resurrection guard.
   syncDebounceTimer = setTimeout(syncMerge, 500);
 }
 
-function syncMerge() {
-  const syncPath = settings.sync_path;
-  if (!syncPath || !fs.existsSync(syncPath)) return;
+function readRemoteState(syncPath) {
+  const remoteDbPath = path.join(syncPath, 'clipboard-history.json');
+  const remoteSettingsPath = path.join(syncPath, 'clipboard-settings.json');
+  let remoteHistory = [];
+  try {
+    const loaded = JSON.parse(fs.readFileSync(remoteDbPath, 'utf-8'));
+    if (Array.isArray(loaded)) remoteHistory = loaded;
+  } catch {}
+  let remoteSettings = {};
+  try { remoteSettings = JSON.parse(fs.readFileSync(remoteSettingsPath, 'utf-8')); } catch {}
+  return { remoteHistory, remoteSettings };
+}
 
+function writeRemoteState(syncPath, canonicalHistory, canonicalSettings) {
+  if (!fs.existsSync(syncPath)) fs.mkdirSync(syncPath, { recursive: true });
+  const remoteDbPath = path.join(syncPath, 'clipboard-history.json');
+  const remoteSettingsPath = path.join(syncPath, 'clipboard-settings.json');
+  const remoteImgDir = path.join(syncPath, 'clipboard-images');
+  const nextHistoryJson = JSON.stringify(canonicalHistory);
+  const nextSettingsJson = JSON.stringify(canonicalSettings, null, 2);
+  let currentHistoryJson = null;
+  let currentSettingsJson = null;
+  try { currentHistoryJson = fs.readFileSync(remoteDbPath, 'utf-8'); } catch {}
+  try { currentSettingsJson = fs.readFileSync(remoteSettingsPath, 'utf-8'); } catch {}
+  if (currentHistoryJson !== nextHistoryJson) atomicWriteFile(remoteDbPath, nextHistoryJson);
+  if (currentSettingsJson !== nextSettingsJson) atomicWriteFile(remoteSettingsPath, nextSettingsJson);
+  syncImages(remoteImgDir);
+}
+
+async function syncMerge() {
+  if (insideSync) return;
   insideSync = true;
   try {
-    const remoteDbPath = path.join(syncPath, 'clipboard-history.json');
-    const remoteSettingsPath = path.join(syncPath, 'clipboard-settings.json');
-    const remoteImgDir = path.join(syncPath, 'clipboard-images');
+    const syncPaths = await getEnabledSyncPaths();
+    if (!syncPaths.length) return;
 
-    let remoteMtime = 0;
-    try { remoteMtime = fs.statSync(remoteDbPath).mtimeMs; } catch {}
-    let remoteSettingsMtime = 0;
-    try { remoteSettingsMtime = fs.statSync(remoteSettingsPath).mtimeMs; } catch {}
-    let localMtime = 0;
-    try { localMtime = fs.statSync(DB_PATH).mtimeMs; } catch {}
-    let localSettingsMtime = 0;
-    try { localSettingsMtime = fs.statSync(SETTINGS_PATH).mtimeMs; } catch {}
-    const localChangedSince = Math.max(localMtime, localSettingsMtime) > lastSyncMtime;
-    const remoteChangedSince = Math.max(remoteMtime, remoteSettingsMtime) > lastSyncMtime;
-    if (!localChangedSince && !remoteChangedSince) return;
+    let canonicalHistory = history;
+    const previousSettingsJson = JSON.stringify(remoteSettingsPayload());
 
-    // Local-only changes: push local to remote without merging. Prevents the
-    // resurrection bug where a deleted group comes back because the merge
-    // sees the "still has group" remote copy as higher-scored.
-    if (localChangedSince && !remoteChangedSince) {
-      try { atomicWriteJson(remoteDbPath, history); } catch {}
-      try {
-        atomicWriteJson(remoteSettingsPath, remoteSettingsPayload(), 2);
-      } catch {}
-      syncImages(remoteImgDir);
-      try {
-        const rmt = fs.statSync(remoteDbPath).mtimeMs;
-        const rsmt = fs.statSync(remoteSettingsPath).mtimeMs;
-        const lmt = fs.statSync(DB_PATH).mtimeMs;
-        const lsmt = fs.statSync(SETTINGS_PATH).mtimeMs;
-        lastSyncMtime = Math.max(rmt, rsmt, lmt, lsmt);
-      } catch {}
-      return;
+    for (const syncPath of syncPaths) {
+      const { remoteHistory, remoteSettings } = readRemoteState(syncPath);
+      settings.tombstones = normalizeTombstones([
+        ...(settings.tombstones || []),
+        ...(remoteSettings.tombstones || []),
+      ]);
+      settings.group_tombstones = normalizeGroupTombstones([
+        ...(settings.group_tombstones || []),
+        ...(remoteSettings.group_tombstones || []),
+      ]);
+      const historyGroups = canonicalHistory.flatMap(h => groupsOf(h));
+      settings.groups = mergeGroups(settings.groups, [...(remoteSettings.groups || []), ...historyGroups]);
+      canonicalHistory = mergeHistories(canonicalHistory, remoteHistory);
+      syncImages(path.join(syncPath, 'clipboard-images'));
     }
 
-    lastSyncMtime = Date.now();
-
-    // Load remote data (merge path)
-    let remoteHistory = [];
-    try { remoteHistory = JSON.parse(fs.readFileSync(remoteDbPath, 'utf-8')); } catch {}
-    let remoteSettings = {};
-    try { remoteSettings = JSON.parse(fs.readFileSync(remoteSettingsPath, 'utf-8')); } catch {}
-
-    const previousTombstones = JSON.stringify(normalizeTombstones(settings.tombstones));
-    const previousGroupTombstones = JSON.stringify(normalizeGroupTombstones(settings.group_tombstones));
-    settings.tombstones = normalizeTombstones([
-      ...(settings.tombstones || []),
-      ...(remoteSettings.tombstones || []),
-    ]);
-    settings.group_tombstones = normalizeGroupTombstones([
-      ...(settings.group_tombstones || []),
-      ...(remoteSettings.group_tombstones || []),
-    ]);
-
-    // Merge histories
-    const merged = mergeHistories(history, remoteHistory);
-    const localChanged = JSON.stringify(merged) !== JSON.stringify(history);
-    const remoteChanged = JSON.stringify(merged) !== JSON.stringify(remoteHistory);
-
+    const localChanged = JSON.stringify(canonicalHistory) !== JSON.stringify(history);
+    const settingsChanged = JSON.stringify(remoteSettingsPayload()) !== previousSettingsJson;
     if (localChanged) {
       history.length = 0;
-      history.push(...merged);
+      history.push(...canonicalHistory);
     }
-
-    // Merge groups from settings + any groups found on history items
-    const historyGroups = history.flatMap(h => groupsOf(h));
-    const mergedGroups = mergeGroups(settings.groups, [...(remoteSettings.groups || []), ...historyGroups]);
-    const groupsChanged = JSON.stringify(mergedGroups) !== JSON.stringify(settings.groups);
-    if (groupsChanged) settings.groups = mergedGroups;
-    const tombstonesChanged =
-      JSON.stringify(settings.tombstones || []) !== previousTombstones ||
-      JSON.stringify(settings.tombstones || []) !== JSON.stringify(normalizeTombstones(remoteSettings.tombstones || []));
-    const groupTombstonesChanged =
-      JSON.stringify(settings.group_tombstones || []) !== previousGroupTombstones ||
-      JSON.stringify(settings.group_tombstones || []) !==
-        JSON.stringify(normalizeGroupTombstones(remoteSettings.group_tombstones || []));
-
-    // Sync images both ways
-    syncImages(remoteImgDir);
-
-    // Only write if something actually changed
-    if (localChanged || groupsChanged || tombstonesChanged || groupTombstonesChanged) {
+    if (localChanged || settingsChanged) {
       saveHistory();
       saveSettingsFile();
     }
-    if (remoteChanged || groupsChanged || tombstonesChanged || groupTombstonesChanged) {
-      try { atomicWriteJson(remoteDbPath, merged); } catch {}
-      try {
-        atomicWriteJson(remoteSettingsPath, remoteSettingsPayload(), 2);
-      } catch {}
-    }
 
-    // Update mtime tracking
-    try {
-      const rmt = fs.statSync(path.join(syncPath, 'clipboard-history.json')).mtimeMs;
-      const rsmt = fs.statSync(path.join(syncPath, 'clipboard-settings.json')).mtimeMs;
-      const lmt = fs.statSync(DB_PATH).mtimeMs;
-      const lsmt = fs.statSync(SETTINGS_PATH).mtimeMs;
-      lastSyncMtime = Math.max(rmt, rsmt, lmt, lsmt);
-    } catch {}
+    const canonicalSettings = remoteSettingsPayload();
+    for (const syncPath of syncPaths) {
+      try { writeRemoteState(syncPath, history, canonicalSettings); } catch {}
+    }
   } finally { insideSync = false; }
 }
 
@@ -1084,22 +1097,48 @@ function setupIPC() {
     if (fs.existsSync(imgPath)) shell.openPath(imgPath);
   });
 
-  ipcMain.handle('set-sync-path', (_, syncPath) => {
-    settings.sync_path = syncPath || '';
+  ipcMain.handle('set-sync-path', async (_, syncPath) => {
+    const accounts = await refreshCloudAccounts();
+    const disabled = new Set((settings.sync_disabled_paths || []).map(normalizeSyncPath));
+    if (syncPath) {
+      settings.sync_path = syncPath;
+      disabled.delete(normalizeSyncPath(syncPath));
+    } else {
+      const legacyPath = normalizeSyncPath(settings.sync_path);
+      if (legacyPath) disabled.add(legacyPath);
+      settings.sync_path = '';
+      for (const acc of accounts) disabled.add(normalizeSyncPath(acc.path));
+    }
+    settings.sync_disabled_paths = [...disabled];
     saveSettingsFile();
     if (syncPath) {
-      // Ensure the sync directory exists
-      if (!fs.existsSync(syncPath)) fs.mkdirSync(syncPath, { recursive: true });
-      lastSyncMtime = 0; // force next sync
-      syncMerge();
+      try {
+        if (!fs.existsSync(syncPath)) fs.mkdirSync(syncPath, { recursive: true });
+      } catch {}
+      await syncMerge();
     }
   });
 
-  ipcMain.handle('get-cloud-accounts', () => getCloudAccounts());
+  ipcMain.handle('set-sync-path-enabled', async (_, syncPath, enabled) => {
+    const normalized = normalizeSyncPath(syncPath);
+    if (!normalized) return;
+    const disabled = new Set((settings.sync_disabled_paths || []).map(normalizeSyncPath));
+    if (enabled) disabled.delete(normalized);
+    else disabled.add(normalized);
+    settings.sync_disabled_paths = [...disabled];
+    saveSettingsFile();
+    if (enabled) {
+      try {
+        if (!fs.existsSync(normalized)) fs.mkdirSync(normalized, { recursive: true });
+      } catch {}
+      await syncMerge();
+    }
+  });
 
-  ipcMain.handle('sync-now', () => {
-    lastSyncMtime = 0;
-    syncMerge();
+  ipcMain.handle('get-cloud-accounts', () => getCloudAccountsForSettings());
+
+  ipcMain.handle('sync-now', async () => {
+    await syncMerge();
   });
 
   ipcMain.handle('get-auto-launch', () => {
@@ -1195,7 +1234,7 @@ app.whenReady().then(() => {
   syncMerge();
   pollClipboard();
   setInterval(pollClipboard, 400);
-  setInterval(syncMerge, 30000);
+  setInterval(() => syncMerge(), 30000);
 
   const hotkey = process.platform === 'darwin' ? 'Cmd+Shift+V' : 'Win+V';
   console.log(`Clipboard Tray running. ${hotkey} to open popup.`);

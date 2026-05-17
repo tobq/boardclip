@@ -150,11 +150,12 @@
                    padding:6px; width:100%; margin-top:4px; transition:all .15s; }
   .add-group-btn:hover { border-color:var(--accent); color:var(--accent); }
   .sync-row { display:flex; align-items:center; gap:6px; padding:6px 0; }
-  .sync-select { flex:1; background:#0a0a0a; border:1px solid #222; border-radius:4px; padding:5px 8px;
-                 color:var(--text); font-size:11px; outline:none; font-family:inherit; cursor:pointer;
-                 appearance:none; -webkit-appearance:none; }
-  .sync-select:focus { border-color:var(--accent); }
-  .sync-select option { background:#0a0a0a; color:var(--text); }
+  .sync-list { flex:1; display:flex; flex-direction:column; gap:4px; min-width:0; }
+  .sync-account { display:flex; align-items:center; gap:8px; padding:6px 8px; background:#0a0a0a; border:1px solid #222; border-radius:4px; }
+  .sync-account input { width:auto; accent-color:var(--accent); flex-shrink:0; }
+  .sync-account-main { flex:1; min-width:0; }
+  .sync-provider { font-size:11px; color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .sync-account-path { font-size:9px; color:var(--text-dim); font-family:'Cascadia Code','Consolas',monospace; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .sync-btn { background:none; border:1px solid #333; border-radius:4px; color:var(--text-dim); cursor:pointer;
               font-size:11px; padding:4px 8px; transition:all .15s; white-space:nowrap; flex-shrink:0; }
   .sync-btn:hover { border-color:var(--accent); color:var(--accent); }
@@ -201,9 +202,7 @@
     <div class="settings-section">
       <h3>Sync</h3>
       <div class="sync-row">
-        <select class="sync-select" id="syncAccount">
-          <option value="">Off</option>
-        </select>
+        <div class="sync-list" id="syncAccounts"></div>
         <button class="sync-btn" id="syncNow" title="Sync now"><span class="mi" style="font-size:14px;vertical-align:middle">sync</span></button>
       </div>
       <div class="sync-status" id="syncStatus"></div>
@@ -693,8 +692,10 @@ document.getElementById('addGroupBtn').addEventListener('click', async () => {
     openSettings();
   }
 });
-document.getElementById('syncAccount').addEventListener('change', async (e) => {
-  await window.api.setSyncPath(e.target.value);
+document.getElementById('syncAccounts').addEventListener('change', async (e) => {
+  const toggle = e.target.closest('[data-sync-path]');
+  if (!toggle) return;
+  await window.api.setSyncPathEnabled(toggle.dataset.syncPath, toggle.checked);
   await refresh();
   openSettings();
 });
@@ -723,21 +724,29 @@ async function openSettings() {
   const mb = (bytes / 1048576).toFixed(1);
   document.getElementById('usage').textContent = `Current: ${s.item_count} items, ${mb} MB`;
 
-  // Sync account picker
-  const syncSelect = document.getElementById('syncAccount');
+  // Native cloud providers are default-on; toggles are local opt-outs.
+  const syncList = document.getElementById('syncAccounts');
   const accounts = await window.api.getCloudAccounts();
-  syncSelect.innerHTML = '<option value="">Off</option>';
+  syncList.innerHTML = '';
   for (const acc of accounts) {
-    const opt = document.createElement('option');
-    opt.value = acc.path;
-    opt.textContent = acc.email;
-    if (s.sync_path === acc.path) opt.selected = true;
-    syncSelect.appendChild(opt);
+    const row = document.createElement('label');
+    row.className = 'sync-account';
+    const provider = acc.provider ? acc.provider.charAt(0).toUpperCase() + acc.provider.slice(1) : 'Cloud';
+    row.innerHTML = `<input type="checkbox" data-sync-path="${esc(acc.path)}" ${acc.enabled ? 'checked' : ''}>
+      <span class="sync-account-main">
+        <span class="sync-provider">${esc(provider)} · ${esc(acc.label || acc.email || acc.path)}</span>
+        <span class="sync-account-path">${esc(acc.path)}</span>
+      </span>`;
+    syncList.appendChild(row);
   }
+  if (!accounts.length) {
+    syncList.innerHTML = '<div class="sync-status">No native cloud folders detected</div>';
+  }
+  const enabledAccounts = accounts.filter(acc => acc.enabled);
   const syncStatus = document.getElementById('syncStatus');
-  syncStatus.textContent = s.sync_path ? 'Syncs on change + every 30s' : '';
-  syncStatus.className = 'sync-status' + (s.sync_path ? ' active' : '');
-  document.getElementById('syncPath').textContent = s.sync_path || '';
+  syncStatus.textContent = accounts.length ? `${enabledAccounts.length}/${accounts.length} providers enabled; syncs on change + every 30s` : '';
+  syncStatus.className = 'sync-status' + (enabledAccounts.length ? ' active' : '');
+  document.getElementById('syncPath').textContent = enabledAccounts.map(acc => acc.path).join('\n');
   document.getElementById('buildInfo').textContent = s.build_info ? `Build ${s.build_info.label}` : '';
 
   // Numpad slots

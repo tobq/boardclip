@@ -145,8 +145,7 @@ h2 { margin: 0; font-size: clamp(22px, 3vw, 32px); }
   background: var(--green);
   font-weight: 800;
 }
-.command-line,
-.update-grid pre {
+.command-line {
   overflow: auto;
   max-width: 100%;
   margin: 14px 0 10px;
@@ -169,25 +168,6 @@ code {
 .demo {
   min-width: 0;
 }
-.demo-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 10px;
-  color: #aab4bf;
-  font-size: 13px;
-}
-.demo-toolbar > div { display: flex; align-items: center; gap: 8px; }
-.status-dot {
-  width: 9px;
-  height: 9px;
-  background: var(--green);
-  border-radius: 50%;
-  box-shadow: 0 0 0 4px rgba(52, 211, 153, .1);
-}
-.demo-actions { gap: 8px; }
-.demo-actions button,
-.demo-actions a,
 .demo-foot button {
   min-height: 30px;
   padding: 0 10px;
@@ -198,9 +178,6 @@ code {
   cursor: pointer;
   font-size: 12px;
 }
-.demo-actions button[aria-pressed="true"],
-.demo-actions button:hover,
-.demo-actions a:hover,
 .demo-foot button:hover {
   color: var(--accent);
   border-color: var(--accent);
@@ -240,6 +217,7 @@ code {
   cursor: pointer;
 }
 .icon-settings:hover,
+.icon-settings.active,
 .icon-settings[aria-pressed="true"] {
   color: var(--accent);
   background: rgba(255,255,255,.06);
@@ -271,6 +249,36 @@ code {
   font-size: 13px;
 }
 #demo-search::placeholder { color: #65707d; }
+.search-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px;
+}
+.search-icon {
+  min-width: 24px;
+  height: 24px;
+  padding: 0 5px;
+  color: var(--dim);
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  cursor: pointer;
+  line-height: 1;
+}
+.search-icon:hover,
+.search-icon.active {
+  color: var(--accent);
+  background: rgba(255,255,255,.06);
+}
+.clear-search {
+  visibility: hidden;
+  font-size: 14px;
+}
+.clear-search.show { visibility: visible; }
+.rx-btn {
+  font: 700 11px/1 "Cascadia Code", Consolas, monospace;
+}
 .chips {
   display: flex;
   flex-wrap: wrap;
@@ -294,6 +302,19 @@ code {
   background: var(--accent);
   border-color: var(--accent);
   border-style: solid;
+}
+.chip.icon-chip {
+  min-width: 22px;
+  padding: 0 5px;
+  font-size: 15px;
+  font-weight: 800;
+  border-color: transparent;
+  border-radius: 4px;
+}
+.chip.icon-chip.active {
+  color: var(--accent);
+  background: transparent;
+  border-color: transparent;
 }
 .settings-panel {
   display: grid;
@@ -420,8 +441,8 @@ code {
 .clip {
   width: 100%;
   display: grid;
-  grid-template-columns: 20px minmax(26px, auto) minmax(0, 1fr);
-  gap: 8px;
+  grid-template-columns: 20px minmax(0, 1fr);
+  gap: 6px;
   align-items: start;
   padding: 8px 14px;
   color: inherit;
@@ -442,11 +463,6 @@ code {
   padding-top: 2px;
 }
 .clip.is-pinned .clip-star { color: var(--pin); }
-.clip-key {
-  min-width: 18px;
-  color: var(--green);
-  font: 700 11px/1.4 "Cascadia Code", Consolas, monospace;
-}
 .clip-body {
   min-width: 0;
   display: grid;
@@ -489,6 +505,10 @@ code {
   border: 1px solid #20252c;
   border-radius: 8px;
 }
+.clip-meta .numpad-chip {
+  color: var(--green);
+  border-style: dashed;
+}
 .empty {
   padding: 54px 20px;
   color: var(--muted);
@@ -526,11 +546,6 @@ article {
 }
 article h3 { margin: 0 0 10px; font-size: 16px; }
 article p { margin: 0; color: #8f9aa6; font-size: 14px; line-height: 1.5; }
-.update-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
-}
 footer {
   width: min(1240px, calc(100% - 36px));
   margin: 0 auto;
@@ -552,8 +567,7 @@ footer a { color: #cdd6df; }
   .demo-window {
     height: 620px;
   }
-  .feature-grid,
-  .update-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .feature-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 @media (max-width: 640px) {
@@ -568,11 +582,9 @@ footer a { color: #cdd6df; }
   .os-tab { flex: 1; }
   .demo-window { min-height: 560px; height: 72vh; }
   .settings-panel { grid-template-columns: 1fr; }
-  .feature-grid,
-  .update-grid { grid-template-columns: 1fr; }
-  .command-line,
-  .update-grid pre { white-space: pre-wrap; word-break: break-word; }
-  .clip { grid-template-columns: 18px 24px minmax(0, 1fr); padding-inline: 10px; }
+  .feature-grid { grid-template-columns: 1fr; }
+  .command-line { white-space: pre-wrap; word-break: break-word; }
+  .clip { grid-template-columns: 18px minmax(0, 1fr); padding-inline: 10px; }
   .thumb { width: 78px; height: 50px; }
   .demo-foot span { display: none; }
 }

@@ -27,9 +27,9 @@
   <main>
     <section class="hero" aria-label="BoardClip installer and demo">
       <div class="hero-copy">
-        <p class="eyebrow">Local clipboard history for desktop</p>
-        <h1>BoardClip</h1>
-        <p class="lede">Find old clips, pin reusable snippets, label messy work, paste numpad macros, and sync through folders you already use.</p>
+        <p class="eyebrow">BoardClip</p>
+        <h1>Find old clips fast</h1>
+        <p class="lede">Local clipboard history with pins, labels, regex search, numpad macros, image clips, and sync through folders you already use.</p>
 
         <div class="install-card" id="install" aria-label="Install BoardClip">
           <div class="install-head">
@@ -49,17 +49,10 @@
       </div>
 
       <div class="demo" aria-label="Interactive BoardClip demo">
-        <div class="demo-toolbar">
-          <div>
-            <span class="status-dot"></span>
-            <strong>Live demo</strong>
-          </div>
-        </div>
-
         <div class="demo-window">
           <div class="window-head">
             <span id="clip-count">100 items</span>
-            <button class="icon-settings" type="button" id="demo-settings" aria-pressed="false" aria-label="Settings">
+            <button class="icon-settings" id="demo-settings-button" type="button" aria-label="Settings" aria-expanded="false" aria-controls="demo-settings">
               <svg viewBox="0 0 24 24" aria-hidden="true">
                 <path d="M19.43 12.98c.04-.32.07-.65.07-.98s-.02-.66-.07-.98l2.11-1.65c.19-.15.24-.42.12-.64l-2-3.46a.5.5 0 0 0-.61-.22l-2.49 1a7.28 7.28 0 0 0-1.7-.98L14.5 2.42A.49.49 0 0 0 14 2h-4a.49.49 0 0 0-.5.42L9.12 5.07c-.61.24-1.18.56-1.7.98l-2.49-1a.5.5 0 0 0-.61.22l-2 3.46a.5.5 0 0 0 .12.64l2.11 1.65a7.8 7.8 0 0 0 0 1.96l-2.11 1.65a.5.5 0 0 0-.12.64l2 3.46c.13.22.39.31.61.22l2.49-1c.52.4 1.09.73 1.7.98l.38 2.65c.04.24.25.42.5.42h4c.25 0 .46-.18.5-.42l.38-2.65c.61-.24 1.18-.56 1.7-.98l2.49 1c.23.08.48 0 .61-.22l2-3.46a.5.5 0 0 0-.12-.64l-2.11-1.65ZM12 15.5A3.5 3.5 0 1 1 12 8a3.5 3.5 0 0 1 0 7.5Z"/>
               </svg>
@@ -67,46 +60,42 @@
           </div>
           <div class="search-row">
             <input id="demo-search" type="search" autocomplete="off" placeholder="Search clips, commands, labels...">
+            <div class="search-actions">
+              <button class="search-icon clear-search" id="demo-clear-search" type="button" title="Clear search" aria-label="Clear search">x</button>
+              <button class="search-icon rx-btn" id="demo-regex" type="button" title="Regex search" aria-label="Regex search">.*</button>
+            </div>
+          </div>
+          <div class="settings-panel" id="demo-settings" hidden>
+            <div class="settings-title">
+              <strong>Settings</strong>
+              <span>Local</span>
+            </div>
+            <div class="setting-row">
+              <span>Launch on startup</span>
+              <span class="toggle on" aria-hidden="true"></span>
+            </div>
+            <div class="setting-row">
+              <span>Search mode</span>
+              <code id="demo-search-mode">plain</code>
+            </div>
+            <div class="settings-section-mini">
+              <span>Sync folders</span>
+              <div class="sync-account-demo">Google Drive, OneDrive, iCloud</div>
+            </div>
+            <div class="settings-section-mini">
+              <span>Numpad</span>
+              <div class="slot-row"><b>#1</b><em>npm run build && git push origin main</em></div>
+              <div class="slot-row"><b>#2</b><em>Support macro reply</em></div>
+            </div>
           </div>
           <div class="chips" id="filter-chips" aria-label="Filters">
-            <button class="chip" type="button" data-filter="pinned">Pinned</button>
-            <button class="chip" type="button" data-filter="numpad">Numpad</button>
+            <button class="chip icon-chip" type="button" data-filter="pinned" title="Pinned" aria-label="Pinned">&#9733;</button>
+            <button class="chip icon-chip" type="button" data-filter="numpad" title="Numpad" aria-label="Numpad">#</button>
             <button class="chip" type="button" data-filter="image">Images</button>
             <button class="chip" type="button" data-filter="work">work</button>
             <button class="chip" type="button" data-filter="code">code</button>
             <button class="chip" type="button" data-filter="support">support</button>
             <button class="chip" type="button" data-filter="ideas">ideas</button>
-          </div>
-          <div class="settings-panel" id="settings-panel" hidden>
-            <div class="settings-title">
-              <strong>Settings</strong>
-              <span>Preview</span>
-            </div>
-            <div class="setting-row">
-              <span>Launch on startup</span>
-              <span class="toggle on"></span>
-            </div>
-            <div class="setting-row">
-              <span>Max age (days)</span>
-              <code>30</code>
-            </div>
-            <div class="setting-row">
-              <span>Max size (GB)</span>
-              <code>1.0</code>
-            </div>
-            <div class="settings-section-mini">
-              <span>Numpad shortcuts</span>
-              <div class="slot-row"><b>1</b><em>Image clip: product-mockup-01.png</em></div>
-              <div class="slot-row"><b>2</b><em>Yep, found the shape of it...</em></div>
-            </div>
-            <div class="settings-section-mini">
-              <span>Sync</span>
-              <div class="sync-account-demo">Google Drive · OneDrive · iCloud</div>
-            </div>
-            <div class="settings-section-mini">
-              <span>Groups</span>
-              <div class="group-pill-row"><i>work</i><i>code</i><i>support</i><i>ideas</i></div>
-            </div>
           </div>
           <div class="clip-list" id="clip-list" aria-live="polite"></div>
           <div class="demo-foot">
@@ -223,11 +212,15 @@
       };
     });
 
-    const state = { filters: new Set(), query: "" };
+    const state = { filters: new Set(), query: "", regex: false };
     const clipList = document.getElementById("clip-list");
     const clipCount = document.getElementById("clip-count");
     const search = document.getElementById("demo-search");
-    const settingsPanel = document.getElementById("settings-panel");
+    const clearSearch = document.getElementById("demo-clear-search");
+    const regexButton = document.getElementById("demo-regex");
+    const settingsButton = document.getElementById("demo-settings-button");
+    const settingsPanel = document.getElementById("demo-settings");
+    const searchMode = document.getElementById("demo-search-mode");
 
     function detectOS() {
       const ua = navigator.userAgent.toLowerCase();
@@ -260,9 +253,17 @@
     }
 
     function matchesQuery(clip) {
-      const q = state.query.trim().toLowerCase();
+      const q = state.query.trim();
       if (!q) return true;
-      return `${clip.text} ${clip.labels.join(" ")} ${clip.type}`.toLowerCase().includes(q);
+      const text = `${clip.text} ${clip.labels.join(" ")} ${clip.type}`;
+      if (state.regex) {
+        try {
+          return new RegExp(q, "i").test(text);
+        } catch {
+          return false;
+        }
+      }
+      return text.toLowerCase().includes(q.toLowerCase());
     }
 
     function renderClips() {
@@ -270,8 +271,7 @@
       clipCount.textContent = `${visible.length} of ${clips.length} items`;
       clipList.innerHTML = visible.slice(0, 18).map((clip, index) => `
         <button class="clip ${clip.pinned ? "is-pinned" : ""} ${index === 0 ? "selected" : ""}" type="button">
-          <span class="clip-star">${clip.pinned ? "★" : "☆"}</span>
-          <span class="clip-key">${clip.numpad || (clip.type === "image" ? "img" : "txt")}</span>
+          <span class="clip-star">${clip.pinned ? "&#9733;" : "&#9734;"}</span>
           <span class="clip-body">
             ${clip.type === "image" ? `
               <span class="thumb-row">
@@ -279,7 +279,7 @@
                 <span class="clip-text">${escapeHtml(clip.text)}</span>
               </span>
             ` : `<span class="clip-text">${escapeHtml(clip.text)}</span>`}
-            <span class="clip-meta">${clip.time} · ${clip.type === "image" ? "image" : `${clip.text.length} chars`} ${clip.labels.map((label) => `<em>${label}</em>`).join("")}</span>
+            <span class="clip-meta">${clip.time} &middot; ${clip.type === "image" ? "image" : `${clip.text.length} chars`} ${clip.numpad ? `<em class="numpad-chip">#${clip.numpad}</em>` : ""} ${clip.labels.map((label) => `<em>${label}</em>`).join("")}</span>
           </span>
         </button>
       `).join("") || `<div class="empty">No clips found. Try a different search.</div>`;
@@ -308,21 +308,37 @@
 
     search.addEventListener("input", () => {
       state.query = search.value;
+      clearSearch.classList.toggle("show", Boolean(state.query));
       renderClips();
+    });
+    clearSearch.addEventListener("click", () => {
+      search.value = "";
+      state.query = "";
+      clearSearch.classList.remove("show");
+      renderClips();
+      search.focus();
+    });
+    regexButton.addEventListener("click", () => {
+      state.regex = !state.regex;
+      regexButton.classList.toggle("active", state.regex);
+      searchMode.textContent = state.regex ? "regex" : "plain";
+      renderClips();
+      search.focus();
+    });
+    settingsButton.addEventListener("click", () => {
+      const open = settingsPanel.hidden;
+      settingsPanel.hidden = !open;
+      settingsButton.classList.toggle("active", open);
+      settingsButton.setAttribute("aria-expanded", String(open));
     });
 
     document.getElementById("random-query").addEventListener("click", () => {
       const queries = ["invoice", "api", "meeting", "image", "thanks", "dns", "launch", "sync", "windows"];
       search.value = queries[Math.floor(Math.random() * queries.length)];
       state.query = search.value;
+      clearSearch.classList.add("show");
       renderClips();
       search.focus();
-    });
-
-    document.getElementById("demo-settings").addEventListener("click", (event) => {
-      const open = settingsPanel.hasAttribute("hidden");
-      settingsPanel.toggleAttribute("hidden", !open);
-      event.currentTarget.setAttribute("aria-pressed", String(open));
     });
 
     const detectedOS = detectOS();

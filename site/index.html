@@ -43,7 +43,10 @@
               <button class="os-tab" type="button" data-os="linux">Linux</button>
             </div>
           </div>
-          <pre class="command-line"><code id="install-command">curl -fsSL https://boardclip.sh/install.sh | sh</code></pre>
+          <div class="command-wrap">
+            <button class="command-copy" type="button" data-copy-command="install-command">Copy</button>
+            <pre class="command-line" data-copy-command="install-command" tabindex="0" title="Click to copy"><code id="install-command">curl -fsSL https://boardclip.sh/install.sh | sh</code></pre>
+          </div>
           <p class="note">Installs from the open-source repo into your user app folder. If BoardClip is already installed, this runs the standard update flow instead.</p>
         </div>
       </div>
@@ -146,7 +149,10 @@
             <button class="os-tab update-os" type="button" data-os="linux">Linux</button>
           </div>
         </div>
-        <pre class="command-line"><code id="update-command">curl -fsSL https://boardclip.sh/update.sh | sh</code></pre>
+        <div class="command-wrap">
+          <button class="command-copy" type="button" data-copy-command="update-command">Copy</button>
+          <pre class="command-line" data-copy-command="update-command" tabindex="0" title="Click to copy"><code id="update-command">curl -fsSL https://boardclip.sh/update.sh | sh</code></pre>
+        </div>
         <p class="note">Pulls the latest source, refreshes dependencies, and relaunches the tray app.</p>
       </div>
     </section>
@@ -186,7 +192,7 @@
       { text: "npm run build && git push origin main" },
       { text: "Yep, found the shape of it. Live prod mitigations first, then clean patch." },
       { text: "https://github.com/tobq/boardclip/issues/new" },
-      { text: "Invoice #BC-2048 marked paid after customer confirmation" },
+      { text: "Invoice #BC-2048 paid via card ending 1234" },
       { text: "Audio visualizer reference", image: "https://picsum.photos/seed/boardclip-waveform/240/82" },
       { text: "curl -fsSL https://boardclip.sh/install.sh | sh" },
       { text: "Meeting notes: launch site, DNS, update scripts, README polish" },
@@ -194,11 +200,11 @@
       { text: "Can you send over the repro steps and expected behavior?" },
       { text: "BOARDCLIP_APP_DIR=$HOME/.local/share/boardclip" },
       { text: "Screenshot 2026-05-17 at 13.15.png", image: "https://picsum.photos/seed/boardclip-dashboard/120/90" },
-      { text: "Config value rotated; update local env before deploy" },
+      { text: "API key rotated; update local env before deploy" },
       { text: "OneDrive sync conflict resolved by newest updatedAt then stable id" },
       { text: "Customer reply: happy to extend the trial while we fix this" },
       { text: "Reddit draft: I built a tiny clipboard tray app because I kept losing useful snippets" },
-      { text: "C:\\Users\\you\\AppData\\Local\\BoardClip" },
+      { text: "C:\\Users\\Tobi\\AppData\\Local\\BoardClip" },
       { text: "Product mockup crop", image: "https://picsum.photos/seed/boardclip-laptop/120/90" },
       { text: "Brand copy: fast clipboard memory without another cloud account" },
       { text: "Launch checklist: domain, Netlify, TLS, scripts, README" },
@@ -304,6 +310,17 @@
       return value.replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[char]));
     }
 
+    async function copyCommand(id, trigger) {
+      const text = document.getElementById(id).textContent.trim();
+      await navigator.clipboard.writeText(text);
+      const button = trigger.closest(".command-wrap").querySelector(".command-copy");
+      const original = button.textContent;
+      button.textContent = "Copied";
+      window.setTimeout(() => {
+        button.textContent = original;
+      }, 1200);
+    }
+
     function targetPoint(selector) {
       const el = document.querySelector(selector);
       const rect = el ? el.getBoundingClientRect() : demoWindow.getBoundingClientRect();
@@ -355,6 +372,15 @@
     });
     document.querySelectorAll(".update-os").forEach((button) => {
       button.addEventListener("click", () => setCommand("update", button.dataset.os));
+    });
+    document.querySelectorAll("[data-copy-command]").forEach((control) => {
+      control.addEventListener("click", () => copyCommand(control.dataset.copyCommand, control));
+      control.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          copyCommand(control.dataset.copyCommand, control);
+        }
+      });
     });
 
     document.querySelectorAll(".chip").forEach((button) => {

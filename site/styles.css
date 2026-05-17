@@ -144,14 +144,44 @@ h2 { margin: 0; font-size: clamp(22px, 3vw, 32px); }
   background: var(--green);
   font-weight: 800;
 }
+.command-wrap {
+  position: relative;
+  margin: 14px 0 10px;
+}
 .command-line {
   overflow: auto;
   max-width: 100%;
-  margin: 14px 0 10px;
+  margin: 0;
   padding: 13px 14px;
+  padding-right: 72px;
   background: #0c1117;
   border: 1px solid #1f2937;
   border-radius: 6px;
+  cursor: pointer;
+}
+.command-line:focus {
+  outline: 2px solid rgba(52, 211, 153, .42);
+  outline-offset: 2px;
+}
+.command-copy {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 1;
+  height: 26px;
+  padding: 0 9px;
+  color: #d7dee8;
+  background: #18202a;
+  border: 1px solid #2a3542;
+  border-radius: 5px;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 800;
+}
+.command-copy:hover {
+  color: #050607;
+  background: var(--green);
+  border-color: var(--green);
 }
 code {
   color: #edf5ff;

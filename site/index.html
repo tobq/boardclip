@@ -103,6 +103,10 @@
             <button type="button" id="random-query">Shuffle search</button>
           </div>
         </div>
+        <div class="demo-guide" id="demo-guide" aria-hidden="true">
+          <span class="demo-guide-cursor"></span>
+          <span class="demo-guide-tip">Try the live demo</span>
+        </div>
       </div>
     </section>
 
@@ -221,6 +225,12 @@
     const settingsButton = document.getElementById("demo-settings-button");
     const settingsPanel = document.getElementById("demo-settings");
     const searchMode = document.getElementById("demo-search-mode");
+    const demoWindow = document.querySelector(".demo-window");
+    const demoGuide = document.getElementById("demo-guide");
+    let pointer = { x: window.innerWidth * 0.58, y: window.innerHeight * 0.45 };
+    let guideTimer = 0;
+    let guideRuns = 0;
+    let guideStopped = false;
 
     function detectOS() {
       const ua = navigator.userAgent.toLowerCase();
@@ -289,6 +299,52 @@
       return value.replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[char]));
     }
 
+    function targetPoint(selector) {
+      const el = document.querySelector(selector);
+      const rect = el ? el.getBoundingClientRect() : demoWindow.getBoundingClientRect();
+      return {
+        x: rect.left + rect.width * 0.5,
+        y: rect.top + rect.height * 0.5
+      };
+    }
+
+    function moveGuide(point, visible) {
+      demoGuide.style.transform = `translate3d(${Math.round(point.x)}px, ${Math.round(point.y)}px, 0)`;
+      demoGuide.classList.toggle("show", visible);
+    }
+
+    function stopGuide() {
+      guideStopped = true;
+      clearTimeout(guideTimer);
+      demoGuide.classList.remove("show");
+    }
+
+    function runGuide() {
+      if (guideStopped || guideRuns >= 5 || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+      const targets = ["#demo-search", "[data-filter='image']", "#demo-settings-button", "#random-query", ".clip.selected"];
+      const to = targetPoint(targets[guideRuns % targets.length]);
+      const from = {
+        x: Math.min(Math.max(pointer.x, 20), window.innerWidth - 180),
+        y: Math.min(Math.max(pointer.y, 20), window.innerHeight - 60)
+      };
+      guideRuns += 1;
+      moveGuide(from, false);
+      guideTimer = window.setTimeout(() => {
+        if (guideStopped) return;
+        moveGuide(from, true);
+        guideTimer = window.setTimeout(() => {
+          if (guideStopped) return;
+          moveGuide(to, true);
+          guideTimer = window.setTimeout(() => {
+            if (guideStopped) return;
+            demoGuide.classList.remove("show");
+            pointer = to;
+            guideTimer = window.setTimeout(runGuide, 1200);
+          }, 1900);
+        }, 180);
+      }, guideRuns === 1 ? 1400 : 300);
+    }
+
     document.querySelectorAll(".os-tab:not(.update-os)").forEach((button) => {
       button.addEventListener("click", () => setOS(button.dataset.os));
     });
@@ -341,10 +397,18 @@
       search.focus();
     });
 
+    window.addEventListener("pointermove", (event) => {
+      pointer = { x: event.clientX, y: event.clientY };
+    }, { passive: true });
+    ["pointerenter", "pointerdown", "focusin", "input", "keydown", "wheel"].forEach((eventName) => {
+      demoWindow.addEventListener(eventName, stopGuide, { once: true });
+    });
+
     const detectedOS = detectOS();
     setOS(detectedOS);
     setUpdateOS(detectedOS);
     renderClips();
+    runGuide();
   </script>
 </body>
 </html>

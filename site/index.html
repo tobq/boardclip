@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>BoardClip - fast clipboard history for desktop</title>
-  <meta name="description" content="BoardClip is a small cross-platform clipboard history tray app with search, pinning, numpad quick-paste, and native cloud sync.">
+  <meta name="description" content="BoardClip is a small cross-platform clipboard history tray app with search, pinning, numpad quick-paste, labels, image clips, and native cloud sync.">
   <link rel="canonical" href="https://boardclip.app/">
   <link rel="icon" href="/favicon.png">
   <link rel="stylesheet" href="/styles.css">
@@ -13,96 +13,270 @@
   <header class="topbar">
     <a class="brand" href="/">BoardClip</a>
     <nav>
-      <a href="#install">Install</a>
       <a href="#features">Features</a>
-      <a href="https://github.com/tobq/boardclip">GitHub</a>
+      <a href="#update">Update</a>
+      <a class="github-button" href="https://github.com/tobq/boardclip" aria-label="BoardClip on GitHub">
+        <svg viewBox="0 0 16 16" aria-hidden="true">
+          <path d="M8 0C3.58 0 0 3.67 0 8.2c0 3.63 2.29 6.7 5.47 7.79.4.08.55-.18.55-.39 0-.19-.01-.84-.01-1.53-2.01.38-2.53-.5-2.69-.96-.09-.24-.48-.96-.82-1.15-.28-.16-.68-.55-.01-.56.63-.01 1.08.59 1.23.84.72 1.24 1.87.89 2.33.68.07-.53.28-.89.51-1.1-1.78-.21-3.64-.91-3.64-4.04 0-.89.31-1.62.82-2.19-.08-.21-.36-1.04.08-2.16 0 0 .67-.22 2.2.84A7.37 7.37 0 0 1 8 3.99c.68 0 1.36.09 2 .28 1.53-1.06 2.2-.84 2.2-.84.44 1.12.16 1.95.08 2.16.51.57.82 1.3.82 2.19 0 3.14-1.87 3.83-3.65 4.04.29.26.54.75.54 1.52 0 1.1-.01 1.98-.01 2.25 0 .21.15.47.55.39A8.07 8.07 0 0 0 16 8.2C16 3.67 12.42 0 8 0Z"/>
+        </svg>
+        GitHub
+      </a>
     </nav>
   </header>
 
   <main>
-    <section class="hero">
+    <section class="hero" aria-label="BoardClip installer and demo">
       <div class="hero-copy">
-        <p class="eyebrow">Clipboard history that stays out of your way</p>
+        <p class="eyebrow">Local clipboard history for desktop</p>
         <h1>BoardClip</h1>
-        <p class="lede">A tiny tray app for keeping, finding, pinning, and quick-pasting the snippets you reuse all day.</p>
-        <div class="cta-row">
-          <a class="button primary" href="#install">Install from terminal</a>
-          <a class="button secondary" href="https://github.com/tobq/boardclip">View source</a>
-        </div>
-      </div>
-      <div class="app-shot" aria-label="BoardClip interface preview">
-        <div class="window">
-          <div class="window-head">
-            <span>12 items</span>
-            <span class="dot"></span>
-          </div>
-          <div class="search">Search...</div>
-          <div class="chips"><span>Pinned</span><span>Numpad</span><span>todo</span></div>
-          <div class="clip active"><b>3</b><p>Would it help if you added comprehensive test logs temporarily...</p></div>
-          <div class="clip"><b>*</b><p>npm run build && git push origin main</p></div>
-          <div class="clip"><b>img</b><p>Screenshot 2026-05-17 at 13.15.png</p></div>
-        </div>
-      </div>
-    </section>
+        <p class="lede">Find old clips, pin reusable snippets, label messy work, paste numpad macros, and sync through folders you already use.</p>
 
-    <section class="install" id="install">
-      <div>
-        <h2>Install</h2>
-        <p>BoardClip installs from source into a per-user app folder, installs Electron dependencies, and starts the tray app.</p>
+        <div class="install-card" id="install" aria-label="Install BoardClip">
+          <div class="install-head">
+            <div>
+              <p class="mini-label">Install</p>
+              <h2 id="install-title">Recommended command</h2>
+            </div>
+            <div class="os-tabs" role="tablist" aria-label="Operating system">
+              <button class="os-tab active" type="button" data-os="mac">macOS</button>
+              <button class="os-tab" type="button" data-os="win">Windows</button>
+              <button class="os-tab" type="button" data-os="linux">Linux</button>
+            </div>
+          </div>
+          <pre class="command-line"><code id="install-command">curl -fsSL https://boardclip.sh/install.sh | sh</code></pre>
+          <p class="note">Installs from the open-source repo into your user app folder, installs dependencies, and starts the tray app.</p>
+        </div>
       </div>
-      <div class="commands">
-        <label>macOS / Linux</label>
-        <pre><code>curl -fsSL https://boardclip.sh/install.sh | sh</code></pre>
-        <label>Windows PowerShell</label>
-        <pre><code>irm https://boardclip.sh/install.ps1 | iex</code></pre>
-        <p class="note">Prefer to inspect first? Download the script URL in your browser or with curl before running it.</p>
+
+      <div class="demo" aria-label="Interactive BoardClip demo">
+        <div class="demo-toolbar">
+          <div>
+            <span class="status-dot"></span>
+            <strong>Live demo</strong>
+          </div>
+          <div class="demo-actions">
+            <button type="button" id="demo-settings" aria-pressed="false">Settings</button>
+            <a href="https://github.com/tobq/boardclip">Source</a>
+          </div>
+        </div>
+
+        <div class="demo-window">
+          <div class="window-head">
+            <span id="clip-count">100 items</span>
+            <span id="sync-state">Google Drive + OneDrive + iCloud</span>
+          </div>
+          <div class="search-row">
+            <input id="demo-search" type="search" autocomplete="off" placeholder="Search clips, commands, labels...">
+          </div>
+          <div class="chips" id="filter-chips" aria-label="Filters">
+            <button class="chip active" type="button" data-filter="all">All</button>
+            <button class="chip" type="button" data-filter="pinned">Pinned</button>
+            <button class="chip" type="button" data-filter="numpad">Numpad</button>
+            <button class="chip" type="button" data-filter="image">Images</button>
+            <button class="chip" type="button" data-filter="work">work</button>
+            <button class="chip" type="button" data-filter="code">code</button>
+            <button class="chip" type="button" data-filter="support">support</button>
+            <button class="chip" type="button" data-filter="ideas">ideas</button>
+          </div>
+          <div class="settings-panel" id="settings-panel" hidden>
+            <label><input type="checkbox" checked data-setting="sync"> Native cloud sync</label>
+            <label><input type="checkbox" checked data-setting="images"> Capture images</label>
+            <label><input type="checkbox" checked data-setting="numpad"> Numpad paste mode</label>
+          </div>
+          <div class="clip-list" id="clip-list" aria-live="polite"></div>
+          <div class="demo-foot">
+            <span>Try: "invoice", "api", "meeting", "image", "thanks"</span>
+            <button type="button" id="random-query">Shuffle search</button>
+          </div>
+        </div>
       </div>
     </section>
 
     <section class="features" id="features">
-      <h2>Built for repeated use</h2>
+      <h2>Built for daily repetition</h2>
       <div class="feature-grid">
         <article>
-          <h3>Fast popup</h3>
-          <p>Open at your cursor, search immediately, paste with Enter, and get back to what you were doing.</p>
+          <h3>Instant search</h3>
+          <p>Open at your cursor, type, press Enter, and paste without turning clipboard history into admin work.</p>
         </article>
         <article>
           <h3>Numpad quick-paste</h3>
           <p>Assign your most-used snippets to 1-9 and paste them from anywhere.</p>
         </article>
         <article>
-          <h3>Pins and groups</h3>
-          <p>Keep durable snippets, tag them, and filter the list without turning your clipboard into a filing cabinet.</p>
+          <h3>Labels and pins</h3>
+          <p>Keep durable snippets, tag work-in-progress, and filter a large clipboard fast.</p>
         </article>
         <article>
-          <h3>Native cloud sync</h3>
-          <p>Uses cloud folders you may already have: Google Drive, OneDrive, and iCloud.</p>
-        </article>
-        <article>
-          <h3>Text and images</h3>
-          <p>Captures both clipboard text and images, with content-addressed image storage.</p>
-        </article>
-        <article>
-          <h3>Open source</h3>
-          <p>Electron app, local data files, no account, and no hosted clipboard database.</p>
+          <h3>Native cloud folders</h3>
+          <p>Sync through Google Drive, OneDrive, and iCloud where available, with local files you can inspect.</p>
         </article>
       </div>
     </section>
 
     <section class="update" id="update">
       <h2>Update</h2>
-      <div class="commands compact">
-        <label>macOS / Linux</label>
+      <div class="update-grid">
         <pre><code>curl -fsSL https://boardclip.sh/update.sh | sh</code></pre>
-        <label>Windows PowerShell</label>
         <pre><code>irm https://boardclip.sh/update.ps1 | iex</code></pre>
       </div>
     </section>
   </main>
 
   <footer>
-    <span>BoardClip is open source.</span>
-    <a href="https://github.com/tobq/boardclip">GitHub</a>
+    <span>Open source. Local-first. No hosted clipboard database.</span>
+    <a href="https://github.com/tobq/boardclip">github.com/tobq/boardclip</a>
   </footer>
+
+  <script>
+    const installCommands = {
+      mac: "curl -fsSL https://boardclip.sh/install.sh | sh",
+      linux: "curl -fsSL https://boardclip.sh/install.sh | sh",
+      win: "irm https://boardclip.sh/install.ps1 | iex"
+    };
+
+    const labels = ["work", "code", "support", "ideas", "legal", "sales", "design", "finance", "ops", "personal", "release", "meeting", "writing", "bug", "social"];
+    const examples = [
+      { text: "npm run build && git push origin main" },
+      { text: "Yep, found the shape of it. Live prod mitigations first, then clean patch." },
+      { text: "https://github.com/tobq/boardclip/issues/new" },
+      { text: "Invoice #BC-2048 paid via card ending 2590" },
+      { text: "Audio visualizer reference", image: "https://picsum.photos/seed/boardclip-waveform/240/82" },
+      { text: "curl -fsSL https://boardclip.sh/install.sh | sh" },
+      { text: "Meeting notes: launch site, DNS, update scripts, README polish" },
+      { text: "SELECT id, content, created_at FROM clips WHERE pinned = 1;" },
+      { text: "Can you send over the repro steps and expected behavior?" },
+      { text: "BOARDCLIP_APP_DIR=$HOME/.local/share/boardclip" },
+      { text: "Screenshot 2026-05-17 at 13.15.png", image: "https://picsum.photos/seed/boardclip-dashboard/120/90" },
+      { text: "API key rotated; update local env before deploy" },
+      { text: "OneDrive sync conflict resolved by newest updatedAt then stable id" },
+      { text: "Customer reply: happy to extend the trial while we fix this" },
+      { text: "Reddit draft: I built a tiny clipboard tray app because I kept losing useful snippets" },
+      { text: "C:\\Users\\Tobi\\AppData\\Local\\BoardClip" },
+      { text: "Product mockup crop", image: "https://picsum.photos/seed/boardclip-laptop/120/90" },
+      { text: "Brand copy: fast clipboard memory without another cloud account" },
+      { text: "Launch checklist: domain, Netlify, TLS, scripts, README" },
+      { text: "macOS accessibility permissions need to be granted once" },
+      { text: "Fix: Windows key release should not open Win+V after BoardClip handles it" },
+      { text: "Architecture diagram", image: "https://picsum.photos/seed/boardclip-architecture/140/80" },
+      { text: "Support macro: Could you try updating to the latest build and relaunching?" },
+      { text: "PR summary: unify provider detection and remove duplicated sync paths" },
+      { text: "npx --yes netlify-cli@latest deploy --prod --dir site" }
+    ];
+
+    const clips = Array.from({ length: 100 }, (_, index) => {
+      const example = examples[index % examples.length];
+      const text = example.text;
+      const primary = labels[index % labels.length];
+      const secondary = labels[(index * 3 + 4) % labels.length];
+      const isImage = Boolean(example.image) || /screenshot|image|diagram|png/i.test(text) || index % 17 === 0;
+      return {
+        id: index + 1,
+        text: isImage && !/png|screenshot|image/i.test(text) ? `Image clip: product-mockup-${String(index + 1).padStart(2, "0")}.png` : text,
+        imageSrc: example.image || (isImage ? `https://picsum.photos/seed/boardclip-${index + 1}/150/86` : null),
+        labels: primary === secondary ? [primary] : [primary, secondary],
+        pinned: index % 9 === 0 || index < 4,
+        numpad: index < 8 ? index + 1 : null,
+        type: isImage ? "image" : "text",
+        time: index < 8 ? "now" : `${index + 2}m`
+      };
+    });
+
+    const state = { filter: "all", query: "" };
+    const clipList = document.getElementById("clip-list");
+    const clipCount = document.getElementById("clip-count");
+    const search = document.getElementById("demo-search");
+    const settingsPanel = document.getElementById("settings-panel");
+
+    function detectOS() {
+      const ua = navigator.userAgent.toLowerCase();
+      if (ua.includes("windows")) return "win";
+      if (ua.includes("linux")) return "linux";
+      return "mac";
+    }
+
+    function setOS(os) {
+      document.querySelectorAll(".os-tab").forEach((button) => button.classList.toggle("active", button.dataset.os === os));
+      document.getElementById("install-command").textContent = installCommands[os];
+      document.getElementById("install-title").textContent = os === "win" ? "Windows PowerShell" : os === "linux" ? "Linux terminal" : "macOS terminal";
+    }
+
+    function matchesFilter(clip) {
+      if (state.filter === "all") return true;
+      if (state.filter === "pinned") return clip.pinned;
+      if (state.filter === "numpad") return Boolean(clip.numpad);
+      if (state.filter === "image") return clip.type === "image";
+      return clip.labels.includes(state.filter);
+    }
+
+    function matchesQuery(clip) {
+      const q = state.query.trim().toLowerCase();
+      if (!q) return true;
+      return `${clip.text} ${clip.labels.join(" ")} ${clip.type}`.toLowerCase().includes(q);
+    }
+
+    function renderClips() {
+      const visible = clips.filter((clip) => matchesFilter(clip) && matchesQuery(clip));
+      clipCount.textContent = `${visible.length} of ${clips.length} items`;
+      clipList.innerHTML = visible.slice(0, 18).map((clip, index) => `
+        <button class="clip ${clip.pinned ? "is-pinned" : ""} ${index === 0 ? "selected" : ""}" type="button">
+          <span class="clip-star">${clip.pinned ? "★" : "☆"}</span>
+          <span class="clip-key">${clip.numpad || (clip.type === "image" ? "img" : "txt")}</span>
+          <span class="clip-body">
+            ${clip.type === "image" ? `
+              <span class="thumb-row">
+                <img class="thumb" src="${clip.imageSrc}" alt="">
+                <span class="clip-text">${escapeHtml(clip.text)}</span>
+              </span>
+            ` : `<span class="clip-text">${escapeHtml(clip.text)}</span>`}
+            <span class="clip-meta">${clip.time} · ${clip.type === "image" ? "image" : `${clip.text.length} chars`} ${clip.labels.map((label) => `<em>${label}</em>`).join("")}</span>
+          </span>
+        </button>
+      `).join("") || `<div class="empty">No clips found. Try a different search.</div>`;
+    }
+
+    function escapeHtml(value) {
+      return value.replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[char]));
+    }
+
+    document.querySelectorAll(".os-tab").forEach((button) => {
+      button.addEventListener("click", () => setOS(button.dataset.os));
+    });
+
+    document.querySelectorAll(".chip").forEach((button) => {
+      button.addEventListener("click", () => {
+        state.filter = button.dataset.filter;
+        document.querySelectorAll(".chip").forEach((chip) => chip.classList.toggle("active", chip === button));
+        renderClips();
+      });
+    });
+
+    search.addEventListener("input", () => {
+      state.query = search.value;
+      renderClips();
+    });
+
+    document.getElementById("random-query").addEventListener("click", () => {
+      const queries = ["invoice", "api", "meeting", "image", "thanks", "dns", "launch", "sync", "windows"];
+      search.value = queries[Math.floor(Math.random() * queries.length)];
+      state.query = search.value;
+      renderClips();
+      search.focus();
+    });
+
+    document.getElementById("demo-settings").addEventListener("click", (event) => {
+      const open = settingsPanel.hasAttribute("hidden");
+      settingsPanel.toggleAttribute("hidden", !open);
+      event.currentTarget.setAttribute("aria-pressed", String(open));
+    });
+
+    settingsPanel.addEventListener("change", () => {
+      const enabled = Array.from(settingsPanel.querySelectorAll("input:checked")).map((input) => input.dataset.setting);
+      document.getElementById("sync-state").textContent = enabled.includes("sync") ? "Google Drive + OneDrive + iCloud" : "Local only";
+    });
+
+    setOS(detectOS());
+    renderClips();
+  </script>
 </body>
 </html>

@@ -4,3 +4,6 @@ clipboard-settings.json
 __pycache__/
 *.pyc
 node_modules/
+
+# Local Netlify folder
+.netlify

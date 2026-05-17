@@ -158,15 +158,27 @@
   </footer>
 
   <script>
-    const installCommands = {
-      mac: "curl -fsSL https://boardclip.sh/install.sh | sh",
-      linux: "curl -fsSL https://boardclip.sh/install.sh | sh",
-      win: "irm https://boardclip.sh/install.ps1 | iex"
+    const osLabels = {
+      mac: "macOS terminal",
+      linux: "Linux terminal",
+      win: "Windows PowerShell"
     };
-    const updateCommands = {
-      mac: "curl -fsSL https://boardclip.sh/update.sh | sh",
-      linux: "curl -fsSL https://boardclip.sh/update.sh | sh",
-      win: "irm https://boardclip.sh/update.ps1 | iex"
+    const commands = {
+      install: {
+        mac: "curl -fsSL https://boardclip.sh/install.sh | sh",
+        linux: "curl -fsSL https://boardclip.sh/install.sh | sh",
+        win: "irm https://boardclip.sh/install.ps1 | iex"
+      },
+      update: {
+        mac: "curl -fsSL https://boardclip.sh/update.sh | sh",
+        linux: "curl -fsSL https://boardclip.sh/update.sh | sh",
+        win: "irm https://boardclip.sh/update.ps1 | iex"
+      }
+    };
+    const builtinFilters = {
+      pinned: (clip) => clip.pinned,
+      numpad: (clip) => Boolean(clip.numpad),
+      image: (clip) => clip.type === "image"
     };
 
     const labels = ["work", "code", "support", "ideas", "legal", "sales", "design", "finance", "ops", "personal", "release", "meeting", "writing", "bug", "social"];
@@ -239,25 +251,18 @@
       return "mac";
     }
 
-    function setOS(os) {
-      document.querySelectorAll(".os-tab:not(.update-os)").forEach((button) => button.classList.toggle("active", button.dataset.os === os));
-      document.getElementById("install-command").textContent = installCommands[os];
-      document.getElementById("install-title").textContent = os === "win" ? "Windows PowerShell" : os === "linux" ? "Linux terminal" : "macOS terminal";
-    }
-
-    function setUpdateOS(os) {
-      document.querySelectorAll(".update-os").forEach((button) => button.classList.toggle("active", button.dataset.os === os));
-      document.getElementById("update-command").textContent = updateCommands[os];
-      document.getElementById("update-title").textContent = os === "win" ? "Windows PowerShell" : os === "linux" ? "Linux terminal" : "macOS terminal";
+    function setCommand(kind, os) {
+      const scope = kind === "update" ? ".update-os" : ".os-tab:not(.update-os)";
+      document.querySelectorAll(scope).forEach((button) => button.classList.toggle("active", button.dataset.os === os));
+      document.getElementById(`${kind}-command`).textContent = commands[kind][os];
+      document.getElementById(`${kind}-title`).textContent = osLabels[os];
     }
 
     function matchesFilter(clip) {
       if (!state.filters.size) return true;
       for (const filter of state.filters) {
-        if (filter === "pinned" && !clip.pinned) return false;
-        if (filter === "numpad" && !clip.numpad) return false;
-        if (filter === "image" && clip.type !== "image") return false;
-        if (!["pinned", "numpad", "image"].includes(filter) && !clip.labels.includes(filter)) return false;
+        const predicate = builtinFilters[filter] || ((item) => item.labels.includes(filter));
+        if (!predicate(clip)) return false;
       }
       return true;
     }
@@ -346,10 +351,10 @@
     }
 
     document.querySelectorAll(".os-tab:not(.update-os)").forEach((button) => {
-      button.addEventListener("click", () => setOS(button.dataset.os));
+      button.addEventListener("click", () => setCommand("install", button.dataset.os));
     });
     document.querySelectorAll(".update-os").forEach((button) => {
-      button.addEventListener("click", () => setUpdateOS(button.dataset.os));
+      button.addEventListener("click", () => setCommand("update", button.dataset.os));
     });
 
     document.querySelectorAll(".chip").forEach((button) => {
@@ -405,8 +410,8 @@
     });
 
     const detectedOS = detectOS();
-    setOS(detectedOS);
-    setUpdateOS(detectedOS);
+    setCommand("install", detectedOS);
+    setCommand("update", detectedOS);
     renderClips();
     runGuide();
   </script>

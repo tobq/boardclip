@@ -185,6 +185,8 @@ code {
 }
 
 .demo-window {
+  --ink: #e6edf3;
+  --muted: #6f7a86;
   height: min(620px, calc(100vh - 128px));
   min-height: 500px;
   display: flex;
@@ -218,8 +220,7 @@ code {
   cursor: pointer;
 }
 .icon-settings:hover,
-.icon-settings.active,
-.icon-settings[aria-pressed="true"] {
+.icon-settings.active {
   color: var(--accent);
   background: rgba(255,255,255,.06);
 }
@@ -417,19 +418,6 @@ code {
   font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-.group-pill-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-}
-.group-pill-row i {
-  padding: 2px 6px;
-  color: #84909d;
-  font-size: 10px;
-  font-style: normal;
-  border: 1px solid #20252c;
-  border-radius: 8px;
 }
 .clip-list {
   flex: 1;

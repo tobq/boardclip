@@ -89,7 +89,25 @@ const AHK_PRESETS = {
 };
 
 // --- Settings ---
-const DEFAULT_SETTINGS = { max_age_days: 7, max_size_gb: 10, regex_search: false, groups: [], sync_path: '' };
+const DEFAULT_SETTINGS = {
+  max_age_days: 7,
+  max_size_gb: 10,
+  regex_search: false,
+  groups: [],
+  sync_path: '',
+  tombstones: [],
+  group_tombstones: [],
+};
+
+function atomicWriteFile(filePath, data) {
+  const tmpPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  fs.writeFileSync(tmpPath, data);
+  fs.renameSync(tmpPath, filePath);
+}
+
+function atomicWriteJson(filePath, value, spacing) {
+  atomicWriteFile(filePath, JSON.stringify(value, null, spacing));
+}
 
 function loadSettings() {
   try {
@@ -101,24 +119,33 @@ function loadSettings() {
 
 function saveSettingsFile() {
   const s = { ...settings };
+  s.tombstones = normalizeTombstones(s.tombstones);
+  s.group_tombstones = normalizeGroupTombstones(s.group_tombstones);
+  settings.tombstones = s.tombstones;
+  settings.group_tombstones = s.group_tombstones;
   delete s.numpad_slots;
-  fs.writeFileSync(SETTINGS_PATH, JSON.stringify(s, null, 2));
+  atomicWriteJson(SETTINGS_PATH, s, 2);
+  dataRevision++;
   scheduleSyncMerge();
 }
 
 let settings = loadSettings();
+let dataRevision = 0;
 
 // --- History ---
 function loadHistory() {
   try {
-    return JSON.parse(fs.readFileSync(DB_PATH, 'utf-8'));
+    const loaded = JSON.parse(fs.readFileSync(DB_PATH, 'utf-8'));
+    return Array.isArray(loaded) ? loaded : [];
   } catch {
     return [];
   }
 }
 
 function saveHistory() {
-  fs.writeFileSync(DB_PATH, JSON.stringify(history));
+  for (const item of history) ensureItemId(item);
+  atomicWriteJson(DB_PATH, history);
+  dataRevision++;
   scheduleSyncMerge();
   syncHookState();
 }
@@ -138,6 +165,7 @@ function syncHookState() {
 
 let history = loadHistory();
 for (const h of history) migrateItemPin(h);
+for (const h of history) ensureItemId(h);
 
 // --- Pin model ---
 // Unified state: item.pin is null/undefined for unpinned items, or an object
@@ -176,6 +204,46 @@ function ensurePin(item) {
   return item.pin;
 }
 
+function dedupeNumpadSlots(items) {
+  const bestBySlot = new Map();
+  for (const item of items) {
+    const slot = numpadSlotOf(item);
+    if (slot == null) continue;
+    const current = bestBySlot.get(slot);
+    const itemScore = item.pin && item.pin.updatedAt || item.ts || 0;
+    const currentScore = current && (current.pin && current.pin.updatedAt || current.ts || 0);
+    if (!current || itemScore >= currentScore) bestBySlot.set(slot, item);
+  }
+  for (const item of items) {
+    const slot = numpadSlotOf(item);
+    if (slot != null && bestBySlot.get(slot) !== item) delete item.pin.number;
+  }
+}
+
+function legacyContentKey(item) {
+  if (item.type === 'image') return `img:${item.image}`;
+  return `txt:${crypto.createHash('sha256').update(item.text || '').digest('hex')}`;
+}
+
+function ensureItemId(item) {
+  if (!item.id) item.id = legacyContentKey(item);
+  return item.id;
+}
+
+function itemKey(item) {
+  return item && (item.id || legacyContentKey(item));
+}
+
+function findHistoryIndex(id) {
+  if (!id) return -1;
+  return history.findIndex(item => itemKey(item) === id);
+}
+
+function findHistoryItem(id) {
+  const idx = findHistoryIndex(id);
+  return idx >= 0 ? history[idx] : null;
+}
+
 function getStorageBytes() {
   let total = 0;
   try { total = fs.statSync(DB_PATH).size; } catch {}
@@ -195,6 +263,15 @@ function removeItemImage(item) {
   }
 }
 
+function deleteHistoryIndex(index, { tombstone = true } = {}) {
+  if (index < 0 || index >= history.length) return null;
+  const item = history[index];
+  if (tombstone) addTombstone(itemKey(item));
+  removeItemImage(item);
+  history.splice(index, 1);
+  return item;
+}
+
 function pruneHistory() {
   const now = Date.now() / 1000;
   const maxAge = settings.max_age_days * 86400;
@@ -203,8 +280,7 @@ function pruneHistory() {
 
   for (let i = history.length - 1; i >= 0; i--) {
     if (!isPinned(history[i]) && (now - (history[i].ts || 0)) > maxAge) {
-      removeItemImage(history[i]);
-      history.splice(i, 1);
+      deleteHistoryIndex(i);
       changed = true;
     }
   }
@@ -215,12 +291,14 @@ function pruneHistory() {
       if (!isPinned(history[i])) { idx = i; break; }
     }
     if (idx < 0) break;
-    removeItemImage(history[idx]);
-    history.splice(idx, 1);
+    deleteHistoryIndex(idx);
     changed = true;
   }
 
-  if (changed) saveHistory();
+  if (changed) {
+    saveSettingsFile();
+    saveHistory();
+  }
 }
 
 // --- Migration: old settings.numpad_slots -> per-item pin ---
@@ -256,48 +334,169 @@ function migrateNumpad() {
 }
 
 // --- Sync: merge local <-> shared (Google Drive etc) ---
-function contentKey(item) {
-  if (item.type === 'image') return `img:${item.image}`;
-  return `txt:${crypto.createHash('md5').update(item.text || '').digest('hex')}`;
+const TOMBSTONE_MAX_AGE_MS = 30 * 86400 * 1000;
+
+function normalizeTombstones(list) {
+  const cutoff = Date.now() - TOMBSTONE_MAX_AGE_MS;
+  const byId = new Map();
+  for (const tombstone of Array.isArray(list) ? list : []) {
+    if (!tombstone || !tombstone.id) continue;
+    const deletedAt = Number(tombstone.deletedAt) || 0;
+    if (deletedAt < cutoff) continue;
+    const existing = byId.get(tombstone.id);
+    if (!existing || deletedAt > existing.deletedAt) {
+      byId.set(tombstone.id, { id: tombstone.id, deletedAt });
+    }
+  }
+  return [...byId.values()];
 }
 
-function metadataScore(item) {
-  if (!item.pin) return 0;
-  let score = 1; // base: pinned
-  if (typeof item.pin.number === 'number') score += 3;
-  if (Array.isArray(item.pin.groups)) score += item.pin.groups.length;
-  return score;
+function tombstoneIds(list) {
+  return new Set(normalizeTombstones(list).map(t => t.id));
+}
+
+function normalizeGroupTombstones(list) {
+  const cutoff = Date.now() - TOMBSTONE_MAX_AGE_MS;
+  const byName = new Map();
+  for (const tombstone of Array.isArray(list) ? list : []) {
+    if (!tombstone || !tombstone.name) continue;
+    const name = String(tombstone.name);
+    const deletedAt = Number(tombstone.deletedAt) || 0;
+    if (deletedAt < cutoff) continue;
+    const existing = byName.get(name);
+    if (!existing || deletedAt > existing.deletedAt) {
+      byName.set(name, { name, deletedAt });
+    }
+  }
+  return [...byName.values()];
+}
+
+function groupTombstoneNames(list) {
+  return new Set(normalizeGroupTombstones(list).map(t => t.name));
+}
+
+function addTombstone(id) {
+  if (!id) return;
+  settings.tombstones = normalizeTombstones([
+    ...(settings.tombstones || []),
+    { id, deletedAt: Date.now() },
+  ]);
+}
+
+function addGroupTombstone(name) {
+  if (!name) return;
+  settings.group_tombstones = normalizeGroupTombstones([
+    ...(settings.group_tombstones || []),
+    { name, deletedAt: Date.now() },
+  ]);
+}
+
+function mergePins(localPin, remotePin, localUpdatedAt = 0, remoteUpdatedAt = 0) {
+  if (!localPin && !remotePin) return null;
+  const deletedGroups = groupTombstoneNames(settings.group_tombstones);
+  const cleanPin = (pin) => {
+    if (!pin) return null;
+    const cleaned = { ...pin };
+    if (Array.isArray(cleaned.groups)) {
+      cleaned.groups = cleaned.groups.filter(g => !deletedGroups.has(g));
+      if (!cleaned.groups.length) delete cleaned.groups;
+    }
+    if (typeof cleaned.number !== 'number' && !cleaned.groups) return null;
+    return cleaned;
+  };
+  if (!localPin && remotePin) return localUpdatedAt > (remotePin.updatedAt || remoteUpdatedAt) ? null : cleanPin(remotePin);
+  if (localPin && !remotePin) return remoteUpdatedAt > (localPin.updatedAt || localUpdatedAt) ? null : cleanPin(localPin);
+  const merged = {};
+  const localGroups = localPin && Array.isArray(localPin.groups) ? localPin.groups : [];
+  const remoteGroups = remotePin && Array.isArray(remotePin.groups) ? remotePin.groups : [];
+  const groups = [...new Set([...localGroups, ...remoteGroups])].filter(g => !deletedGroups.has(g));
+  if (groups.length) merged.groups = groups;
+
+  const localNumber = localPin && typeof localPin.number === 'number' ? localPin.number : null;
+  const remoteNumber = remotePin && typeof remotePin.number === 'number' ? remotePin.number : null;
+  if (localNumber != null && remoteNumber != null) {
+    merged.number = (localPin.updatedAt || 0) >= (remotePin.updatedAt || 0) ? localNumber : remoteNumber;
+  } else if (localNumber != null) {
+    merged.number = localNumber;
+  } else if (remoteNumber != null) {
+    merged.number = remoteNumber;
+  }
+
+  if (localPin && localPin.updatedAt || remotePin && remotePin.updatedAt) {
+    merged.updatedAt = Math.max(localPin && localPin.updatedAt || 0, remotePin && remotePin.updatedAt || 0);
+  }
+  return Object.keys(merged).length ? merged : {};
+}
+
+function mergeItems(localItem, remoteItem) {
+  migrateItemPin(localItem);
+  migrateItemPin(remoteItem);
+  ensureItemId(localItem);
+  ensureItemId(remoteItem);
+  const localTs = localItem.ts || 0;
+  const remoteTs = remoteItem.ts || 0;
+  const localUpdated = localItem.updatedAt || localTs;
+  const remoteUpdated = remoteItem.updatedAt || remoteTs;
+  const base = remoteUpdated > localUpdated ? { ...remoteItem } : { ...localItem };
+  base.id = itemKey(base);
+  base.ts = Math.max(localTs, remoteTs);
+  base.updatedAt = Math.max(localItem.updatedAt || 0, remoteItem.updatedAt || 0) || undefined;
+  base.pin = mergePins(
+    localItem.pin,
+    remoteItem.pin,
+    localItem.updatedAt || localItem.ts || 0,
+    remoteItem.updatedAt || remoteItem.ts || 0
+  );
+  return base;
 }
 
 function mergeHistories(local, remote) {
+  if (!Array.isArray(local)) local = [];
+  if (!Array.isArray(remote)) remote = [];
   // Migrate remote items in place if they're still in the old format so the
   // merge score comparison doesn't see a mix of old/new pin shapes.
   for (const item of remote) migrateItemPin(item);
+  for (const item of remote) ensureItemId(item);
+  for (const item of local) ensureItemId(item);
+
+  const deleted = tombstoneIds(settings.tombstones);
 
   const merged = new Map();
 
-  for (const item of local) merged.set(contentKey(item), item);
+  for (const item of local) {
+    if (!deleted.has(itemKey(item))) merged.set(itemKey(item), item);
+  }
 
   for (const item of remote) {
-    const key = contentKey(item);
+    const key = itemKey(item);
+    if (deleted.has(key)) continue;
     const existing = merged.get(key);
     if (!existing) {
       merged.set(key, item);
     } else {
-      const remoteScore = metadataScore(item);
-      const localScore = metadataScore(existing);
-      if (remoteScore > localScore ||
-          (remoteScore === localScore && (item.ts || 0) > (existing.ts || 0))) {
-        merged.set(key, item);
-      }
+      merged.set(key, mergeItems(existing, item));
     }
   }
 
-  return [...merged.values()].sort((a, b) => (b.ts || 0) - (a.ts || 0));
+  const result = [...merged.values()].sort((a, b) => (b.ts || 0) - (a.ts || 0));
+  dedupeNumpadSlots(result);
+  return result;
 }
 
 function mergeGroups(local, remote) {
-  return [...new Set([...(local || []), ...(remote || [])])];
+  const deleted = groupTombstoneNames(settings.group_tombstones);
+  return [...new Set([...(local || []), ...(remote || [])])].filter(g => !deleted.has(g));
+}
+
+function remoteSettingsPayload() {
+  const remoteSave = {
+    ...settings,
+    tombstones: normalizeTombstones(settings.tombstones),
+    group_tombstones: normalizeGroupTombstones(settings.group_tombstones),
+  };
+  delete remoteSave.numpad_slots;
+  delete remoteSave.sync_path;
+  return remoteSave;
 }
 
 function syncImages(remoteImgDir) {
@@ -348,28 +547,31 @@ function syncMerge() {
 
     let remoteMtime = 0;
     try { remoteMtime = fs.statSync(remoteDbPath).mtimeMs; } catch {}
+    let remoteSettingsMtime = 0;
+    try { remoteSettingsMtime = fs.statSync(remoteSettingsPath).mtimeMs; } catch {}
     let localMtime = 0;
     try { localMtime = fs.statSync(DB_PATH).mtimeMs; } catch {}
-    const localChangedSince = localMtime > lastSyncMtime;
-    const remoteChangedSince = remoteMtime > lastSyncMtime;
+    let localSettingsMtime = 0;
+    try { localSettingsMtime = fs.statSync(SETTINGS_PATH).mtimeMs; } catch {}
+    const localChangedSince = Math.max(localMtime, localSettingsMtime) > lastSyncMtime;
+    const remoteChangedSince = Math.max(remoteMtime, remoteSettingsMtime) > lastSyncMtime;
     if (!localChangedSince && !remoteChangedSince) return;
 
     // Local-only changes: push local to remote without merging. Prevents the
     // resurrection bug where a deleted group comes back because the merge
     // sees the "still has group" remote copy as higher-scored.
     if (localChangedSince && !remoteChangedSince) {
-      try { fs.writeFileSync(remoteDbPath, JSON.stringify(history)); } catch {}
+      try { atomicWriteJson(remoteDbPath, history); } catch {}
       try {
-        const remoteSave = { ...settings };
-        delete remoteSave.numpad_slots;
-        delete remoteSave.sync_path;
-        fs.writeFileSync(remoteSettingsPath, JSON.stringify(remoteSave, null, 2));
+        atomicWriteJson(remoteSettingsPath, remoteSettingsPayload(), 2);
       } catch {}
       syncImages(remoteImgDir);
       try {
         const rmt = fs.statSync(remoteDbPath).mtimeMs;
+        const rsmt = fs.statSync(remoteSettingsPath).mtimeMs;
         const lmt = fs.statSync(DB_PATH).mtimeMs;
-        lastSyncMtime = Math.max(rmt, lmt);
+        const lsmt = fs.statSync(SETTINGS_PATH).mtimeMs;
+        lastSyncMtime = Math.max(rmt, rsmt, lmt, lsmt);
       } catch {}
       return;
     }
@@ -381,6 +583,17 @@ function syncMerge() {
     try { remoteHistory = JSON.parse(fs.readFileSync(remoteDbPath, 'utf-8')); } catch {}
     let remoteSettings = {};
     try { remoteSettings = JSON.parse(fs.readFileSync(remoteSettingsPath, 'utf-8')); } catch {}
+
+    const previousTombstones = JSON.stringify(normalizeTombstones(settings.tombstones));
+    const previousGroupTombstones = JSON.stringify(normalizeGroupTombstones(settings.group_tombstones));
+    settings.tombstones = normalizeTombstones([
+      ...(settings.tombstones || []),
+      ...(remoteSettings.tombstones || []),
+    ]);
+    settings.group_tombstones = normalizeGroupTombstones([
+      ...(settings.group_tombstones || []),
+      ...(remoteSettings.group_tombstones || []),
+    ]);
 
     // Merge histories
     const merged = mergeHistories(history, remoteHistory);
@@ -397,30 +610,36 @@ function syncMerge() {
     const mergedGroups = mergeGroups(settings.groups, [...(remoteSettings.groups || []), ...historyGroups]);
     const groupsChanged = JSON.stringify(mergedGroups) !== JSON.stringify(settings.groups);
     if (groupsChanged) settings.groups = mergedGroups;
+    const tombstonesChanged =
+      JSON.stringify(settings.tombstones || []) !== previousTombstones ||
+      JSON.stringify(settings.tombstones || []) !== JSON.stringify(normalizeTombstones(remoteSettings.tombstones || []));
+    const groupTombstonesChanged =
+      JSON.stringify(settings.group_tombstones || []) !== previousGroupTombstones ||
+      JSON.stringify(settings.group_tombstones || []) !==
+        JSON.stringify(normalizeGroupTombstones(remoteSettings.group_tombstones || []));
 
     // Sync images both ways
     syncImages(remoteImgDir);
 
     // Only write if something actually changed
-    if (localChanged || groupsChanged) {
+    if (localChanged || groupsChanged || tombstonesChanged || groupTombstonesChanged) {
       saveHistory();
       saveSettingsFile();
     }
-    if (remoteChanged || groupsChanged) {
-      try { fs.writeFileSync(remoteDbPath, JSON.stringify(merged)); } catch {}
+    if (remoteChanged || groupsChanged || tombstonesChanged || groupTombstonesChanged) {
+      try { atomicWriteJson(remoteDbPath, merged); } catch {}
       try {
-        const remoteSave = { ...settings };
-        delete remoteSave.numpad_slots;
-        delete remoteSave.sync_path;
-        fs.writeFileSync(remoteSettingsPath, JSON.stringify(remoteSave, null, 2));
+        atomicWriteJson(remoteSettingsPath, remoteSettingsPayload(), 2);
       } catch {}
     }
 
     // Update mtime tracking
     try {
       const rmt = fs.statSync(path.join(syncPath, 'clipboard-history.json')).mtimeMs;
+      const rsmt = fs.statSync(path.join(syncPath, 'clipboard-settings.json')).mtimeMs;
       const lmt = fs.statSync(DB_PATH).mtimeMs;
-      lastSyncMtime = Math.max(rmt, lmt);
+      const lsmt = fs.statSync(SETTINGS_PATH).mtimeMs;
+      lastSyncMtime = Math.max(rmt, rsmt, lmt, lsmt);
     } catch {}
   } finally { insideSync = false; }
 }
@@ -435,7 +654,7 @@ function saveClipboardImage(nativeImg) {
   const hash = imageHash(buf);
   const fname = `${hash}.png`;
   const fpath = path.join(IMG_DIR, fname);
-  if (!fs.existsSync(fpath)) fs.writeFileSync(fpath, buf);
+  if (!fs.existsSync(fpath)) atomicWriteFile(fpath, buf);
   const size = nativeImg.getSize();
   return { fname, width: size.width, height: size.height };
 }
@@ -446,16 +665,25 @@ let lastImgHash = '';
 let pollGate = true;
 
 function addToHistory(entry, matchFn) {
+  ensureItemId(entry);
+  const beforeTombstones = normalizeTombstones(settings.tombstones);
+  settings.tombstones = beforeTombstones.filter(t => t.id !== itemKey(entry));
+  const tombstoneRemoved = settings.tombstones.length !== beforeTombstones.length;
   // Check if already at top
-  if (history.length && matchFn(history[0])) return;
+  if (history.length && matchFn(history[0])) {
+    if (tombstoneRemoved) saveSettingsFile();
+    return;
+  }
   // Find existing, preserve pin metadata
   const existIdx = history.findIndex(matchFn);
   if (existIdx >= 0) {
     if (history[existIdx].pin) entry.pin = history[existIdx].pin;
+    entry.id = itemKey(history[existIdx]);
     history.splice(existIdx, 1);
   }
   history.unshift(entry);
   pruneHistory();
+  if (tombstoneRemoved) saveSettingsFile();
   saveHistory();
 }
 
@@ -539,19 +767,22 @@ async function numpadPaste(slotNum) {
   if (!item) return;
 
   pollGate = false;
-  const backup = backupClipboard();
-  setClipboardToItem(item);
+  let backup = null;
+  try {
+    backup = backupClipboard();
+    setClipboardToItem(item);
   // Minimum delay for Windows clipboard propagation before paste. 15ms is
   // tight but reliable — clipboard.writeText is synchronous and Windows
   // WM_CLIPBOARDUPDATE propagates within a few ms on any modern system.
-  await new Promise(r => setTimeout(r, 15));
-  await simulatePaste();
+    await new Promise(r => setTimeout(r, 15));
+    await simulatePaste();
+    await new Promise(r => setTimeout(r, 150));
   // Fire-and-forget restore: the target app needs ~100-150ms to read from
   // the clipboard after receiving Ctrl+V. We don't block the caller on that.
-  setTimeout(() => {
+  } finally {
     try { restoreClipboard(backup); } catch {}
     pollGate = true;
-  }, 150);
+  }
 }
 
 // --- Window & state ---
@@ -700,9 +931,9 @@ function setClipboardToItem(item) {
   }
 }
 
-async function pasteAndHide(index) {
-  if (index < 0 || index >= history.length) return;
-  const item = history[index];
+async function pasteAndHide(id) {
+  const item = findHistoryItem(id);
+  if (!item) return;
 
   pollGate = false;
   try {
@@ -761,9 +992,9 @@ function createTray() {
 }
 
 // --- Open in editor ---
-function openEditor(idx) {
-  if (idx < 0 || idx >= history.length || history[idx].type === 'image') return;
-  const item = history[idx];
+function openEditor(id) {
+  const item = findHistoryItem(id);
+  if (!item || item.type === 'image') return;
   const originalText = item.text || '';
   const tmpPath = path.join(os.tmpdir(), `clip-${Date.now()}.txt`);
   fs.writeFileSync(tmpPath, originalText, 'utf-8');
@@ -778,6 +1009,7 @@ function openEditor(idx) {
       // Use item reference — survives index shifts from deletes/adds
       if (newText !== originalText && item.text === originalText) {
         item.text = newText;
+        item.updatedAt = Date.now();
         saveHistory();
       }
     } catch {}
@@ -790,6 +1022,7 @@ function openEditor(idx) {
 // --- IPC handlers ---
 function setupIPC() {
   ipcMain.handle('get-history', () => history);
+  ipcMain.handle('get-history-state', () => ({ revision: dataRevision, items: history }));
 
   ipcMain.handle('get-settings', () => ({
     ...settings,
@@ -798,21 +1031,23 @@ function setupIPC() {
     build_info: BUILD_INFO,
   }));
 
-  ipcMain.handle('paste', (_, index) => {
-    if (typeof index !== 'number' || index < 0 || index >= history.length) return;
-    setClipboardToItem(history[index]);
+  ipcMain.handle('paste', (_, id) => {
+    const item = findHistoryItem(id);
+    if (!item) return;
+    setClipboardToItem(item);
   });
 
-  ipcMain.handle('paste-and-hide', (_, index) => pasteAndHide(index));
+  ipcMain.handle('paste-and-hide', (_, id) => pasteAndHide(id));
 
   ipcMain.handle('hide-popup', () => hidePopup());
 
   ipcMain.handle('copy', (_, text) => clipboard.writeText(text || ''));
 
-  ipcMain.handle('delete-item', (_, index) => {
-    if (typeof index !== 'number' || index < 0 || index >= history.length) return;
-    removeItemImage(history[index]);
-    history.splice(index, 1);
+  ipcMain.handle('delete-item', (_, id) => {
+    const index = findHistoryIndex(id);
+    if (index < 0) return;
+    deleteHistoryIndex(index);
+    saveSettingsFile();
     saveHistory();
   });
 
@@ -820,10 +1055,14 @@ function setupIPC() {
     const kept = [];
     for (const item of history) {
       if (isPinned(item)) kept.push(item);
-      else removeItemImage(item);
+      else {
+        addTombstone(itemKey(item));
+        removeItemImage(item);
+      }
     }
     history.length = 0;
     history.push(...kept);
+    saveSettingsFile();
     saveHistory();
   });
 
@@ -831,9 +1070,9 @@ function setupIPC() {
   //   - unpinned        → star it (pin = {})
   //   - starred+numbered → remove the number, keep starred
   //   - starred (any)   → fully unpin (pin = null, clears groups too)
-  ipcMain.handle('pin', (_, index) => {
-    if (typeof index !== 'number' || index < 0 || index >= history.length) return;
-    const item = history[index];
+  ipcMain.handle('pin', (_, id) => {
+    const item = findHistoryItem(id);
+    if (!item) return;
     if (!item.pin) {
       item.pin = {};
     } else if (typeof item.pin.number === 'number') {
@@ -841,17 +1080,26 @@ function setupIPC() {
     } else {
       item.pin = null;
     }
+    item.updatedAt = Date.now();
+    if (item.pin) item.pin.updatedAt = Date.now();
     saveHistory();
   });
 
-  ipcMain.handle('numpad-assign', (_, index, slot) => {
-    if (typeof index !== 'number' || typeof slot !== 'number' ||
-        slot < 1 || slot > 9 || index < 0 || index >= history.length) return;
+  ipcMain.handle('numpad-assign', (_, id, slot) => {
+    const item = findHistoryItem(id);
+    if (typeof slot !== 'number' || slot < 1 || slot > 9 || !item) return;
     // Strip the slot from any other item without unpinning them.
     for (const h of history) {
-      if (hasNumpadSlot(h, slot)) delete h.pin.number;
+      if (hasNumpadSlot(h, slot)) {
+        delete h.pin.number;
+        h.pin.updatedAt = Date.now();
+        h.updatedAt = h.pin.updatedAt;
+      }
     }
-    ensurePin(history[index]).number = slot;
+    const pin = ensurePin(item);
+    pin.number = slot;
+    pin.updatedAt = Date.now();
+    item.updatedAt = pin.updatedAt;
     saveHistory();
   });
 
@@ -860,6 +1108,8 @@ function setupIPC() {
     for (const h of history) {
       if (hasNumpadSlot(h, slot)) {
         delete h.pin.number;
+        h.pin.updatedAt = Date.now();
+        h.updatedAt = h.pin.updatedAt;
         saveHistory();
         break;
       }
@@ -877,8 +1127,12 @@ function setupIPC() {
   ipcMain.handle('group-create', (_, name) => {
     if (!name) return;
     if (!settings.groups) settings.groups = [];
+    settings.group_tombstones = normalizeGroupTombstones(settings.group_tombstones)
+      .filter(t => t.name !== name);
     if (!settings.groups.includes(name)) {
       settings.groups.push(name);
+      saveSettingsFile();
+    } else {
       saveSettingsFile();
     }
   });
@@ -887,11 +1141,14 @@ function setupIPC() {
     const groups = settings.groups || [];
     const idx = groups.indexOf(name);
     if (idx >= 0) {
+      addGroupTombstone(name);
       groups.splice(idx, 1);
       for (const h of history) {
         if (h.pin && h.pin.groups) {
           h.pin.groups = h.pin.groups.filter(g => g !== name);
           if (h.pin.groups.length === 0) delete h.pin.groups;
+          h.pin.updatedAt = Date.now();
+          h.updatedAt = h.pin.updatedAt;
         }
       }
       saveSettingsFile();
@@ -901,9 +1158,9 @@ function setupIPC() {
 
   // Toggle membership in a group. Multi-group: an item can belong to many.
   // Adding to any group implicitly pins the item (creates pin object).
-  ipcMain.handle('group-assign', (_, index, group) => {
-    if (typeof index !== 'number' || index < 0 || index >= history.length || !group) return;
-    const item = history[index];
+  ipcMain.handle('group-assign', (_, id, group) => {
+    const item = findHistoryItem(id);
+    if (!item || !group) return;
     const pin = ensurePin(item);
     if (!pin.groups) pin.groups = [];
     const gIdx = pin.groups.indexOf(group);
@@ -913,13 +1170,15 @@ function setupIPC() {
     } else {
       pin.groups.push(group);
     }
+    pin.updatedAt = Date.now();
+    item.updatedAt = pin.updatedAt;
     saveHistory();
   });
 
-  ipcMain.handle('copy-image-path', (_, index) => {
-    if (typeof index !== 'number' || index < 0 || index >= history.length ||
-        history[index].type !== 'image') return { path: null };
-    const fname = history[index].image;
+  ipcMain.handle('copy-image-path', (_, id) => {
+    const item = findHistoryItem(id);
+    if (!item || item.type !== 'image') return { path: null };
+    const fname = item.image;
     const src = path.join(IMG_DIR, fname);
     if (!fs.existsSync(src)) return { path: null };
     const dest = path.join(os.homedir(), 'Downloads', fname);
@@ -928,16 +1187,14 @@ function setupIPC() {
     return { path: dest };
   });
 
-  ipcMain.handle('open-editor', (_, index) => {
-    if (typeof index !== 'number' || index < 0 || index >= history.length ||
-        history[index].type === 'image') return;
-    openEditor(index);
+  ipcMain.handle('open-editor', (_, id) => {
+    openEditor(id);
   });
 
-  ipcMain.handle('open-image', (_, index) => {
-    if (typeof index !== 'number' || index < 0 || index >= history.length ||
-        history[index].type !== 'image') return;
-    const imgPath = path.join(IMG_DIR, history[index].image);
+  ipcMain.handle('open-image', (_, id) => {
+    const item = findHistoryItem(id);
+    if (!item || item.type !== 'image') return;
+    const imgPath = path.join(IMG_DIR, item.image);
     if (fs.existsSync(imgPath)) shell.openPath(imgPath);
   });
 

@@ -256,6 +256,7 @@ let toastTimer, items = [], expanded = new Set(), query = '', regexOn = false, s
 const BATCH = 30;
 let rendered = 0, filtered = [];
 let groups = [], activeFilters = new Set();
+let dataRevision = -1;
 
 // --- Helpers ---
 function ago(ts) {
@@ -283,12 +284,14 @@ function isPinned(item) { return item.pin != null; }
 function numpadOf(item) { return item.pin && typeof item.pin.number === 'number' ? item.pin.number : null; }
 function groupsOf(item) { return item.pin && Array.isArray(item.pin.groups) ? item.pin.groups : []; }
 function isInGroup(item, g) { return groupsOf(item).includes(g); }
+function itemId(item) { return item && item.id; }
+function itemById(id) { return items.find(it => itemId(it) === id); }
 function showToast(msg) { toast.textContent = msg||'Copied'; toast.classList.add('show'); clearTimeout(toastTimer); toastTimer = setTimeout(()=>toast.classList.remove('show'),1200); }
 
 // --- Numpad slot map ---
 function numpadMap() {
   const m = {};
-  items.forEach((it,i) => { const n = numpadOf(it); if (n) m[n] = i; });
+  items.forEach(it => { const n = numpadOf(it); if (n) m[n] = itemId(it); });
   return m;
 }
 
@@ -357,10 +360,11 @@ function loadBatch() {
 function buildItem(it, ri, nmap) {
   const pinned = isPinned(it);
   const np = numpadOf(it);
+  const id = itemId(it);
   const isImage = it.type === 'image';
   const el = document.createElement('div');
   el.className = 'item' + (pinned ? ' has-pin' : '');
-  el.dataset.i = ri;
+  el.dataset.id = id || '';
 
   let previewHtml;
   let metaHtml;
@@ -369,7 +373,7 @@ function buildItem(it, ri, nmap) {
     metaHtml = `<span>${ago(it.ts)}</span><span>${it.width||'?'}x${it.height||'?'}</span>`;
   } else {
     const text = it.text || '';
-    const exp = expanded.has(ri);
+    const exp = expanded.has(id);
     const display = exp ? text : text.replace(/\r?\n/g, ' ');
     previewHtml = highlight(display, query);
     metaHtml = `<span>${ago(it.ts)}</span><span>${text.length.toLocaleString()} chars</span>`;
@@ -385,8 +389,9 @@ function buildItem(it, ri, nmap) {
     const cls = np === n ? 'current' : (n in nmap ? 'taken' : 'free');
     let title = n;
     if (n in nmap) {
-      const slotItem = items[nmap[n]];
-      title = slotItem.type === 'image' ? `${n}: [image]` : `${n}: ${(slotItem.text||'').replace(/\n/g,' ').slice(0,80)}`;
+      const slotItem = itemById(nmap[n]);
+      title = slotItem && slotItem.type === 'image' ? `${n}: [image]` :
+        `${n}: ${((slotItem && slotItem.text) || '').replace(/\n/g,' ').slice(0,80)}`;
     }
     npBtns += `<span class="np-btn ${cls}" data-n="${n}" title="${esc(String(title))}">${n}</span>`;
   }
@@ -402,7 +407,7 @@ function buildItem(it, ri, nmap) {
 
   el.innerHTML = `<div class="item-row">
     <div class="pin-area">
-      <button class="star${pinned?' active':''}" data-action="pin" data-i="${ri}" title="${pinned?'Unpin':'Pin'}"><span class="mi${pinned?' filled':''}">star</span></button>
+      <button class="star${pinned?' active':''}" data-action="pin" data-id="${esc(id)}" title="${pinned?'Unpin':'Pin'}"><span class="mi${pinned?' filled':''}">star</span></button>
       ${np ? `<span class="numpad-badge">${BADGES[np]}</span>` : ''}
       <div class="numpad-picker">
         <div class="np-row">${npBtns}</div>
@@ -410,10 +415,10 @@ function buildItem(it, ri, nmap) {
       </div>
     </div>
     <div class="content">
-      <div class="preview ${expanded.has(ri)?'expanded':'collapsed'}">${previewHtml}</div>
+      <div class="preview ${expanded.has(id)?'expanded':'collapsed'}">${previewHtml}</div>
       <div class="meta">${metaHtml}</div>
     </div>
-    <div class="actions">${!isImage && ((it.text||'').length > 120 || /\n/.test(it.text||'')) ? `<button class="icon-btn accent" data-action="expand" data-i="${ri}" title="${expanded.has(ri)?'Collapse':'Expand'}"><span class="mi">${expanded.has(ri)?'unfold_less':'unfold_more'}</span></button>` : ''}${isImage ? `<button class="icon-btn accent" data-action="open-img" data-i="${ri}" title="Open image"><span class="mi">open_in_new</span></button><button class="icon-btn accent" data-action="save-img" data-i="${ri}" title="Copy to Downloads"><span class="mi">save</span></button>` : `<button class="icon-btn accent" data-action="edit" data-i="${ri}" title="Open in editor"><span class="mi">open_in_new</span></button>`}<button class="icon-btn danger" data-action="del" data-i="${ri}" title="Delete"><span class="mi">close</span></button></div>
+    <div class="actions">${!isImage && ((it.text||'').length > 120 || /\n/.test(it.text||'')) ? `<button class="icon-btn accent" data-action="expand" data-id="${esc(id)}" title="${expanded.has(id)?'Collapse':'Expand'}"><span class="mi">${expanded.has(id)?'unfold_less':'unfold_more'}</span></button>` : ''}${isImage ? `<button class="icon-btn accent" data-action="open-img" data-id="${esc(id)}" title="Open image"><span class="mi">open_in_new</span></button><button class="icon-btn accent" data-action="save-img" data-id="${esc(id)}" title="Copy to Downloads"><span class="mi">save</span></button>` : `<button class="icon-btn accent" data-action="edit" data-id="${esc(id)}" title="Open in editor"><span class="mi">open_in_new</span></button>`}<button class="icon-btn danger" data-action="del" data-id="${esc(id)}" title="Delete"><span class="mi">close</span></button></div>
   </div>`;
   return el;
 }
@@ -473,18 +478,18 @@ document.addEventListener('click', async (e) => {
     if (gpBtn.dataset.action === 'add-group') {
       const item = gpBtn.closest('.item');
       if (!item) return;
-      const ri = +item.dataset.i;
+      const id = item.dataset.id;
       const name = await promptDialog('New group name');
       if (name) {
         await window.api.groupCreate(name);
-        if (items[ri] && !isInGroup(items[ri], name)) await window.api.groupAssign(ri, name);
+        const current = itemById(id);
+        if (current && !isInGroup(current, name)) await window.api.groupAssign(id, name);
         await refreshGroupsAndList();
       }
     } else {
       const item = gpBtn.closest('.item');
       if (!item) return;
-      const ri = +item.dataset.i;
-      window.api.groupAssign(ri, gpBtn.dataset.group).then(refresh);
+      window.api.groupAssign(item.dataset.id, gpBtn.dataset.group).then(refresh);
     }
     return;
   }
@@ -495,33 +500,31 @@ document.addEventListener('click', async (e) => {
     const n = +npBtn.dataset.n;
     const item = npBtn.closest('.item');
     if (!item) return;
-    const ri = +item.dataset.i;
-    tryAssignNumpad(n, ri);
+    tryAssignNumpad(n, item.dataset.id);
     return;
   }
   // Star/pin
   const star = e.target.closest('[data-action="pin"]');
-  if (star) { e.stopPropagation(); window.api.pin(+star.dataset.i).then(refresh); return; }
+  if (star) { e.stopPropagation(); window.api.pin(star.dataset.id).then(refresh); return; }
   // Open image in default viewer
   const openImg = e.target.closest('[data-action="open-img"]');
-  if (openImg) { e.stopPropagation(); window.api.openImage(+openImg.dataset.i); return; }
+  if (openImg) { e.stopPropagation(); window.api.openImage(openImg.dataset.id); return; }
   // Save image to Downloads
   const saveImg = e.target.closest('[data-action="save-img"]');
-  if (saveImg) { e.stopPropagation(); window.api.copyImagePath(+saveImg.dataset.i).then(d => { if(d && d.path) showToast('Path copied'); }); return; }
+  if (saveImg) { e.stopPropagation(); window.api.copyImagePath(saveImg.dataset.id).then(d => { if(d && d.path) showToast('Path copied'); }); return; }
   // Edit in editor
   const edit = e.target.closest('[data-action="edit"]');
-  if (edit) { e.stopPropagation(); window.api.openEditor(+edit.dataset.i); return; }
+  if (edit) { e.stopPropagation(); window.api.openEditor(edit.dataset.id); return; }
   // Expand
   const exp = e.target.closest('[data-action="expand"]');
-  if (exp) { e.stopPropagation(); const ri=+exp.dataset.i; expanded.has(ri)?expanded.delete(ri):expanded.add(ri); applyFilter(); return; }
+  if (exp) { e.stopPropagation(); const id=exp.dataset.id; expanded.has(id)?expanded.delete(id):expanded.add(id); applyFilter(); return; }
   // Delete
   const del = e.target.closest('[data-action="del"]');
-  if (del) { e.stopPropagation(); window.api.deleteItem(+del.dataset.i).then(refresh); return; }
+  if (del) { e.stopPropagation(); window.api.deleteItem(del.dataset.id).then(refresh); return; }
   // Click item to paste
   const item = e.target.closest('.item');
   if (item) {
-    const idx = +item.dataset.i;
-    window.api.pasteAndHide(idx);
+    window.api.pasteAndHide(item.dataset.id);
     return;
   }
 });
@@ -558,18 +561,19 @@ function promptDialog(title) {
 
 // --- Numpad assign with confirm ---
 let pendingAssign = null;
-function tryAssignNumpad(slot, itemIdx) {
+function tryAssignNumpad(slot, id) {
   const nmap = numpadMap();
-  if (slot in nmap && nmap[slot] !== itemIdx) {
-    const existing = items[nmap[slot]];
+  if (slot in nmap && nmap[slot] !== id) {
+    const existing = itemById(nmap[slot]);
+    if (!existing) return;
     const preview = existing.type === 'image' ? '[image]' : (existing.text||'').slice(0,80);
     document.getElementById('confirmTitle').textContent = `Numpad ${slot} already assigned:`;
     document.getElementById('confirmMsg').textContent = preview;
     document.getElementById('confirmYes').textContent = 'Replace';
-    pendingAssign = {slot, itemIdx};
+    pendingAssign = {slot, id};
     document.getElementById('confirmOverlay').classList.add('show');
   } else {
-    window.api.numpadAssign(itemIdx, slot).then(refresh);
+    window.api.numpadAssign(id, slot).then(refresh);
   }
 }
 document.getElementById('confirmYes').addEventListener('click', async () => {
@@ -584,7 +588,7 @@ document.getElementById('confirmYes').addEventListener('click', async () => {
       await window.api.groupDelete(g);
       await refreshGroupsAndList();
     } else {
-      await window.api.numpadAssign(pendingAssign.itemIdx, pendingAssign.slot);
+      await window.api.numpadAssign(pendingAssign.id, pendingAssign.slot);
       await refresh();
     }
   }
@@ -599,7 +603,8 @@ document.getElementById('confirmNo').addEventListener('click', () => {
 // Global function called from main process for numpad assign
 window.assignNumpad = function(slot) {
   if (selectedIdx >= 0 && selectedIdx < filtered.length) {
-    tryAssignNumpad(slot, filtered[selectedIdx]);
+    const item = items[filtered[selectedIdx]];
+    if (item) tryAssignNumpad(slot, itemId(item));
   }
 };
 
@@ -619,8 +624,7 @@ searchEl.addEventListener('keydown', e => {
     const nmap = numpadMap();
     if (n in nmap) {
       e.preventDefault();
-      const idx = nmap[n];
-      window.api.pasteAndHide(idx);
+      window.api.pasteAndHide(nmap[n]);
       return;
     }
   }
@@ -655,8 +659,8 @@ document.addEventListener('keydown', e => {
   else if (e.key === 'ArrowUp') { e.preventDefault(); moveSelection(-1); }
   else if (e.key === 'Enter' && selectedIdx >= 0 && selectedIdx < filtered.length) {
     e.preventDefault();
-    const idx = filtered[selectedIdx];
-    window.api.pasteAndHide(idx);
+    const item = items[filtered[selectedIdx]];
+    if (item) window.api.pasteAndHide(itemId(item));
   }
 });
 
@@ -742,9 +746,9 @@ async function openSettings() {
   slotsEl.innerHTML = '';
   for (let n = 1; n <= 9; n++) {
     const has = n in nmap;
-    const it = has ? items[nmap[n]] : null;
+    const it = has ? itemById(nmap[n]) : null;
     const text = it ? (it.type === 'image' ? '[image]' : (it.text||'').replace(/\n/g,' ').slice(0,60)) : '';
-    slotsEl.innerHTML += `<div class="np-slot${has?' has-content':''}" data-slot-idx="${has?nmap[n]:''}">
+    slotsEl.innerHTML += `<div class="np-slot${has?' has-content':''}" data-slot-id="${has ? esc(nmap[n]) : ''}">
       <span class="np-num">${n}</span>
       <span class="np-text${has?'':' empty'}">${has ? esc(text) : 'empty'}</span>
       ${has ? `<button class="icon-btn np-remove" data-slot="${n}" title="Unassign"><span class="mi">close</span></button>` : ''}
@@ -760,11 +764,11 @@ async function openSettings() {
   });
   slotsEl.querySelectorAll('.np-slot.has-content').forEach(slot => {
     slot.addEventListener('click', async () => {
-      const idx = +slot.dataset.slotIdx;
-      const it = items[idx];
+      const id = slot.dataset.slotId;
+      const it = itemById(id);
       if (!it) return;
       if (it.type === 'image') {
-        await window.api.paste(idx);
+        await window.api.paste(id);
       } else {
         await window.api.copy(it.text || '');
       }
@@ -822,9 +826,11 @@ async function refreshGroupsAndList() {
 // --- Data refresh ---
 async function refresh({force = false} = {}) {
   try {
-    const data = await window.api.getHistory();
-    const changed = JSON.stringify(data) !== JSON.stringify(items);
+    const state = window.api.getHistoryState ? await window.api.getHistoryState() : {revision: Date.now(), items: await window.api.getHistory()};
+    const data = state.items || [];
+    const changed = state.revision !== dataRevision;
     if (changed) {
+      dataRevision = state.revision;
       items = data;
     }
     if (changed || force) rerenderList();

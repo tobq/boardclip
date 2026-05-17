@@ -5,7 +5,8 @@
   "description": "Clipboard history tray app with numpad quick-paste",
   "main": "main.js",
   "scripts": {
-    "start": "electron ."
+    "start": "electron .",
+    "test": "node test/clipboard-model.test.js"
   },
   "devDependencies": {
     "electron": "^34.0.0"

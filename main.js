@@ -11,6 +11,7 @@ const { exec, spawn } = require('child_process');
 const winPaste = require('./lib/windows-paste');
 const getBuildInfo = require('./lib/build-info');
 const getCloudAccounts = require('./lib/cloud-accounts');
+const clipboardModel = require('./lib/clipboard-model');
 
 app.setName('Clipboard Tray');
 
@@ -89,15 +90,7 @@ const AHK_PRESETS = {
 };
 
 // --- Settings ---
-const DEFAULT_SETTINGS = {
-  max_age_days: 7,
-  max_size_gb: 10,
-  regex_search: false,
-  groups: [],
-  sync_path: '',
-  tombstones: [],
-  group_tombstones: [],
-};
+const DEFAULT_SETTINGS = clipboardModel.DEFAULT_SETTINGS;
 
 function atomicWriteFile(filePath, data) {
   const tmpPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
@@ -126,11 +119,17 @@ function saveSettingsFile() {
   delete s.numpad_slots;
   atomicWriteJson(SETTINGS_PATH, s, 2);
   dataRevision++;
+  notifyDataChanged();
   scheduleSyncMerge();
 }
 
 let settings = loadSettings();
 let dataRevision = 0;
+
+function notifyDataChanged() {
+  if (!win || win.isDestroyed() || !win.webContents || win.webContents.isDestroyed()) return;
+  win.webContents.send('history-changed', dataRevision);
+}
 
 // --- History ---
 function loadHistory() {
@@ -146,6 +145,7 @@ function saveHistory() {
   for (const item of history) ensureItemId(item);
   atomicWriteJson(DB_PATH, history);
   dataRevision++;
+  notifyDataChanged();
   scheduleSyncMerge();
   syncHookState();
 }
@@ -173,65 +173,35 @@ for (const h of history) ensureItemId(h);
 // object = "starred" (eligible for retention). Replaces the old tangled
 // model of `item.pinned: false|true|1-9` + `item.group: string`.
 function migrateItemPin(h) {
-  if ('pin' in h) return; // already new format
-  const pin = {};
-  let pinned = false;
-  if (typeof h.pinned === 'number') {
-    pin.number = h.pinned;
-    pinned = true;
-  } else if (h.pinned === true) {
-    pinned = true;
-  }
-  if (h.group) {
-    pin.groups = [h.group];
-    pinned = true;
-  }
-  h.pin = pinned ? pin : null;
-  delete h.pinned;
-  delete h.group;
+  clipboardModel.migrateItemPin(h);
 }
 
-function isPinned(item) { return item.pin != null; }
+function isPinned(item) { return clipboardModel.isPinned(item); }
 function numpadSlotOf(item) {
-  return item.pin && typeof item.pin.number === 'number' ? item.pin.number : null;
+  return clipboardModel.numpadSlotOf(item);
 }
 function groupsOf(item) {
-  return item.pin && Array.isArray(item.pin.groups) ? item.pin.groups : [];
+  return clipboardModel.groupsOf(item);
 }
-function hasNumpadSlot(item, n) { return numpadSlotOf(item) === n; }
+function hasNumpadSlot(item, n) { return clipboardModel.hasNumpadSlot(item, n); }
 function ensurePin(item) {
-  if (!item.pin) item.pin = {};
-  return item.pin;
+  return clipboardModel.ensurePin(item);
 }
 
 function dedupeNumpadSlots(items) {
-  const bestBySlot = new Map();
-  for (const item of items) {
-    const slot = numpadSlotOf(item);
-    if (slot == null) continue;
-    const current = bestBySlot.get(slot);
-    const itemScore = item.pin && item.pin.updatedAt || item.ts || 0;
-    const currentScore = current && (current.pin && current.pin.updatedAt || current.ts || 0);
-    if (!current || itemScore >= currentScore) bestBySlot.set(slot, item);
-  }
-  for (const item of items) {
-    const slot = numpadSlotOf(item);
-    if (slot != null && bestBySlot.get(slot) !== item) delete item.pin.number;
-  }
+  return clipboardModel.dedupeNumpadSlots(items);
 }
 
 function legacyContentKey(item) {
-  if (item.type === 'image') return `img:${item.image}`;
-  return `txt:${crypto.createHash('sha256').update(item.text || '').digest('hex')}`;
+  return clipboardModel.legacyContentKey(item);
 }
 
 function ensureItemId(item) {
-  if (!item.id) item.id = legacyContentKey(item);
-  return item.id;
+  return clipboardModel.ensureItemId(item);
 }
 
 function itemKey(item) {
-  return item && (item.id || legacyContentKey(item));
+  return clipboardModel.itemKey(item);
 }
 
 function findHistoryIndex(id) {
@@ -360,45 +330,16 @@ function migrateNumpad() {
 }
 
 // --- Sync: merge local <-> shared (Google Drive etc) ---
-const TOMBSTONE_MAX_AGE_MS = 30 * 86400 * 1000;
-
 function normalizeTombstones(list) {
-  const cutoff = Date.now() - TOMBSTONE_MAX_AGE_MS;
-  const byId = new Map();
-  for (const tombstone of Array.isArray(list) ? list : []) {
-    if (!tombstone || !tombstone.id) continue;
-    const deletedAt = Number(tombstone.deletedAt) || 0;
-    if (deletedAt < cutoff) continue;
-    const existing = byId.get(tombstone.id);
-    if (!existing || deletedAt > existing.deletedAt) {
-      byId.set(tombstone.id, { id: tombstone.id, deletedAt });
-    }
-  }
-  return [...byId.values()];
-}
-
-function tombstoneIds(list) {
-  return new Set(normalizeTombstones(list).map(t => t.id));
+  return clipboardModel.normalizeTombstones(list);
 }
 
 function normalizeGroupTombstones(list) {
-  const cutoff = Date.now() - TOMBSTONE_MAX_AGE_MS;
-  const byName = new Map();
-  for (const tombstone of Array.isArray(list) ? list : []) {
-    if (!tombstone || !tombstone.name) continue;
-    const name = String(tombstone.name);
-    const deletedAt = Number(tombstone.deletedAt) || 0;
-    if (deletedAt < cutoff) continue;
-    const existing = byName.get(name);
-    if (!existing || deletedAt > existing.deletedAt) {
-      byName.set(name, { name, deletedAt });
-    }
-  }
-  return [...byName.values()];
+  return clipboardModel.normalizeGroupTombstones(list);
 }
 
 function groupTombstoneNames(list) {
-  return new Set(normalizeGroupTombstones(list).map(t => t.name));
+  return clipboardModel.groupTombstoneNames(list);
 }
 
 function addTombstone(id) {
@@ -418,100 +359,19 @@ function addGroupTombstone(name) {
 }
 
 function mergePins(localPin, remotePin, localUpdatedAt = 0, remoteUpdatedAt = 0) {
-  if (!localPin && !remotePin) return null;
-  const deletedGroups = groupTombstoneNames(settings.group_tombstones);
-  const cleanPin = (pin) => {
-    if (!pin) return null;
-    const cleaned = { ...pin };
-    if (Array.isArray(cleaned.groups)) {
-      cleaned.groups = cleaned.groups.filter(g => !deletedGroups.has(g));
-      if (!cleaned.groups.length) delete cleaned.groups;
-    }
-    if (typeof cleaned.number !== 'number' && !cleaned.groups) return null;
-    return cleaned;
-  };
-  if (!localPin && remotePin) return localUpdatedAt > (remotePin.updatedAt || remoteUpdatedAt) ? null : cleanPin(remotePin);
-  if (localPin && !remotePin) return remoteUpdatedAt > (localPin.updatedAt || localUpdatedAt) ? null : cleanPin(localPin);
-  const merged = {};
-  const localGroups = localPin && Array.isArray(localPin.groups) ? localPin.groups : [];
-  const remoteGroups = remotePin && Array.isArray(remotePin.groups) ? remotePin.groups : [];
-  const groups = [...new Set([...localGroups, ...remoteGroups])].filter(g => !deletedGroups.has(g));
-  if (groups.length) merged.groups = groups;
-
-  const localNumber = localPin && typeof localPin.number === 'number' ? localPin.number : null;
-  const remoteNumber = remotePin && typeof remotePin.number === 'number' ? remotePin.number : null;
-  if (localNumber != null && remoteNumber != null) {
-    merged.number = (localPin.updatedAt || 0) >= (remotePin.updatedAt || 0) ? localNumber : remoteNumber;
-  } else if (localNumber != null) {
-    merged.number = localNumber;
-  } else if (remoteNumber != null) {
-    merged.number = remoteNumber;
-  }
-
-  if (localPin && localPin.updatedAt || remotePin && remotePin.updatedAt) {
-    merged.updatedAt = Math.max(localPin && localPin.updatedAt || 0, remotePin && remotePin.updatedAt || 0);
-  }
-  return Object.keys(merged).length ? merged : {};
+  return clipboardModel.mergePins(localPin, remotePin, localUpdatedAt, remoteUpdatedAt, settings.group_tombstones);
 }
 
 function mergeItems(localItem, remoteItem) {
-  migrateItemPin(localItem);
-  migrateItemPin(remoteItem);
-  ensureItemId(localItem);
-  ensureItemId(remoteItem);
-  const localTs = localItem.ts || 0;
-  const remoteTs = remoteItem.ts || 0;
-  const localUpdated = localItem.updatedAt || localTs;
-  const remoteUpdated = remoteItem.updatedAt || remoteTs;
-  const base = remoteUpdated > localUpdated ? { ...remoteItem } : { ...localItem };
-  base.id = itemKey(base);
-  base.ts = Math.max(localTs, remoteTs);
-  base.updatedAt = Math.max(localItem.updatedAt || 0, remoteItem.updatedAt || 0) || undefined;
-  base.pin = mergePins(
-    localItem.pin,
-    remoteItem.pin,
-    localItem.updatedAt || localItem.ts || 0,
-    remoteItem.updatedAt || remoteItem.ts || 0
-  );
-  return base;
+  return clipboardModel.mergeItems(localItem, remoteItem, settings.group_tombstones);
 }
 
 function mergeHistories(local, remote) {
-  if (!Array.isArray(local)) local = [];
-  if (!Array.isArray(remote)) remote = [];
-  // Migrate remote items in place if they're still in the old format so the
-  // merge score comparison doesn't see a mix of old/new pin shapes.
-  for (const item of remote) migrateItemPin(item);
-  for (const item of remote) ensureItemId(item);
-  for (const item of local) ensureItemId(item);
-
-  const deleted = tombstoneIds(settings.tombstones);
-
-  const merged = new Map();
-
-  for (const item of local) {
-    if (!deleted.has(itemKey(item))) merged.set(itemKey(item), item);
-  }
-
-  for (const item of remote) {
-    const key = itemKey(item);
-    if (deleted.has(key)) continue;
-    const existing = merged.get(key);
-    if (!existing) {
-      merged.set(key, item);
-    } else {
-      merged.set(key, mergeItems(existing, item));
-    }
-  }
-
-  const result = [...merged.values()].sort((a, b) => (b.ts || 0) - (a.ts || 0));
-  dedupeNumpadSlots(result);
-  return result;
+  return clipboardModel.mergeHistories(local, remote, settings);
 }
 
 function mergeGroups(local, remote) {
-  const deleted = groupTombstoneNames(settings.group_tombstones);
-  return [...new Set([...(local || []), ...(remote || [])])].filter(g => !deleted.has(g));
+  return clipboardModel.mergeGroups(local, remote, settings.group_tombstones);
 }
 
 function remoteSettingsPayload() {

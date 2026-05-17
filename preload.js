@@ -3,6 +3,11 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('api', {
   getHistory: () => ipcRenderer.invoke('get-history'),
   getHistoryState: () => ipcRenderer.invoke('get-history-state'),
+  onHistoryChanged: (callback) => {
+    const listener = (_, revision) => callback(revision);
+    ipcRenderer.on('history-changed', listener);
+    return () => ipcRenderer.removeListener('history-changed', listener);
+  },
   getSettings: () => ipcRenderer.invoke('get-settings'),
   paste: (id) => ipcRenderer.invoke('paste', id),
   pasteAndHide: (id) => ipcRenderer.invoke('paste-and-hide', id),

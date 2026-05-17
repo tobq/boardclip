@@ -839,7 +839,11 @@ async function refresh({force = false} = {}) {
 
 // Initial load + poll
 refreshGroupsAndList();
-setInterval(refresh, 1000);
+if (window.api.onHistoryChanged) {
+  window.api.onHistoryChanged(() => refreshGroupsAndList());
+} else {
+  setInterval(refresh, 1000);
+}
 
 // --- Focus/blur integration ---
 window.addEventListener('focus', () => {

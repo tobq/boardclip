@@ -127,6 +127,8 @@ function saveSettingsFile() {
 let settings = loadSettings();
 let dataRevision = 0;
 let cloudAccountsCache = [];
+let cloudAccountsCacheAt = 0;
+const CLOUD_ACCOUNTS_CACHE_TTL_MS = 5 * 60 * 1000;
 
 function normalizeSyncPath(syncPath) {
   return path.normalize(String(syncPath || ''));
@@ -401,6 +403,18 @@ function remoteSettingsPayload() {
 
 async function refreshCloudAccounts() {
   cloudAccountsCache = await getCloudAccounts();
+  cloudAccountsCacheAt = Date.now();
+  return cloudAccountsCache;
+}
+
+async function getCachedCloudAccounts({ force = false } = {}) {
+  if (
+    force ||
+    !cloudAccountsCacheAt ||
+    Date.now() - cloudAccountsCacheAt > CLOUD_ACCOUNTS_CACHE_TTL_MS
+  ) {
+    return refreshCloudAccounts();
+  }
   return cloudAccountsCache;
 }
 
@@ -420,17 +434,37 @@ function syncAccountsWithLegacy(accounts) {
 }
 
 async function getCloudAccountsForSettings() {
-  const accounts = syncAccountsWithLegacy(await refreshCloudAccounts());
-  const disabled = new Set((settings.sync_disabled_paths || []).map(normalizeSyncPath));
+  const accounts = syncAccountsWithLegacy(await getCachedCloudAccounts({ force: true }));
+  const disabled = syncDisabledPathSet();
   return accounts.map(acc => ({ ...acc, enabled: !disabled.has(normalizeSyncPath(acc.path)) }));
 }
 
 async function getEnabledSyncPaths() {
-  const accounts = syncAccountsWithLegacy(cloudAccountsCache.length ? cloudAccountsCache : await refreshCloudAccounts());
-  const disabled = new Set((settings.sync_disabled_paths || []).map(normalizeSyncPath));
+  const accounts = syncAccountsWithLegacy(await getCachedCloudAccounts());
+  const disabled = syncDisabledPathSet();
   return accounts
     .map(acc => normalizeSyncPath(acc.path))
     .filter(syncPath => syncPath && !disabled.has(syncPath));
+}
+
+function syncDisabledPathSet() {
+  return new Set((settings.sync_disabled_paths || []).map(normalizeSyncPath));
+}
+
+async function setSyncPathEnabled(syncPath, enabled) {
+  const normalized = normalizeSyncPath(syncPath);
+  if (!normalized) return;
+  const disabled = syncDisabledPathSet();
+  if (enabled) disabled.delete(normalized);
+  else disabled.add(normalized);
+  settings.sync_disabled_paths = [...disabled];
+  saveSettingsFile();
+  if (enabled) {
+    try {
+      if (!fs.existsSync(normalized)) fs.mkdirSync(normalized, { recursive: true });
+    } catch {}
+    await syncMerge();
+  }
 }
 
 function syncImages(remoteImgDir) {
@@ -1098,41 +1132,24 @@ function setupIPC() {
   });
 
   ipcMain.handle('set-sync-path', async (_, syncPath) => {
-    const accounts = await refreshCloudAccounts();
-    const disabled = new Set((settings.sync_disabled_paths || []).map(normalizeSyncPath));
     if (syncPath) {
       settings.sync_path = syncPath;
-      disabled.delete(normalizeSyncPath(syncPath));
-    } else {
-      const legacyPath = normalizeSyncPath(settings.sync_path);
-      if (legacyPath) disabled.add(legacyPath);
-      settings.sync_path = '';
-      for (const acc of accounts) disabled.add(normalizeSyncPath(acc.path));
+      await setSyncPathEnabled(syncPath, true);
+      return;
     }
+
+    const accounts = await getCachedCloudAccounts({ force: true });
+    const disabled = syncDisabledPathSet();
+    const legacyPath = normalizeSyncPath(settings.sync_path);
+    if (legacyPath) disabled.add(legacyPath);
+    settings.sync_path = '';
+    for (const acc of accounts) disabled.add(normalizeSyncPath(acc.path));
     settings.sync_disabled_paths = [...disabled];
     saveSettingsFile();
-    if (syncPath) {
-      try {
-        if (!fs.existsSync(syncPath)) fs.mkdirSync(syncPath, { recursive: true });
-      } catch {}
-      await syncMerge();
-    }
   });
 
   ipcMain.handle('set-sync-path-enabled', async (_, syncPath, enabled) => {
-    const normalized = normalizeSyncPath(syncPath);
-    if (!normalized) return;
-    const disabled = new Set((settings.sync_disabled_paths || []).map(normalizeSyncPath));
-    if (enabled) disabled.delete(normalized);
-    else disabled.add(normalized);
-    settings.sync_disabled_paths = [...disabled];
-    saveSettingsFile();
-    if (enabled) {
-      try {
-        if (!fs.existsSync(normalized)) fs.mkdirSync(normalized, { recursive: true });
-      } catch {}
-      await syncMerge();
-    }
+    await setSyncPathEnabled(syncPath, enabled);
   });
 
   ipcMain.handle('get-cloud-accounts', () => getCloudAccountsForSettings());

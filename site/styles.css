@@ -554,26 +554,29 @@ code {
   opacity: 0;
   pointer-events: none;
   transform: translate3d(0, 0, 0);
-  transition: transform 1.45s cubic-bezier(.2, .8, .2, 1), opacity .35s ease;
+  transition: transform 1.55s cubic-bezier(.2, .8, .2, 1), opacity .35s ease;
 }
 .demo-guide.show { opacity: 1; }
 .demo-guide-cursor {
-  width: 18px;
-  height: 24px;
+  width: 23px;
+  height: 31px;
   display: block;
   background: #ffffff;
-  border: 1px solid rgba(17, 24, 39, .22);
-  clip-path: polygon(0 0, 0 22px, 6px 17px, 10px 24px, 14px 22px, 10px 15px, 18px 15px);
-  filter: drop-shadow(0 10px 18px rgba(17, 24, 39, .28));
+  border: 2px solid #0f172a;
+  clip-path: polygon(0 0, 0 29px, 8px 22px, 13px 31px, 18px 28px, 13px 20px, 23px 20px);
+  filter:
+    drop-shadow(0 0 0 #0f172a)
+    drop-shadow(0 2px 0 #0f172a)
+    drop-shadow(0 16px 20px rgba(17, 24, 39, .42));
 }
 .demo-guide-tip {
   margin-top: 16px;
-  padding: 7px 9px;
-  color: #0f172a;
-  background: #ffffff;
-  border: 1px solid rgba(17, 24, 39, .12);
+  padding: 8px 10px;
+  color: #ffffff;
+  background: #111827;
+  border: 1px solid rgba(255, 255, 255, .72);
   border-radius: 7px;
-  box-shadow: 0 14px 34px rgba(17, 24, 39, .16);
+  box-shadow: 0 14px 34px rgba(17, 24, 39, .32);
   font-size: 12px;
   font-weight: 800;
   white-space: nowrap;

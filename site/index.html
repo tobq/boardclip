@@ -245,9 +245,10 @@
     const searchMode = document.getElementById("demo-search-mode");
     const demoWindow = document.querySelector(".demo-window");
     const demoGuide = document.getElementById("demo-guide");
-    let pointer = { x: window.innerWidth * 0.58, y: window.innerHeight * 0.45 };
+    let pointer = null;
     let guideTimer = 0;
     let guideRuns = 0;
+    let guideStarted = false;
     let guideStopped = false;
 
     function detectOS() {
@@ -354,7 +355,7 @@
     }
 
     function runGuide() {
-      if (guideStopped || guideRuns >= 5 || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+      if (!pointer || guideStopped || guideRuns >= 5 || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
       const targets = ["#demo-search", "[data-filter='image']", "#demo-settings-button", "#random-query", ".clip.selected"];
       const to = targetPoint(targets[guideRuns % targets.length]);
       const from = {
@@ -376,7 +377,7 @@
             guideTimer = window.setTimeout(runGuide, 1200);
           }, 1900);
         }, 180);
-      }, guideRuns === 1 ? 1400 : 300);
+      }, 120);
     }
 
     document.querySelectorAll(".os-tab:not(.update-os)").forEach((button) => {
@@ -442,6 +443,10 @@
 
     window.addEventListener("pointermove", (event) => {
       pointer = { x: event.clientX, y: event.clientY };
+      if (!guideStarted && !guideStopped) {
+        guideStarted = true;
+        guideTimer = window.setTimeout(runGuide, 350);
+      }
     }, { passive: true });
     ["pointerenter", "pointerdown", "focusin", "input", "keydown", "wheel"].forEach((eventName) => {
       demoWindow.addEventListener(eventName, stopGuide, { once: true });
@@ -451,7 +456,6 @@
     setCommand("install", detectedOS);
     setCommand("update", detectedOS);
     renderClips();
-    runGuide();
   </script>
 </body>
 </html>

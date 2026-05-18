@@ -242,8 +242,11 @@ function updateTextItem(item, text) {
     const existing = history[existingIdx];
     existing.text = next.text;
     existing.ts = Math.max(existing.ts || 0, next.ts || 0);
+    const existingPinUpdated = clipboardModel.pinUpdatedAt(existing);
+    const nextPinUpdated = clipboardModel.pinUpdatedAt(next);
     existing.updatedAt = Math.max(existing.updatedAt || 0, next.updatedAt || 0);
-    existing.pin = mergePins(existing.pin, next.pin, existing.updatedAt || existing.ts || 0, next.updatedAt || next.ts || 0);
+    existing.pin = mergePins(existing.pin, next.pin, existingPinUpdated, nextPinUpdated);
+    existing.pinUpdatedAt = Math.max(existingPinUpdated, nextPinUpdated) || undefined;
     const oldIdx = history.indexOf(item);
     if (oldIdx >= 0) history.splice(oldIdx, 1);
     addTombstone(oldId);
@@ -322,15 +325,24 @@ function migrateNumpad() {
   if (oldSlots) {
     for (const [numStr, slot] of Object.entries(oldSlots)) {
       const num = parseInt(numStr);
+      const now = Date.now();
       if (slot.type === 'image') {
         const match = history.find(h => h.type === 'image' && h.image === slot.image);
-        if (match) ensurePin(match).number = num;
-        else history.unshift({ type: 'image', image: slot.image, ts: Date.now() / 1000, pin: { number: num } });
+        if (match) {
+          ensurePin(match).number = num;
+          touchPin(match, now);
+        } else {
+          history.unshift({ type: 'image', image: slot.image, ts: now / 1000, updatedAt: now, pinUpdatedAt: now, pin: { number: num, updatedAt: now } });
+        }
       } else {
         const text = slot.text || '';
         const match = history.find(h => h.type !== 'image' && h.text === text);
-        if (match) ensurePin(match).number = num;
-        else history.unshift({ type: 'text', text, ts: Date.now() / 1000, pin: { number: num } });
+        if (match) {
+          ensurePin(match).number = num;
+          touchPin(match, now);
+        } else {
+          history.unshift({ type: 'text', text, ts: now / 1000, updatedAt: now, pinUpdatedAt: now, pin: { number: num, updatedAt: now } });
+        }
       }
     }
     delete settings.numpad_slots;
@@ -339,7 +351,8 @@ function migrateNumpad() {
   } else if (!history.length) {
     for (const num of [9, 8, 7, 6, 5, 4, 3, 2, 1]) {
       if (AHK_PRESETS[num]) {
-        history.unshift({ type: 'text', text: AHK_PRESETS[num], ts: Date.now() / 1000, pin: { number: num } });
+        const now = Date.now();
+        history.unshift({ type: 'text', text: AHK_PRESETS[num], ts: now / 1000, updatedAt: now, pinUpdatedAt: now, pin: { number: num, updatedAt: now } });
       }
     }
     saveHistory();
@@ -377,6 +390,13 @@ function addGroupTombstone(name) {
 
 function mergePins(localPin, remotePin, localUpdatedAt = 0, remoteUpdatedAt = 0) {
   return clipboardModel.mergePins(localPin, remotePin, localUpdatedAt, remoteUpdatedAt, settings.group_tombstones);
+}
+
+function touchPin(item, now = Date.now()) {
+  if (!item) return;
+  item.updatedAt = now;
+  item.pinUpdatedAt = now;
+  if (item.pin) item.pin.updatedAt = now;
 }
 
 function mergeItems(localItem, remoteItem) {
@@ -1030,26 +1050,24 @@ function setupIPC() {
     } else {
       item.pin = null;
     }
-    item.updatedAt = Date.now();
-    if (item.pin) item.pin.updatedAt = Date.now();
+    touchPin(item);
     saveHistory();
   });
 
   ipcMain.handle('numpad-assign', (_, id, slot) => {
     const item = findHistoryItem(id);
     if (typeof slot !== 'number' || slot < 1 || slot > 9 || !item) return;
+    const now = Date.now();
     // Strip the slot from any other item without unpinning them.
     for (const h of history) {
       if (hasNumpadSlot(h, slot)) {
         delete h.pin.number;
-        h.pin.updatedAt = Date.now();
-        h.updatedAt = h.pin.updatedAt;
+        touchPin(h, now);
       }
     }
     const pin = ensurePin(item);
     pin.number = slot;
-    pin.updatedAt = Date.now();
-    item.updatedAt = pin.updatedAt;
+    touchPin(item, now);
     saveHistory();
   });
 
@@ -1058,8 +1076,7 @@ function setupIPC() {
     for (const h of history) {
       if (hasNumpadSlot(h, slot)) {
         delete h.pin.number;
-        h.pin.updatedAt = Date.now();
-        h.updatedAt = h.pin.updatedAt;
+        touchPin(h);
         saveHistory();
         break;
       }
@@ -1093,12 +1110,12 @@ function setupIPC() {
     if (idx >= 0) {
       addGroupTombstone(name);
       groups.splice(idx, 1);
+      const now = Date.now();
       for (const h of history) {
         if (h.pin && h.pin.groups) {
           h.pin.groups = h.pin.groups.filter(g => g !== name);
           if (h.pin.groups.length === 0) delete h.pin.groups;
-          h.pin.updatedAt = Date.now();
-          h.updatedAt = h.pin.updatedAt;
+          touchPin(h, now);
         }
       }
       saveSettingsFile();
@@ -1120,8 +1137,7 @@ function setupIPC() {
     } else {
       pin.groups.push(group);
     }
-    pin.updatedAt = Date.now();
-    item.updatedAt = pin.updatedAt;
+    touchPin(item);
     saveHistory();
   });
 

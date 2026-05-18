@@ -38,6 +38,20 @@ function text(text, extra = {}) {
 }
 
 {
+  const local = text('clip', { pin: null, ts: 200, updatedAt: 200 });
+  const remote = text('clip', { pin: { groups: ['todo'], updatedAt: 120 }, pinUpdatedAt: 120, ts: 100, updatedAt: 100 });
+  const merged = model.mergeHistories([local], [remote], {});
+  assert.deepStrictEqual(merged[0].pin.groups, ['todo']);
+}
+
+{
+  const local = text('clip', { pin: null, pinUpdatedAt: 300, ts: 200, updatedAt: 300 });
+  const remote = text('clip', { pin: { groups: ['todo'], updatedAt: 120 }, pinUpdatedAt: 120, ts: 100, updatedAt: 100 });
+  const merged = model.mergeHistories([local], [remote], {});
+  assert.strictEqual(merged[0].pin, null);
+}
+
+{
   const local = text('a', { pin: { number: 1, updatedAt: 10 }, ts: 10 });
   const remote = text('b', { pin: { number: 1, updatedAt: 20 }, ts: 20 });
   const merged = model.mergeHistories([local], [remote], {});
@@ -62,6 +76,8 @@ function text(text, extra = {}) {
   assert.strictEqual(ui.addClipboardText(base, 'new clip')[0].text, 'new clip');
   assert.strictEqual(ui.touchItem(base, 'a', 30)[0].id, 'a');
   assert.strictEqual(ui.numpadMap(ui.assignNumpad(base, 'a', 2, 40))[2], 'a');
+  assert.strictEqual(ui.togglePin(base, 'a', 50).find(i => i.id === 'a').pinUpdatedAt, 50);
+  assert.strictEqual(ui.togglePin([{ id: 'a', type: 'text', text: 'x', ts: 1, pin: { updatedAt: 1 } }], 'a', 60)[0].pinUpdatedAt, 60);
   assert.strictEqual(ui.ago(100, 102), 'now');
   assert.strictEqual(ui.ago(100, 165), '1m');
   assert.strictEqual(ui.nextAgoDelayMs(100, 130), 1000);

@@ -124,27 +124,35 @@
     const ts = now || Math.floor(Date.now() / 1000);
     return sortItems((items || []).map((item) => itemId(item) === id ? { ...item, ts, updatedAt: ts } : item));
   }
+  function withPinTimestamp(item, ts) {
+    const next = { ...item, updatedAt: ts, pinUpdatedAt: ts };
+    if (next.pin) next.pin = { ...next.pin, updatedAt: ts };
+    return next;
+  }
   function togglePin(items, id, now) {
     const ts = now || Math.floor(Date.now() / 1000);
     return (items || []).map((item) => {
       if (itemId(item) !== id) return item;
-      if (isPinned(item)) return { ...item, pin: null, updatedAt: ts };
-      return { ...item, pin: { updatedAt: ts }, updatedAt: ts };
+      if (isPinned(item)) return withPinTimestamp({ ...item, pin: null }, ts);
+      return withPinTimestamp({ ...item, pin: {} }, ts);
     });
   }
   function assignNumpad(items, id, slot, now) {
     const ts = now || Math.floor(Date.now() / 1000);
     return (items || []).map((item) => {
       const next = { ...item, pin: item.pin ? { ...item.pin } : item.pin };
-      if (numpadOf(next) === slot && itemId(next) !== id) delete next.pin.number;
+      let changed = false;
+      if (numpadOf(next) === slot && itemId(next) !== id) {
+        delete next.pin.number;
+        changed = true;
+      }
       if (itemId(next) === id) {
         const pin = ensurePin(next);
         pin.number = slot;
-        pin.updatedAt = ts;
-        next.updatedAt = ts;
+        return withPinTimestamp(next, ts);
       }
       if (next.pin && typeof next.pin.number !== 'number' && !groupsOf(next).length) next.pin = null;
-      return next;
+      return changed ? withPinTimestamp(next, ts) : next;
     });
   }
   function toggleGroup(items, id, group, now) {
@@ -157,10 +165,8 @@
       else groups.add(group);
       if (groups.size) next.pin.groups = [...groups];
       else delete next.pin.groups;
-      next.pin.updatedAt = ts;
-      next.updatedAt = ts;
       if (typeof next.pin.number !== 'number' && !groups.size) next.pin = null;
-      return next;
+      return withPinTimestamp(next, ts);
     });
   }
   function deleteItem(items, id) {

@@ -9,7 +9,7 @@
   --primary: #18181b;
   --primary-hover: #27272a;
   --primary-foreground: #fafafa;
-  --topbar-bg: color-mix(in srgb, var(--page), #ffffff 6%);
+  --topbar-bg: transparent;
   --badge-bg: color-mix(in srgb, var(--page), #ffffff 9%);
   --tabs-bg: color-mix(in srgb, var(--page), #000000 5%);
   --command-bg: #09090b;
@@ -46,7 +46,7 @@
     --primary: #18181b;
     --primary-hover: #27272a;
     --primary-foreground: #fafafa;
-    --topbar-bg: color-mix(in srgb, var(--page), #ffffff 6%);
+    --topbar-bg: transparent;
     --badge-bg: color-mix(in srgb, var(--page), #ffffff 9%);
     --tabs-bg: color-mix(in srgb, var(--page), #000000 5%);
     --command-bg: #09090b;
@@ -84,8 +84,9 @@ button, input { font: inherit; }
   justify-content: space-between;
   min-height: 58px;
   padding: 10px max(18px, calc((100vw - 1120px) / 2));
-  background: var(--topbar-bg);
+  background: transparent;
   backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
 }
 .brand {
   font-size: 15px;
@@ -853,7 +854,7 @@ code {
   --primary: #18181b;
   --primary-hover: #27272a;
   --primary-foreground: #fafafa;
-  --topbar-bg: color-mix(in srgb, var(--page), #ffffff 6%);
+  --topbar-bg: transparent;
   --badge-bg: color-mix(in srgb, var(--page), #ffffff 9%);
   --tabs-bg: color-mix(in srgb, var(--page), #000000 5%);
   --command-bg: #09090b;
@@ -877,7 +878,7 @@ code {
   --primary: #18181b;
   --primary-hover: #27272a;
   --primary-foreground: #fafafa;
-  --topbar-bg: color-mix(in srgb, var(--page), #ffffff 6%);
+  --topbar-bg: transparent;
   --badge-bg: color-mix(in srgb, var(--page), #ffffff 9%);
   --tabs-bg: color-mix(in srgb, var(--page), #000000 5%);
   --command-bg: #09090b;

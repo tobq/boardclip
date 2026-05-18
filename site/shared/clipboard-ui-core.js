@@ -106,13 +106,23 @@
       ...groupsOf(item),
     ].join(' ');
   }
-  function matchesQuery(text, query, regex) {
+  function prepareQuery(query, regex) {
     const q = String(query || '').trim();
-    if (!q) return true;
+    if (!q) return { kind: 'none' };
     if (regex) {
-      try { return new RegExp(q, 'i').test(text); } catch { return false; }
+      try { return { kind: 'regex', regex: new RegExp(q, 'i') }; } catch { return { kind: 'invalid' }; }
     }
-    return String(text || '').toLowerCase().includes(q.toLowerCase());
+    return { kind: 'text', needle: q.toLowerCase() };
+  }
+  function matchesPreparedQuery(text, prepared, lowerText) {
+    if (!prepared || prepared.kind === 'none') return true;
+    if (prepared.kind === 'invalid') return false;
+    if (prepared.kind === 'regex') return prepared.regex.test(String(text || ''));
+    if (lowerText != null) return String(lowerText).includes(prepared.needle);
+    return String(text || '').toLowerCase().includes(prepared.needle);
+  }
+  function matchesQuery(text, query, regex) {
+    return matchesPreparedQuery(text, prepareQuery(query, regex));
   }
   function matchesFilter(item, filters) {
     if (!filters || !filters.size) return true;
@@ -126,17 +136,26 @@
   }
   function filterItems(items, state) {
     const filters = state && state.filters;
-    const query = state && state.query;
-    const regex = state && state.regex;
-    return (items || []).filter((item) => matchesFilter(item, filters) && matchesQuery(itemSearchText(item), query, regex));
+    const prepared = prepareQuery(state && state.query, state && state.regex);
+    const searchTexts = state && state.searchTexts;
+    const searchTextLower = state && state.searchTextLower;
+    return (items || []).filter((item, index) => {
+      if (!matchesFilter(item, filters)) return false;
+      if (prepared.kind === 'none') return true;
+      return matchesPreparedQuery(searchTexts ? searchTexts[index] : itemSearchText(item), prepared, searchTextLower && searchTextLower[index]);
+    });
   }
   function filterItemIndexes(items, state) {
     const filters = state && state.filters;
-    const query = state && state.query;
-    const regex = state && state.regex;
+    const prepared = prepareQuery(state && state.query, state && state.regex);
+    const searchTexts = state && state.searchTexts;
+    const searchTextLower = state && state.searchTextLower;
     const result = [];
     (items || []).forEach((item, index) => {
-      if (matchesFilter(item, filters) && matchesQuery(itemSearchText(item), query, regex)) result.push(index);
+      if (!matchesFilter(item, filters)) return;
+      if (prepared.kind === 'none' || matchesPreparedQuery(searchTexts ? searchTexts[index] : itemSearchText(item), prepared, searchTextLower && searchTextLower[index])) {
+        result.push(index);
+      }
     });
     return result;
   }
@@ -182,12 +201,21 @@
     const groups = options.groups || [];
     const activeFilters = options.activeFilters || new Set();
     const query = options.query || '';
+    const builtinCounts = options.builtinCounts || null;
+    const groupCounts = options.groupCounts || null;
     let html = '';
-    for (const filter of builtinFilters(items, activeFilters)) {
+    const filters = builtinCounts
+      ? BUILTIN_FILTERS
+        .map((filter) => ({ ...filter, count: builtinCounts[filter.id] || 0, active: activeFilters.has(filter.id) }))
+        .filter((filter) => filter.count > 0)
+      : builtinFilters(items, activeFilters);
+    for (const filter of filters) {
       html += `<span class="filter-tag builtin icon-filter${filter.active ? ' active' : ''}" data-filter="${escapeHtml(filter.id)}" title="${escapeHtml(builtinFilterTitle(filter))}" aria-label="${escapeHtml(filter.ariaLabel)}">${builtinFilterIconHtml(filter, options)}</span>`;
     }
     html += groups.map((group) => {
-      const count = items.filter((item) => isInGroup(item, group)).length;
+      const count = groupCounts && typeof groupCounts.get === 'function'
+        ? groupCounts.get(group) || 0
+        : items.filter((item) => isInGroup(item, group)).length;
       const label = escapeHtml(group);
       return `<span class="filter-tag${activeFilters.has(group) ? ' active' : ''}" data-group="${label}" title="${count} item${count !== 1 ? 's' : ''} in ${label}">${label}<span class="gtag-x mi" data-action="delete-group" data-group="${label}">close</span></span>`;
     }).join('');
@@ -203,7 +231,9 @@
       return `<img src="${escapeHtml(src)}" alt="image">`;
     }
     const text = item && item.text || '';
-    const display = options && options.expanded ? text : text.replace(/\r?\n/g, ' ');
+    const display = options && typeof options.previewText === 'function'
+      ? options.previewText(item)
+      : options && options.expanded ? text : text.replace(/\r?\n/g, ' ');
     if (options && typeof options.highlight === 'function') return options.highlight(display);
     return escapeHtml(display);
   }
@@ -324,6 +354,7 @@
     builtinFilterCount,
     builtinFilters,
     itemSearchText,
+    prepareQuery,
     matchesQuery,
     matchesFilter,
     filterItems,

@@ -332,7 +332,7 @@ function renderGroupFilters() {
   const numpadCount = items.filter(it => numpadOf(it) != null).length;
   const imageCount = items.filter(it => it.type === 'image').length;
   let html = '';
-  if (pinnedCount) html += `<span class="filter-tag builtin icon-filter${activeFilters.has('__pinned__') ? ' active' : ''}" data-filter="__pinned__" title="${pinnedCount} pinned item${pinnedCount !== 1 ? 's' : ''}" aria-label="Pinned"><span class="mi filled">star</span></span>`;
+  if (pinnedCount) html += `<span class="filter-tag builtin icon-filter${activeFilters.has('__pinned__') ? ' active' : ''}" data-filter="__pinned__" title="${pinnedCount} pinned item${pinnedCount !== 1 ? 's' : ''}" aria-label="Pinned"><span class="mi">star</span></span>`;
   if (numpadCount) html += `<span class="filter-tag builtin icon-filter${activeFilters.has('__numbered__') ? ' active' : ''}" data-filter="__numbered__" title="${numpadCount} macro${numpadCount !== 1 ? 's' : ''} set for numpad" aria-label="Numpad">#</span>`;
   if (imageCount) html += `<span class="filter-tag builtin${activeFilters.has('__images__') ? ' active' : ''}" data-filter="__images__" title="${imageCount} image${imageCount !== 1 ? 's' : ''}">Images</span>`;
   html += groups.map(g => {

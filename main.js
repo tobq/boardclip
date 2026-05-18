@@ -781,6 +781,15 @@ function notifyColorSchemeChanged() {
   win.webContents.send('color-scheme-changed', currentColorScheme());
 }
 
+function configureMacPopupWindow(window) {
+  if (process.platform !== 'darwin' || !window) return;
+  window.setVisibleOnAllWorkspaces(true, {
+    visibleOnFullScreen: true,
+    skipTransformProcessType: true,
+  });
+  window.setAlwaysOnTop(true, 'screen-saver');
+}
+
 function createPopup() {
   win = new BrowserWindow({
     width: WIN_W,
@@ -799,6 +808,7 @@ function createPopup() {
     },
   });
 
+  configureMacPopupWindow(win);
   win.loadFile('index.html');
 
   // Dev: auto-reload UI when index.html changes (debounced)
@@ -905,6 +915,7 @@ function showPopup() {
   const x = Math.min(Math.max(wx, cursor.x - WIN_W / 2), wx + ww - WIN_W);
   const y = Math.min(Math.max(wy, cursor.y - 50), wy + wh - WIN_H);
 
+  configureMacPopupWindow(win);
   win.setPosition(Math.round(x), Math.round(y));
   win.show();
   win.moveTop();

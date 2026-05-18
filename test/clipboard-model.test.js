@@ -136,6 +136,15 @@ function text(text, extra = {}) {
     ['__pinned__', 1, false],
     ['__numbered__', 1, true],
   ]);
+  const filterBar = ui.renderFilterBar({ items: base, groups: ['code'], activeFilters: new Set(['__numbered__']), query: '' });
+  assert(filterBar.includes('data-filter="__numbered__"'));
+  assert(filterBar.includes('data-group="code"'));
+  assert(!filterBar.includes('data-filter="image"'));
+  assert(!filterBar.includes('class="chip'));
+  const clipItem = ui.renderClipItem(base[1], { imageSrc: () => '' });
+  assert(clipItem.includes('class="item has-pin"'));
+  assert(clipItem.includes('class="numpad-tag">#2</span>'));
+  assert(clipItem.includes('class="group-tag">code</span>'));
   assert.deepStrictEqual(ui.filterItems(base, { filters: new Set(['work']), query: 'invoice', regex: false }).map(i => i.id), ['a']);
   assert.deepStrictEqual(ui.filterItemIndexes(base, { filters: new Set(['__numbered__', 'code']), query: 'macro', regex: false }), [1]);
   assert.deepStrictEqual(ui.filterItemIndexes(base, { filters: new Set(['__numbered__', 'work']), query: '', regex: false }), []);

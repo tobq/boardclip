@@ -146,6 +146,101 @@
     const label = count === 1 ? 'item' : 'items';
     return state && (state.query || state.filters && state.filters.size) ? `${shown} of ${count} ${label}` : `${count} ${label}`;
   }
+  function escapeHtml(value) {
+    return String(value == null ? '' : value).replace(/[&<>"']/g, (char) => ({
+      '&': '&amp;',
+      '<': '&lt;',
+      '>': '&gt;',
+      '"': '&quot;',
+      "'": '&#39;',
+    }[char]));
+  }
+  function builtinFilterTitle(filter) {
+    if (!filter) return '';
+    if (filter.id === '__numbered__') return `${filter.count} macro${filter.count !== 1 ? 's' : ''} set for numpad`;
+    return `${filter.count} ${filter.label.toLowerCase().replace(/s$/, '')}${filter.count !== 1 ? 's' : ''}`;
+  }
+  function builtinFilterIconHtml(filter, options) {
+    const iconMode = options && options.iconMode || 'material';
+    if (!filter) return '';
+    if (filter.icon === 'numpad') return '#';
+    if (filter.icon === 'star') {
+      if (iconMode === 'unicode') return '&#9734;';
+      return '<span class="mi">star</span>';
+    }
+    if (filter.icon === 'image') {
+      if (iconMode === 'svg') {
+        return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5.5A2.5 2.5 0 0 1 7.5 3h9A2.5 2.5 0 0 1 19 5.5v13A2.5 2.5 0 0 1 16.5 21h-9A2.5 2.5 0 0 1 5 18.5v-13Zm2 9.9 3.1-3.1a1.2 1.2 0 0 1 1.7 0l1.7 1.7.8-.8a1.2 1.2 0 0 1 1.7 0l1 1V5.5a.5.5 0 0 0-.5-.5h-9a.5.5 0 0 0-.5.5v9.9Zm0 2.8v.3c0 .3.2.5.5.5h9a.5.5 0 0 0 .5-.5v-1.5l-1.9-1.9-.8.8a1.2 1.2 0 0 1-1.7 0l-1.7-1.7L7 18.2ZM9 8.2a1.2 1.2 0 1 1 2.4 0A1.2 1.2 0 0 1 9 8.2Z"/></svg>';
+      }
+      return '<span class="mi">image</span>';
+    }
+    return escapeHtml(filter.label);
+  }
+  function renderFilterBar(params) {
+    const options = params || {};
+    const items = options.items || [];
+    const groups = options.groups || [];
+    const activeFilters = options.activeFilters || new Set();
+    const query = options.query || '';
+    let html = '';
+    for (const filter of builtinFilters(items, activeFilters)) {
+      html += `<span class="filter-tag builtin icon-filter${filter.active ? ' active' : ''}" data-filter="${escapeHtml(filter.id)}" title="${escapeHtml(builtinFilterTitle(filter))}" aria-label="${escapeHtml(filter.ariaLabel)}">${builtinFilterIconHtml(filter, options)}</span>`;
+    }
+    html += groups.map((group) => {
+      const count = items.filter((item) => isInGroup(item, group)).length;
+      const label = escapeHtml(group);
+      return `<span class="filter-tag${activeFilters.has(group) ? ' active' : ''}" data-group="${label}" title="${count} item${count !== 1 ? 's' : ''} in ${label}">${label}<span class="gtag-x mi" data-action="delete-group" data-group="${label}">close</span></span>`;
+    }).join('');
+    if (activeFilters.size && !query) {
+      html += '<span class="filter-tag clear-filter icon-filter" data-action="clear-search-filters" title="Clear filters" aria-label="Clear filters"><span class="mi">close</span></span>';
+    }
+    return html;
+  }
+  function defaultPreviewHtml(item, options) {
+    const isImage = item && item.type === 'image';
+    if (isImage) {
+      const src = options && typeof options.imageSrc === 'function' ? options.imageSrc(item) : item.imageSrc || item.image || '';
+      return `<img src="${escapeHtml(src)}" alt="image">`;
+    }
+    const text = item && item.text || '';
+    const display = options && options.expanded ? text : text.replace(/\r?\n/g, ' ');
+    if (options && typeof options.highlight === 'function') return options.highlight(display);
+    return escapeHtml(display);
+  }
+  function renderClipItem(item, options) {
+    const opts = options || {};
+    const id = itemId(item) || '';
+    const pinned = isPinned(item);
+    const np = numpadOf(item);
+    const isImage = item && item.type === 'image';
+    let metaHtml;
+    if (isImage) {
+      const width = item.width || '?';
+      const height = item.height || '?';
+      metaHtml = `<span data-relative-ts="${item.ts || 0}">${ago(item.ts)}</span><span>${escapeHtml(`${width}x${height}`)}</span>`;
+    } else {
+      const text = item && item.text || '';
+      metaHtml = `<span data-relative-ts="${item.ts || 0}">${ago(item.ts)}</span><span>${text.length.toLocaleString()} chars</span>`;
+    }
+    if (np) metaHtml += `<span class="numpad-tag">#${np}</span>`;
+    if (pinned) metaHtml += '<span class="pin-tag">pinned</span>';
+    for (const group of groupsOf(item)) metaHtml += `<span class="group-tag">${escapeHtml(group)}</span>`;
+    const previewClass = opts.expanded ? 'expanded' : 'collapsed';
+    const selected = opts.selected ? ' selected' : '';
+    return `<div class="item${pinned ? ' has-pin' : ''}${selected}" data-id="${escapeHtml(id)}">
+      <div class="item-row">
+        <div class="pin-area">
+          <button class="star${pinned ? ' active' : ''}" data-action="pin" data-id="${escapeHtml(id)}" title="${pinned ? 'Unpin' : 'Pin'}"><span class="mi${pinned ? ' filled' : ''}">star</span></button>
+          ${opts.pickerHtml || ''}
+        </div>
+        <div class="content">
+          <div class="preview ${previewClass}">${defaultPreviewHtml(item, opts)}</div>
+          <div class="meta">${metaHtml}</div>
+        </div>
+        <div class="actions">${opts.actionsHtml || ''}</div>
+      </div>
+    </div>`;
+  }
   function sortItems(items) {
     return [...(items || [])].sort((a, b) => (b.ts || 0) - (a.ts || 0));
   }
@@ -234,6 +329,11 @@
     filterItems,
     filterItemIndexes,
     itemCountLabel,
+    escapeHtml,
+    builtinFilterTitle,
+    builtinFilterIconHtml,
+    renderFilterBar,
+    renderClipItem,
     sortItems,
     touchItem,
     togglePin,

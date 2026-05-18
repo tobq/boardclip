@@ -364,22 +364,7 @@ function numpadMap() {
 // --- Group filter tags ---
 function renderGroupFilters() {
   const el = document.getElementById('groupFilters');
-  let html = '';
-  for (const filter of Core.builtinFilters(items, activeFilters)) {
-    const title = filter.id === '__numbered__'
-      ? `${filter.count} macro${filter.count !== 1 ? 's' : ''} set for numpad`
-      : `${filter.count} ${filter.label.toLowerCase().replace(/s$/, '')}${filter.count !== 1 ? 's' : ''}`;
-    const content = filter.icon === 'numpad' ? '#' : `<span class="mi">${filter.icon}</span>`;
-    html += `<span class="filter-tag builtin icon-filter${filter.active ? ' active' : ''}" data-filter="${filter.id}" title="${title}" aria-label="${filter.ariaLabel}">${content}</span>`;
-  }
-  html += groups.map(g => {
-    const count = items.filter(it => isInGroup(it, g)).length;
-    return `<span class="filter-tag${activeFilters.has(g) ? ' active' : ''}" data-group="${esc(g)}" title="${count} item${count !== 1 ? 's' : ''} in ${esc(g)}">${esc(g)}<span class="gtag-x mi" data-action="delete-group" data-group="${esc(g)}">close</span></span>`;
-  }).join('');
-  if (activeFilters.size && !query) {
-    html += `<span class="filter-tag clear-filter icon-filter" data-action="clear-search-filters" title="Clear filters" aria-label="Clear filters"><span class="mi">close</span></span>`;
-  }
-  el.innerHTML = html;
+  el.innerHTML = Core.renderFilterBar({ items, groups, activeFilters, query });
 }
 
 function applyFilter() {
@@ -427,26 +412,6 @@ function buildItem(it, ri, nmap) {
   const id = itemId(it);
   const isImage = it.type === 'image';
   const el = document.createElement('div');
-  el.className = 'item' + (pinned ? ' has-pin' : '');
-  el.dataset.id = id || '';
-
-  let previewHtml;
-  let metaHtml;
-  if (isImage) {
-    previewHtml = `<img src="clip-img:///${esc(it.image)}" alt="image">`;
-    metaHtml = `<span data-relative-ts="${it.ts || 0}">${ago(it.ts)}</span><span>${it.width||'?'}x${it.height||'?'}</span>`;
-  } else {
-    const text = it.text || '';
-    const exp = expanded.has(id);
-    const display = exp ? text : text.replace(/\r?\n/g, ' ');
-    previewHtml = highlight(display, query);
-    metaHtml = `<span data-relative-ts="${it.ts || 0}">${ago(it.ts)}</span><span>${text.length.toLocaleString()} chars</span>`;
-  }
-  if (np) metaHtml += `<span class="numpad-tag">#${np}</span>`;
-  if (pinned) metaHtml += `<span style="color:var(--pin)">pinned</span>`;
-  for (const g of groupsOf(it)) {
-    metaHtml += `<span style="color:var(--accent)">${esc(g)}</span>`;
-  }
 
   // Build numpad picker buttons
   let npBtns = '';
@@ -470,21 +435,19 @@ function buildItem(it, ri, nmap) {
   });
   gpBtns += `<span class="gp-btn add-group" data-action="add-group" title="New group"><span class="mi" style="font-size:14px">add</span></span>`;
 
-  el.innerHTML = `<div class="item-row">
-    <div class="pin-area">
-      <button class="star${pinned?' active':''}" data-action="pin" data-id="${esc(id)}" title="${pinned?'Unpin':'Pin'}"><span class="mi${pinned?' filled':''}">star</span></button>
-      <div class="numpad-picker">
+  const pickerHtml = `<div class="numpad-picker">
         <div class="np-row">${npBtns}</div>
         <div class="gp-row">${gpBtns}</div>
-      </div>
-    </div>
-    <div class="content">
-      <div class="preview ${expanded.has(id)?'expanded':'collapsed'}">${previewHtml}</div>
-      <div class="meta">${metaHtml}</div>
-    </div>
-    <div class="actions">${!isImage && ((it.text||'').length > 120 || /\n/.test(it.text||'')) ? `<button class="icon-btn accent" data-action="expand" data-id="${esc(id)}" title="${expanded.has(id)?'Collapse':'Expand'}"><span class="mi">${expanded.has(id)?'unfold_less':'unfold_more'}</span></button>` : ''}${isImage ? `<button class="icon-btn accent" data-action="open-img" data-id="${esc(id)}" title="Open image"><span class="mi">open_in_new</span></button><button class="icon-btn accent" data-action="save-img" data-id="${esc(id)}" title="Copy to Downloads"><span class="mi">save</span></button>` : `<button class="icon-btn accent" data-action="edit" data-id="${esc(id)}" title="Open in editor"><span class="mi">open_in_new</span></button>`}<button class="icon-btn danger" data-action="del" data-id="${esc(id)}" title="Delete"><span class="mi">close</span></button></div>
-  </div>`;
-  return el;
+      </div>`;
+  const actionsHtml = `${!isImage && ((it.text||'').length > 120 || /\n/.test(it.text||'')) ? `<button class="icon-btn accent" data-action="expand" data-id="${esc(id)}" title="${expanded.has(id)?'Collapse':'Expand'}"><span class="mi">${expanded.has(id)?'unfold_less':'unfold_more'}</span></button>` : ''}${isImage ? `<button class="icon-btn accent" data-action="open-img" data-id="${esc(id)}" title="Open image"><span class="mi">open_in_new</span></button><button class="icon-btn accent" data-action="save-img" data-id="${esc(id)}" title="Copy to Downloads"><span class="mi">save</span></button>` : `<button class="icon-btn accent" data-action="edit" data-id="${esc(id)}" title="Open in editor"><span class="mi">open_in_new</span></button>`}<button class="icon-btn danger" data-action="del" data-id="${esc(id)}" title="Delete"><span class="mi">close</span></button>`;
+  el.innerHTML = Core.renderClipItem(it, {
+    expanded: expanded.has(id),
+    imageSrc: item => `clip-img:///${esc(item.image)}`,
+    highlight: text => highlight(text, query),
+    pickerHtml,
+    actionsHtml,
+  });
+  return el.firstElementChild;
 }
 
 function updateCount() {

@@ -1,17 +1,17 @@
 :root {
   color-scheme: light dark;
-  --page: #fafafa;
-  --card: #ffffff;
-  --foreground: #09090b;
-  --muted-page: #71717a;
-  --border-page: #e4e4e7;
-  --border-strong: #d4d4d8;
+  --page: #8b8b87;
+  --card: #a2a29d;
+  --foreground: #101010;
+  --muted-page: #343432;
+  --border-page: #797974;
+  --border-strong: #6d6d68;
   --primary: #18181b;
   --primary-hover: #27272a;
   --primary-foreground: #fafafa;
-  --topbar-bg: rgba(250, 250, 250, .88);
-  --badge-bg: #f4f4f5;
-  --tabs-bg: #f4f4f5;
+  --topbar-bg: rgba(139, 139, 135, .9);
+  --badge-bg: #989893;
+  --tabs-bg: #989893;
   --command-bg: #09090b;
   --command-border: #27272a;
   --command-button-bg: #18181b;
@@ -37,27 +37,27 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --page: #09090b;
-    --card: #0f0f11;
-    --foreground: #fafafa;
-    --muted-page: #a1a1aa;
-    --border-page: #27272a;
-    --border-strong: #3f3f46;
-    --primary: #fafafa;
-    --primary-hover: #e4e4e7;
-    --primary-foreground: #09090b;
-    --topbar-bg: rgba(9, 9, 11, .86);
-    --badge-bg: #18181b;
-    --tabs-bg: #18181b;
-    --command-bg: #030305;
+    --page: #7c7c78;
+    --card: #94948f;
+    --foreground: #101010;
+    --muted-page: #30302e;
+    --border-page: #6d6d68;
+    --border-strong: #62625e;
+    --primary: #18181b;
+    --primary-hover: #27272a;
+    --primary-foreground: #fafafa;
+    --topbar-bg: rgba(124, 124, 120, .9);
+    --badge-bg: #898984;
+    --tabs-bg: #898984;
+    --command-bg: #09090b;
     --command-border: #27272a;
     --command-button-bg: #18181b;
     --command-button-border: #3f3f46;
     --command-button-hover: #27272a;
-    --demo-shadow: rgba(0, 0, 0, .42);
-    --hint-bg: #18181b;
-    --hint-foreground: #fafafa;
-    --hint-shadow: rgba(0, 0, 0, .28);
+    --demo-shadow: rgba(24, 24, 27, .3);
+    --hint-bg: #a2a29d;
+    --hint-foreground: #18181b;
+    --hint-shadow: rgba(24, 24, 27, .12);
   }
 }
 
@@ -859,53 +859,53 @@ code {
   .demo-guide { display: none; }
 }
 
-/* Page intentionally contrasts the OS theme; the product demo mirrors it. */
+/* The page stays neutral grey; the product demo mirrors the OS theme. */
 :root[data-system-theme="dark"] {
-  --page: #fafafa;
-  --card: #ffffff;
-  --foreground: #09090b;
-  --muted-page: #71717a;
-  --border-page: #e4e4e7;
-  --border-strong: #d4d4d8;
+  --page: #7c7c78;
+  --card: #94948f;
+  --foreground: #101010;
+  --muted-page: #30302e;
+  --border-page: #6d6d68;
+  --border-strong: #62625e;
   --primary: #18181b;
   --primary-hover: #27272a;
   --primary-foreground: #fafafa;
-  --topbar-bg: rgba(250, 250, 250, .88);
-  --badge-bg: #f4f4f5;
-  --tabs-bg: #f4f4f5;
+  --topbar-bg: rgba(124, 124, 120, .9);
+  --badge-bg: #898984;
+  --tabs-bg: #898984;
+  --command-bg: #09090b;
+  --command-border: #27272a;
+  --command-button-bg: #18181b;
+  --command-button-border: #3f3f46;
+  --command-button-hover: #27272a;
+  --demo-shadow: rgba(24, 24, 27, .3);
+  --hint-bg: #94948f;
+  --hint-foreground: #18181b;
+  --hint-shadow: rgba(24, 24, 27, .1);
+}
+
+:root[data-system-theme="light"] {
+  --page: #8b8b87;
+  --card: #a2a29d;
+  --foreground: #101010;
+  --muted-page: #343432;
+  --border-page: #797974;
+  --border-strong: #6d6d68;
+  --primary: #18181b;
+  --primary-hover: #27272a;
+  --primary-foreground: #fafafa;
+  --topbar-bg: rgba(139, 139, 135, .9);
+  --badge-bg: #989893;
+  --tabs-bg: #989893;
   --command-bg: #09090b;
   --command-border: #27272a;
   --command-button-bg: #18181b;
   --command-button-border: #3f3f46;
   --command-button-hover: #27272a;
   --demo-shadow: rgba(24, 24, 27, .24);
-  --hint-bg: #ffffff;
+  --hint-bg: #a2a29d;
   --hint-foreground: #18181b;
   --hint-shadow: rgba(24, 24, 27, .1);
-}
-
-:root[data-system-theme="light"] {
-  --page: #09090b;
-  --card: #0f0f11;
-  --foreground: #fafafa;
-  --muted-page: #a1a1aa;
-  --border-page: #27272a;
-  --border-strong: #3f3f46;
-  --primary: #fafafa;
-  --primary-hover: #e4e4e7;
-  --primary-foreground: #09090b;
-  --topbar-bg: rgba(9, 9, 11, .86);
-  --badge-bg: #18181b;
-  --tabs-bg: #18181b;
-  --command-bg: #030305;
-  --command-border: #27272a;
-  --command-button-bg: #18181b;
-  --command-button-border: #3f3f46;
-  --command-button-hover: #27272a;
-  --demo-shadow: rgba(0, 0, 0, .42);
-  --hint-bg: #18181b;
-  --hint-foreground: #fafafa;
-  --hint-shadow: rgba(0, 0, 0, .28);
 }
 
 :root[data-system-theme="light"] .demo-window {

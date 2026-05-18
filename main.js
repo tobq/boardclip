@@ -76,8 +76,41 @@ function setAutoLaunchEnabled(enabled) {
 
 if (!fs.existsSync(IMG_DIR)) fs.mkdirSync(IMG_DIR, { recursive: true });
 
-const BUILD_INFO = getBuildInfo(SCRIPT_DIR);
-const autoUpdater = createAutoUpdater({ appDir: SCRIPT_DIR, buildInfo: BUILD_INFO });
+let BUILD_INFO = getBuildInfo(SCRIPT_DIR);
+
+function refreshBuildInfo() {
+  BUILD_INFO = getBuildInfo(SCRIPT_DIR);
+  return BUILD_INFO;
+}
+
+async function reloadRendererAfterUpdate() {
+  refreshBuildInfo();
+  refreshTray();
+  if (!win || win.isDestroyed() || !win.webContents || win.webContents.isDestroyed()) return;
+  await new Promise((resolve) => {
+    const timer = setTimeout(resolve, 2000);
+    if (timer.unref) timer.unref();
+    win.webContents.once('did-finish-load', () => {
+      clearTimeout(timer);
+      resolve();
+    });
+    win.webContents.reloadIgnoringCache();
+  });
+  await resetPopupRendererState();
+}
+
+function relaunchAfterUpdate() {
+  app.relaunch();
+  app.exit(0);
+}
+
+const autoUpdater = createAutoUpdater({
+  appDir: SCRIPT_DIR,
+  buildInfo: BUILD_INFO,
+  onReload: reloadRendererAfterUpdate,
+  onRelaunch: relaunchAfterUpdate,
+  onBuildInfoChanged: refreshBuildInfo,
+});
 
 // --- AHK presets for first-run seeding ---
 const AHK_PRESETS = {
@@ -1149,6 +1182,13 @@ function createTray() {
   if (process.platform === 'darwin') trayIcon.setTemplateImage(true);
 
   tray = new Tray(trayIcon);
+  refreshTray();
+  tray.on('click', showPopup);
+  tray.on('double-click', showPopup);
+}
+
+function refreshTray() {
+  if (!tray) return;
   tray.setToolTip(`BoardClip ${BUILD_INFO.label}`);
 
   const contextMenu = Menu.buildFromTemplate([
@@ -1161,8 +1201,6 @@ function createTray() {
   ]);
 
   tray.setContextMenu(contextMenu);
-  tray.on('click', showPopup);
-  tray.on('double-click', showPopup);
 }
 
 // --- Open in editor ---
@@ -1421,6 +1459,7 @@ function setupIPC() {
       ok: !!result.ok,
       status: result.status || 'unknown',
       latest: result.latest || null,
+      mode: result.mode || null,
       error: result.error ? result.error.message : null,
     };
   });

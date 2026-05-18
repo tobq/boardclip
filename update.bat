@@ -62,6 +62,11 @@ if defined NEED_INSTALL (
   echo Dependencies unchanged.
 )
 
+if "%BOARDCLIP_UPDATE_NO_START%"=="1" (
+  echo Update applied.
+  exit /b 0
+)
+
 call "%APP_DIR%start.bat"
 if errorlevel 1 exit /b 1
 

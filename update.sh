@@ -42,5 +42,10 @@ else
   echo "Dependencies unchanged."
 fi
 
+if [ "${BOARDCLIP_UPDATE_NO_START:-}" = "1" ]; then
+  echo "Update applied."
+  exit 0
+fi
+
 ./start.sh
 echo "Update complete."

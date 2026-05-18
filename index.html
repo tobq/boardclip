@@ -970,6 +970,10 @@ function updateStatusText(result) {
       return 'Up to date';
     case 'updating':
       return latest ? `Updating to ${latest}...` : 'Updating...';
+    case 'reloaded':
+      return latest ? `Updated UI to ${latest}` : 'Updated UI';
+    case 'relaunching':
+      return latest ? `Updated to ${latest}; relaunching...` : 'Updated; relaunching...';
     case 'unsupported':
       return 'Auto-update unavailable for this build';
     case 'busy':

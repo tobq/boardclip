@@ -149,6 +149,10 @@ function text(text, extra = {}) {
   assert.strictEqual(autoUpdate.updateScriptPath('C:\\App', 'win32'), 'C:\\App\\update.bat');
   assert.strictEqual(autoUpdate.updateScriptPath('/app', 'linux'), '/app/update.sh');
   assert.strictEqual(autoUpdate.canAutoUpdate(__dirname, { fullCommit: 'abc', dirty: true }), false);
+  assert.strictEqual(autoUpdate.updateModeForChangedFiles(['index.html']), 'reload');
+  assert.strictEqual(autoUpdate.updateModeForChangedFiles(['site/shared/clipboard-ui-core.js']), 'reload');
+  assert.strictEqual(autoUpdate.updateModeForChangedFiles(['main.js']), 'relaunch');
+  assert.strictEqual(autoUpdate.updateModeForChangedFiles([]), 'none');
 }
 
 console.log('clipboard model tests passed');

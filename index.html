@@ -172,8 +172,11 @@
   .np-slot .np-remove .mi { font-size:14px; }
   .settings-usage { font-size:11px; color:var(--text-dim); margin-top:12px; }
   .settings-footer { margin-top:24px; padding:12px 0 8px; border-top:1px solid var(--line); }
+  .settings-footer-actions { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
   .settings-clear { border:1px solid var(--red); background:transparent; color:var(--red); padding:6px 14px; border-radius:6px; cursor:pointer; font-size:11px; font-weight:500; }
   .settings-clear:hover { background:var(--red); color:var(--active-fg); }
+  .settings-secondary { border:1px solid var(--line-strong); background:transparent; color:var(--text-dim); padding:6px 12px; border-radius:6px; cursor:pointer; font-size:11px; font-weight:500; }
+  .settings-secondary:hover { border-color:var(--accent); color:var(--accent); }
   .group-slot { display:flex; align-items:center; gap:8px; padding:6px 0; border-bottom:1px solid var(--line-soft); }
   .group-slot .gp-name { flex:1; font-size:12px; color:var(--accent); }
   .group-slot .gp-count { font-size:10px; color:var(--text-dim); }
@@ -260,7 +263,10 @@
       <button class="add-group-btn" id="addGroupBtn"><span class="mi" style="font-size:14px;vertical-align:middle">add</span> New Group</button>
     </div>
     <div class="settings-footer">
-      <button class="settings-clear" id="clearAll">Clear All</button>
+      <div class="settings-footer-actions">
+        <button class="settings-clear" id="clearAll">Clear All</button>
+        <button class="settings-secondary" id="copyDiagnostics">Copy Diagnostics</button>
+      </div>
       <div class="build-info" id="buildInfo"></div>
     </div>
   </div>
@@ -677,6 +683,11 @@ document.getElementById('clearAll').addEventListener('click', () => {
   document.getElementById('confirmYes').textContent = 'Clear';
   pendingAssign = {clearAll: true};
   document.getElementById('confirmOverlay').classList.add('show');
+});
+document.getElementById('copyDiagnostics').addEventListener('click', async () => {
+  const diagnostics = await window.api.getSyncDiagnostics();
+  await window.api.copy(JSON.stringify(diagnostics, null, 2));
+  showToast('Diagnostics copied');
 });
 
 // --- Search ---

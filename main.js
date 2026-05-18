@@ -599,6 +599,65 @@ function readRemoteState(syncPath) {
   return { remoteHistory, remoteSettings };
 }
 
+function safeReadJson(filePath, fallback) {
+  try { return JSON.parse(fs.readFileSync(filePath, 'utf-8')); } catch { return fallback; }
+}
+
+function fileSummary(filePath) {
+  try {
+    const stats = fs.statSync(filePath);
+    return { exists: true, mtime: stats.mtime.toISOString(), size: stats.size };
+  } catch {
+    return { exists: false };
+  }
+}
+
+function groupCountsFromHistory(items) {
+  const counts = new Map();
+  for (const item of Array.isArray(items) ? items : []) {
+    const groups = item && item.pin && Array.isArray(item.pin.groups) ? item.pin.groups : [];
+    for (const group of groups) counts.set(group, (counts.get(group) || 0) + 1);
+  }
+  return Object.fromEntries([...counts.entries()].sort((a, b) => a[0].localeCompare(b[0])));
+}
+
+function stateSummary(basePath) {
+  const settingsPath = path.join(basePath, 'clipboard-settings.json');
+  const historyPath = path.join(basePath, 'clipboard-history.json');
+  const remoteSettings = safeReadJson(settingsPath, {});
+  const remoteHistory = safeReadJson(historyPath, []);
+  return {
+    base_path: basePath,
+    settings_file: fileSummary(settingsPath),
+    history_file: fileSummary(historyPath),
+    item_count: Array.isArray(remoteHistory) ? remoteHistory.length : null,
+    settings_groups: Array.isArray(remoteSettings.groups) ? remoteSettings.groups : [],
+    history_group_counts: groupCountsFromHistory(remoteHistory),
+    group_tombstones: normalizeGroupTombstones(remoteSettings.group_tombstones),
+  };
+}
+
+async function syncDiagnostics() {
+  const accounts = await getCloudAccountsForSettings();
+  return {
+    generated_at: new Date().toISOString(),
+    platform: process.platform,
+    app_dir: SCRIPT_DIR,
+    build: BUILD_INFO,
+    local: stateSummary(SCRIPT_DIR),
+    sync_disabled_paths: settings.sync_disabled_paths || [],
+    legacy_sync_path: settings.sync_path || '',
+    accounts: accounts.map(acc => ({
+      provider: acc.provider,
+      label: acc.label,
+      email: acc.email,
+      enabled: !!acc.enabled,
+      path: acc.path,
+      state: stateSummary(acc.path),
+    })),
+  };
+}
+
 function writeRemoteState(syncPath, canonicalHistory, canonicalSettings) {
   if (!fs.existsSync(syncPath)) fs.mkdirSync(syncPath, { recursive: true });
   const remoteDbPath = path.join(syncPath, 'clipboard-history.json');
@@ -1277,6 +1336,7 @@ function setupIPC() {
   });
 
   ipcMain.handle('get-cloud-accounts', () => getCloudAccountsForSettings());
+  ipcMain.handle('get-sync-diagnostics', () => syncDiagnostics());
 
   ipcMain.handle('sync-now', async () => {
     await syncMerge();

@@ -170,19 +170,20 @@
   .add-group-btn { background:none; border:1px dashed var(--line-strong); border-radius:4px; color:var(--text-dim); cursor:pointer; font-size:11px;
                    padding:6px; width:100%; margin-top:4px; transition:all .15s; }
   .add-group-btn:hover { border-color:var(--accent); color:var(--accent); }
-  .sync-row { display:flex; align-items:center; gap:6px; padding:6px 0; }
+  .sync-row { display:flex; align-items:flex-start; gap:6px; padding:6px 0; min-width:0; }
   .sync-list { flex:1; display:flex; flex-direction:column; gap:4px; min-width:0; }
-  .sync-account { display:flex; align-items:center; gap:8px; padding:6px 8px; background:var(--input); border:1px solid var(--line); border-radius:4px; }
+  .sync-account { display:flex; align-items:center; gap:8px; min-width:0; overflow:hidden; padding:6px 8px; background:var(--input); border:1px solid var(--line); border-radius:4px; }
   .sync-account input { width:auto; accent-color:var(--accent); flex-shrink:0; }
   .sync-account-main { flex:1; min-width:0; }
-  .sync-provider { font-size:11px; color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-  .sync-account-path { font-size:9px; color:var(--text-dim); font-family:'Cascadia Code','Consolas',monospace; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .sync-provider { display:block; max-width:100%; font-size:11px; color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .sync-account-path { display:block; max-width:100%; font-size:9px; color:var(--text-dim); font-family:'Cascadia Code','Consolas',monospace; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .sync-btn { background:none; border:1px solid var(--line-strong); border-radius:4px; color:var(--text-dim); cursor:pointer;
               font-size:11px; padding:4px 8px; transition:all .15s; white-space:nowrap; flex-shrink:0; }
   .sync-btn:hover { border-color:var(--accent); color:var(--accent); }
   .sync-status { font-size:10px; color:var(--text-dim); margin-top:2px; }
   .sync-status.active { color:var(--green); }
-  .sync-path { font-size:10px; color:var(--text-dim); margin-top:3px; word-break:break-all; font-family:'Cascadia Code','Consolas',monospace; }
+  .sync-path { display:flex; flex-direction:column; gap:2px; min-width:0; max-width:100%; overflow:hidden; font-size:10px; color:var(--text-dim); margin-top:3px; font-family:'Cascadia Code','Consolas',monospace; }
+  .sync-path-line { display:block; max-width:100%; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .build-info { font-size:10px; color:var(--text-dim); margin-top:12px; font-family:'Cascadia Code','Consolas',monospace; }
 </style></head><body>
 
@@ -293,6 +294,13 @@ if (window.api.onColorSchemeChanged) window.api.onColorSchemeChanged(applyColorS
 // --- Helpers ---
 function ago(ts) { return Core.ago(ts); }
 function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+function providerName(acc) {
+  const provider = acc && acc.provider ? String(acc.provider) : 'cloud';
+  return provider.charAt(0).toUpperCase() + provider.slice(1);
+}
+function syncAccountLabel(acc) {
+  return `${providerName(acc)} · ${acc.label || acc.email || acc.path}`;
+}
 function highlight(text, q) {
   if (!q) return esc(text);
   try {
@@ -795,12 +803,22 @@ async function openSettings() {
   for (const acc of accounts) {
     const row = document.createElement('label');
     row.className = 'sync-account';
-    const provider = acc.provider ? acc.provider.charAt(0).toUpperCase() + acc.provider.slice(1) : 'Cloud';
-    row.innerHTML = `<input type="checkbox" data-sync-path="${esc(acc.path)}" ${acc.enabled ? 'checked' : ''}>
-      <span class="sync-account-main">
-        <span class="sync-provider">${esc(provider)} · ${esc(acc.label || acc.email || acc.path)}</span>
-        <span class="sync-account-path">${esc(acc.path)}</span>
-      </span>`;
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.dataset.syncPath = acc.path;
+    checkbox.checked = !!acc.enabled;
+    const main = document.createElement('span');
+    main.className = 'sync-account-main';
+    const label = document.createElement('span');
+    label.className = 'sync-provider';
+    label.title = syncAccountLabel(acc);
+    label.textContent = syncAccountLabel(acc);
+    const pathLabel = document.createElement('span');
+    pathLabel.className = 'sync-account-path';
+    pathLabel.title = acc.path;
+    pathLabel.textContent = acc.path;
+    main.append(label, pathLabel);
+    row.append(checkbox, main);
     syncList.appendChild(row);
   }
   if (!accounts.length) {
@@ -810,7 +828,15 @@ async function openSettings() {
   const syncStatus = document.getElementById('syncStatus');
   syncStatus.textContent = accounts.length ? `${enabledAccounts.length}/${accounts.length} providers enabled; syncs on change + every 30s` : '';
   syncStatus.className = 'sync-status' + (enabledAccounts.length ? ' active' : '');
-  document.getElementById('syncPath').textContent = enabledAccounts.map(acc => acc.path).join('\n');
+  const syncPathEl = document.getElementById('syncPath');
+  syncPathEl.innerHTML = '';
+  for (const acc of enabledAccounts) {
+    const line = document.createElement('span');
+    line.className = 'sync-path-line';
+    line.title = acc.path;
+    line.textContent = acc.path;
+    syncPathEl.appendChild(line);
+  }
   document.getElementById('buildInfo').textContent = s.build_info ? `Build ${s.build_info.label}` : '';
 
   // Numpad slots

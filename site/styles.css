@@ -126,17 +126,6 @@ main {
   padding: 64px 0 54px;
 }
 .hero-copy { min-width: 0; }
-.eyebrow {
-  width: fit-content;
-  margin: 0 0 14px;
-  padding: 4px 9px;
-  color: var(--muted-page);
-  background: var(--badge-bg);
-  border-radius: 999px;
-  font-size: 12px;
-  font-weight: 650;
-  letter-spacing: 0;
-}
 h1 {
   margin: 0;
   max-width: 560px;

@@ -785,9 +785,8 @@ function configureMacPopupWindow(window) {
   if (process.platform !== 'darwin' || !window) return;
   window.setVisibleOnAllWorkspaces(true, {
     visibleOnFullScreen: true,
-    skipTransformProcessType: true,
   });
-  window.setAlwaysOnTop(true, 'screen-saver');
+  window.setAlwaysOnTop(true, 'pop-up-menu');
 }
 
 function createPopup() {

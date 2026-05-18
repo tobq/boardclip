@@ -21,24 +21,7 @@
   header { display:flex; align-items:center; padding:8px 8px 0 14px; gap:6px; -webkit-app-region:drag; }
   header button { -webkit-app-region:no-drag; }
   .count { font-size:11px; color:var(--text-dim); flex:1; }
-  /* Shared icon button base — used for all small clickable icons */
-  .icon-btn { background:none; border:none; border-radius:4px; color:var(--text-dim); cursor:pointer;
-              width:24px; height:24px; display:flex; align-items:center; justify-content:center; transition:all .15s; padding:0; }
-  .icon-btn:hover { color:var(--text); background:var(--hover); }
-  .icon-btn.accent:hover { color:var(--accent); }
-  .icon-btn.danger:hover { color:var(--red); }
-  .icon-btn .mi { font-size:16px; }
   .close-btn { font-size:18px; font-weight:bold; font-family:system-ui; line-height:1; }
-  .search-row { display:flex; align-items:stretch; margin:8px 14px 4px; background:var(--input); border:1px solid var(--line); border-radius:4px; transition:border-color .15s; }
-  .search-row:focus-within { border-color:var(--accent); }
-  .search { flex:1; background:transparent; border:none; padding:7px 4px 7px 10px; color:var(--text); font-size:13px; outline:none; font-family:inherit; min-width:0; }
-  .search::placeholder { color:var(--text-dim); }
-  .search-btns { display:flex; align-items:center; gap:1px; padding-right:4px; }
-  .search-clear { display:none; }
-  .search-clear.show { display:flex; }
-  .rx-btn { font-family:'Cascadia Code',monospace; font-size:12px; }
-  .rx-btn.active { color:var(--accent); background:var(--accent-bg); }
-  .rx-btn.active:hover { color:var(--accent); background:var(--accent-bg-strong); }
 
   .main-view { display:flex; flex-direction:column; flex:1; min-height:0; }
 
@@ -83,26 +66,9 @@
                   margin-bottom:12px; font-family:inherit; }
   .prompt-input:focus { border-color:var(--accent); }
 
-  /* Settings view */
-  .settings-view { display:none; flex-direction:column; height:100%; }
-  .settings-view.show { display:flex; }
   .main-view.hidden { display:none; }
-  .settings-hdr { display:flex; align-items:center; padding:8px 8px 8px 8px; gap:6px; border-bottom:1px solid var(--line); -webkit-app-region:drag; }
+  .settings-hdr { -webkit-app-region:drag; }
   .settings-hdr button { -webkit-app-region:no-drag; }
-  .settings-hdr h2 { font-size:14px; font-weight:500; flex:1; }
-  .settings-body { flex:1; overflow-y:auto; padding:12px 14px; }
-  .setting-row { display:flex; align-items:center; justify-content:space-between; padding:8px 0; }
-  .setting-row label { font-size:12px; color:var(--text); }
-  .setting-row input { width:80px; background:var(--input); border:1px solid var(--line); border-radius:4px; padding:5px 8px; color:var(--text); font-size:12px; text-align:right; outline:none; }
-  .setting-row input:focus { border-color:var(--accent); }
-  .switch-row { cursor:pointer; }
-  .switch-row input { position:absolute; opacity:0; pointer-events:none; }
-  .switch { width:30px; height:17px; position:relative; flex-shrink:0; border-radius:999px; background:var(--hover-strong); border:1px solid var(--line-strong); transition:all .15s; }
-  .switch::after { content:""; position:absolute; top:3px; left:3px; width:9px; height:9px; border-radius:50%; background:var(--text-dim); transition:all .15s; }
-  .switch-row input:checked + .switch { background:rgba(167,139,250,.28); border-color:rgba(167,139,250,.55); }
-  .switch-row input:checked + .switch::after { left:16px; background:var(--accent); }
-  .switch-row:hover .switch { border-color:var(--accent); }
-  .switch-row:focus-within .switch { border-color:var(--accent); box-shadow:0 0 0 2px rgba(167,139,250,.18); }
   .shortcut-row { align-items:flex-start; gap:10px; }
   .shortcut-row > label { padding-top:6px; flex-shrink:0; }
   .shortcut-control { display:flex; align-items:center; justify-content:flex-end; gap:6px; min-width:0; }
@@ -114,36 +80,16 @@
   .shortcut-reset .mi { font-size:14px; }
   .shortcut-status { min-height:14px; font-size:10px; color:var(--text-dim); margin-top:-4px; }
   .shortcut-status.error { color:var(--red); }
-  .settings-section { margin-top:16px; }
-  .settings-section h3 { font-size:12px; color:var(--text-dim); margin-bottom:8px; text-transform:uppercase; letter-spacing:.5px; }
-  .np-slot { display:flex; align-items:center; gap:8px; padding:6px 0; border-bottom:1px solid var(--line-soft); }
-  .np-slot .np-num { color:var(--accent); font-family:'Cascadia Code',monospace; font-size:13px; font-weight:600; min-width:18px; }
-  .np-slot .np-text { flex:1; font-size:11px; color:var(--text-dim); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-family:'Cascadia Code',monospace; }
-  .np-slot .np-text.empty { font-style:italic; }
-  .np-slot.has-content { cursor:pointer; }
-  .np-slot.has-content:hover { background:var(--surface2); }
-  .np-slot .np-remove .mi { font-size:14px; }
-  .settings-usage { font-size:11px; color:var(--text-dim); margin-top:12px; }
   .settings-footer { margin-top:24px; padding:12px 0 8px; border-top:1px solid var(--line); }
   .settings-footer-actions { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
   .settings-clear { border:1px solid var(--red); background:transparent; color:var(--red); padding:6px 14px; border-radius:6px; cursor:pointer; font-size:11px; font-weight:500; }
   .settings-clear:hover { background:var(--red); color:var(--active-fg); }
   .settings-secondary { border:1px solid var(--line-strong); background:transparent; color:var(--text-dim); padding:6px 12px; border-radius:6px; cursor:pointer; font-size:11px; font-weight:500; }
   .settings-secondary:hover { border-color:var(--accent); color:var(--accent); }
-  .group-slot { display:flex; align-items:center; gap:8px; padding:6px 0; border-bottom:1px solid var(--line-soft); }
-  .group-slot .gp-name { flex:1; font-size:12px; color:var(--accent); }
-  .group-slot .gp-count { font-size:10px; color:var(--text-dim); }
-  .group-slot .gp-del .mi { font-size:14px; }
   .add-group-btn { background:none; border:1px dashed var(--line-strong); border-radius:4px; color:var(--text-dim); cursor:pointer; font-size:11px;
                    padding:6px; width:100%; margin-top:4px; transition:all .15s; }
   .add-group-btn:hover { border-color:var(--accent); color:var(--accent); }
   .sync-row, .settings-action-row { display:flex; align-items:flex-start; gap:6px; padding:6px 0; min-width:0; }
-  .sync-list, .settings-action-list { flex:1; display:flex; flex-direction:column; gap:4px; min-width:0; }
-  .sync-account, .settings-action-card { display:flex; align-items:center; gap:8px; min-width:0; overflow:hidden; padding:6px 8px; background:var(--input); border:1px solid var(--line); border-radius:4px; }
-  .sync-account input, .settings-action-card input { width:auto; accent-color:var(--accent); flex-shrink:0; }
-  .sync-account-main, .settings-action-main { flex:1; min-width:0; }
-  .sync-provider, .settings-action-title { display:block; max-width:100%; font-size:11px; color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-  .sync-account-path, .settings-action-detail { display:block; max-width:100%; font-size:9px; color:var(--text-dim); font-family:'Cascadia Code','Consolas',monospace; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .sync-btn, .settings-icon-btn { background:none; border:1px solid var(--line-strong); border-radius:4px; color:var(--text-dim); cursor:pointer;
               font-size:11px; padding:4px 8px; transition:all .15s; white-space:nowrap; flex-shrink:0; }
   .sync-btn:hover, .settings-icon-btn:hover { border-color:var(--accent); color:var(--accent); }

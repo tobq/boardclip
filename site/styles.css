@@ -387,122 +387,11 @@ code {
   height: 15px;
   fill: currentColor;
 }
-.demo-window .icon-btn {
-  width: 24px;
-  height: 24px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
-  color: var(--dim);
-  background: transparent;
-  border: 0;
-  border-radius: 4px;
-  cursor: pointer;
-}
-.demo-window .icon-btn:hover { color: var(--accent); background: rgba(255,255,255,.06); }
-.search-row {
-  display: flex;
-  align-items: stretch;
-  margin: 8px 14px 4px;
-  background: #0a0a0a;
-  border: 1px solid #222;
-  border-radius: 4px;
-  transition: border-color .15s;
-}
-.search-row:focus-within { border-color: var(--accent); }
-#demo-search {
-  width: 100%;
-  min-width: 0;
-  height: 34px;
-  padding: 7px 4px 7px 10px;
-  color: var(--ink);
-  background: transparent;
-  border: 0;
-  outline: 0;
-  font-size: 13px;
-  font-family: inherit;
-}
-#demo-search::placeholder { color: #65707d; }
-.search-actions {
-  display: inline-flex;
-  align-items: center;
-  gap: 1px;
-  padding-right: 4px;
-}
-.search-icon {
-  width: 24px;
-  height: 24px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
-  color: var(--dim);
-  background: transparent;
-  border: 0;
-  border-radius: 4px;
-  cursor: pointer;
-  line-height: 1;
-}
-.search-icon:hover,
-.search-icon.active {
-  color: var(--accent);
-  background: rgba(255,255,255,.06);
-}
-.clear-search {
-  display: none;
-  font: 700 18px/1 system-ui, sans-serif;
-}
-.clear-search.show { display: flex; }
-.rx-btn {
-  font: 700 12px/1 "Cascadia Code", Consolas, monospace;
-}
-.settings-view {
-  flex: 1;
-  min-height: 0;
-  flex-direction: column;
-  color: var(--ink);
-  background: var(--surface);
-}
-.settings-hdr {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 8px;
-  border-bottom: 1px solid #222;
-}
-.settings-hdr h2 {
-  flex: 1;
-  margin: 0;
-  color: var(--ink);
-  font-size: 14px;
-  font-weight: 500;
-}
 .demo-settings-note {
   color: var(--dim);
   font-size: 10px;
   text-transform: uppercase;
   letter-spacing: .04em;
-}
-.settings-body {
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
-  padding: 12px 14px;
-}
-.settings-section { margin-top: 16px; }
-.settings-section h3 {
-  margin: 0 0 8px;
-  color: var(--dim);
-  font-size: 12px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: .5px;
-}
-.settings-usage {
-  margin-top: 12px;
-  color: var(--dim);
-  font-size: 11px;
 }
 .setting-value {
   color: var(--ink);
@@ -512,135 +401,6 @@ code {
   padding: 2px 6px;
   font: 11px/1.3 "Cascadia Code", Consolas, monospace;
 }
-.switch-row { cursor: pointer; }
-.switch-row input {
-  position: absolute;
-  opacity: 0;
-  pointer-events: none;
-}
-.switch {
-  width: 30px;
-  height: 17px;
-  position: relative;
-  flex-shrink: 0;
-  border-radius: 999px;
-  background: #252525;
-  border: 1px solid #333;
-  transition: all .15s;
-}
-.switch::after {
-  content: "";
-  position: absolute;
-  top: 3px;
-  left: 3px;
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
-  background: var(--dim);
-  transition: all .15s;
-}
-.switch-row input:checked + .switch {
-  background: rgba(167, 139, 250, .28);
-  border-color: rgba(167, 139, 250, .55);
-}
-.switch-row input:checked + .switch::after {
-  left: 16px;
-  background: var(--accent);
-}
-.sync-list {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-.sync-account {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 8px;
-  background: #0a0a0a;
-  border: 1px solid #222;
-  border-radius: 4px;
-}
-.sync-account input {
-  width: auto;
-  accent-color: var(--accent);
-  flex-shrink: 0;
-}
-.sync-account-main {
-  flex: 1;
-  min-width: 0;
-}
-.sync-provider {
-  display: block;
-  overflow: hidden;
-  color: var(--ink);
-  font-size: 11px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.sync-account-path {
-  display: block;
-  overflow: hidden;
-  color: var(--dim);
-  font: 9px/1.3 "Cascadia Code", Consolas, monospace;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.np-slot,
-.group-slot {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 0;
-  border-bottom: 1px solid #111;
-}
-.np-num {
-  min-width: 18px;
-  color: var(--accent);
-  font: 700 13px/1 "Cascadia Code", Consolas, monospace;
-}
-.np-text {
-  flex: 1;
-  overflow: hidden;
-  color: var(--dim);
-  font: 11px/1.35 "Cascadia Code", Consolas, monospace;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.np-text.empty { font-style: italic; }
-.gp-name {
-  flex: 1;
-  color: var(--accent);
-  font-size: 12px;
-}
-.gp-count {
-  color: var(--dim);
-  font-size: 10px;
-}
-.settings-panel {
-  flex: 1;
-  display: grid;
-  grid-template-columns: 1fr;
-  align-content: start;
-  gap: 8px 10px;
-  min-height: 0;
-  margin: 0;
-  padding: 12px 14px;
-  overflow: auto;
-  background: var(--surface);
-  border: 0;
-  border-top: 1px solid #222;
-  border-radius: 0;
-}
-.settings-title {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: -4px -6px 4px;
-  padding: 0 0 8px;
-  border-bottom: 1px solid #222;
-}
-.settings-title strong { flex: 1; }
 .demo-back {
   width: 24px;
   height: 24px;
@@ -652,94 +412,6 @@ code {
   font-size: 15px;
 }
 .demo-back:hover { color: var(--accent); background: rgba(255,255,255,.06); }
-.settings-title strong {
-  color: #d5dde6;
-  font-size: 12px;
-}
-.settings-title span,
-.settings-section-mini > span {
-  color: var(--dim);
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: .04em;
-}
-.setting-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  min-height: 26px;
-  color: #b5bec8;
-  font-size: 11px;
-}
-.demo-toggle-input {
-  position: absolute;
-  opacity: 0;
-  pointer-events: none;
-}
-.setting-row code {
-  padding: 2px 6px;
-  color: #dfe6ef;
-  background: #11151a;
-  border: 1px solid #20262d;
-  border-radius: 4px;
-  font-size: 11px;
-}
-.toggle {
-  width: 28px;
-  height: 16px;
-  position: relative;
-  display: inline-block;
-  border-radius: 999px;
-  background: #252a31;
-}
-.toggle::after {
-  content: "";
-  position: absolute;
-  top: 3px;
-  left: 3px;
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  background: #8995a1;
-}
-.toggle.on {
-  background: rgba(167, 139, 250, .32);
-}
-.toggle.on::after {
-  left: 15px;
-  background: var(--accent);
-}
-.settings-section-mini {
-  display: grid;
-  gap: 5px;
-  min-width: 0;
-  padding-top: 2px;
-}
-.slot-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-}
-.slot-row b {
-  color: var(--green);
-  font: 700 11px/1 "Cascadia Code", Consolas, monospace;
-}
-.slot-row em {
-  overflow: hidden;
-  color: var(--muted);
-  font: normal 10px/1.3 "Cascadia Code", Consolas, monospace;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.sync-account-demo {
-  overflow: hidden;
-  color: #b5bec8;
-  font-size: 11px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 .demo-foot {
   display: flex;
   align-items: center;
@@ -865,15 +537,11 @@ code {
   border-color: #d4d4d8;
 }
 :root[data-system-theme="light"] .demo-window .item,
-:root[data-system-theme="light"] .demo-window .settings-panel,
-:root[data-system-theme="light"] .demo-window .settings-title,
 :root[data-system-theme="light"] .demo-window .demo-foot {
   border-color: #e4e4e7;
 }
 :root[data-system-theme="light"] .demo-window .preview,
-:root[data-system-theme="light"] .demo-window .settings-title strong,
-:root[data-system-theme="light"] .demo-window .setting-row,
-:root[data-system-theme="light"] .demo-window .sync-account-demo {
+:root[data-system-theme="light"] .demo-window .setting-row {
   color: #18181b;
 }
 :root[data-system-theme="light"] .demo-window .setting-row code,
@@ -941,10 +609,7 @@ footer a { color: var(--foreground); }
   .os-tabs { width: 100%; }
   .os-tab { flex: 1; }
   .demo-window { min-height: 560px; height: 72vh; }
-  .settings-panel { grid-template-columns: 1fr; }
   .feature-grid { grid-template-columns: 1fr; }
   .command-line { white-space: pre-wrap; word-break: break-word; }
-  .clip { grid-template-columns: 18px minmax(0, 1fr); padding-inline: 10px; }
-  .thumb { width: 78px; height: 50px; }
   .demo-foot span { display: none; }
 }

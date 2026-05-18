@@ -177,10 +177,10 @@ function text(text, extra = {}) {
   assert(siteHtml.includes('Core.renderFilterBar'));
   assert(appHtml.includes('Core.renderClipItem'));
   assert(siteHtml.includes('Core.renderClipItem'));
-  for (const selector of ['filter-tag', 'item', 'preview', 'meta', 'star', 'empty']) {
+  for (const selector of ['icon-btn', 'search-row', 'search', 'filter-tag', 'item', 'preview', 'meta', 'star', 'empty', 'settings-view', 'setting-row', 'switch', 'np-slot', 'group-slot', 'sync-account']) {
     assert(sharedCss.includes(`.${selector}`), `shared popup css owns .${selector}`);
-    assert(!new RegExp(`^\\s*\\.${selector}\\b`, 'm').test(appHtml), `app must not redefine .${selector}`);
-    assert(!new RegExp(`^\\s*\\.${selector}\\b`, 'm').test(siteCss), `site css must not redefine .${selector}`);
+    assert(!new RegExp(`^\\s*\\.${selector}(?![-\\w])`, 'm').test(appHtml), `app must not redefine .${selector}`);
+    assert(!new RegExp(`^\\s*\\.${selector}(?![-\\w])`, 'm').test(siteCss), `site css must not redefine .${selector}`);
   }
 }
 

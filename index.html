@@ -199,8 +199,6 @@
   .sync-status, .settings-status { font-size:10px; color:var(--text-dim); margin-top:2px; }
   .sync-status.active, .settings-status.active { color:var(--green); }
   .sync-status.error, .settings-status.error { color:var(--red); }
-  .sync-path { display:flex; flex-direction:column; gap:2px; min-width:0; max-width:100%; overflow:hidden; font-size:10px; color:var(--text-dim); margin-top:3px; font-family:'Cascadia Code','Consolas',monospace; }
-  .sync-path-line { display:block; max-width:100%; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .build-info { display:flex; flex-direction:column; gap:2px; min-width:0; max-width:100%; overflow:hidden; font-size:10px; color:var(--text-dim); margin-top:12px; font-family:'Cascadia Code','Consolas',monospace; }
   .build-info-line { display:block; max-width:100%; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 </style></head><body>
@@ -258,7 +256,6 @@
         <button class="sync-btn" id="syncNow" title="Sync now"><span class="mi" style="font-size:14px;vertical-align:middle">sync</span></button>
       </div>
       <div class="sync-status" id="syncStatus"></div>
-      <div class="sync-path" id="syncPath"></div>
     </div>
     <div class="settings-section">
       <h3>Updates</h3>
@@ -1070,15 +1067,6 @@ async function openSettings() {
   const syncStatus = document.getElementById('syncStatus');
   syncStatus.textContent = accounts.length ? `${enabledAccounts.length}/${accounts.length} providers enabled; syncs on change + every 30s` : '';
   syncStatus.className = 'sync-status' + (enabledAccounts.length ? ' active' : '');
-  const syncPathEl = document.getElementById('syncPath');
-  syncPathEl.innerHTML = '';
-  for (const acc of enabledAccounts) {
-    const line = document.createElement('span');
-    line.className = 'sync-path-line';
-    line.title = acc.path;
-    line.textContent = acc.path;
-    syncPathEl.appendChild(line);
-  }
   renderUpdateSettings(s);
   const buildInfoEl = document.getElementById('buildInfo');
   buildInfoEl.innerHTML = '';

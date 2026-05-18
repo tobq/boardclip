@@ -23,7 +23,7 @@ jobs:
             artifacts: |
               dist/*.exe
           - name: macOS Intel
-            runner: macos-13
+            runner: macos-15-intel
             script: dist:mac
             artifacts: |
               dist/*.dmg

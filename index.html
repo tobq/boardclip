@@ -54,6 +54,8 @@
   .filter-tag.icon-filter.active { background:transparent; border-color:transparent; color:var(--accent); }
   .filter-tag.builtin { border-style:dashed; }
   .filter-tag.builtin.active { border-style:solid; }
+  .filter-tag.clear-filter { border-style:solid; color:var(--red); }
+  .filter-tag.clear-filter:hover { border-color:var(--red); color:var(--red); background:var(--hover); }
   .filter-tag .gtag-x { display:none; margin-left:1px; margin-right:-3px; color:var(--text-dim); font-size:10px; vertical-align:middle;
                         width:12px; height:12px; line-height:12px; text-align:center; border-radius:50%; cursor:pointer; }
   .filter-tag:hover .gtag-x { display:inline-block; }
@@ -337,6 +339,9 @@ function renderGroupFilters() {
     const count = items.filter(it => isInGroup(it, g)).length;
     return `<span class="filter-tag${activeFilters.has(g) ? ' active' : ''}" data-group="${esc(g)}" title="${count} item${count !== 1 ? 's' : ''} in ${esc(g)}">${esc(g)}<span class="gtag-x mi" data-action="delete-group" data-group="${esc(g)}">close</span></span>`;
   }).join('');
+  if (activeFilters.size && !query) {
+    html += `<span class="filter-tag clear-filter icon-filter" data-action="clear-search-filters" title="Clear filters" aria-label="Clear filters"><span class="mi">close</span></span>`;
+  }
   el.innerHTML = html;
 }
 
@@ -455,8 +460,20 @@ function buildItem(it, ri, nmap) {
 function updateCount() {
   const total = items.length;
   const visible = filtered.length;
-  const label = total === 1 ? 'item' : 'items';
-  countEl.textContent = `${visible} of ${total} ${label}`;
+  countEl.textContent = Core.itemCountLabel(total, visible, { query, filters: activeFilters });
+}
+
+function updateClearControls() {
+  searchClear.classList.toggle('show', !!query);
+  searchClear.title = activeFilters.size ? 'Clear search and filters' : 'Clear search';
+}
+
+function clearSearchAndFilters() {
+  searchEl.value = '';
+  query = '';
+  activeFilters.clear();
+  updateClearControls();
+  rerenderList();
 }
 
 // --- Scroll-based lazy load ---
@@ -469,6 +486,13 @@ listEl.addEventListener('scroll', () => {
 
 // --- Event delegation ---
 document.addEventListener('click', async (e) => {
+  const clearFilters = e.target.closest('[data-action="clear-search-filters"]');
+  if (clearFilters) {
+    e.stopPropagation();
+    clearSearchAndFilters();
+    searchEl.focus();
+    return;
+  }
   // Group delete x on tag
   const gtagX = e.target.closest('[data-action="delete-group"]');
   if (gtagX) {
@@ -662,8 +686,8 @@ searchEl.addEventListener('keydown', e => {
   }
 });
 const searchClear = document.getElementById('searchClear');
-searchEl.addEventListener('input', e => { query = e.target.value; searchClear.classList.toggle('show', !!query); applyFilter(); updateCount(); });
-searchClear.addEventListener('click', () => { searchEl.value = ''; query = ''; searchClear.classList.remove('show'); applyFilter(); updateCount(); searchEl.focus(); });
+searchEl.addEventListener('input', e => { query = e.target.value; updateClearControls(); rerenderList(); });
+searchClear.addEventListener('click', () => { clearSearchAndFilters(); searchEl.focus(); });
 
 // --- Regex toggle ---
 regexBtn.addEventListener('click', () => {

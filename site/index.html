@@ -71,36 +71,36 @@
               <button class="search-icon rx-btn" id="demo-regex" type="button" title="Regex search" aria-label="Regex search">.*</button>
             </div>
           </div>
-          <div class="settings-panel" id="demo-settings" hidden>
-            <div class="settings-title">
-              <button class="demo-back" id="demo-settings-back" type="button" aria-label="Back">&larr;</button>
-              <strong>Settings</strong>
-              <span>Demo</span>
+          <div class="settings-view" id="demo-settings" hidden>
+            <div class="settings-hdr">
+              <button class="icon-btn demo-back" id="demo-settings-back" type="button" aria-label="Back">&larr;</button>
+              <h2>Settings</h2>
+              <span class="demo-settings-note">Demo</span>
             </div>
-            <label class="setting-row">
-              <span>Launch on startup</span>
-              <input class="demo-toggle-input" type="checkbox" checked>
-              <span class="toggle on" aria-hidden="true"></span>
-            </label>
-            <div class="setting-row">
-              <span>Search mode</span>
-              <code id="demo-search-mode">plain</code>
-            </div>
-            <div class="settings-section-mini">
-              <span>Current</span>
-              <div class="sync-account-demo" id="demo-usage">100 items, 0.1 MB</div>
-            </div>
-            <div class="settings-section-mini">
-              <span>Sync</span>
-              <div class="sync-account-demo">Google Drive, OneDrive, iCloud enabled</div>
-            </div>
-            <div class="settings-section-mini">
-              <span>Numpad</span>
-              <div id="demo-numpad-slots"></div>
-            </div>
-            <div class="settings-section-mini">
-              <span>Groups</span>
-              <div id="demo-group-slots"></div>
+            <div class="settings-body">
+              <label class="setting-row switch-row">
+                <span>Launch on startup</span>
+                <input class="demo-toggle-input" type="checkbox" checked>
+                <span class="switch" aria-hidden="true"></span>
+              </label>
+              <div class="setting-row"><label>Search mode</label><span class="setting-value" id="demo-search-mode">plain</span></div>
+              <div class="settings-usage" id="demo-usage">100 items, 0.0 MB</div>
+              <div class="settings-section">
+                <h3>Sync</h3>
+                <div class="sync-list">
+                  <label class="sync-account"><input type="checkbox" checked><span class="sync-account-main"><span class="sync-provider">Google Drive</span><span class="sync-account-path">Demo cloud folder</span></span></label>
+                  <label class="sync-account"><input type="checkbox" checked><span class="sync-account-main"><span class="sync-provider">OneDrive</span><span class="sync-account-path">Demo cloud folder</span></span></label>
+                  <label class="sync-account"><input type="checkbox" checked><span class="sync-account-main"><span class="sync-provider">iCloud</span><span class="sync-account-path">Demo cloud folder</span></span></label>
+                </div>
+              </div>
+              <div class="settings-section">
+                <h3>Numpad Shortcuts</h3>
+                <div id="demo-numpad-slots"></div>
+              </div>
+              <div class="settings-section">
+                <h3>Groups</h3>
+                <div id="demo-group-slots"></div>
+              </div>
             </div>
           </div>
           <div class="chips demo-main" id="filter-chips" aria-label="Filters">
@@ -111,6 +111,7 @@
             <button class="chip" type="button" data-filter="code">code</button>
             <button class="chip" type="button" data-filter="support">support</button>
             <button class="chip" type="button" data-filter="ideas">ideas</button>
+            <button class="chip clear-chip icon-chip" id="demo-clear-filters" type="button" title="Clear filters" aria-label="Clear filters" hidden>&times;</button>
           </div>
           <div class="clip-list demo-main" id="clip-list" aria-live="polite"></div>
           <div class="demo-foot demo-main">
@@ -258,6 +259,7 @@
     const clipCount = document.getElementById("clip-count");
     const search = document.getElementById("demo-search");
     const clearSearch = document.getElementById("demo-clear-search");
+    const clearFilters = document.getElementById("demo-clear-filters");
     const regexButton = document.getElementById("demo-regex");
     const settingsButton = document.getElementById("demo-settings-button");
     const settingsBack = document.getElementById("demo-settings-back");
@@ -290,7 +292,8 @@
 
     function renderClips() {
       const visible = Core.filterItems(clips, state);
-      clipCount.textContent = `${visible.length} of ${clips.length} items`;
+      clipCount.textContent = Core.itemCountLabel(clips.length, visible.length, state);
+      updateClearControls();
       renderDemoSettings();
       clipList.innerHTML = visible.slice(0, 18).map((clip, index) => `
         <button class="clip ${Core.isPinned(clip) ? "is-pinned" : ""} ${index === 0 ? "selected" : ""}" type="button" data-id="${escapeHtml(Core.itemId(clip))}">
@@ -317,11 +320,11 @@
         const id = nmap[n];
         const clip = clips.find((item) => Core.itemId(item) === id);
         const text = clip ? (clip.type === "image" ? "[image]" : clip.text.replace(/\s+/g, " ").slice(0, 52)) : "empty";
-        return `<div class="slot-row"><b>#${n}</b><em>${escapeHtml(text)}</em></div>`;
+        return `<div class="np-slot${clip ? " has-content" : ""}"><span class="np-num">${n}</span><span class="np-text${clip ? "" : " empty"}">${escapeHtml(text)}</span></div>`;
       }).join("");
       demoGroupSlots.innerHTML = labels.slice(0, 8).map((group) => {
         const count = clips.filter((clip) => Core.isInGroup(clip, group)).length;
-        return `<div class="slot-row"><b>${escapeHtml(group)}</b><em>${count} items</em></div>`;
+        return `<div class="group-slot"><span class="gp-name">${escapeHtml(group)}</span><span class="gp-count">${count} item${count === 1 ? "" : "s"}</span></div>`;
       }).join("");
     }
 
@@ -373,6 +376,21 @@
       const before = clips.length;
       clips = Core.addClipboardText(clips, text);
       if (clips.length !== before || clips[0]?.text === text) renderClips();
+    }
+
+    function updateClearControls() {
+      clearSearch.classList.toggle("show", Boolean(state.query));
+      clearSearch.title = state.filters.size ? "Clear search and filters" : "Clear search";
+      clearFilters.hidden = Boolean(state.query) || !state.filters.size;
+    }
+
+    function clearSearchAndFilters() {
+      search.value = "";
+      state.query = "";
+      state.filters.clear();
+      document.querySelectorAll(".chip[data-filter]").forEach((button) => button.classList.remove("active"));
+      updateClearControls();
+      renderClips();
     }
 
     function targetPoint(selector) {
@@ -454,17 +472,17 @@
         renderClips();
       });
     });
+    clearFilters.addEventListener("click", () => {
+      clearSearchAndFilters();
+      search.focus();
+    });
 
     search.addEventListener("input", () => {
       state.query = search.value;
-      clearSearch.classList.toggle("show", Boolean(state.query));
       renderClips();
     });
     clearSearch.addEventListener("click", () => {
-      search.value = "";
-      state.query = "";
-      clearSearch.classList.remove("show");
-      renderClips();
+      clearSearchAndFilters();
       search.focus();
     });
     regexButton.addEventListener("click", () => {
@@ -509,7 +527,6 @@
       const queries = ["invoice", "api", "meeting", "image", "thanks", "dns", "launch", "sync", "windows"];
       search.value = queries[Math.floor(Math.random() * queries.length)];
       state.query = search.value;
-      clearSearch.classList.add("show");
       renderClips();
       search.focus();
     });

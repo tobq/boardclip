@@ -89,6 +89,12 @@
     const regex = state && state.regex;
     return (items || []).filter((item) => matchesFilter(item, filters) && matchesQuery(itemSearchText(item), query, regex));
   }
+  function itemCountLabel(total, visible, state) {
+    const count = Number(total) || 0;
+    const shown = Number(visible) || 0;
+    const label = count === 1 ? 'item' : 'items';
+    return state && (state.query || state.filters && state.filters.size) ? `${shown} of ${count} ${label}` : `${count} ${label}`;
+  }
   function sortItems(items) {
     return [...(items || [])].sort((a, b) => (b.ts || 0) - (a.ts || 0));
   }
@@ -159,6 +165,7 @@
     matchesQuery,
     matchesFilter,
     filterItems,
+    itemCountLabel,
     sortItems,
     touchItem,
     togglePin,

@@ -67,6 +67,23 @@
 .star { background: none; border: none; color: var(--text-dim); cursor: pointer; font-size: 14px; padding: 2px; transition: color .15s; line-height: 1; }
 .star .mi { font-size: 18px; }
 .star.active, .star:hover { color: var(--pin); }
+.numpad-picker { display: none; position: absolute; top: 100%; left: -4px; z-index: 20; background: var(--input); border: 1px solid var(--line-strong); border-radius: 6px;
+                  padding: 3px; flex-direction: column; gap: 2px; box-shadow: 0 4px 12px var(--shadow); }
+.pin-area:hover .numpad-picker { display: flex; }
+.np-row { display: flex; gap: 2px; white-space: nowrap; }
+.np-btn { width: 22px; height: 22px; display: flex; align-items: center; justify-content: center; border-radius: 3px; font-size: 11px;
+          font-family: "Cascadia Code", monospace; cursor: pointer; transition: all .1s; }
+.np-btn.free { color: var(--accent); background: transparent; }
+.np-btn.taken { color: var(--text); background: var(--line-strong); }
+.np-btn.current { color: var(--green); background: var(--green-bg); font-weight: bold; }
+.np-btn:hover { background: var(--hover-strong); color: var(--text); }
+.gp-row { display: flex; gap: 2px; flex-wrap: wrap; border-top: 1px solid var(--line); padding-top: 3px; }
+.gp-btn { height: 20px; padding: 0 6px; display: flex; align-items: center; border-radius: 3px; font-size: 10px;
+          cursor: pointer; transition: all .1s; white-space: nowrap; }
+.gp-btn.assigned { color: var(--green); background: var(--green-bg); }
+.gp-btn.available { color: var(--text-dim); background: transparent; }
+.gp-btn:hover { background: var(--hover-strong); color: var(--text); }
+.gp-btn.add-group { color: var(--accent); font-size: 13px; font-weight: bold; width: 20px; justify-content: center; }
 .content { flex: 1; min-width: 0; }
 .preview { font-size: 12px; line-height: 1.5; color: var(--text); font-family: "Cascadia Code", "Consolas", monospace; }
 .preview.collapsed { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

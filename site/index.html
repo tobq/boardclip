@@ -241,7 +241,7 @@
         url: `${releaseBase}BoardClip-Linux.AppImage`
       }
     };
-    const labels = ["work", "code", "support", "ideas", "legal", "sales", "design", "finance", "ops", "personal", "release", "meeting", "writing", "bug", "social"];
+    let labels = ["work", "code", "support", "ideas", "legal", "sales", "design", "finance", "ops", "personal", "release", "meeting", "writing", "bug", "social"];
     const numpadSlots = new Map([
       [0, 1],
       [5, 4],
@@ -626,6 +626,23 @@
       if (clear) {
         clearSearchAndFilters();
         search.focus();
+        return;
+      }
+      const groupDelete = event.target.closest("[data-action='delete-group']");
+      if (groupDelete) {
+        event.stopPropagation();
+        const group = groupDelete.dataset.group;
+        state.filters.delete(group);
+        labels = labels.filter((label) => label !== group);
+        clips = clips.map((clip) => {
+          if (!clip.pin || !Array.isArray(clip.pin.groups)) return clip;
+          const groups = clip.pin.groups.filter((label) => label !== group);
+          const nextPin = { ...clip.pin };
+          if (groups.length) nextPin.groups = groups;
+          else delete nextPin.groups;
+          return { ...clip, pin: Object.keys(nextPin).length ? nextPin : null };
+        });
+        renderClips();
         return;
       }
       const button = event.target.closest(".filter-tag[data-filter], .filter-tag[data-group]");

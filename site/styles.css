@@ -1,17 +1,17 @@
 :root {
   color-scheme: light dark;
   --page: #8b8b87;
-  --card: #a2a29d;
+  --card: color-mix(in srgb, var(--page), #ffffff 16%);
   --foreground: #101010;
   --muted-page: #343432;
-  --border-page: #797974;
-  --border-strong: #6d6d68;
+  --border-page: color-mix(in srgb, var(--page), #000000 10%);
+  --border-strong: color-mix(in srgb, var(--page), #000000 18%);
   --primary: #18181b;
   --primary-hover: #27272a;
   --primary-foreground: #fafafa;
-  --topbar-bg: rgba(139, 139, 135, .9);
-  --badge-bg: #989893;
-  --tabs-bg: #989893;
+  --topbar-bg: color-mix(in srgb, var(--page), #ffffff 6%);
+  --badge-bg: color-mix(in srgb, var(--page), #ffffff 9%);
+  --tabs-bg: color-mix(in srgb, var(--page), #000000 5%);
   --command-bg: #09090b;
   --command-border: #27272a;
   --command-button-bg: #18181b;
@@ -38,17 +38,17 @@
 @media (prefers-color-scheme: dark) {
   :root {
     --page: #7c7c78;
-    --card: #94948f;
+    --card: color-mix(in srgb, var(--page), #ffffff 16%);
     --foreground: #101010;
     --muted-page: #30302e;
-    --border-page: #6d6d68;
-    --border-strong: #62625e;
+    --border-page: color-mix(in srgb, var(--page), #000000 10%);
+    --border-strong: color-mix(in srgb, var(--page), #000000 18%);
     --primary: #18181b;
     --primary-hover: #27272a;
     --primary-foreground: #fafafa;
-    --topbar-bg: rgba(124, 124, 120, .9);
-    --badge-bg: #898984;
-    --tabs-bg: #898984;
+    --topbar-bg: color-mix(in srgb, var(--page), #ffffff 6%);
+    --badge-bg: color-mix(in srgb, var(--page), #ffffff 9%);
+    --tabs-bg: color-mix(in srgb, var(--page), #000000 5%);
     --command-bg: #09090b;
     --command-border: #27272a;
     --command-button-bg: #18181b;
@@ -85,7 +85,6 @@ button, input { font: inherit; }
   min-height: 58px;
   padding: 10px max(18px, calc((100vw - 1120px) / 2));
   background: var(--topbar-bg);
-  border-bottom: 1px solid var(--border-page);
   backdrop-filter: blur(16px);
 }
 .brand {
@@ -107,12 +106,12 @@ nav a:not(.github-button):hover { color: var(--foreground); }
   padding: 0 12px;
   color: var(--primary-foreground);
   background: var(--primary);
-  border: 1px solid var(--primary);
+  border: 0;
   border-radius: var(--radius);
   font-size: 13px;
   font-weight: 700;
 }
-.github-button:hover { background: var(--primary-hover); border-color: var(--primary-hover); }
+.github-button:hover { background: var(--primary-hover); }
 .github-button svg { width: 16px; height: 16px; fill: currentColor; }
 
 main {
@@ -133,7 +132,6 @@ main {
   padding: 4px 9px;
   color: var(--muted-page);
   background: var(--badge-bg);
-  border: 1px solid var(--border-page);
   border-radius: 999px;
   font-size: 12px;
   font-weight: 650;
@@ -159,7 +157,6 @@ h1 {
 .install-card {
   margin-top: 28px;
   background: var(--card);
-  border: 1px solid var(--border-page);
   border-radius: var(--radius);
   padding: 16px;
 }
@@ -183,7 +180,6 @@ h2 { margin: 0; color: var(--foreground); font-size: clamp(20px, 2vw, 28px); let
   display: inline-flex;
   padding: 3px;
   background: var(--tabs-bg);
-  border: 1px solid var(--border-page);
   border-radius: var(--radius);
   flex-shrink: 0;
 }
@@ -213,7 +209,7 @@ h2 { margin: 0; color: var(--foreground); font-size: clamp(20px, 2vw, 28px); let
   padding: 13px 14px;
   padding-right: 72px;
   background: var(--command-bg);
-  border: 1px solid var(--command-border);
+  border: 0;
   border-radius: var(--radius);
   cursor: pointer;
 }
@@ -230,7 +226,7 @@ h2 { margin: 0; color: var(--foreground); font-size: clamp(20px, 2vw, 28px); let
   padding: 0 9px;
   color: #d7dee8;
   background: var(--command-button-bg);
-  border: 1px solid var(--command-button-border);
+  border: 0;
   border-radius: 6px;
   cursor: pointer;
   font-size: 11px;
@@ -239,7 +235,6 @@ h2 { margin: 0; color: var(--foreground); font-size: clamp(20px, 2vw, 28px); let
 .command-copy:hover {
   color: #fafafa;
   background: var(--command-button-hover);
-  border-color: #52525b;
 }
 code {
   color: #edf5ff;
@@ -847,7 +842,6 @@ code {
   padding: 7px 10px;
   color: var(--hint-foreground);
   background: var(--hint-bg);
-  border: 1px solid var(--border-page);
   border-radius: var(--radius);
   box-shadow: 0 10px 24px var(--hint-shadow);
   font-size: 12px;
@@ -862,17 +856,17 @@ code {
 /* The page stays neutral grey; the product demo mirrors the OS theme. */
 :root[data-system-theme="dark"] {
   --page: #7c7c78;
-  --card: #94948f;
+  --card: color-mix(in srgb, var(--page), #ffffff 16%);
   --foreground: #101010;
   --muted-page: #30302e;
-  --border-page: #6d6d68;
-  --border-strong: #62625e;
+  --border-page: color-mix(in srgb, var(--page), #000000 10%);
+  --border-strong: color-mix(in srgb, var(--page), #000000 18%);
   --primary: #18181b;
   --primary-hover: #27272a;
   --primary-foreground: #fafafa;
-  --topbar-bg: rgba(124, 124, 120, .9);
-  --badge-bg: #898984;
-  --tabs-bg: #898984;
+  --topbar-bg: color-mix(in srgb, var(--page), #ffffff 6%);
+  --badge-bg: color-mix(in srgb, var(--page), #ffffff 9%);
+  --tabs-bg: color-mix(in srgb, var(--page), #000000 5%);
   --command-bg: #09090b;
   --command-border: #27272a;
   --command-button-bg: #18181b;
@@ -886,17 +880,17 @@ code {
 
 :root[data-system-theme="light"] {
   --page: #8b8b87;
-  --card: #a2a29d;
+  --card: color-mix(in srgb, var(--page), #ffffff 16%);
   --foreground: #101010;
   --muted-page: #343432;
-  --border-page: #797974;
-  --border-strong: #6d6d68;
+  --border-page: color-mix(in srgb, var(--page), #000000 10%);
+  --border-strong: color-mix(in srgb, var(--page), #000000 18%);
   --primary: #18181b;
   --primary-hover: #27272a;
   --primary-foreground: #fafafa;
-  --topbar-bg: rgba(139, 139, 135, .9);
-  --badge-bg: #989893;
-  --tabs-bg: #989893;
+  --topbar-bg: color-mix(in srgb, var(--page), #ffffff 6%);
+  --badge-bg: color-mix(in srgb, var(--page), #ffffff 9%);
+  --tabs-bg: color-mix(in srgb, var(--page), #000000 5%);
   --command-bg: #09090b;
   --command-border: #27272a;
   --command-button-bg: #18181b;
@@ -960,7 +954,6 @@ article {
   min-height: 144px;
   padding: 18px;
   background: var(--card);
-  border: 1px solid var(--border-page);
   border-radius: var(--radius);
 }
 article h3 { margin: 0 0 10px; color: var(--foreground); font-size: 15px; letter-spacing: -.01em; }

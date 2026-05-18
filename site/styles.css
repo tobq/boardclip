@@ -426,13 +426,17 @@ code {
   border-color: transparent;
 }
 .clear-chip {
-  color: #f87171;
-  border-color: #f87171;
-  border-style: solid;
+  width: 22px;
+  padding: 0;
+  color: var(--dim);
+  background: transparent;
+  border: 0;
+  border-radius: 50%;
 }
 .clear-chip:hover {
-  color: #f87171;
-  border-color: #f87171;
+  color: var(--ink);
+  background: rgba(255,255,255,.06);
+  border: 0;
 }
 .settings-view {
   flex: 1;

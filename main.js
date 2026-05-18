@@ -723,9 +723,7 @@ function imageHash(buffer) {
   return crypto.createHash('md5').update(buffer).digest('hex').slice(0, 12);
 }
 
-function saveClipboardImage(nativeImg) {
-  const buf = nativeImg.toPNG();
-  const hash = imageHash(buf);
+function saveClipboardImageBuffer(hash, buf, nativeImg) {
   const fname = `${hash}.png`;
   const fpath = path.join(IMG_DIR, fname);
   if (!fs.existsSync(fpath)) atomicWriteFile(fpath, buf);
@@ -736,7 +734,24 @@ function saveClipboardImage(nativeImg) {
 // --- Clipboard polling ---
 let lastText = '';
 let lastImgHash = '';
+let lastImageFormatsKey = '';
+let lastImageProbeAt = 0;
+let lastSlowPollLogAt = 0;
 let pollGate = true;
+const IMAGE_CLIPBOARD_PROBE_MS = 3000;
+const SLOW_CLIPBOARD_POLL_MS = 250;
+
+function clipboardFormatsKey() {
+  try {
+    return clipboard.availableFormats().sort().join('|');
+  } catch {
+    return '';
+  }
+}
+
+function formatsContainImage(formatsKey) {
+  return /image|png|tiff|bitmap/i.test(formatsKey || '');
+}
 
 function addToHistory(entry, matchFn) {
   ensureItemId(entry);
@@ -766,32 +781,52 @@ function addToHistory(entry, matchFn) {
 function pollClipboard() {
   if (!pollGate) return;
 
+  const startedAt = Date.now();
+  let formatsKey = '';
   try {
-    const img = clipboard.readImage();
-    if (!img.isEmpty()) {
+    formatsKey = clipboardFormatsKey();
+    if (formatsContainImage(formatsKey)) {
+      const now = Date.now();
+      if (formatsKey === lastImageFormatsKey && now - lastImageProbeAt < IMAGE_CLIPBOARD_PROBE_MS) {
+        return;
+      }
+      lastImageFormatsKey = formatsKey;
+      lastImageProbeAt = now;
+
+      const img = clipboard.readImage();
+      if (img.isEmpty()) return;
       const buf = img.toPNG();
       const h = imageHash(buf);
       if (h !== lastImgHash) {
         lastImgHash = h;
         lastText = '';
-        const { fname, width, height } = saveClipboardImage(img);
+        const { fname, width, height } = saveClipboardImageBuffer(h, buf, img);
         addToHistory(
           { type: 'image', image: fname, ts: Date.now() / 1000, width, height },
           it => it.type === 'image' && it.image === fname
         );
       }
-    } else {
-      const text = clipboard.readText();
-      if (text && text !== lastText) {
-        lastText = text;
-        lastImgHash = '';
-        addToHistory(
-          { type: 'text', text, ts: Date.now() / 1000 },
-          it => it.text === text
-        );
-      }
+      return;
     }
-  } catch {}
+
+    lastImageFormatsKey = '';
+    const text = clipboard.readText();
+    if (text && text !== lastText) {
+      lastText = text;
+      lastImgHash = '';
+      addToHistory(
+        { type: 'text', text, ts: Date.now() / 1000 },
+        it => it.text === text
+      );
+    }
+  } catch {
+  } finally {
+    const elapsed = Date.now() - startedAt;
+    if (elapsed > SLOW_CLIPBOARD_POLL_MS && Date.now() - lastSlowPollLogAt > 5000) {
+      lastSlowPollLogAt = Date.now();
+      console.log(`Slow clipboard poll: ${elapsed}ms (${formatsKey || 'unknown formats'})`);
+    }
+  }
 }
 
 // --- Clipboard backup/restore (simplified — backs up text/image/html/rtf) ---
@@ -968,6 +1003,7 @@ function resetPopupRendererState() {
   if (!win || win.isDestroyed() || !win.webContents || win.webContents.isDestroyed()) return Promise.resolve(false);
   return win.webContents.executeJavaScript(`
     window.resetPopupState?.();
+    window.focusSearch?.();
     true;
   `).catch(() => false);
 }

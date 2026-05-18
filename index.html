@@ -184,21 +184,21 @@
   .add-group-btn { background:none; border:1px dashed var(--line-strong); border-radius:4px; color:var(--text-dim); cursor:pointer; font-size:11px;
                    padding:6px; width:100%; margin-top:4px; transition:all .15s; }
   .add-group-btn:hover { border-color:var(--accent); color:var(--accent); }
-  .sync-row { display:flex; align-items:flex-start; gap:6px; padding:6px 0; min-width:0; }
-  .sync-list { flex:1; display:flex; flex-direction:column; gap:4px; min-width:0; }
-  .sync-account { display:flex; align-items:center; gap:8px; min-width:0; overflow:hidden; padding:6px 8px; background:var(--input); border:1px solid var(--line); border-radius:4px; }
-  .sync-account input { width:auto; accent-color:var(--accent); flex-shrink:0; }
-  .sync-account-main { flex:1; min-width:0; }
-  .sync-provider { display:block; max-width:100%; font-size:11px; color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-  .sync-account-path { display:block; max-width:100%; font-size:9px; color:var(--text-dim); font-family:'Cascadia Code','Consolas',monospace; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-  .sync-btn { background:none; border:1px solid var(--line-strong); border-radius:4px; color:var(--text-dim); cursor:pointer;
+  .sync-row, .settings-action-row { display:flex; align-items:flex-start; gap:6px; padding:6px 0; min-width:0; }
+  .sync-list, .settings-action-list { flex:1; display:flex; flex-direction:column; gap:4px; min-width:0; }
+  .sync-account, .settings-action-card { display:flex; align-items:center; gap:8px; min-width:0; overflow:hidden; padding:6px 8px; background:var(--input); border:1px solid var(--line); border-radius:4px; }
+  .sync-account input, .settings-action-card input { width:auto; accent-color:var(--accent); flex-shrink:0; }
+  .sync-account-main, .settings-action-main { flex:1; min-width:0; }
+  .sync-provider, .settings-action-title { display:block; max-width:100%; font-size:11px; color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .sync-account-path, .settings-action-detail { display:block; max-width:100%; font-size:9px; color:var(--text-dim); font-family:'Cascadia Code','Consolas',monospace; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .sync-btn, .settings-icon-btn { background:none; border:1px solid var(--line-strong); border-radius:4px; color:var(--text-dim); cursor:pointer;
               font-size:11px; padding:4px 8px; transition:all .15s; white-space:nowrap; flex-shrink:0; }
-  .sync-btn:hover { border-color:var(--accent); color:var(--accent); }
-  .sync-btn:disabled { opacity:.45; cursor:not-allowed; }
-  .sync-btn:disabled:hover { border-color:var(--line-strong); color:var(--text-dim); }
-  .sync-status { font-size:10px; color:var(--text-dim); margin-top:2px; }
-  .sync-status.active { color:var(--green); }
-  .sync-status.error { color:var(--red); }
+  .sync-btn:hover, .settings-icon-btn:hover { border-color:var(--accent); color:var(--accent); }
+  .sync-btn:disabled, .settings-icon-btn:disabled { opacity:.45; cursor:not-allowed; }
+  .sync-btn:disabled:hover, .settings-icon-btn:disabled:hover { border-color:var(--line-strong); color:var(--text-dim); }
+  .sync-status, .settings-status { font-size:10px; color:var(--text-dim); margin-top:2px; }
+  .sync-status.active, .settings-status.active { color:var(--green); }
+  .sync-status.error, .settings-status.error { color:var(--red); }
   .sync-path { display:flex; flex-direction:column; gap:2px; min-width:0; max-width:100%; overflow:hidden; font-size:10px; color:var(--text-dim); margin-top:3px; font-family:'Cascadia Code','Consolas',monospace; }
   .sync-path-line { display:block; max-width:100%; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .build-info { display:flex; flex-direction:column; gap:2px; min-width:0; max-width:100%; overflow:hidden; font-size:10px; color:var(--text-dim); margin-top:12px; font-family:'Cascadia Code','Consolas',monospace; }
@@ -262,18 +262,18 @@
     </div>
     <div class="settings-section">
       <h3>Updates</h3>
-      <div class="sync-row">
-        <div class="sync-list">
-          <div class="sync-account">
-            <span class="sync-account-main">
-              <span class="sync-provider" id="updateBuild"></span>
-              <span class="sync-account-path" id="updateDetail"></span>
+      <div class="settings-action-row">
+        <div class="settings-action-list">
+          <div class="settings-action-card">
+            <span class="settings-action-main">
+              <span class="settings-action-title" id="updateBuild"></span>
+              <span class="settings-action-detail" id="updateDetail"></span>
             </span>
           </div>
         </div>
-        <button class="sync-btn" id="updateNow" title="Check for updates"><span class="mi" style="font-size:14px;vertical-align:middle">system_update_alt</span></button>
+        <button class="settings-icon-btn" id="updateNow" title="Check for updates"><span class="mi" style="font-size:14px;vertical-align:middle">system_update_alt</span></button>
       </div>
-      <div class="sync-status" id="updateStatus"></div>
+      <div class="settings-status" id="updateStatus"></div>
     </div>
     <div class="settings-section">
       <h3>Groups</h3>
@@ -510,6 +510,10 @@ function clearSearchAndFilters() {
   rerenderList();
 }
 
+window.focusSearch = function() {
+  searchEl.focus();
+};
+
 // --- Scroll-based lazy load ---
 listEl.addEventListener('scroll', () => {
   if (rendered < filtered.length) {
@@ -659,6 +663,7 @@ window.resetPopupState = function() {
   document.getElementById('settingsView')?.classList.remove('show');
   document.getElementById('mainView')?.classList.remove('hidden');
   document.body.style.pointerEvents = '';
+  window.focusSearch();
 };
 
 function tryAssignNumpad(slot, id) {
@@ -979,7 +984,7 @@ function updateStatusText(result) {
 function setUpdateStatus(message, state = '') {
   const updateStatus = document.getElementById('updateStatus');
   updateStatus.textContent = message || '';
-  updateStatus.className = `sync-status${state ? ` ${state}` : ''}`;
+  updateStatus.className = `settings-status${state ? ` ${state}` : ''}`;
 }
 
 function renderUpdateSettings(settings) {

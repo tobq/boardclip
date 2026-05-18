@@ -719,9 +719,12 @@
     themeQuery.addEventListener("change", syncTheme);
     syncTheme();
     setDownload(detectedDownloadOS());
-    setInstallMode("installer");
+    setInstallMode(location.hash === "#update" ? "cli" : "installer");
     setCommand("install", detectedOS);
     setCommand("update", detectedOS);
+    if (location.hash === "#update") {
+      requestAnimationFrame(() => document.getElementById("update")?.scrollIntoView());
+    }
     renderClips();
   </script>
 </body>

@@ -4,9 +4,9 @@ Fast cross-platform clipboard history for desktop. BoardClip runs as a tray app,
 
 ## Install
 
-Everyday desktop builds are published on GitHub Releases:
+Everyday desktop builds are available from the website:
 
-[Download BoardClip](https://github.com/tobq/boardclip/releases/latest)
+[Download BoardClip](https://boardclip.app)
 
 Terminal install keeps a source checkout on your machine and reuses the same local lifecycle scripts for future updates.
 

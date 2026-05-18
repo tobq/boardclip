@@ -274,7 +274,6 @@
 <script src="site/shared/clipboard-ui-core.js"></script>
 <script>
 const Core = window.BoardClipCore;
-const BADGES = {1:'\u2460',2:'\u2461',3:'\u2462',4:'\u2463',5:'\u2464',6:'\u2465',7:'\u2466',8:'\u2467',9:'\u2468'};
 const listEl = document.getElementById('list');
 const toast = document.getElementById('toast');
 const searchEl = document.getElementById('search');
@@ -309,13 +308,7 @@ function highlight(text, q) {
     return esc(text).replace(re, '<mark>$1</mark>');
   } catch { return esc(text); }
 }
-function matches(text, q) {
-  if (!q) return true;
-  try {
-    return regexOn ? new RegExp(q, 'i').test(text) : text.toLowerCase().includes(q.toLowerCase());
-  } catch { return false; }
-}
-// --- Pin model helpers (mirrors main.js) ---
+// --- Pin model helpers ---
 // item.pin: null/undefined = unpinned. Object = pinned. Shape: { number?: 1-9, groups?: string[] }
 function isPinned(item) { return Core.isPinned(item); }
 function numpadOf(item) { return Core.numpadOf(item); }
@@ -350,26 +343,8 @@ function renderGroupFilters() {
   el.innerHTML = html;
 }
 
-// --- Rendering ---
-function matchesFilter(it) {
-  if (!activeFilters.size) return true;
-  for (const f of activeFilters) {
-    if (f === '__pinned__' && !isPinned(it)) return false;
-    else if (f === '__numbered__' && numpadOf(it) === null) return false;
-    else if (f === '__images__' && it.type !== 'image') return false;
-    else if (!f.startsWith('__') && !isInGroup(it, f)) return false;
-  }
-  return true;
-}
-
 function applyFilter() {
-  const q = query;
-  filtered = [];
-  items.forEach((it, i) => {
-    if (!matchesFilter(it)) return;
-    const text = it.type === 'image' ? 'image' : (it.text || '');
-    if (matches(text, q)) filtered.push(i);
-  });
+  filtered = Core.filterItemIndexes(items, { query, regex: regexOn, filters: activeFilters });
   rendered = 0;
   listEl.innerHTML = '';
   selectedIdx = -1;
@@ -526,11 +501,7 @@ document.addEventListener('click', async (e) => {
   if (ftag) {
     const f = ftag.dataset.filter;
     if (activeFilters.has(f)) { activeFilters.delete(f); }
-    else {
-      if (f === '__pinned__') activeFilters.delete('__numbered__');
-      else if (f === '__numbered__') activeFilters.delete('__pinned__');
-      activeFilters.add(f);
-    }
+    else activeFilters.add(f);
     rerenderList();
     return;
   }

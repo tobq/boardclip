@@ -111,6 +111,16 @@
     const regex = state && state.regex;
     return (items || []).filter((item) => matchesFilter(item, filters) && matchesQuery(itemSearchText(item), query, regex));
   }
+  function filterItemIndexes(items, state) {
+    const filters = state && state.filters;
+    const query = state && state.query;
+    const regex = state && state.regex;
+    const result = [];
+    (items || []).forEach((item, index) => {
+      if (matchesFilter(item, filters) && matchesQuery(itemSearchText(item), query, regex)) result.push(index);
+    });
+    return result;
+  }
   function itemCountLabel(total, visible, state) {
     const count = Number(total) || 0;
     const shown = Number(visible) || 0;
@@ -196,9 +206,11 @@
     nextAgoDelayMs,
     updateRelativeTimes,
     numpadMap,
+    itemSearchText,
     matchesQuery,
     matchesFilter,
     filterItems,
+    filterItemIndexes,
     itemCountLabel,
     sortItems,
     touchItem,

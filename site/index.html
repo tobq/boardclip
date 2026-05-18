@@ -17,7 +17,7 @@
     <a class="brand" href="/">BoardClip</a>
     <nav>
       <a href="#features">Features</a>
-      <a href="https://github.com/tobq/boardclip/releases/latest">Download</a>
+      <a href="#download">Download</a>
       <a href="#update">Update</a>
       <a class="github-button" href="https://github.com/tobq/boardclip" aria-label="BoardClip on GitHub">
         <svg viewBox="0 0 16 16" aria-hidden="true">
@@ -34,13 +34,21 @@
         <h1>Clipboard history, snippets, and macros across devices.</h1>
         <p class="lede">Search old clips, pin reusable snippets, label work in progress, save image clips, assign numpad macros, and sync through cloud storage you already use.</p>
 
-        <div class="download-card" aria-label="Download BoardClip">
+        <div class="download-card" id="download" aria-label="Download BoardClip">
           <div>
             <p class="mini-label">Desktop app</p>
-            <h2>Download the installer</h2>
-            <p class="note">Built from GitHub Actions for Windows, macOS, and Linux. Terminal install is still available below.</p>
+            <h2 id="download-title">Download for your system</h2>
+            <p class="note" id="download-note">Installer builds are published automatically from GitHub Actions.</p>
           </div>
-          <a class="download-button" href="https://github.com/tobq/boardclip/releases/latest">GitHub Releases</a>
+          <div class="download-actions">
+            <a class="download-button" id="download-link" href="#">Download</a>
+            <div class="download-options" aria-label="Other downloads">
+              <button type="button" data-download-os="win">Windows</button>
+              <button type="button" data-download-os="mac-arm">Mac Apple Silicon</button>
+              <button type="button" data-download-os="mac-intel">Mac Intel</button>
+              <button type="button" data-download-os="linux">Linux</button>
+            </div>
+          </div>
         </div>
 
         <div class="install-card" id="install" aria-label="Install BoardClip">
@@ -207,6 +215,33 @@
         win: "irm https://boardclip.sh/update.ps1 | iex"
       }
     };
+    const releaseBase = "https://github.com/tobq/boardclip/releases/latest/download/";
+    const downloads = {
+      win: {
+        title: "Download for Windows",
+        label: "Download installer",
+        note: "Downloads the Windows installer directly. Portable EXE is available below.",
+        url: `${releaseBase}BoardClip-Setup-Windows.exe`
+      },
+      "mac-arm": {
+        title: "Download for Mac",
+        label: "Download Apple Silicon",
+        note: "For M-series Macs. Intel Mac download is available below.",
+        url: `${releaseBase}BoardClip-macOS-Apple-Silicon.dmg`
+      },
+      "mac-intel": {
+        title: "Download for Mac",
+        label: "Download Intel Mac",
+        note: "For older Intel Macs. Apple Silicon download is available below.",
+        url: `${releaseBase}BoardClip-macOS-Intel.dmg`
+      },
+      linux: {
+        title: "Download for Linux",
+        label: "Download AppImage",
+        note: "Downloads the Linux AppImage directly. deb package is available below.",
+        url: `${releaseBase}BoardClip-Linux.AppImage`
+      }
+    };
     const labels = ["work", "code", "support", "ideas", "legal", "sales", "design", "finance", "ops", "personal", "release", "meeting", "writing", "bug", "social"];
     const numpadSlots = new Map([
       [0, 1],
@@ -290,6 +325,24 @@
       if (ua.includes("windows")) return "win";
       if (ua.includes("linux")) return "linux";
       return "mac";
+    }
+
+    function detectedDownloadOS() {
+      const os = detectOS();
+      if (os === "mac") return "mac-arm";
+      return os;
+    }
+
+    function setDownload(os) {
+      const selected = downloads[os] || downloads.win;
+      document.getElementById("download-title").textContent = selected.title;
+      document.getElementById("download-note").textContent = selected.note;
+      const link = document.getElementById("download-link");
+      link.href = selected.url;
+      link.textContent = selected.label;
+      document.querySelectorAll("[data-download-os]").forEach((button) => {
+        button.classList.toggle("active", button.dataset.downloadOs === os);
+      });
     }
 
     function setCommand(kind, os) {
@@ -520,6 +573,9 @@
     document.querySelectorAll(".update-os").forEach((button) => {
       button.addEventListener("click", () => setCommand("update", button.dataset.os));
     });
+    document.querySelectorAll("[data-download-os]").forEach((button) => {
+      button.addEventListener("click", () => setDownload(button.dataset.downloadOs));
+    });
     document.querySelectorAll("[data-copy-command]").forEach((control) => {
       control.addEventListener("click", async () => {
         await copyCommand(control.dataset.copyCommand, control);
@@ -629,6 +685,7 @@
     }
     themeQuery.addEventListener("change", syncTheme);
     syncTheme();
+    setDownload(detectedDownloadOS());
     setCommand("install", detectedOS);
     setCommand("update", detectedOS);
     renderClips();

@@ -5,6 +5,7 @@ __pycache__/
 *.pyc
 node_modules/
 dist/
+release/
 
 # Local Netlify folder
 .netlify

@@ -20,26 +20,42 @@ jobs:
           - name: Windows
             runner: windows-2025
             script: dist:win
+            prepare_assets: |
+              New-Item -ItemType Directory -Force release | Out-Null
+              Copy-Item "dist/BoardClip Setup *.exe" "release/BoardClip-Setup-Windows.exe"
+              Copy-Item (Get-ChildItem dist -Filter "*.exe" | Where-Object { $_.Name -notlike "*Setup*" } | Select-Object -First 1).FullName "release/BoardClip-Windows-Portable.exe"
             artifacts: |
-              dist/*.exe
+              release/*.exe
           - name: macOS Intel
             runner: macos-15-intel
             script: dist:mac
+            prepare_assets: |
+              New-Item -ItemType Directory -Force release | Out-Null
+              Copy-Item "dist/BoardClip-*.dmg" "release/BoardClip-macOS-Intel.dmg"
+              Copy-Item "dist/BoardClip-*-mac.zip" "release/BoardClip-macOS-Intel.zip"
             artifacts: |
-              dist/*.dmg
-              dist/*.zip
+              release/*.dmg
+              release/*.zip
           - name: macOS Apple Silicon
             runner: macos-15
             script: dist:mac
+            prepare_assets: |
+              New-Item -ItemType Directory -Force release | Out-Null
+              Copy-Item "dist/BoardClip-*-arm64.dmg" "release/BoardClip-macOS-Apple-Silicon.dmg"
+              Copy-Item "dist/BoardClip-*-arm64-mac.zip" "release/BoardClip-macOS-Apple-Silicon.zip"
             artifacts: |
-              dist/*.dmg
-              dist/*.zip
+              release/*.dmg
+              release/*.zip
           - name: Linux
             runner: ubuntu-24.04
             script: dist:linux
+            prepare_assets: |
+              New-Item -ItemType Directory -Force release | Out-Null
+              Copy-Item "dist/BoardClip-*.AppImage" "release/BoardClip-Linux.AppImage"
+              Copy-Item "dist/boardclip_*_amd64.deb" "release/BoardClip-Linux.deb"
             artifacts: |
-              dist/*.AppImage
-              dist/*.deb
+              release/*.AppImage
+              release/*.deb
 
     steps:
       - name: Checkout
@@ -58,6 +74,10 @@ jobs:
         run: npm run ${{ matrix.platform.script }}
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: false
+
+      - name: Prepare release assets
+        shell: pwsh
+        run: ${{ matrix.platform.prepare_assets }}
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v7

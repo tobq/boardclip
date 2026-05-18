@@ -151,21 +151,44 @@ h1 {
   padding: 16px;
 }
 .download-card {
+  background: color-mix(in srgb, var(--card), var(--foreground) 4%);
+}
+.download-card h2 { font-size: 24px; line-height: 1.12; }
+.method-tabs {
+  display: inline-flex;
+  padding: 3px;
+  background: var(--tabs-bg);
+  border-radius: var(--radius);
+  flex-shrink: 0;
+}
+.method-tab {
+  height: 28px;
+  padding: 0 10px;
+  color: var(--muted-page);
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.method-tab.active {
+  color: var(--primary-foreground);
+  background: var(--primary);
+  font-weight: 800;
+}
+.install-mode-panel {
+  margin-top: 14px;
+}
+.cli-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 18px;
-  margin-top: 28px;
-  padding: 16px;
-  background: color-mix(in srgb, var(--card), var(--foreground) 4%);
-  border-radius: var(--radius);
+  gap: 14px;
 }
-.download-card h2 { font-size: 24px; line-height: 1.12; }
 .download-actions {
   display: grid;
+  margin-top: 14px;
   gap: 8px;
-  min-width: 210px;
-  flex-shrink: 0;
 }
 .download-button {
   display: inline-flex;
@@ -184,8 +207,8 @@ h1 {
 .download-options {
   display: flex;
   flex-wrap: wrap;
-  justify-content: flex-end;
   gap: 6px;
+  margin-top: 8px;
 }
 .download-options button {
   min-height: 26px;
@@ -1032,14 +1055,12 @@ footer a { color: var(--foreground); }
   nav a:not(.github-button) { display: none; }
   .hero { gap: 18px; }
   h1 { font-size: 46px; }
-  .download-card {
-    align-items: stretch;
-    flex-direction: column;
-  }
-  .download-actions { min-width: 0; }
   .download-button { width: 100%; }
   .download-options { justify-content: flex-start; }
-  .install-head { flex-direction: column; }
+  .install-head,
+  .cli-head { flex-direction: column; align-items: stretch; }
+  .method-tabs { width: 100%; }
+  .method-tab { flex: 1; }
   .os-tabs { width: 100%; }
   .os-tab { flex: 1; }
   .demo-window { min-height: 560px; height: 72vh; }

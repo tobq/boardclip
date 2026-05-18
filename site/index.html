@@ -18,7 +18,7 @@
     <nav>
       <a href="#features">Features</a>
       <a href="#download">Download</a>
-      <a href="#update">Update</a>
+      <a class="cli-only" href="#update" hidden>Update</a>
       <a class="github-button" href="https://github.com/tobq/boardclip" aria-label="BoardClip on GitHub">
         <svg viewBox="0 0 16 16" aria-hidden="true">
           <path d="M8 0C3.58 0 0 3.67 0 8.2c0 3.63 2.29 6.7 5.47 7.79.4.08.55-.18.55-.39 0-.19-.01-.84-.01-1.53-2.01.38-2.53-.5-2.69-.96-.09-.24-.48-.96-.82-1.15-.28-.16-.68-.55-.01-.56.63-.01 1.08.59 1.23.84.72 1.24 1.87.89 2.33.68.07-.53.28-.89.51-1.1-1.78-.21-3.64-.91-3.64-4.04 0-.89.31-1.62.82-2.19-.08-.21-.36-1.04.08-2.16 0 0 .67-.22 2.2.84A7.37 7.37 0 0 1 8 3.99c.68 0 1.36.09 2 .28 1.53-1.06 2.2-.84 2.2-.84.44 1.12.16 1.95.08 2.16.51.57.82 1.3.82 2.19 0 3.14-1.87 3.83-3.65 4.04.29.26.54.75.54 1.52 0 1.1-.01 1.98-.01 2.25 0 .21.15.47.55.39A8.07 8.07 0 0 0 16 8.2C16 3.67 12.42 0 8 0Z"/>
@@ -34,14 +34,23 @@
         <h1>Clipboard history, snippets, and macros across devices.</h1>
         <p class="lede">Search old clips, pin reusable snippets, label work in progress, save image clips, assign numpad macros, and sync through cloud storage you already use.</p>
 
-        <div class="download-card" id="download" aria-label="Download BoardClip">
-          <div>
-            <p class="mini-label">Desktop app</p>
-            <h2 id="download-title">Download for your system</h2>
-            <p class="note" id="download-note">Installer builds are published automatically from GitHub Actions.</p>
+        <div class="install-card download-card" id="download" aria-label="Install BoardClip">
+          <div class="install-head">
+            <div>
+              <p class="mini-label">Get BoardClip</p>
+              <h2 id="download-title">Download for your system</h2>
+            </div>
+            <div class="method-tabs" role="tablist" aria-label="Install method">
+              <button class="method-tab active" type="button" data-install-mode="installer">Installer</button>
+              <button class="method-tab" type="button" data-install-mode="cli">CLI</button>
+            </div>
           </div>
-          <div class="download-actions">
-            <a class="download-button" id="download-link" href="#">Download</a>
+
+          <div class="install-mode-panel" data-mode-panel="installer">
+            <p class="note" id="download-note">Installer builds are published automatically from GitHub Actions.</p>
+            <div class="download-actions">
+              <a class="download-button" id="download-link" href="#">Download</a>
+            </div>
             <div class="download-options" aria-label="Other downloads">
               <button type="button" data-download-os="win">Windows</button>
               <button type="button" data-download-os="mac-arm">Mac Apple Silicon</button>
@@ -49,25 +58,22 @@
               <button type="button" data-download-os="linux">Linux</button>
             </div>
           </div>
-        </div>
 
-        <div class="install-card" id="install" aria-label="Install BoardClip">
-          <div class="install-head">
-            <div>
-              <p class="mini-label">Install</p>
+          <div class="install-mode-panel" data-mode-panel="cli" hidden>
+            <div class="cli-head">
               <h2 id="install-title">Recommended command</h2>
+              <div class="os-tabs" role="tablist" aria-label="Operating system">
+                <button class="os-tab cli-os active" type="button" data-os="mac">macOS</button>
+                <button class="os-tab cli-os" type="button" data-os="win">Windows</button>
+                <button class="os-tab cli-os" type="button" data-os="linux">Linux</button>
+              </div>
             </div>
-            <div class="os-tabs" role="tablist" aria-label="Operating system">
-              <button class="os-tab active" type="button" data-os="mac">macOS</button>
-              <button class="os-tab" type="button" data-os="win">Windows</button>
-              <button class="os-tab" type="button" data-os="linux">Linux</button>
+            <div class="command-wrap">
+              <button class="command-copy" type="button" data-copy-command="install-command">Copy</button>
+              <pre class="command-line" data-copy-command="install-command" tabindex="0" title="Click to copy"><code id="install-command">curl -fsSL https://boardclip.sh/install.sh | sh</code></pre>
             </div>
+            <p class="note">Installs from the open-source repo. If BoardClip already exists, this runs the normal update flow.</p>
           </div>
-          <div class="command-wrap">
-            <button class="command-copy" type="button" data-copy-command="install-command">Copy</button>
-            <pre class="command-line" data-copy-command="install-command" tabindex="0" title="Click to copy"><code id="install-command">curl -fsSL https://boardclip.sh/install.sh | sh</code></pre>
-          </div>
-          <p class="note">Installs from the open-source repo. If BoardClip already exists, this runs the normal update flow.</p>
         </div>
       </div>
 
@@ -167,7 +173,7 @@
       </div>
     </section>
 
-    <section class="update" id="update">
+    <section class="update cli-only" id="update" hidden>
       <h2>Update</h2>
       <div class="install-card update-card" aria-label="Update BoardClip">
         <div class="install-head">
@@ -226,13 +232,13 @@
       "mac-arm": {
         title: "Download for Mac",
         label: "Download Apple Silicon",
-        note: "For M-series Macs. Intel Mac download is available below.",
+        note: "For M-series Macs. Switch to Intel Mac if you need the older build.",
         url: `${releaseBase}BoardClip-macOS-Apple-Silicon.dmg`
       },
       "mac-intel": {
         title: "Download for Mac",
         label: "Download Intel Mac",
-        note: "For older Intel Macs. Apple Silicon download is available below.",
+        note: "For older Intel Macs. Switch to Apple Silicon for M-series Macs.",
         url: `${releaseBase}BoardClip-macOS-Intel.dmg`
       },
       linux: {
@@ -299,6 +305,7 @@
     let clips = Core.sortItems(seedClips);
 
     const state = { filters: new Set(), query: "", regex: false };
+    const installState = { mode: "installer", downloadOS: "win" };
     const clipList = document.getElementById("clip-list");
     const clipCount = document.getElementById("clip-count");
     const search = document.getElementById("demo-search");
@@ -335,8 +342,11 @@
 
     function setDownload(os) {
       const selected = downloads[os] || downloads.win;
-      document.getElementById("download-title").textContent = selected.title;
-      document.getElementById("download-note").textContent = selected.note;
+      installState.downloadOS = downloads[os] ? os : "win";
+      if (installState.mode === "installer") {
+        document.getElementById("download-title").textContent = selected.title;
+        document.getElementById("download-note").textContent = selected.note;
+      }
       const link = document.getElementById("download-link");
       link.href = selected.url;
       link.textContent = selected.label;
@@ -345,8 +355,27 @@
       });
     }
 
+    function setInstallMode(mode) {
+      const isCli = mode === "cli";
+      installState.mode = isCli ? "cli" : "installer";
+      document.querySelectorAll("[data-install-mode]").forEach((button) => {
+        button.classList.toggle("active", button.dataset.installMode === installState.mode);
+      });
+      document.querySelectorAll("[data-mode-panel]").forEach((panel) => {
+        panel.hidden = panel.dataset.modePanel !== installState.mode;
+      });
+      document.querySelectorAll(".cli-only").forEach((element) => {
+        element.hidden = !isCli;
+      });
+      if (isCli) {
+        document.getElementById("download-title").textContent = "Install from CLI";
+      } else {
+        setDownload(installState.downloadOS);
+      }
+    }
+
     function setCommand(kind, os) {
-      const scope = kind === "update" ? ".update-os" : ".os-tab:not(.update-os)";
+      const scope = kind === "update" ? ".update-os" : ".cli-os";
       document.querySelectorAll(scope).forEach((button) => button.classList.toggle("active", button.dataset.os === os));
       document.getElementById(`${kind}-command`).textContent = commands[kind][os];
       document.getElementById(`${kind}-title`).textContent = osLabels[os];
@@ -567,7 +596,7 @@
       }, 120);
     }
 
-    document.querySelectorAll(".os-tab:not(.update-os)").forEach((button) => {
+    document.querySelectorAll(".cli-os").forEach((button) => {
       button.addEventListener("click", () => setCommand("install", button.dataset.os));
     });
     document.querySelectorAll(".update-os").forEach((button) => {
@@ -575,6 +604,9 @@
     });
     document.querySelectorAll("[data-download-os]").forEach((button) => {
       button.addEventListener("click", () => setDownload(button.dataset.downloadOs));
+    });
+    document.querySelectorAll("[data-install-mode]").forEach((button) => {
+      button.addEventListener("click", () => setInstallMode(button.dataset.installMode));
     });
     document.querySelectorAll("[data-copy-command]").forEach((control) => {
       control.addEventListener("click", async () => {
@@ -686,6 +718,7 @@
     themeQuery.addEventListener("change", syncTheme);
     syncTheme();
     setDownload(detectedDownloadOS());
+    setInstallMode("installer");
     setCommand("install", detectedOS);
     setCommand("update", detectedOS);
     renderClips();

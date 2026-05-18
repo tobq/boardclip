@@ -752,6 +752,7 @@ let shortcutRecording = false;
 
 function shortcutLabel(accelerator) {
   return String(accelerator || '')
+    .replace(/Globe|Fn/g, 'Globe')
     .replace(/CommandOrControl/g, window.api.platform === 'darwin' ? 'Cmd/Ctrl' : 'Ctrl')
     .replace(/Command/g, 'Cmd')
     .replace(/Control/g, 'Ctrl')
@@ -880,10 +881,11 @@ document.addEventListener('keydown', async (e) => {
   }
   const shortcut = shortcutFromEvent(e);
   if (!shortcut) {
-    setShortcutStatus(shortcutKeyFromEvent(e) ? 'Add a modifier.' : 'Press a non-modifier key.', true);
+    setShortcutStatus(shortcutKeyFromEvent(e) ? 'Add a shortcut modifier.' : 'Press a non-modifier key.', true);
     return;
   }
-  await applyShortcut(shortcut);
+  const resolved = window.api.resolveShowShortcut ? await window.api.resolveShowShortcut(shortcut) : shortcut;
+  await applyShortcut(resolved);
 }, true);
 
 document.getElementById('addGroupBtn').addEventListener('click', async () => {

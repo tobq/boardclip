@@ -143,6 +143,7 @@ function effectiveShowShortcut() {
 }
 
 function globalShowShortcut() {
+  if (process.platform === 'darwin' && shortcutUsesFn(settings.show_shortcut)) return '';
   return settings.show_shortcut || (process.platform === 'win32' ? '' : DEFAULT_SHOW_SHORTCUT);
 }
 
@@ -153,14 +154,23 @@ function normalizeShowShortcut(shortcut) {
   return value;
 }
 
+function shortcutUsesFn(shortcut) {
+  return String(shortcut || '').split('+').some(part => {
+    const value = part.trim().toLowerCase();
+    return value === 'fn' || value === 'globe' || value === 'function';
+  });
+}
+
 function shortcutHasKeyAndModifier(shortcut) {
   const parts = String(shortcut || '').split('+').map(p => p.trim()).filter(Boolean);
-  const modifiers = new Set([
-    'CommandOrControl', 'CommandOrCtrl', 'CmdOrCtrl',
-    'Command', 'Cmd', 'Control', 'Ctrl', 'Alt', 'Option',
-    'Shift', 'Super', 'Meta',
+  const primaryModifiers = new Set([
+    'commandorcontrol', 'commandorctrl', 'cmdorctrl',
+    'command', 'cmd', 'control', 'ctrl', 'alt', 'option',
+    'super', 'meta', 'fn', 'globe', 'function',
   ]);
-  return parts.some(part => modifiers.has(part)) && parts.some(part => !modifiers.has(part));
+  const allModifiers = new Set([...primaryModifiers, 'shift']);
+  return parts.some(part => primaryModifiers.has(part.toLowerCase())) &&
+         parts.some(part => !allModifiers.has(part.toLowerCase()));
 }
 
 function normalizeSyncPath(syncPath) {
@@ -1167,6 +1177,10 @@ function setupIPC() {
   });
 
   ipcMain.handle('set-show-shortcut', (_, shortcut) => setShowShortcut(shortcut));
+  ipcMain.handle('resolve-show-shortcut', (_, shortcut) => {
+    const hook = getMacosHotkey();
+    return hook ? hook.resolveShortcutFromCurrentModifiers(shortcut) : shortcut;
+  });
 
   ipcMain.handle('group-create', (_, name) => {
     if (!name) return;
@@ -1281,6 +1295,13 @@ function setupIPC() {
 
 // --- Global shortcuts ---
 let windowsHook = null;
+let macosHotkey = null;
+
+function getMacosHotkey() {
+  if (process.platform !== 'darwin') return null;
+  if (!macosHotkey) macosHotkey = require('./lib/macos-hotkey');
+  return macosHotkey;
+}
 
 function handleNumpad(slot) {
   if (win && win.isVisible()) {
@@ -1295,8 +1316,14 @@ function handleNumpad(slot) {
 function setShowShortcut(shortcut) {
   const previous = settings.show_shortcut || '';
   const next = normalizeShowShortcut(shortcut);
+  if (next && shortcutUsesFn(next) && process.platform !== 'darwin') {
+    return { ok: false, error: 'Globe shortcuts are only supported on macOS.' };
+  }
   if (next && !shortcutHasKeyAndModifier(next)) {
-    return { ok: false, error: 'Use at least one modifier and one key.' };
+    const modifiers = process.platform === 'darwin'
+      ? 'Command, Control, Option, or Globe'
+      : 'Command, Control, Alt, or Win';
+    return { ok: false, error: `Use ${modifiers} with a key.` };
   }
 
   settings.show_shortcut = next;
@@ -1316,6 +1343,9 @@ function registerShortcuts() {
 
   let showShortcutRegistered = true;
   const showKey = globalShowShortcut();
+  const macosFnShowKey = process.platform === 'darwin' && shortcutUsesFn(settings.show_shortcut)
+    ? settings.show_shortcut
+    : '';
 
   if (process.platform === 'win32') {
     // Windows Clipboard History owns Win+V and Win+Numpad1-9, so we can't use
@@ -1330,6 +1360,17 @@ function registerShortcuts() {
     // Seed the shared state with current history so plain numpad keys
     // immediately intercept for already-assigned slots.
     syncHookState();
+  }
+
+  if (process.platform === 'darwin') {
+    const hook = getMacosHotkey();
+    if (macosFnShowKey) {
+      const result = hook.install({ shortcut: macosFnShowKey, onPressed: showPopup });
+      showShortcutRegistered = !!result.ok;
+      if (!result.ok) console.log(`Warning: ${result.error}`);
+    } else if (hook) {
+      hook.clearRuntimeShortcut();
+    }
   }
 
   if (showKey) {
@@ -1404,5 +1445,6 @@ app.whenReady().then(() => {
 app.on('will-quit', () => {
   globalShortcut.unregisterAll();
   if (windowsHook) windowsHook.uninstall();
+  if (macosHotkey) macosHotkey.uninstall();
 });
 app.on('window-all-closed', () => { /* keep running as tray app */ });

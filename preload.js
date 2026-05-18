@@ -20,6 +20,7 @@ contextBridge.exposeInMainWorld('api', {
   numpadUnassign: (slot) => ipcRenderer.invoke('numpad-unassign', slot),
   saveSettings: (settings) => ipcRenderer.invoke('save-settings', settings),
   setShowShortcut: (shortcut) => ipcRenderer.invoke('set-show-shortcut', shortcut),
+  resolveShowShortcut: (shortcut) => ipcRenderer.invoke('resolve-show-shortcut', shortcut),
   groupCreate: (name) => ipcRenderer.invoke('group-create', name),
   groupDelete: (name) => ipcRenderer.invoke('group-delete', name),
   groupAssign: (id, group) => ipcRenderer.invoke('group-assign', id, group),

@@ -22,6 +22,7 @@ const DB_PATH = path.join(SCRIPT_DIR, 'clipboard-history.json');
 const SETTINGS_PATH = path.join(SCRIPT_DIR, 'clipboard-settings.json');
 const IMG_DIR = path.join(SCRIPT_DIR, 'clipboard-images');
 const APP_ICON_PATH = path.join(SCRIPT_DIR, 'icon.png');
+const TRAY_ICON_PATH = path.join(SCRIPT_DIR, 'assets', 'tray-icon.png');
 
 function windowsStartupDir() {
   const appData = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
@@ -968,7 +969,9 @@ async function pasteAndHide(id) {
 
 function createTray() {
   let trayIcon;
-  if (fs.existsSync(APP_ICON_PATH)) {
+  if (fs.existsSync(TRAY_ICON_PATH)) {
+    trayIcon = nativeImage.createFromPath(TRAY_ICON_PATH).resize({ width: 16, height: 16 });
+  } else if (fs.existsSync(APP_ICON_PATH)) {
     trayIcon = nativeImage.createFromPath(APP_ICON_PATH).resize({ width: 16, height: 16 });
   } else {
     trayIcon = nativeImage.createEmpty();

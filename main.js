@@ -973,13 +973,27 @@ function createPopup() {
   configureMacPopupWindow(win);
   win.loadFile('index.html');
 
-  // Dev: auto-reload UI when index.html changes (debounced)
+  // Dev/source installs: auto-reload renderer files while iterating.
   let reloadTimer = null;
-  fs.watch(path.join(__dirname, 'index.html'), () => {
+  const scheduleRendererReload = () => {
     if (reloadTimer) clearTimeout(reloadTimer);
     reloadTimer = setTimeout(() => {
       if (win && !win.isDestroyed()) win.webContents.reloadIgnoringCache();
     }, 300);
+  };
+  const rendererWatchers = [];
+  for (const file of [
+    path.join(__dirname, 'index.html'),
+    path.join(__dirname, 'site', 'shared', 'clipboard-ui-core.js'),
+    path.join(__dirname, 'site', 'shared', 'clipboard-popup.css'),
+  ]) {
+    try { rendererWatchers.push(fs.watch(file, scheduleRendererReload)); } catch {}
+  }
+  win.rendererWatchers = rendererWatchers;
+  win.on('closed', () => {
+    for (const watcher of rendererWatchers) {
+      try { watcher.close(); } catch {}
+    }
   });
 
   // Windows: blur-to-hide works reliably

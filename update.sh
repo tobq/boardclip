@@ -42,7 +42,9 @@ else
   echo "Dependencies unchanged."
 fi
 
-sh scripts/create-macos-launcher.sh "$(pwd)" 2>/dev/null || true
+if ! sh scripts/create-macos-launcher.sh "$(pwd)"; then
+  echo "Warning: could not create macOS Applications launcher." >&2
+fi
 
 if [ "${BOARDCLIP_UPDATE_NO_START:-}" = "1" ]; then
   echo "Update applied."

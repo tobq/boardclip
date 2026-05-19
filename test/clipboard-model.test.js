@@ -10,6 +10,7 @@ const autoUpdate = require('../lib/auto-update');
 const syncPaths = require('../lib/sync-paths');
 const clipboardCapture = require('../lib/clipboard-capture');
 const windowsClipboard = require('../lib/windows-clipboard');
+const textBlobStore = require('../lib/text-blob-store');
 
 function text(text, extra = {}) {
   const item = { type: 'text', text, ts: 1, ...extra };
@@ -197,6 +198,32 @@ function text(text, extra = {}) {
     assert(sharedCss.includes(`.${selector}`), `shared popup css owns .${selector}`);
     assert(!new RegExp(`^\\s*\\.${selector}(?![-\\w])`, 'm').test(appHtml), `app must not redefine .${selector}`);
     assert(!new RegExp(`^\\s*\\.${selector}(?![-\\w])`, 'm').test(siteCss), `site css must not redefine .${selector}`);
+  }
+}
+
+{
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'boardclip-text-blobs-'));
+  try {
+    const longText = `header\n${'x'.repeat(textBlobStore.TEXT_BLOB_THRESHOLD_BYTES + 32)}\nfooter`;
+    const item = text(longText, { ts: 123, updatedAt: 123 });
+    const stored = textBlobStore.prepareHistoryForStorage([item], dir);
+    assert.strictEqual(stored.length, 1);
+    assert.strictEqual(stored[0].text.length, textBlobStore.TEXT_PREVIEW_CHARS);
+    assert.strictEqual(stored[0].textPreview, stored[0].text);
+    assert.strictEqual(stored[0].textSize, Buffer.byteLength(longText, 'utf8'));
+    assert.strictEqual(stored[0].id, `txt:${stored[0].textHash}`);
+    assert(fs.existsSync(path.join(dir, stored[0].textRef)));
+
+    const hydrated = textBlobStore.hydrateHistory(JSON.parse(JSON.stringify(stored)), dir);
+    assert.strictEqual(hydrated[0].text, longText);
+    assert.strictEqual(model.itemKey(hydrated[0]), item.id);
+
+    const remotePreviewOnly = { ...stored[0], text: stored[0].textPreview, ts: 200, updatedAt: 200 };
+    const merged = model.mergeHistories([hydrated[0]], [remotePreviewOnly], {});
+    assert.strictEqual(merged[0].text, longText);
+    assert.strictEqual(merged[0].updatedAt, 200);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
   }
 }
 

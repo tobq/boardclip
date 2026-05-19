@@ -142,6 +142,7 @@ BoardClip stores data in the app checkout:
 - `clipboard-history.json`
 - `clipboard-settings.json`
 - `clipboard-images/`
+- `clipboard-text/` for large text snippets
 
 Cloud sync writes the same files into detected provider folders under `clipboard-tray/`. That folder name is retained for compatibility with earlier installs.
 

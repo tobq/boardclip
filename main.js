@@ -13,6 +13,7 @@ const getBuildInfo = require('./lib/build-info');
 const getCloudAccounts = require('./lib/cloud-accounts');
 const clipboardModel = require('./lib/clipboard-model');
 const clipboardCapture = require('./lib/clipboard-capture');
+const textBlobStore = require('./lib/text-blob-store');
 const { createAutoUpdater, updateSupport } = require('./lib/auto-update');
 const syncPaths = require('./lib/sync-paths');
 
@@ -44,6 +45,7 @@ const SCRIPT_DIR = __dirname;
 const DB_PATH = path.join(SCRIPT_DIR, 'clipboard-history.json');
 const SETTINGS_PATH = path.join(SCRIPT_DIR, 'clipboard-settings.json');
 const IMG_DIR = path.join(SCRIPT_DIR, 'clipboard-images');
+const TEXT_DIR = path.join(SCRIPT_DIR, textBlobStore.TEXT_BLOB_DIRNAME);
 const APP_ICON_PATH = path.join(SCRIPT_DIR, 'icon.png');
 
 function windowsStartupDir() {
@@ -98,6 +100,7 @@ function setAutoLaunchEnabled(enabled) {
 }
 
 if (!fs.existsSync(IMG_DIR)) fs.mkdirSync(IMG_DIR, { recursive: true });
+if (!fs.existsSync(TEXT_DIR)) fs.mkdirSync(TEXT_DIR, { recursive: true });
 
 let BUILD_INFO = getBuildInfo(SCRIPT_DIR);
 
@@ -248,15 +251,19 @@ function notifyDataChanged() {
 function loadHistory() {
   try {
     const loaded = JSON.parse(fs.readFileSync(DB_PATH, 'utf-8'));
-    return Array.isArray(loaded) ? loaded : [];
+    return textBlobStore.hydrateHistory(Array.isArray(loaded) ? loaded : [], TEXT_DIR);
   } catch {
     return [];
   }
 }
 
-function saveHistory() {
+function writeHistoryStorageFile() {
   for (const item of history) ensureItemId(item);
-  atomicWriteJson(DB_PATH, history);
+  atomicWriteJson(DB_PATH, textBlobStore.prepareHistoryForStorage(history, TEXT_DIR));
+}
+
+function saveHistory() {
+  writeHistoryStorageFile();
   dataRevision++;
   notifyDataChanged();
   scheduleSyncMerge();
@@ -339,12 +346,13 @@ function updateTextItem(item, text) {
   if (!item || item.type === 'image') return null;
   const oldId = itemKey(item);
   const next = { ...item, text: text || '', updatedAt: Date.now() };
+  textBlobStore.setInlineText(next, text);
   next.id = legacyContentKey(next);
 
   const existingIdx = history.findIndex(h => h !== item && itemKey(h) === next.id);
   if (existingIdx >= 0) {
     const existing = history[existingIdx];
-    existing.text = next.text;
+    textBlobStore.setInlineText(existing, next.text);
     existing.ts = Math.max(existing.ts || 0, next.ts || 0);
     const existingPinUpdated = clipboardModel.pinUpdatedAt(existing);
     const nextPinUpdated = clipboardModel.pinUpdatedAt(next);
@@ -357,7 +365,7 @@ function updateTextItem(item, text) {
     return existing;
   }
 
-  item.text = next.text;
+  textBlobStore.setInlineText(item, next.text);
   item.id = next.id;
   item.updatedAt = next.updatedAt;
   if (oldId !== item.id) addTombstone(oldId);
@@ -370,6 +378,11 @@ function getStorageBytes() {
   try {
     for (const fname of fs.readdirSync(IMG_DIR)) {
       try { total += fs.statSync(path.join(IMG_DIR, fname)).size; } catch {}
+    }
+  } catch {}
+  try {
+    for (const fname of fs.readdirSync(TEXT_DIR)) {
+      try { total += fs.statSync(path.join(TEXT_DIR, fname)).size; } catch {}
     }
   } catch {}
   return total;
@@ -388,6 +401,7 @@ function deleteHistoryIndex(index, { tombstone = true } = {}) {
   const item = history[index];
   if (tombstone) addTombstone(itemKey(item));
   removeItemImage(item);
+  textBlobStore.removeLocalBlobIfUnreferenced(item, history, TEXT_DIR);
   history.splice(index, 1);
   return item;
 }
@@ -626,6 +640,10 @@ function syncImages(remoteImgDir) {
   } catch {}
 }
 
+function syncTextBlobs(remoteTextDir) {
+  textBlobStore.syncTextBlobs(TEXT_DIR, remoteTextDir);
+}
+
 let syncDebounceTimer = null;
 let insideSync = false;
 
@@ -638,10 +656,11 @@ function scheduleSyncMerge() {
 function readRemoteState(syncPath) {
   const remoteDbPath = path.join(syncPath, 'clipboard-history.json');
   const remoteSettingsPath = path.join(syncPath, 'clipboard-settings.json');
+  const remoteTextDir = path.join(syncPath, textBlobStore.TEXT_BLOB_DIRNAME);
   let remoteHistory = [];
   try {
     const loaded = JSON.parse(fs.readFileSync(remoteDbPath, 'utf-8'));
-    if (Array.isArray(loaded)) remoteHistory = loaded;
+    if (Array.isArray(loaded)) remoteHistory = textBlobStore.hydrateHistory(loaded, remoteTextDir);
   } catch {}
   let remoteSettings = {};
   try { remoteSettings = JSON.parse(fs.readFileSync(remoteSettingsPath, 'utf-8')); } catch {}
@@ -679,6 +698,7 @@ function stateSummary(basePath) {
     base_path: basePath,
     settings_file: fileSummary(settingsPath),
     history_file: fileSummary(historyPath),
+    text_dir: fileSummary(path.join(basePath, textBlobStore.TEXT_BLOB_DIRNAME)),
     item_count: Array.isArray(remoteHistory) ? remoteHistory.length : null,
     settings_groups: Array.isArray(remoteSettings.groups) ? remoteSettings.groups : [],
     history_group_counts: groupCountsFromHistory(remoteHistory),
@@ -713,7 +733,8 @@ function writeRemoteState(syncPath, canonicalHistory, canonicalSettings) {
   const remoteDbPath = path.join(syncPath, 'clipboard-history.json');
   const remoteSettingsPath = path.join(syncPath, 'clipboard-settings.json');
   const remoteImgDir = path.join(syncPath, 'clipboard-images');
-  const nextHistoryJson = JSON.stringify(canonicalHistory);
+  const remoteTextDir = path.join(syncPath, textBlobStore.TEXT_BLOB_DIRNAME);
+  const nextHistoryJson = JSON.stringify(textBlobStore.prepareHistoryForStorage(canonicalHistory, remoteTextDir));
   const nextSettingsJson = JSON.stringify(canonicalSettings, null, 2);
   let currentHistoryJson = null;
   let currentSettingsJson = null;
@@ -722,6 +743,7 @@ function writeRemoteState(syncPath, canonicalHistory, canonicalSettings) {
   if (currentHistoryJson !== nextHistoryJson) atomicWriteFile(remoteDbPath, nextHistoryJson);
   if (currentSettingsJson !== nextSettingsJson) atomicWriteFile(remoteSettingsPath, nextSettingsJson);
   syncImages(remoteImgDir);
+  syncTextBlobs(remoteTextDir);
 }
 
 async function syncMerge() {
@@ -735,6 +757,7 @@ async function syncMerge() {
     const previousSettingsJson = JSON.stringify(remoteSettingsPayload());
 
     for (const syncPath of syncPaths) {
+      syncTextBlobs(path.join(syncPath, textBlobStore.TEXT_BLOB_DIRNAME));
       const { remoteHistory, remoteSettings } = readRemoteState(syncPath);
       settings.tombstones = normalizeTombstones([
         ...(settings.tombstones || []),
@@ -748,6 +771,7 @@ async function syncMerge() {
       settings.groups = mergeGroups(settings.groups, [...(remoteSettings.groups || []), ...historyGroups]);
       canonicalHistory = mergeHistories(canonicalHistory, remoteHistory);
       syncImages(path.join(syncPath, 'clipboard-images'));
+      syncTextBlobs(path.join(syncPath, textBlobStore.TEXT_BLOB_DIRNAME));
     }
 
     const localChanged = JSON.stringify(canonicalHistory) !== JSON.stringify(history);
@@ -1175,6 +1199,7 @@ function setClipboardToItem(item) {
     const imgPath = path.join(IMG_DIR, item.image);
     if (fs.existsSync(imgPath)) clipboard.writeImage(nativeImage.createFromPath(imgPath));
   } else {
+    textBlobStore.hydrateTextItem(item, TEXT_DIR);
     clipboard.writeText(item.text || '');
   }
 }
@@ -1248,6 +1273,7 @@ function refreshTray() {
 function openEditor(id) {
   const item = findHistoryItem(id);
   if (!item || item.type === 'image') return;
+  textBlobStore.hydrateTextItem(item, TEXT_DIR);
   const originalText = item.text || '';
   const tmpPath = path.join(os.tmpdir(), `clip-${Date.now()}.txt`);
   fs.writeFileSync(tmpPath, originalText, 'utf-8');
@@ -1665,6 +1691,7 @@ app.whenReady().then(() => {
   if (process.platform === 'darwin') app.dock.hide();
 
   migrateNumpad();
+  writeHistoryStorageFile();
   setupIPC();
   createPopup();
   createTray();

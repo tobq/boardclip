@@ -1,5 +1,6 @@
 clipboard-history.json
 clipboard-images/
+clipboard-text/
 clipboard-settings.json
 __pycache__/
 *.pyc

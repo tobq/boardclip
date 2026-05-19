@@ -8,7 +8,8 @@
 <style>
   :root { color-scheme:dark; --bg: #0c0c0c; --surface: #131313; --surface2: #1a1a1a; --input:#0a0a0a; --text: #ccc; --text-dim: #555;
           --line:#222; --line-strong:#333; --line-soft:#111; --hover:#ffffff10; --hover-strong:#252525; --accent-bg:#1a1030; --accent-bg-strong:#251545; --active-fg:#000; --shadow:rgba(0,0,0,.5);
-          --accent: #a78bfa; --green: #34d399; --green-bg:#0f2a1f; --red: #f87171; --pin: #f59e0b; }
+          --accent: #a78bfa; --green: #34d399; --green-bg:#0f2a1f; --red: #f87171; --pin: #f59e0b;
+          --list-scrollbar-width: thin; --list-scrollbar-size: 8px; --list-scrollbar-thumb: var(--line-strong); --list-scrollbar-thumb-hover: var(--text-dim); --list-scrollbar-border: 2px solid var(--surface); }
   :root[data-theme="light"] { color-scheme:light; --bg:#f4f4f5; --surface:#ffffff; --surface2:#f4f4f5; --input:#ffffff; --text:#18181b; --text-dim:#71717a;
           --line:#e4e4e7; --line-strong:#d4d4d8; --line-soft:#ececef; --hover:#00000008; --hover-strong:#e4e4e7; --accent-bg:#f1ecff; --accent-bg-strong:#e6dcff; --active-fg:#fff; --shadow:rgba(24,24,27,.14);
           --accent:#7c3aed; --green:#059669; --green-bg:#dcfce7; --red:#dc2626; --pin:#d97706; }
@@ -16,12 +17,7 @@
   html, body { height:100%; overflow:hidden; }
   body { font-family:'Segoe UI',system-ui,sans-serif; background:var(--surface); color:var(--text); display:flex; flex-direction:column; }
   ::-webkit-scrollbar { width:0; }
-  #popupShell { flex:1; min-height:0; height:100%; display:flex; flex-direction:column; }
-  #popupShell .list { scrollbar-width:thin; scrollbar-color:var(--line-strong) transparent; }
-  #popupShell .list::-webkit-scrollbar { width:8px; }
-  #popupShell .list::-webkit-scrollbar-track { background:transparent; }
-  #popupShell .list::-webkit-scrollbar-thumb { background:var(--line-strong); border-radius:8px; border:2px solid var(--surface); }
-  #popupShell .list::-webkit-scrollbar-thumb:hover { background:var(--text-dim); }
+  #popupShell { flex:1; min-height:0; height:100%; display:flex; flex-direction:column; overflow:hidden; }
 
   mark { background:rgba(167,139,250,.2); color:#c4b5fd; border-radius:2px; padding:0 1px; }
   .toast { position:fixed; bottom:16px; left:50%; transform:translateX(-50%) translateY(16px); background:var(--green); color:var(--active-fg);

@@ -57,8 +57,11 @@
 .filter-tag.active .gtag-x { color: rgba(0,0,0,.4); }
 .filter-tag.active .gtag-x:hover { color: var(--active-fg); background: rgba(0,0,0,.15); }
 
-.list { flex: 1; overflow-y: auto; padding: 0 0 8px; min-height: 0; scrollbar-width: none; }
-.list::-webkit-scrollbar { width: 0; }
+.list { flex: 1; overflow-y: auto; padding: 0 0 8px; min-height: 0; scrollbar-width: var(--list-scrollbar-width, none); scrollbar-color: var(--list-scrollbar-thumb, transparent) transparent; }
+.list::-webkit-scrollbar { width: var(--list-scrollbar-size, 0); }
+.list::-webkit-scrollbar-track { background: transparent; }
+.list::-webkit-scrollbar-thumb { background: var(--list-scrollbar-thumb, transparent); border-radius: 8px; border: var(--list-scrollbar-border, 0); }
+.list::-webkit-scrollbar-thumb:hover { background: var(--list-scrollbar-thumb-hover, var(--list-scrollbar-thumb, transparent)); }
 .item { padding: 8px 14px; cursor: pointer; transition: background .1s; position: relative; border-bottom: 1px solid var(--line-soft); color: inherit; }
 .item:hover, .item.selected { background: var(--surface2); }
 .item.has-pin { border-left: 2px solid var(--pin); }

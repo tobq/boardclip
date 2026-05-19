@@ -44,12 +44,13 @@ app.setName('BoardClip');
 
 // --- Paths ---
 const SCRIPT_DIR = __dirname;
-const DB_PATH = path.join(SCRIPT_DIR, 'clipboard-history.json');
-const SETTINGS_PATH = path.join(SCRIPT_DIR, 'clipboard-settings.json');
-const IMG_DIR = path.join(SCRIPT_DIR, 'clipboard-images');
-const TEXT_DIR = path.join(SCRIPT_DIR, textBlobStore.TEXT_BLOB_DIRNAME);
+const DATA_DIR = app.isPackaged ? app.getPath('userData') : SCRIPT_DIR;
+const DB_PATH = path.join(DATA_DIR, 'clipboard-history.json');
+const SETTINGS_PATH = path.join(DATA_DIR, 'clipboard-settings.json');
+const IMG_DIR = path.join(DATA_DIR, 'clipboard-images');
+const TEXT_DIR = path.join(DATA_DIR, textBlobStore.TEXT_BLOB_DIRNAME);
 const APP_ICON_PATH = path.join(SCRIPT_DIR, 'icon.png');
-const DIAGNOSTICS_PATH = path.join(SCRIPT_DIR, 'boardclip-diagnostics.jsonl');
+const DIAGNOSTICS_PATH = path.join(DATA_DIR, 'boardclip-diagnostics.jsonl');
 
 function windowsStartupDir() {
   const appData = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
@@ -814,12 +815,13 @@ async function syncDiagnostics() {
     generated_at: new Date().toISOString(),
     platform: process.platform,
     app_dir: SCRIPT_DIR,
+    data_dir: DATA_DIR,
     build: BUILD_INFO,
     runtime: runtimeDiagnosticSnapshot(),
     diagnostics: diagnostics.snapshot({
       log_tail: diagnostics.fileTail(),
     }),
-    local: stateSummary(SCRIPT_DIR),
+    local: stateSummary(DATA_DIR),
     sync_disabled_paths: settings.sync_disabled_paths || [],
     legacy_sync_path: settings.sync_path || '',
     custom_sync_paths: settings.sync_custom_paths || [],
@@ -1267,14 +1269,14 @@ function createPopup() {
     backgroundColor: appBackgroundColor(),
     icon: APP_ICON_PATH,
     webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
+      preload: path.join(SCRIPT_DIR, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
     },
   });
 
   configureMacPopupWindow(win);
-  win.loadFile('index.html');
+  win.loadFile(path.join(SCRIPT_DIR, 'index.html'));
 
   // Dev/source installs: auto-reload renderer files while iterating.
   let reloadTimer = null;
@@ -1285,12 +1287,14 @@ function createPopup() {
     }, 300);
   };
   const rendererWatchers = [];
-  for (const file of [
-    path.join(__dirname, 'index.html'),
-    path.join(__dirname, 'site', 'shared', 'clipboard-ui-core.js'),
-    path.join(__dirname, 'site', 'shared', 'clipboard-popup.css'),
-  ]) {
-    try { rendererWatchers.push(fs.watch(file, scheduleRendererReload)); } catch {}
+  if (!app.isPackaged) {
+    for (const file of [
+      path.join(SCRIPT_DIR, 'index.html'),
+      path.join(SCRIPT_DIR, 'site', 'shared', 'clipboard-ui-core.js'),
+      path.join(SCRIPT_DIR, 'site', 'shared', 'clipboard-popup.css'),
+    ]) {
+      try { rendererWatchers.push(fs.watch(file, scheduleRendererReload)); } catch {}
+    }
   }
   win.rendererWatchers = rendererWatchers;
   win.on('closed', () => {
@@ -1574,6 +1578,7 @@ function setupIPC() {
       const support = updateSupport(SCRIPT_DIR, BUILD_INFO);
       return {
         app_dir: SCRIPT_DIR,
+        data_dir: DATA_DIR,
         auto_update: support.supported,
         update_support: support,
         diagnostics_file: DIAGNOSTICS_PATH,

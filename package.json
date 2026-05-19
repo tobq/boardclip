@@ -1,7 +1,7 @@
 {
   "name": "boardclip",
   "productName": "BoardClip",
-  "version": "2.0.21",
+  "version": "2.0.22",
   "description": "Cross-platform clipboard history tray app with numpad quick-paste and native cloud sync",
   "author": "BoardClip contributors",
   "main": "main.js",

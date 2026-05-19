@@ -137,7 +137,7 @@ kill.bat
 
 ## Data
 
-BoardClip stores data in the app checkout:
+Source installs store data in the app checkout. Packaged installs store data in Electron's per-user app data directory:
 
 - `clipboard-history.json`
 - `clipboard-settings.json`

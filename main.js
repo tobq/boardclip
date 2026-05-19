@@ -11,6 +11,7 @@ const { exec, spawn } = require('child_process');
 const winPaste = require('./lib/windows-paste');
 const getBuildInfo = require('./lib/build-info');
 const getCloudAccounts = require('./lib/cloud-accounts');
+const blobStore = require('./lib/blob-store');
 const clipboardModel = require('./lib/clipboard-model');
 const clipboardCapture = require('./lib/clipboard-capture');
 const textBlobStore = require('./lib/text-blob-store');
@@ -155,9 +156,7 @@ const AHK_PRESETS = {
 const DEFAULT_SETTINGS = clipboardModel.DEFAULT_SETTINGS;
 
 function atomicWriteFile(filePath, data) {
-  const tmpPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
-  fs.writeFileSync(tmpPath, data);
-  fs.renameSync(tmpPath, filePath);
+  blobStore.atomicWriteFile(filePath, data);
 }
 
 function atomicWriteJson(filePath, value, spacing) {
@@ -375,17 +374,7 @@ function updateTextItem(item, text) {
 function getStorageBytes() {
   let total = 0;
   try { total = fs.statSync(DB_PATH).size; } catch {}
-  try {
-    for (const fname of fs.readdirSync(IMG_DIR)) {
-      try { total += fs.statSync(path.join(IMG_DIR, fname)).size; } catch {}
-    }
-  } catch {}
-  try {
-    for (const fname of fs.readdirSync(TEXT_DIR)) {
-      try { total += fs.statSync(path.join(TEXT_DIR, fname)).size; } catch {}
-    }
-  } catch {}
-  return total;
+  return total + blobStore.directoryBytes(IMG_DIR) + blobStore.directoryBytes(TEXT_DIR);
 }
 
 function removeItemImage(item) {
@@ -613,31 +602,7 @@ async function setSyncPathEnabled(syncPath, enabled) {
 }
 
 function syncImages(remoteImgDir) {
-  try {
-    if (!fs.existsSync(remoteImgDir)) fs.mkdirSync(remoteImgDir, { recursive: true });
-  } catch {
-    return;
-  }
-
-  // Copy remote -> local (missing locally)
-  try {
-    for (const fname of fs.readdirSync(remoteImgDir)) {
-      const localPath = path.join(IMG_DIR, fname);
-      if (!fs.existsSync(localPath)) {
-        fs.copyFileSync(path.join(remoteImgDir, fname), localPath);
-      }
-    }
-  } catch {}
-
-  // Copy local -> remote (missing remotely)
-  try {
-    for (const fname of fs.readdirSync(IMG_DIR)) {
-      const remotePath = path.join(remoteImgDir, fname);
-      if (!fs.existsSync(remotePath)) {
-        fs.copyFileSync(path.join(IMG_DIR, fname), remotePath);
-      }
-    }
-  } catch {}
+  blobStore.syncMissingFiles(IMG_DIR, remoteImgDir);
 }
 
 function syncTextBlobs(remoteTextDir) {

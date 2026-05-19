@@ -222,6 +222,19 @@ function text(text, extra = {}) {
     const merged = model.mergeHistories([hydrated[0]], [remotePreviewOnly], {});
     assert.strictEqual(merged[0].text, longText);
     assert.strictEqual(merged[0].updatedAt, 200);
+
+    const missingBlobItem = { ...stored[0], text: stored[0].textPreview };
+    const preserved = textBlobStore.prepareHistoryForStorage([missingBlobItem], path.join(dir, 'missing-out'))[0];
+    assert.strictEqual(preserved.textHash, stored[0].textHash);
+    assert.strictEqual(preserved.textRef, stored[0].textRef);
+    assert.strictEqual(preserved.text, stored[0].textPreview);
+
+    const blockedDir = path.join(dir, 'not-a-dir');
+    fs.writeFileSync(blockedDir, 'file blocks directory creation');
+    const fallback = textBlobStore.prepareHistoryForStorage([item], blockedDir)[0];
+    assert.strictEqual(fallback.text, longText);
+    assert.strictEqual(fallback.textRef, undefined);
+    assert.strictEqual(fallback.textHash, undefined);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

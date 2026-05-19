@@ -192,6 +192,9 @@ function text(text, extra = {}) {
   assert(siteHtml.includes('Core.renderItemPicker'));
   assert(appHtml.includes('Core.renderPopupShell'));
   assert(siteHtml.includes('Core.renderPopupShell'));
+  const shellHtml = ui.renderPopupShell({ headerActionsHtml: '<button id="syncHeaderBtn"></button>' });
+  assert(shellHtml.includes('id="syncHeaderBtn"'));
+  assert(shellHtml.indexOf('id="syncHeaderBtn"') < shellHtml.indexOf('id="settingsBtn"'));
   assert(!siteHtml.includes('window-head'));
   assert(!siteHtml.includes('icon-settings'));
   assert(!siteHtml.includes('demo-settings-note'));

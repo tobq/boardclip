@@ -106,6 +106,9 @@
 <script>
 const Core = window.BoardClipCore;
 document.getElementById('popupShell').innerHTML = Core.renderPopupShell({
+  headerActionsHtml: `
+    <button class="icon-btn accent" id="syncHeaderBtn" type="button" title="Sync now" aria-label="Sync now"><span class="mi">sync</span></button>
+  `,
   settingsBodyHtml: `
     <label class="setting-row switch-row" for="autoLaunch">
       <span>Launch on startup</span>
@@ -705,6 +708,48 @@ document.getElementById('settingsBtn').addEventListener('click', openSettings);
 document.getElementById('settingsBack').addEventListener('click', closeSettings);
 
 let shortcutRecording = false;
+let manualSyncInFlight = false;
+
+function setManualSyncButtons(syncing) {
+  const buttons = [document.getElementById('syncHeaderBtn'), document.getElementById('syncNow')].filter(Boolean);
+  for (const button of buttons) {
+    button.disabled = syncing;
+    button.title = syncing ? 'Syncing...' : 'Sync now';
+    button.setAttribute('aria-label', button.title);
+  }
+}
+
+async function runManualSync({ showSettingsStatus = false } = {}) {
+  if (manualSyncInFlight) return;
+  manualSyncInFlight = true;
+  setManualSyncButtons(true);
+  const syncStatus = document.getElementById('syncStatus');
+  if (showSettingsStatus && syncStatus) {
+    syncStatus.textContent = 'Syncing...';
+    syncStatus.className = 'sync-status active';
+  }
+  try {
+    await window.api.syncNow();
+    await refresh();
+    if (showSettingsStatus && syncStatus) {
+      syncStatus.textContent = 'Synced!';
+      syncStatus.className = 'sync-status active';
+      setTimeout(() => openSettings(), 500);
+    } else {
+      showToast('Synced');
+    }
+  } catch (error) {
+    if (showSettingsStatus && syncStatus) {
+      syncStatus.textContent = 'Sync failed';
+      syncStatus.className = 'sync-status error';
+    } else {
+      showToast('Sync failed');
+    }
+  } finally {
+    manualSyncInFlight = false;
+    setManualSyncButtons(false);
+  }
+}
 
 function shortcutLabel(accelerator) {
   return String(accelerator || '')
@@ -859,13 +904,8 @@ document.getElementById('syncAccounts').addEventListener('change', async (e) => 
   await refresh();
   openSettings();
 });
-document.getElementById('syncNow').addEventListener('click', async () => {
-  await window.api.syncNow();
-  await refresh();
-  const syncStatus = document.getElementById('syncStatus');
-  syncStatus.textContent = 'Synced!';
-  setTimeout(() => openSettings(), 500);
-});
+document.getElementById('syncHeaderBtn').addEventListener('click', () => runManualSync());
+document.getElementById('syncNow').addEventListener('click', () => runManualSync({ showSettingsStatus: true }));
 document.getElementById('addSyncFolder').addEventListener('click', async () => {
   const syncStatus = document.getElementById('syncStatus');
   syncStatus.textContent = 'Choose a folder...';

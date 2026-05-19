@@ -26,6 +26,8 @@
 .icon-btn:hover { color: var(--text); background: var(--hover); }
 .icon-btn.accent:hover { color: var(--accent); }
 .icon-btn.danger:hover { color: var(--red); }
+.icon-btn:disabled { opacity: .45; cursor: not-allowed; }
+.icon-btn:disabled:hover { color: var(--text-dim); background: none; }
 .icon-btn .mi { font-size: 16px; }
 .search-row { display: flex; align-items: stretch; margin: 8px 14px 4px; background: var(--input); border: 1px solid var(--line); border-radius: 4px; transition: border-color .15s; }
 .search-row:focus-within { border-color: var(--accent); }

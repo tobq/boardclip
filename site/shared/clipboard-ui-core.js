@@ -320,6 +320,7 @@
     const esc = escapeHtml;
     const settingsBodyHtml = opts.settingsBodyHtml || '';
     const afterListHtml = opts.afterListHtml || '';
+    const headerActionsHtml = opts.headerActionsHtml || '';
     const settingsNoteHtml = opts.settingsNote
       ? `<span class="settings-note">${esc(opts.settingsNote)}</span>`
       : '';
@@ -328,6 +329,7 @@
       <div class="sticky">
         <header>
           <span class="count" id="${esc(ids.count)}"></span>
+          ${headerActionsHtml}
           <button class="icon-btn accent" id="${esc(ids.settingsBtn)}" type="button" title="Settings" aria-label="Settings" aria-expanded="false" aria-controls="${esc(ids.settingsView)}"><span class="mi filled">settings</span></button>
           <button class="icon-btn close-btn" id="${esc(ids.closeBtn)}" type="button" title="Close (Esc)"${closeStyle}>&times;</button>
         </header>

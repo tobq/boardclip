@@ -219,7 +219,9 @@ function text(text, extra = {}) {
   assert(clipboardCapture.formatsSuggestImage(['image/png']));
   assert(clipboardCapture.formatsSuggestImage(['FileDrop']));
   assert(clipboardCapture.formatsSuggestImage(['FileGroupDescriptorW', 'FileContents']));
+  assert(clipboardCapture.formatsSuggestImage(['text/uri-list']));
   assert(clipboardCapture.formatsSuggestFileTransfer(['FileGroupDescriptorW', 'FileContents']));
+  assert(clipboardCapture.formatsSuggestFileTransfer(['text/uri-list']));
   assert(!clipboardCapture.formatsSuggestFileTransfer(['image/png']));
   assert(!clipboardCapture.formatsSuggestImage(['text/plain']));
   assert.strictEqual(clipboardCapture.formatsKey(['b', 'a']), 'a|b');

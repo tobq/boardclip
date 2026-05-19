@@ -787,6 +787,7 @@ function saveClipboardImageBuffer(hash, buf, imageInfo) {
 let lastText = '';
 let lastImgHash = '';
 let lastImageProbeToken = '';
+let lastCapturedImageToken = '';
 let lastImageProbeAt = 0;
 let lastSlowPollLogAt = 0;
 let pollGate = true;
@@ -841,6 +842,9 @@ function pollClipboard() {
     if (formatsContainImage(formatsKey)) {
       const now = Date.now();
       const probeToken = clipboardCapture.clipboardChangeToken(formats);
+      if (probeToken && probeToken === lastCapturedImageToken) {
+        return;
+      }
       if (probeToken === lastImageProbeToken && now - lastImageProbeAt < IMAGE_CLIPBOARD_PROBE_MS) {
         return;
       }
@@ -849,6 +853,7 @@ function pollClipboard() {
 
       const captured = clipboardCapture.readClipboardImage({ clipboard, nativeImage, formats });
       if (!captured) return;
+      lastCapturedImageToken = probeToken;
       const buf = captured.buffer;
       const h = imageHash(buf);
       if (h !== lastImgHash) {
@@ -864,6 +869,7 @@ function pollClipboard() {
     }
 
     lastImageProbeToken = '';
+    lastCapturedImageToken = '';
     const text = clipboard.readText();
     if (text && text !== lastText) {
       lastText = text;

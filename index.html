@@ -16,6 +16,12 @@
   html, body { height:100%; overflow:hidden; }
   body { font-family:'Segoe UI',system-ui,sans-serif; background:var(--surface); color:var(--text); display:flex; flex-direction:column; }
   ::-webkit-scrollbar { width:0; }
+  #popupShell { flex:1; min-height:0; height:100%; display:flex; flex-direction:column; }
+  #popupShell .list { scrollbar-width:thin; scrollbar-color:var(--line-strong) transparent; }
+  #popupShell .list::-webkit-scrollbar { width:8px; }
+  #popupShell .list::-webkit-scrollbar-track { background:transparent; }
+  #popupShell .list::-webkit-scrollbar-thumb { background:var(--line-strong); border-radius:8px; border:2px solid var(--surface); }
+  #popupShell .list::-webkit-scrollbar-thumb:hover { background:var(--text-dim); }
 
   mark { background:rgba(167,139,250,.2); color:#c4b5fd; border-radius:2px; padding:0 1px; }
   .toast { position:fixed; bottom:16px; left:50%; transform:translateX(-50%) translateY(16px); background:var(--green); color:var(--active-fg);

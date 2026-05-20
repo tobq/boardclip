@@ -1644,6 +1644,7 @@ async function syncMerge(options = {}) {
   const startedAt = Date.now();
   const force = !!(options && options.force);
   const startedDirtyVersion = syncDirtyVersion;
+  const startedDataRevision = dataRevision;
   const hadLocalDirty = startedDirtyVersion !== syncedDirtyVersion;
   const fullSync = force || !lastFullSyncAt || Date.now() - lastFullSyncAt > SYNC_FULL_INTERVAL_MS;
   let syncPaths = [];
@@ -1721,6 +1722,17 @@ async function syncMerge(options = {}) {
         canonical_items: canonicalHistory.length,
         ms: Date.now() - providerStartedAt,
       });
+    }
+
+    if (syncDirtyVersion !== startedDirtyVersion || dataRevision !== startedDataRevision) {
+      canonicalHistory = mergeHistories(history.slice(), canonicalHistory);
+      diagnostics.record('sync.merge_rebased_local', {
+        started_dirty_version: startedDirtyVersion,
+        current_dirty_version: syncDirtyVersion,
+        started_revision: startedDataRevision,
+        current_revision: dataRevision,
+        items: canonicalHistory.length,
+      }, { forceFile: true });
     }
 
     recoveredImages = await recoverRecentOrphanImages(canonicalHistory);

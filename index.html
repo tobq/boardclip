@@ -146,6 +146,12 @@ document.getElementById('popupShell').innerHTML = Core.renderPopupShell({
       </div>
       <button class="settings-secondary sync-add-folder" id="addSyncFolder" type="button"><span class="mi" style="font-size:14px;vertical-align:middle">create_new_folder</span> Add sync folder</button>
       <div class="sync-status" id="syncStatus"></div>
+      <label class="setting-row switch-row" for="p2pEnabled">
+        <span>Local network fast sync</span>
+        <input id="p2pEnabled" type="checkbox">
+        <span class="switch" aria-hidden="true"></span>
+      </label>
+      <div class="sync-status" id="p2pStatus"></div>
     </div>
     <div class="settings-section">
       <h3>Updates</h3>
@@ -734,6 +740,23 @@ function manualSyncResultText(result) {
   return `Synced: ${changed} (${elapsed})`;
 }
 
+function p2pStatusText(status) {
+  if (!status || !status.enabled) return 'Off';
+  if (!status.running) return 'Starting local network sync...';
+  const peers = Array.isArray(status.peers) ? status.peers : [];
+  if (!peers.length) return 'On; looking for nearby BoardClip devices';
+  const names = peers.slice(0, 3).map(peer => peer.deviceName || 'Device').join(', ');
+  const extra = peers.length > 3 ? ` +${peers.length - 3}` : '';
+  return `On; ${peers.length} peer${peers.length === 1 ? '' : 's'} nearby: ${names}${extra}`;
+}
+
+function renderP2PStatus(status) {
+  const statusEl = document.getElementById('p2pStatus');
+  if (!statusEl) return;
+  statusEl.textContent = p2pStatusText(status);
+  statusEl.className = 'sync-status' + (status && status.enabled && status.running ? ' active' : '');
+}
+
 async function runManualSync({ showSettingsStatus = false } = {}) {
   if (manualSyncInFlight) return;
   manualSyncInFlight = true;
@@ -1117,6 +1140,16 @@ async function openSettings() {
   const syncStatus = document.getElementById('syncStatus');
   syncStatus.textContent = accounts.length ? `${enabledAccounts.length}/${accounts.length} providers enabled; syncs on change + every 30s` : '';
   syncStatus.className = 'sync-status' + (enabledAccounts.length ? ' active' : '');
+  const p2pEnabledEl = document.getElementById('p2pEnabled');
+  const p2pRuntime = s.runtime_info && s.runtime_info.p2p || { enabled: !!s.p2p_enabled };
+  p2pEnabledEl.checked = !!p2pRuntime.enabled;
+  renderP2PStatus(p2pRuntime);
+  p2pEnabledEl.onchange = async (event) => {
+    const nextEnabled = !!event.target.checked;
+    renderP2PStatus({ enabled: nextEnabled, running: false, peers: [] });
+    const status = await window.api.setP2PEnabled(nextEnabled);
+    renderP2PStatus(status);
+  };
   renderUpdateSettings(s);
   const buildInfoEl = document.getElementById('buildInfo');
   buildInfoEl.innerHTML = '';

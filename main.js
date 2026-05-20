@@ -4,6 +4,8 @@ const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
 const os = require('os');
+const http = require('http');
+const dgram = require('dgram');
 const { exec, spawn } = require('child_process');
 
 // Windows-specific fast input (keybd_event, Get/SetForegroundWindow).
@@ -58,6 +60,13 @@ const IMAGE_ORPHAN_RECOVERY_WINDOW_MS = 30 * 60 * 1000;
 const IMAGE_ORPHAN_RECOVERY_MAX_FILES = 20;
 const SYNC_REMOTE_WRITE_TIMEOUT_MS = 8000;
 const CONTENT_IMAGE_RE = /^([a-f0-9]{12})(?: \(\d+\))?\.png$/i;
+const P2P_DISCOVERY_ADDR = '239.255.43.21';
+const P2P_DISCOVERY_PORT = 45454;
+const P2P_PROTOCOL_VERSION = 1;
+const P2P_ANNOUNCE_INTERVAL_MS = 2000;
+const P2P_PULL_THROTTLE_MS = 1000;
+const P2P_HTTP_TIMEOUT_MS = 5000;
+const P2P_AUTH_WINDOW_MS = 60 * 1000;
 
 function windowsStartupDir() {
   const appData = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
@@ -290,6 +299,7 @@ function saveSettingsFile() {
     diagnostics_changed: previousDiagnosticsEnabled !== diagnostics.isEnabled(),
   }, 50);
   dataRevision++;
+  p2pNotifyLocalChange();
   notifyDataChanged();
   scheduleSyncMerge();
 }
@@ -306,6 +316,30 @@ const CLOUD_ACCOUNTS_CACHE_TTL_MS = 5 * 60 * 1000;
 const DEFAULT_SHOW_SHORTCUT = 'CommandOrControl+Shift+V';
 let diagnosticsLoopExpectedAt = 0;
 let diagnosticsCpu = process.cpuUsage();
+
+function ensureP2PIdentity() {
+  let changed = false;
+  if (!settings.p2p_device_id) {
+    settings.p2p_device_id = crypto.randomBytes(16).toString('hex');
+    changed = true;
+  }
+  if (!settings.p2p_secret) {
+    settings.p2p_secret = crypto.randomBytes(32).toString('hex');
+    changed = true;
+  }
+  if (settings.p2p_enabled === undefined) {
+    settings.p2p_enabled = true;
+    changed = true;
+  }
+  return changed;
+}
+
+const p2pIdentityInitialized = ensureP2PIdentity();
+if (p2pIdentityInitialized) {
+  process.nextTick(() => {
+    try { saveSettingsFile(); } catch {}
+  });
+}
 
 function runtimeDiagnosticSnapshot() {
   const memory = process.memoryUsage();
@@ -460,6 +494,7 @@ function saveHistory() {
     file_bytes: fileSummary(DB_PATH).size || 0,
   }, 75);
   dataRevision++;
+  p2pNotifyLocalChange();
   notifyDataChanged();
   scheduleSyncMerge();
   syncHookState();
@@ -722,7 +757,35 @@ function remoteSettingsPayload() {
   delete remoteSave.sync_disabled_paths;
   delete remoteSave.show_shortcut;
   delete remoteSave.quick_paste_shortcut;
+  delete remoteSave.p2p_device_id;
   return remoteSave;
+}
+
+function mergeSyncedSettings(remoteSettings) {
+  if (!remoteSettings || typeof remoteSettings !== 'object') return false;
+  const before = JSON.stringify(remoteSettingsPayload());
+  settings.tombstones = normalizeTombstones([
+    ...(settings.tombstones || []),
+    ...(remoteSettings.tombstones || []),
+  ]);
+  settings.group_tombstones = normalizeGroupTombstones([
+    ...(settings.group_tombstones || []),
+    ...(remoteSettings.group_tombstones || []),
+  ]);
+  const secrets = [settings.p2p_secret, remoteSettings.p2p_secret].filter(Boolean).sort();
+  if (secrets.length) settings.p2p_secret = secrets[0];
+  if (remoteSettings.p2p_enabled !== undefined && settings.p2p_enabled === undefined) {
+    settings.p2p_enabled = !!remoteSettings.p2p_enabled;
+  }
+  ensureP2PIdentity();
+  return JSON.stringify(remoteSettingsPayload()) !== before;
+}
+
+function foldRemoteState(canonicalHistory, remoteHistory, remoteSettings) {
+  mergeSyncedSettings(remoteSettings);
+  const historyGroups = canonicalHistory.flatMap(h => groupsOf(h));
+  settings.groups = mergeGroups(settings.groups, [...(remoteSettings && remoteSettings.groups || []), ...historyGroups]);
+  return mergeHistories(canonicalHistory, remoteHistory);
 }
 
 async function refreshCloudAccounts() {
@@ -1038,6 +1101,7 @@ async function syncDiagnostics() {
     data_dir: DATA_DIR,
     build: BUILD_INFO,
     runtime: runtimeDiagnosticSnapshot(),
+    p2p: p2pStatus(),
     diagnostics: diagnostics.snapshot({
       log_tail: diagnostics.fileTail(),
     }),
@@ -1102,6 +1166,454 @@ function withTimeout(promise, ms, label) {
       if (timer.unref) timer.unref();
     }),
   ]);
+}
+
+const p2p = {
+  server: null,
+  socket: null,
+  port: 0,
+  announceTimer: null,
+  announceSoonTimer: null,
+  peers: new Map(),
+  pulls: new Map(),
+  started: false,
+  revision: 1,
+};
+
+function p2pEnabled() {
+  return !!settings.p2p_enabled && !!settings.p2p_secret && !!settings.p2p_device_id;
+}
+
+function p2pDeviceName() {
+  return os.hostname() || `${process.platform}-${settings.p2p_device_id.slice(0, 6)}`;
+}
+
+function p2pSecretHash() {
+  return crypto.createHash('sha256').update(String(settings.p2p_secret || '')).digest('hex').slice(0, 16);
+}
+
+function p2pHmac(payload) {
+  return crypto.createHmac('sha256', String(settings.p2p_secret || '')).update(payload).digest('hex');
+}
+
+function p2pSignature(method, requestPath, timestamp, bodyHash) {
+  return p2pHmac(`${method}\n${requestPath}\n${timestamp}\n${bodyHash || ''}`);
+}
+
+function safeImageName(name) {
+  const value = path.basename(String(name || '').trim());
+  return CONTENT_IMAGE_RE.test(value) ? value.toLowerCase().replace(/ \(\d+\)(?=\.png$)/, '') : '';
+}
+
+function p2pHistoryStorage() {
+  return textBlobStore.prepareHistoryForStorage(history, TEXT_DIR);
+}
+
+function p2pTextRefsFromHistory(items) {
+  const refs = new Set();
+  for (const item of Array.isArray(items) ? items : []) {
+    const ref = textBlobStore.safeTextRef(item && item.textRef);
+    if (ref) refs.add(ref);
+  }
+  return [...refs];
+}
+
+function p2pImageNamesFromHistory(items) {
+  const names = new Set();
+  for (const item of Array.isArray(items) ? items : []) {
+    if (!item || item.type !== 'image') continue;
+    const name = safeImageName(item.image);
+    if (name) names.add(name);
+  }
+  return [...names];
+}
+
+function p2pStatePayload() {
+  const storedHistory = p2pHistoryStorage();
+  return {
+    protocol: P2P_PROTOCOL_VERSION,
+    deviceId: settings.p2p_device_id,
+    deviceName: p2pDeviceName(),
+    build: BUILD_INFO.label,
+    revision: p2p.revision,
+    history: storedHistory,
+    settings: remoteSettingsPayload(),
+    images: p2pImageNamesFromHistory(storedHistory),
+    texts: p2pTextRefsFromHistory(storedHistory),
+  };
+}
+
+function p2pVerifyRequest(req, bodyBuffer) {
+  const timestamp = Number(req.headers['x-boardclip-ts']) || 0;
+  if (!timestamp || Math.abs(Date.now() - timestamp) > P2P_AUTH_WINDOW_MS) return false;
+  const signature = String(req.headers['x-boardclip-sig'] || '');
+  const bodyHash = crypto.createHash('sha256').update(bodyBuffer || Buffer.alloc(0)).digest('hex');
+  const expected = p2pSignature(req.method, req.url, timestamp, bodyHash);
+  try {
+    return crypto.timingSafeEqual(Buffer.from(signature, 'hex'), Buffer.from(expected, 'hex'));
+  } catch {
+    return false;
+  }
+}
+
+function p2pSendJson(res, status, payload) {
+  const body = JSON.stringify(payload);
+  res.writeHead(status, {
+    'Content-Type': 'application/json',
+    'Content-Length': Buffer.byteLength(body),
+  });
+  res.end(body);
+}
+
+function p2pServeAsset(res, kind, name) {
+  const safeName = kind === 'image' ? safeImageName(name) : textBlobStore.safeTextRef(name);
+  if (!safeName) {
+    res.writeHead(400);
+    res.end('Bad asset name');
+    return;
+  }
+  const baseDir = kind === 'image' ? IMG_DIR : TEXT_DIR;
+  const filePath = path.join(baseDir, safeName);
+  fs.readFile(filePath, (error, data) => {
+    if (error) {
+      res.writeHead(404);
+      res.end('Not found');
+      return;
+    }
+    res.writeHead(200, {
+      'Content-Type': kind === 'image' ? 'image/png' : 'text/plain; charset=utf-8',
+      'Content-Length': data.length,
+    });
+    res.end(data);
+  });
+}
+
+function p2pRequestHandler(req, res) {
+  const chunks = [];
+  req.on('data', chunk => chunks.push(chunk));
+  req.on('end', () => {
+    const body = chunks.length ? Buffer.concat(chunks) : Buffer.alloc(0);
+    if (!p2pEnabled() || !p2pVerifyRequest(req, body)) {
+      res.writeHead(401);
+      res.end('Unauthorized');
+      return;
+    }
+    try {
+      const url = new URL(req.url, 'http://127.0.0.1');
+      if (req.method === 'GET' && url.pathname === '/manifest') {
+        p2pSendJson(res, 200, {
+          protocol: P2P_PROTOCOL_VERSION,
+          deviceId: settings.p2p_device_id,
+          deviceName: p2pDeviceName(),
+          build: BUILD_INFO.label,
+          revision: p2p.revision,
+          items: history.length,
+        });
+        return;
+      }
+      if (req.method === 'GET' && url.pathname === '/state') {
+        p2pSendJson(res, 200, p2pStatePayload());
+        return;
+      }
+      const imagePrefix = '/asset/image/';
+      const textPrefix = '/asset/text/';
+      if (req.method === 'GET' && url.pathname.startsWith(imagePrefix)) {
+        p2pServeAsset(res, 'image', decodeURIComponent(url.pathname.slice(imagePrefix.length)));
+        return;
+      }
+      if (req.method === 'GET' && url.pathname.startsWith(textPrefix)) {
+        p2pServeAsset(res, 'text', decodeURIComponent(url.pathname.slice(textPrefix.length)));
+        return;
+      }
+      res.writeHead(404);
+      res.end('Not found');
+    } catch (error) {
+      diagnostics.record('p2p.request.error', { error: error && error.message }, { forceFile: true });
+      res.writeHead(500);
+      res.end('Error');
+    }
+  });
+}
+
+function p2pAuthHeaders(method, requestPath, body = Buffer.alloc(0)) {
+  const timestamp = Date.now();
+  const bodyHash = crypto.createHash('sha256').update(body).digest('hex');
+  return {
+    'x-boardclip-device': settings.p2p_device_id,
+    'x-boardclip-ts': String(timestamp),
+    'x-boardclip-sig': p2pSignature(method, requestPath, timestamp, bodyHash),
+  };
+}
+
+function p2pHttpRequest(peer, requestPath, { binary = false } = {}) {
+  return new Promise((resolve, reject) => {
+    const request = http.request({
+      hostname: peer.host,
+      port: peer.port,
+      path: requestPath,
+      method: 'GET',
+      timeout: P2P_HTTP_TIMEOUT_MS,
+      headers: p2pAuthHeaders('GET', requestPath),
+    }, (response) => {
+      const chunks = [];
+      response.on('data', chunk => chunks.push(chunk));
+      response.on('end', () => {
+        const body = chunks.length ? Buffer.concat(chunks) : Buffer.alloc(0);
+        if (response.statusCode < 200 || response.statusCode >= 300) {
+          reject(new Error(`HTTP ${response.statusCode}`));
+          return;
+        }
+        if (binary) {
+          resolve(body);
+          return;
+        }
+        try { resolve(JSON.parse(body.toString('utf8'))); } catch (error) { reject(error); }
+      });
+    });
+    request.on('timeout', () => request.destroy(new Error('timeout')));
+    request.on('error', reject);
+    request.end();
+  });
+}
+
+async function p2pFetchMissingAsset(peer, kind, name) {
+  const safeName = kind === 'image' ? safeImageName(name) : textBlobStore.safeTextRef(name);
+  if (!safeName) return false;
+  const baseDir = kind === 'image' ? IMG_DIR : TEXT_DIR;
+  const target = path.join(baseDir, safeName);
+  try {
+    await fs.promises.access(target, fs.constants.F_OK);
+    return false;
+  } catch {}
+  const encoded = encodeURIComponent(safeName);
+  const data = await p2pHttpRequest(peer, `/asset/${kind}/${encoded}`, { binary: true });
+  await fs.promises.mkdir(baseDir, { recursive: true });
+  await atomicWriteFileAsync(target, data);
+  return true;
+}
+
+async function p2pPullPeer(peer, reason = 'discovery') {
+  if (!p2pEnabled() || !peer || peer.deviceId === settings.p2p_device_id) return null;
+  const existing = p2p.pulls.get(peer.deviceId);
+  if (existing && Date.now() - existing.startedAt < P2P_PULL_THROTTLE_MS) return existing.promise;
+
+  const promise = (async () => {
+    const startedAt = Date.now();
+    let fetchedAssets = 0;
+    const state = await p2pHttpRequest(peer, '/state');
+    if (!state || state.protocol !== P2P_PROTOCOL_VERSION || state.deviceId !== peer.deviceId) {
+      throw new Error('invalid peer state');
+    }
+    for (const name of state.images || []) {
+      if (await p2pFetchMissingAsset(peer, 'image', name)) fetchedAssets++;
+    }
+    for (const ref of state.texts || []) {
+      if (await p2pFetchMissingAsset(peer, 'text', ref)) fetchedAssets++;
+    }
+
+    const remoteHistory = textBlobStore.hydrateHistory(Array.isArray(state.history) ? state.history : [], TEXT_DIR);
+    const previousSettingsJson = JSON.stringify(remoteSettingsPayload());
+    let canonicalHistory = foldRemoteState(history.slice(), remoteHistory, state.settings || {});
+    const recoveredImages = await recoverRecentOrphanImages(canonicalHistory);
+    const localChanged = JSON.stringify(canonicalHistory) !== JSON.stringify(history);
+    const settingsChanged = JSON.stringify(remoteSettingsPayload()) !== previousSettingsJson;
+    if (localChanged) {
+      history.length = 0;
+      history.push(...canonicalHistory);
+    }
+    if (localChanged || settingsChanged) {
+      applyingSyncState = true;
+      try {
+        saveHistory();
+        saveSettingsFile();
+      } finally {
+        applyingSyncState = false;
+      }
+      scheduleSyncMerge();
+      p2pNotifyLocalChange();
+    }
+    diagnostics.record('p2p.pull', {
+      peer: peer.deviceName || peer.deviceId,
+      reason,
+      ms: Date.now() - startedAt,
+      remote_items: remoteHistory.length,
+      local_changed: localChanged,
+      settings_changed: settingsChanged,
+      fetched_assets: fetchedAssets,
+      recovered_images: recoveredImages,
+      items: history.length,
+    }, { forceFile: localChanged || fetchedAssets > 0 });
+    return { ok: true, local_changed: localChanged, settings_changed: settingsChanged, fetched_assets: fetchedAssets };
+  })().catch(error => {
+    diagnostics.record('p2p.pull.error', {
+      peer: peer.deviceName || peer.deviceId,
+      reason,
+      error: error && error.message,
+    }, { forceFile: true });
+    return { ok: false, error: error && error.message };
+  }).finally(() => {
+    const current = p2p.pulls.get(peer.deviceId);
+    if (current && current.promise === promise) p2p.pulls.delete(peer.deviceId);
+  });
+
+  p2p.pulls.set(peer.deviceId, { startedAt: Date.now(), promise });
+  return promise;
+}
+
+function p2pAnnouncementPayload() {
+  return {
+    app: 'boardclip',
+    protocol: P2P_PROTOCOL_VERSION,
+    deviceId: settings.p2p_device_id,
+    deviceName: p2pDeviceName(),
+    secretHash: p2pSecretHash(),
+    port: p2p.port,
+    revision: p2p.revision,
+    build: BUILD_INFO.label,
+    items: history.length,
+  };
+}
+
+function p2pAnnounceNow() {
+  if (!p2pEnabled() || !p2p.socket || !p2p.port) return;
+  const body = Buffer.from(JSON.stringify(p2pAnnouncementPayload()));
+  try {
+    p2p.socket.send(body, 0, body.length, P2P_DISCOVERY_PORT, P2P_DISCOVERY_ADDR);
+  } catch {}
+}
+
+function p2pNotifyLocalChange() {
+  p2p.revision++;
+  if (!p2pEnabled()) return;
+  if (p2p.announceSoonTimer) clearTimeout(p2p.announceSoonTimer);
+  p2p.announceSoonTimer = setTimeout(() => {
+    p2p.announceSoonTimer = null;
+    p2pAnnounceNow();
+  }, 50);
+  if (p2p.announceSoonTimer.unref) p2p.announceSoonTimer.unref();
+}
+
+function p2pHandleAnnouncement(message, rinfo) {
+  if (!p2pEnabled()) return;
+  let payload = null;
+  try { payload = JSON.parse(message.toString('utf8')); } catch { return; }
+  if (!payload || payload.app !== 'boardclip' || payload.protocol !== P2P_PROTOCOL_VERSION) return;
+  if (!payload.deviceId || payload.deviceId === settings.p2p_device_id) return;
+  if (payload.secretHash !== p2pSecretHash()) return;
+  const port = Number(payload.port) || 0;
+  if (port <= 0 || port > 65535) return;
+
+  const previous = p2p.peers.get(payload.deviceId);
+  const revision = Number(payload.revision) || 0;
+  const peer = {
+    deviceId: payload.deviceId,
+    deviceName: payload.deviceName || payload.deviceId.slice(0, 8),
+    host: rinfo.address,
+    port,
+    revision,
+    build: payload.build || '',
+    items: Number(payload.items) || 0,
+    lastSeen: Date.now(),
+    lastPulledRevision: previous ? previous.lastPulledRevision : 0,
+  };
+  p2p.peers.set(peer.deviceId, peer);
+  if (!previous || previous.revision !== revision || previous.host !== peer.host || previous.port !== peer.port) {
+    peer.lastPulledRevision = previous ? previous.lastPulledRevision : 0;
+    if (revision && revision !== peer.lastPulledRevision) {
+      peer.lastPulledRevision = revision;
+      p2pPullPeer(peer, 'announcement');
+    }
+  }
+}
+
+function p2pPeerSummaries() {
+  const cutoff = Date.now() - 30 * 1000;
+  return [...p2p.peers.values()]
+    .filter(peer => peer.lastSeen >= cutoff)
+    .sort((a, b) => b.lastSeen - a.lastSeen)
+    .map(peer => ({
+      deviceId: peer.deviceId,
+      deviceName: peer.deviceName,
+      host: peer.host,
+      port: peer.port,
+      build: peer.build,
+      items: peer.items,
+      lastSeen: peer.lastSeen,
+    }));
+}
+
+async function startP2PSync() {
+  if (p2p.started || !p2pEnabled()) return;
+  p2p.started = true;
+  try {
+    p2p.server = http.createServer(p2pRequestHandler);
+    await new Promise((resolve, reject) => {
+      p2p.server.once('error', reject);
+      p2p.server.listen(0, '0.0.0.0', () => {
+        p2p.server.off('error', reject);
+        resolve();
+      });
+    });
+    p2p.port = p2p.server.address().port;
+    p2p.socket = dgram.createSocket({ type: 'udp4', reuseAddr: true });
+    p2p.socket.on('message', p2pHandleAnnouncement);
+    p2p.socket.on('error', error => {
+      diagnostics.record('p2p.discovery.error', { error: error && error.message }, { forceFile: true });
+    });
+    await new Promise((resolve, reject) => {
+      p2p.socket.once('error', reject);
+      p2p.socket.bind(P2P_DISCOVERY_PORT, () => {
+        p2p.socket.off('error', reject);
+        try { p2p.socket.addMembership(P2P_DISCOVERY_ADDR); } catch {}
+        try { p2p.socket.setMulticastTTL(1); } catch {}
+        resolve();
+      });
+    });
+    p2p.announceTimer = setInterval(p2pAnnounceNow, P2P_ANNOUNCE_INTERVAL_MS);
+    if (p2p.announceTimer.unref) p2p.announceTimer.unref();
+    p2pAnnounceNow();
+    diagnostics.record('p2p.start', { port: p2p.port, device: p2pDeviceName() }, { forceFile: true });
+  } catch (error) {
+    diagnostics.record('p2p.start.error', { error: error && error.message }, { forceFile: true });
+    stopP2PSync();
+  }
+}
+
+function stopP2PSync() {
+  p2p.started = false;
+  if (p2p.announceTimer) clearInterval(p2p.announceTimer);
+  if (p2p.announceSoonTimer) clearTimeout(p2p.announceSoonTimer);
+  p2p.announceTimer = null;
+  p2p.announceSoonTimer = null;
+  try { if (p2p.socket) p2p.socket.close(); } catch {}
+  try { if (p2p.server) p2p.server.close(); } catch {}
+  p2p.socket = null;
+  p2p.server = null;
+  p2p.port = 0;
+}
+
+async function restartP2PSync() {
+  stopP2PSync();
+  if (p2pEnabled()) await startP2PSync();
+}
+
+async function setP2PEnabled(enabled) {
+  settings.p2p_enabled = !!enabled;
+  ensureP2PIdentity();
+  saveSettingsFile();
+  await restartP2PSync();
+  return p2pStatus();
+}
+
+function p2pStatus() {
+  return {
+    enabled: !!settings.p2p_enabled,
+    running: !!(p2p.started && p2p.server && p2p.socket),
+    port: p2p.port,
+    deviceId: settings.p2p_device_id,
+    deviceName: p2pDeviceName(),
+    peers: p2pPeerSummaries(),
+  };
 }
 
 async function syncMerge(options = {}) {
@@ -1182,17 +1694,7 @@ async function syncMerge(options = {}) {
       const remoteImgDir = path.join(syncPath, 'clipboard-images');
       await syncRemoteAssets(remoteImgDir, remoteTextDir);
       const { remoteHistory, remoteSettings } = await readRemoteState(syncPath);
-      settings.tombstones = normalizeTombstones([
-        ...(settings.tombstones || []),
-        ...(remoteSettings.tombstones || []),
-      ]);
-      settings.group_tombstones = normalizeGroupTombstones([
-        ...(settings.group_tombstones || []),
-        ...(remoteSettings.group_tombstones || []),
-      ]);
-      const historyGroups = canonicalHistory.flatMap(h => groupsOf(h));
-      settings.groups = mergeGroups(settings.groups, [...(remoteSettings.groups || []), ...historyGroups]);
-      canonicalHistory = mergeHistories(canonicalHistory, remoteHistory);
+      canonicalHistory = foldRemoteState(canonicalHistory, remoteHistory, remoteSettings);
       await updateSyncProviderCache(syncPath);
       providers.push({
         path: syncPath,
@@ -1943,6 +2445,7 @@ function setupIPC() {
         auto_update: support.supported,
         update_support: support,
         diagnostics_file: DIAGNOSTICS_PATH,
+        p2p: p2pStatus(),
       };
     })(),
     shortcut_info: {
@@ -2162,6 +2665,8 @@ function setupIPC() {
   });
 
   ipcMain.handle('get-cloud-accounts', () => getCloudAccountsForSettings());
+  ipcMain.handle('set-p2p-enabled', (_, enabled) => setP2PEnabled(enabled));
+  ipcMain.handle('get-p2p-status', () => p2pStatus());
   ipcMain.handle('get-sync-diagnostics', () => syncDiagnostics());
   ipcMain.handle('record-diagnostics', (_, event, details) => {
     const forceFile = !!(details && details.slow && !diagnostics.isEnabled());
@@ -2170,6 +2675,8 @@ function setupIPC() {
   });
 
   ipcMain.handle('sync-now', async () => {
+    const peers = p2pPeerSummaries();
+    await Promise.all(peers.map(peer => p2pPullPeer(peer, 'manual')));
     return syncMerge({ force: true });
   });
 
@@ -2413,6 +2920,7 @@ app.whenReady().then(() => {
   createTray();
   registerShortcuts();
   startDiagnosticsMonitor();
+  startP2PSync();
   autoUpdater.start();
 
   // Sync with shared folder on startup + every 30s
@@ -2428,5 +2936,6 @@ app.on('will-quit', () => {
   globalShortcut.unregisterAll();
   if (windowsHook) windowsHook.uninstall();
   if (macosHotkey) macosHotkey.uninstall();
+  stopP2PSync();
 });
 app.on('window-all-closed', () => { /* keep running as tray app */ });

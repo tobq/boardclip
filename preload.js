@@ -33,6 +33,8 @@ contextBridge.exposeInMainWorld('api', {
   chooseSyncFolder: () => ipcRenderer.invoke('choose-sync-folder'),
   setSyncPathEnabled: (path, enabled) => ipcRenderer.invoke('set-sync-path-enabled', path, enabled),
   getCloudAccounts: () => ipcRenderer.invoke('get-cloud-accounts'),
+  setP2PEnabled: (enabled) => ipcRenderer.invoke('set-p2p-enabled', enabled),
+  getP2PStatus: () => ipcRenderer.invoke('get-p2p-status'),
   getSyncDiagnostics: () => ipcRenderer.invoke('get-sync-diagnostics'),
   recordDiagnostics: (event, details) => ipcRenderer.invoke('record-diagnostics', event, details),
   syncNow: () => ipcRenderer.invoke('sync-now'),

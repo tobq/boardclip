@@ -2757,23 +2757,66 @@ async function pasteAndHide(id) {
   }
 }
 
-async function numpadPasteAndHide(slot) {
+function validNumpadSlot(slot) {
   const slotNum = Number(slot);
-  if (!Number.isInteger(slotNum) || slotNum < 1 || slotNum > 9) return;
+  return Number.isInteger(slotNum) && slotNum >= 1 && slotNum <= 9 ? slotNum : null;
+}
+
+async function runNumpadSlotAction(slot, options = {}) {
+  const slotNum = validNumpadSlot(slot);
+  if (slotNum == null) return;
 
   const trace = {
     seq: ++quickPasteTraceSeq,
     received_at: Date.now(),
-    source: 'panel_number',
+    source: options.source || 'shortcut',
   };
   diagnostics.record('shortcut.quick_paste_received', { ...trace, slot: slotNum }, { forceFile: true });
 
-  if (win && !win.isDestroyed() && win.isVisible()) hidePopup();
-  if (process.platform === 'win32' && savedForegroundWindow) {
+  const popupVisible = !!(win && !win.isDestroyed() && win.isVisible());
+  const popupFocused = popupVisible && win.isFocused();
+  const hasItem = history.some(h => hasNumpadSlot(h, slotNum));
+  const assignWhenFocused = options.assignWhenFocused !== false;
+  const shouldAssign = assignWhenFocused && popupFocused;
+  const shouldCaptureMacTarget = process.platform === 'darwin' && popupVisible && !popupFocused;
+  const frontmostStartedAt = Date.now();
+  const targetAppName = shouldCaptureMacTarget ? await getFrontmostMacAppName() : '';
+  const frontmostMs = Date.now() - frontmostStartedAt;
+
+  diagnostics.record('shortcut.quick_paste', {
+    ...trace,
+    slot: slotNum,
+    popup_visible: popupVisible,
+    popup_focused: popupFocused,
+    has_item: hasItem,
+    target_app: targetAppName,
+    frontmost_ms: frontmostMs,
+    since_received_ms: Date.now() - trace.received_at,
+    window: macWindowSnapshot(),
+  }, { forceFile: true });
+
+  if (shouldAssign) {
+    win.webContents.executeJavaScript(`window.assignNumpad(${slotNum})`).catch(() => {});
+    return;
+  }
+
+  if (popupVisible) hidePopup();
+  if (process.platform === 'win32' && popupVisible && savedForegroundWindow) {
     winPaste.setForegroundWindow(savedForegroundWindow);
   }
   await new Promise(r => setTimeout(r, 15));
-  await numpadPaste(slotNum, { trace });
+  await numpadPaste(slotNum, { targetAppName, trace });
+  if (win && !win.isDestroyed() && win.isVisible()) {
+    diagnostics.record('shortcut.quick_paste_force_hide', { ...trace, slot: slotNum, window: macWindowSnapshot() }, { forceFile: true });
+    hidePopup();
+  }
+}
+
+async function numpadPasteAndHide(slot) {
+  await runNumpadSlotAction(slot, {
+    source: 'panel_number',
+    assignWhenFocused: false,
+  });
 }
 
 function createTray() {
@@ -3152,36 +3195,7 @@ function handleNumpad(slot) {
 }
 
 async function handleQuickPaste(slot) {
-  const trace = { seq: ++quickPasteTraceSeq, received_at: Date.now() };
-  diagnostics.record('shortcut.quick_paste_received', { ...trace, slot }, { forceFile: true });
-  const popupVisible = !!(win && !win.isDestroyed() && win.isVisible());
-  const popupFocused = popupVisible && win.isFocused();
-  const frontmostStartedAt = Date.now();
-  const shouldRestoreMacFocus = process.platform === 'darwin' && popupVisible;
-  const targetAppName = shouldRestoreMacFocus ? await getFrontmostMacAppName() : '';
-  const frontmostMs = Date.now() - frontmostStartedAt;
-  const hasItem = history.some(h => hasNumpadSlot(h, slot));
-  diagnostics.record('shortcut.quick_paste', {
-    ...trace,
-    slot,
-    popup_visible: popupVisible,
-    popup_focused: popupFocused,
-    has_item: hasItem,
-    target_app: targetAppName,
-    frontmost_ms: frontmostMs,
-    since_received_ms: Date.now() - trace.received_at,
-    window: macWindowSnapshot(),
-  }, { forceFile: true });
-  if (popupFocused) {
-    win.webContents.executeJavaScript(`window.assignNumpad(${slot})`).catch(() => {});
-    return;
-  }
-  if (popupVisible) hidePopup();
-  await numpadPaste(slot, { targetAppName, trace });
-  if (win && !win.isDestroyed() && win.isVisible()) {
-    diagnostics.record('shortcut.quick_paste_force_hide', { ...trace, slot, window: macWindowSnapshot() }, { forceFile: true });
-    hidePopup();
-  }
+  await runNumpadSlotAction(slot, { source: 'shortcut' });
 }
 
 function setShowShortcut(shortcut) {

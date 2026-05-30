@@ -822,13 +822,13 @@ function setShortcutStatus(kind, message, isError = false) {
   status.className = 'shortcut-status' + (isError ? ' error' : '');
 }
 
-function stopShortcutRecording() {
+function stopShortcutRecording({ resume = true } = {}) {
   const kind = shortcutRecording;
   shortcutRecording = null;
   for (const button of [shortcutRecordEl('show'), shortcutRecordEl('quickPaste')]) {
     if (button) button.classList.remove('recording');
   }
-  if (kind && window.api.resumeShortcuts) {
+  if (resume && kind && window.api.resumeShortcuts) {
     window.api.resumeShortcuts().catch(() => {});
   }
   return kind;
@@ -924,7 +924,7 @@ function shortcutFromEvent(e) {
 }
 
 async function applyShortcut(kind, shortcut) {
-  stopShortcutRecording();
+  stopShortcutRecording({ resume: false });
   const result = kind === 'quickPaste'
     ? await window.api.setQuickPasteShortcut(shortcut)
     : await window.api.setShowShortcut(shortcut);

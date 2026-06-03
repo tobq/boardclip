@@ -44,9 +44,9 @@ $Shortcut.Arguments = "`"$LauncherPath`""
 $Shortcut.WorkingDirectory = $AppDir
 $Shortcut.Description = "BoardClip clipboard history"
 
-$ElectronExe = Join-Path $AppDir "node_modules\electron\dist\electron.exe"
-if (Test-Path $ElectronExe) {
-  $Shortcut.IconLocation = "$ElectronExe,0"
+$AppIcon = Join-Path $AppDir "assets\boardclip-icon.ico"
+if (Test-Path $AppIcon) {
+  $Shortcut.IconLocation = "$AppIcon,0"
 }
 
 $Shortcut.Save()

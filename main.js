@@ -21,6 +21,7 @@ const textBlobStore = require('./lib/text-blob-store');
 const { createAutoUpdater, updateSupport } = require('./lib/auto-update');
 const syncPaths = require('./lib/sync-paths');
 const { Diagnostics } = require('./lib/diagnostics');
+const { ensureDirectory } = require('./lib/ensure-directory');
 
 function guardBrokenPipe(stream) {
   try {
@@ -124,8 +125,8 @@ function setAutoLaunchEnabled(enabled) {
   app.setLoginItemSettings({ openAtLogin: !!enabled });
 }
 
-if (!fs.existsSync(IMG_DIR)) fs.mkdirSync(IMG_DIR, { recursive: true });
-if (!fs.existsSync(TEXT_DIR)) fs.mkdirSync(TEXT_DIR, { recursive: true });
+ensureDirectory(IMG_DIR);
+ensureDirectory(TEXT_DIR);
 
 let BUILD_INFO = getBuildInfo(SCRIPT_DIR);
 

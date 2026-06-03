@@ -1,13 +1,13 @@
 {
   "name": "boardclip",
   "productName": "BoardClip",
-  "version": "2.0.37",
+  "version": "2.0.38",
   "description": "Cross-platform clipboard history tray app with numpad quick-paste and native cloud sync",
   "author": "BoardClip contributors",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "test": "node test/clipboard-model.test.js",
+    "test": "node test/clipboard-model.test.js && node test/ensure-directory.test.js",
     "sync:icons": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/sync-icons.ps1",
     "dist": "electron-builder --publish never",
     "dist:win": "electron-builder --win nsis portable --publish never",

@@ -18,6 +18,10 @@ if (-not (Test-Path $StartBat)) {
   throw "Cannot create BoardClip shortcut: missing $StartBat"
 }
 
+function Escape-VbsString([string]$Value) {
+  return $Value.Replace('"', '""')
+}
+
 $LauncherPath = Join-Path $AppDir "BoardClip.vbs"
 $Launcher = @"
 Set shell = CreateObject("WScript.Shell")
@@ -30,6 +34,18 @@ Set-Content -Path $LauncherPath -Value $Launcher -Encoding ASCII
 
 $ProgramsDir = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs"
 New-Item -ItemType Directory -Force -Path $ProgramsDir | Out-Null
+
+$StartupShortcutPath = Join-Path $ProgramsDir "Startup\BoardClip.vbs"
+if (Test-Path $StartupShortcutPath) {
+  $EscapedAppDir = Escape-VbsString $AppDir
+  $EscapedStartBat = Escape-VbsString $StartBat
+  $StartupLauncher = @"
+Set shell = CreateObject("WScript.Shell")
+shell.CurrentDirectory = "$EscapedAppDir"
+shell.Run """" & "$EscapedStartBat" & """", 0, False
+"@
+  Set-Content -Path $StartupShortcutPath -Value $StartupLauncher -Encoding ASCII
+}
 
 foreach ($Name in @("ClipboardTray.lnk", "clipboard-tray.lnk", "clipboard_numpad.lnk", "Clipboard Tray.lnk")) {
   Remove-Item (Join-Path $ProgramsDir $Name) -Force -ErrorAction SilentlyContinue

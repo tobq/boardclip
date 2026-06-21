@@ -4,6 +4,7 @@ clipboard-images/
 clipboard-text/
 clipboard-settings.json
 boardclip-diagnostics.jsonl
+BoardClip.vbs
 __pycache__/
 *.pyc
 node_modules/

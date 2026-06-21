@@ -48,8 +48,10 @@
 .filter-tag.icon-filter .mi { font-size: 18px; font-variation-settings: "FILL" 0, "wght" 700, "GRAD" 0, "opsz" 20; }
 .filter-tag:hover { border-color: var(--accent); color: var(--text); }
 .filter-tag.active { background: var(--accent); color: var(--active-fg); border-color: var(--accent); }
+.filter-tag.excluded { background: var(--hover); color: var(--text-dim); border-color: var(--line); text-decoration: line-through; text-decoration-thickness: 1px; }
 .filter-tag.icon-filter:hover { background: var(--hover); border-color: transparent; color: var(--text); }
 .filter-tag.icon-filter.active { background: transparent; border-color: transparent; color: var(--accent); }
+.filter-tag.icon-filter.excluded { background: var(--hover); border-color: transparent; color: var(--text-dim); }
 .filter-tag.clear-filter { width: 22px; height: 22px; padding: 0; border: 0; border-radius: 50%; color: var(--text-dim); background: transparent; }
 .filter-tag.clear-filter:hover { color: var(--text); background: var(--hover); }
 .filter-tag .gtag-x { display: none; margin-left: 1px; margin-right: -3px; color: var(--text-dim); font-size: 10px; vertical-align: middle;

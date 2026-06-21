@@ -205,7 +205,7 @@ const BATCH = 30;
 const COLLAPSED_PREVIEW_CHARS = 700;
 const SEARCH_PREVIEW_CONTEXT = 260;
 let rendered = 0, filtered = [];
-let groups = [], activeFilters = new Set();
+let groups = [], activeFilters = new Set(), excludedFilters = new Set();
 let dataRevision = -1;
 let diagnosticsEnabled = false;
 let searchTexts = [], searchTextLower = [];
@@ -220,7 +220,7 @@ function recordRendererPerf(event, startedAt, details = {}, thresholdMs = 50) {
     items: items.length,
     filtered: filtered.length,
     query_length: query.length,
-    filters: activeFilters.size,
+    filters: activeFilters.size + excludedFilters.size,
     slow: ms >= thresholdMs,
   });
   if (promise && promise.catch) promise.catch(() => {});
@@ -338,18 +338,18 @@ function numpadMap() {
 function renderGroupFilters() {
   const startedAt = performance.now();
   const el = document.getElementById('groupFilters');
-  el.innerHTML = Core.renderFilterBar({ items, groups, activeFilters, query, builtinCounts, groupCounts });
+  el.innerHTML = Core.renderFilterBar({ items, groups, activeFilters, excludedFilters, query, builtinCounts, groupCounts });
   recordRendererPerf('filters.render_bar', startedAt, { groups: groups.length }, 40);
 }
 
 function applyFilter() {
   const startedAt = performance.now();
-  filtered = Core.filterItemIndexes(items, { query, regex: regexOn, filters: activeFilters, searchTexts, searchTextLower });
+  filtered = Core.filterItemIndexes(items, { query, regex: regexOn, filters: activeFilters, excludedFilters, searchTexts, searchTextLower });
   rendered = 0;
   listEl.innerHTML = '';
   selectedIdx = -1;
   loadBatch();
-  if (!filtered.length) listEl.innerHTML = `<div class="empty">${query || activeFilters.size ? 'No matches' : 'Copy something to get started'}</div>`;
+  if (!filtered.length) listEl.innerHTML = `<div class="empty">${query || Core.hasActiveFilters({ filters: activeFilters, excludedFilters }) ? 'No matches' : 'Copy something to get started'}</div>`;
   recordRendererPerf('list.apply_filter', startedAt, { rendered, regex: regexOn }, 60);
 }
 
@@ -423,18 +423,18 @@ function buildItem(it, ri, nmap) {
 function updateCount() {
   const total = items.length;
   const visible = filtered.length;
-  countEl.textContent = Core.itemCountLabel(total, visible, { query, filters: activeFilters });
+  countEl.textContent = Core.itemCountLabel(total, visible, { query, filters: activeFilters, excludedFilters });
 }
 
 function updateClearControls() {
   searchClear.classList.toggle('show', !!query);
-  searchClear.title = activeFilters.size ? 'Clear search and filters' : 'Clear search';
+  searchClear.title = Core.hasActiveFilters({ filters: activeFilters, excludedFilters }) ? 'Clear search and filters' : 'Clear search';
 }
 
 function clearSearchAndFilters() {
   searchEl.value = '';
   query = '';
-  activeFilters.clear();
+  Core.clearFilterState({ filters: activeFilters, excludedFilters });
   updateClearControls();
   rerenderList();
 }
@@ -450,6 +450,18 @@ listEl.addEventListener('scroll', () => {
     if (scrollTop + clientHeight > scrollHeight * 0.85) loadBatch();
   }
 });
+
+function handleFilterTagIntent(e, intent) {
+  const tag = e.target.closest('.filter-tag[data-filter], .filter-tag[data-group]');
+  if (!tag || e.target.closest('[data-action="delete-group"]')) return false;
+  const filter = tag.dataset.filter || tag.dataset.group;
+  if (!filter) return false;
+  e.stopPropagation();
+  Core.applyFilterIntent({ filters: activeFilters, excludedFilters }, filter, intent);
+  updateClearControls();
+  rerenderList();
+  return true;
+}
 
 // --- Event delegation ---
 document.addEventListener('click', async (e) => {
@@ -473,23 +485,7 @@ document.addEventListener('click', async (e) => {
     return;
   }
   // Built-in filter tags
-  const ftag = e.target.closest('.filter-tag[data-filter]');
-  if (ftag) {
-    const f = ftag.dataset.filter;
-    if (activeFilters.has(f)) { activeFilters.delete(f); }
-    else activeFilters.add(f);
-    rerenderList();
-    return;
-  }
-  // Group filter tags
-  const gtag = e.target.closest('.filter-tag[data-group]');
-  if (gtag && !e.target.closest('[data-action="delete-group"]')) {
-    const g = gtag.dataset.group;
-    if (activeFilters.has(g)) activeFilters.delete(g);
-    else activeFilters.add(g);
-    rerenderList();
-    return;
-  }
+  if (handleFilterTagIntent(e, 'include')) return;
   // Group picker buttons
   const gpBtn = e.target.closest('.gp-btn');
   if (gpBtn) {
@@ -545,6 +541,12 @@ document.addEventListener('click', async (e) => {
   if (item) {
     window.api.pasteAndHide(item.dataset.id);
     return;
+  }
+});
+
+document.addEventListener('contextmenu', (e) => {
+  if (handleFilterTagIntent(e, 'exclude')) {
+    e.preventDefault();
   }
 });
 
@@ -619,6 +621,7 @@ document.getElementById('confirmYes').addEventListener('click', async () => {
     } else if (pendingAssign.deleteGroup) {
       const g = pendingAssign.deleteGroup;
       activeFilters.delete(g);
+      excludedFilters.delete(g);
       await window.api.groupDelete(g);
       await refreshGroupsAndList();
     } else {
@@ -1223,6 +1226,7 @@ async function openSettings() {
       e.stopPropagation();
       const g = btn.dataset.group;
       activeFilters.delete(g);
+      excludedFilters.delete(g);
       await window.api.groupDelete(g);
       await refreshGroupsAndList();
       openSettings();

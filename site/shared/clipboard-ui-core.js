@@ -121,35 +121,97 @@
   function matchesQuery(text, query, regex) {
     return matchesPreparedQuery(text, prepareQuery(query, regex));
   }
-  function matchesFilter(item, filters) {
-    if (!filters || !filters.size) return true;
-    for (const filter of filters) {
-      if (filter === '__pinned__' && !isPinned(item)) return false;
-      if (filter === '__numbered__' && numpadOf(item) == null) return false;
-      if (filter === '__images__' && item.type !== 'image') return false;
-      if (!String(filter).startsWith('__') && !isInGroup(item, filter)) return false;
+  function asFilterSet(value) {
+    if (value instanceof Set) return value;
+    if (Array.isArray(value)) return new Set(value);
+    return new Set();
+  }
+  function filterStateFrom(stateOrFilters) {
+    if (stateOrFilters instanceof Set || Array.isArray(stateOrFilters)) {
+      return { filters: asFilterSet(stateOrFilters), excludedFilters: new Set() };
+    }
+    const state = stateOrFilters || {};
+    return {
+      filters: asFilterSet(state.filters || state.activeFilters),
+      excludedFilters: asFilterSet(state.excludedFilters),
+    };
+  }
+  function ensureFilterState(state) {
+    if (!state) return { filters: new Set(), excludedFilters: new Set() };
+    if (!(state.filters instanceof Set)) state.filters = asFilterSet(state.filters);
+    if (!(state.excludedFilters instanceof Set)) state.excludedFilters = asFilterSet(state.excludedFilters);
+    return state;
+  }
+  function hasActiveFilters(stateOrFilters) {
+    const state = filterStateFrom(stateOrFilters);
+    return Boolean(state.filters.size || state.excludedFilters.size);
+  }
+  function filterTokenMatches(item, filter) {
+    const key = String(filter || '');
+    if (key === '__pinned__') return isPinned(item);
+    if (key === '__numbered__') return numpadOf(item) != null;
+    if (key === '__images__') return item && item.type === 'image';
+    if (key.startsWith('__')) return false;
+    return isInGroup(item, key);
+  }
+  function matchesFilter(item, stateOrFilters) {
+    const state = filterStateFrom(stateOrFilters);
+    for (const filter of state.filters) {
+      if (!filterTokenMatches(item, filter)) return false;
+    }
+    for (const filter of state.excludedFilters) {
+      if (filterTokenMatches(item, filter)) return false;
     }
     return true;
   }
+  function applyFilterIntent(state, filter, intent) {
+    const key = String(filter || '');
+    if (!key) return false;
+    const next = ensureFilterState(state);
+    const exclude = intent === 'exclude';
+    if (exclude) {
+      if (next.excludedFilters.has(key)) {
+        next.excludedFilters.delete(key);
+      } else {
+        next.filters.delete(key);
+        next.excludedFilters.add(key);
+      }
+      return true;
+    }
+    if (next.filters.has(key)) {
+      next.filters.delete(key);
+    } else if (next.excludedFilters.has(key)) {
+      next.excludedFilters.delete(key);
+    } else {
+      next.excludedFilters.delete(key);
+      next.filters.add(key);
+    }
+    return true;
+  }
+  function clearFilterState(state) {
+    const next = ensureFilterState(state);
+    next.filters.clear();
+    next.excludedFilters.clear();
+  }
   function filterItems(items, state) {
-    const filters = state && state.filters;
+    const filterState = filterStateFrom(state);
     const prepared = prepareQuery(state && state.query, state && state.regex);
     const searchTexts = state && state.searchTexts;
     const searchTextLower = state && state.searchTextLower;
     return (items || []).filter((item, index) => {
-      if (!matchesFilter(item, filters)) return false;
+      if (!matchesFilter(item, filterState)) return false;
       if (prepared.kind === 'none') return true;
       return matchesPreparedQuery(searchTexts ? searchTexts[index] : itemSearchText(item), prepared, searchTextLower && searchTextLower[index]);
     });
   }
   function filterItemIndexes(items, state) {
-    const filters = state && state.filters;
+    const filterState = filterStateFrom(state);
     const prepared = prepareQuery(state && state.query, state && state.regex);
     const searchTexts = state && state.searchTexts;
     const searchTextLower = state && state.searchTextLower;
     const result = [];
     (items || []).forEach((item, index) => {
-      if (!matchesFilter(item, filters)) return;
+      if (!matchesFilter(item, filterState)) return;
       if (prepared.kind === 'none' || matchesPreparedQuery(searchTexts ? searchTexts[index] : itemSearchText(item), prepared, searchTextLower && searchTextLower[index])) {
         result.push(index);
       }
@@ -160,7 +222,7 @@
     const count = Number(total) || 0;
     const shown = Number(visible) || 0;
     const label = count === 1 ? 'item' : 'items';
-    return state && (state.query || state.filters && state.filters.size) ? `${shown} of ${count} ${label}` : `${count} ${label}`;
+    return state && (state.query || hasActiveFilters(state)) ? `${shown} of ${count} ${label}` : `${count} ${label}`;
   }
   function escapeHtml(value) {
     return String(value == null ? '' : value).replace(/[&<>"']/g, (char) => ({
@@ -196,27 +258,38 @@
     const options = params || {};
     const items = options.items || [];
     const groups = options.groups || [];
-    const activeFilters = options.activeFilters || new Set();
+    const activeFilters = asFilterSet(options.activeFilters || options.filters);
+    const excludedFilters = asFilterSet(options.excludedFilters);
     const query = options.query || '';
     const builtinCounts = options.builtinCounts || null;
     const groupCounts = options.groupCounts || null;
     let html = '';
     const filters = builtinCounts
       ? BUILTIN_FILTERS
-        .map((filter) => ({ ...filter, count: builtinCounts[filter.id] || 0, active: activeFilters.has(filter.id) }))
+        .map((filter) => ({
+          ...filter,
+          count: builtinCounts[filter.id] || 0,
+          active: activeFilters.has(filter.id),
+          excluded: excludedFilters.has(filter.id),
+        }))
         .filter((filter) => filter.count > 0)
-      : builtinFilters(items, activeFilters);
+      : builtinFilters(items, activeFilters)
+        .map((filter) => ({ ...filter, excluded: excludedFilters.has(filter.id) }));
     for (const filter of filters) {
-      html += `<span class="filter-tag builtin icon-filter${filter.active ? ' active' : ''}" data-filter="${escapeHtml(filter.id)}" title="${escapeHtml(builtinFilterTitle(filter))}" aria-label="${escapeHtml(filter.ariaLabel)}">${builtinFilterIconHtml(filter, options)}</span>`;
+      const stateClass = filter.active ? ' active' : filter.excluded ? ' excluded' : '';
+      const title = filter.excluded ? `Excluding ${filter.label}` : builtinFilterTitle(filter);
+      html += `<span class="filter-tag builtin icon-filter${stateClass}" data-filter="${escapeHtml(filter.id)}" title="${escapeHtml(title)}" aria-label="${escapeHtml(filter.ariaLabel)}">${builtinFilterIconHtml(filter, options)}</span>`;
     }
     html += groups.map((group) => {
       const count = groupCounts && typeof groupCounts.get === 'function'
         ? groupCounts.get(group) || 0
         : items.filter((item) => isInGroup(item, group)).length;
       const label = escapeHtml(group);
-      return `<span class="filter-tag${activeFilters.has(group) ? ' active' : ''}" data-group="${label}" title="${count} item${count !== 1 ? 's' : ''} in ${label}">${label}<span class="gtag-x mi" data-action="delete-group" data-group="${label}">close</span></span>`;
+      const stateClass = activeFilters.has(group) ? ' active' : excludedFilters.has(group) ? ' excluded' : '';
+      const title = excludedFilters.has(group) ? `Excluding ${group}` : `${count} item${count !== 1 ? 's' : ''} in ${group}`;
+      return `<span class="filter-tag${stateClass}" data-group="${label}" title="${escapeHtml(title)}">${label}<span class="gtag-x mi" data-action="delete-group" data-group="${label}">close</span></span>`;
     }).join('');
-    if (activeFilters.size && !query) {
+    if ((activeFilters.size || excludedFilters.size) && !query) {
       html += '<span class="filter-tag clear-filter icon-filter" data-action="clear-search-filters" title="Clear filters" aria-label="Clear filters"><span class="mi">close</span></span>';
     }
     return html;
@@ -441,7 +514,14 @@
     itemSearchText,
     prepareQuery,
     matchesQuery,
+    asFilterSet,
+    filterStateFrom,
+    ensureFilterState,
+    hasActiveFilters,
+    filterTokenMatches,
     matchesFilter,
+    applyFilterIntent,
+    clearFilterState,
     filterItems,
     filterItemIndexes,
     itemCountLabel,

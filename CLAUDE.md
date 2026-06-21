@@ -83,7 +83,7 @@ Otherwise the key passes through so normal numpad typing works. Main thread call
 
 - **`icon-btn` base class** — all small clickable icons share 24x24 rounded style. Variants: `.accent` (purple hover), `.danger` (red hover), `.close-btn` (bold ×)
 - **Null-guard `it.text`** — always use `(it.text||'')` in templates
-- **Filter tags**: built-in (dashed border), custom groups (solid border)
+- **Filter tags**: shared app/site UI. Left click includes a filter, right click excludes it, and the global clear X resets search plus include/exclude filters.
 - **Confirm dialog** shared between numpad reassign, group delete, and clear all
 - **Settings auto-save** — max age/size save on input change, no Save button
 - **Dev auto-reload** — `fs.watch` on `index.html` triggers `reloadIgnoringCache()` (debounced 300ms)

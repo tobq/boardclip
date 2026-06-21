@@ -66,7 +66,7 @@ when you intentionally want Git to autostash local code changes.
 - Hotkey popup: Cmd+Shift+V on macOS, Win+V on Windows.
 - Text and image history with automatic deduplication.
 - Numpad quick-paste slots 1-9 for snippets you reuse constantly.
-- Pins and groups for keeping durable clips organized.
+- Pins and groups for keeping durable clips organized, with include/exclude filters.
 - Native cloud sync through Google Drive, OneDrive, and iCloud folders.
 - Regex search, external editor support, and image export.
 - Local-first data: no hosted clipboard database or BoardClip account.

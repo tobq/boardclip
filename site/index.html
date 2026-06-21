@@ -299,7 +299,7 @@
     });
     let clips = Core.sortItems(seedClips);
 
-    const state = { filters: new Set(), query: "", regex: false };
+    const state = { filters: new Set(), excludedFilters: new Set(), query: "", regex: false };
     const installState = { mode: "installer", downloadOS: "win" };
     const clipList = document.getElementById("clip-list");
     const clipCount = document.getElementById("clip-count");
@@ -413,6 +413,7 @@
         items: clips,
         groups: ["work", "code", "support", "ideas"],
         activeFilters: state.filters,
+        excludedFilters: state.excludedFilters,
         query: state.query,
       });
     }
@@ -534,13 +535,13 @@
 
     function updateClearControls() {
       clearSearch.classList.toggle("show", Boolean(state.query));
-      clearSearch.title = state.filters.size ? "Clear search and filters" : "Clear search";
+      clearSearch.title = Core.hasActiveFilters(state) ? "Clear search and filters" : "Clear search";
     }
 
     function clearSearchAndFilters() {
       search.value = "";
       state.query = "";
-      state.filters.clear();
+      Core.clearFilterState(state);
       updateClearControls();
       renderClips();
     }
@@ -621,6 +622,17 @@
       if (text) window.setTimeout(() => addCopiedText(text), 0);
     });
 
+    function handleDemoFilterIntent(event, intent) {
+      const button = event.target.closest(".filter-tag[data-filter], .filter-tag[data-group]");
+      if (!button || event.target.closest("[data-action='delete-group']")) return false;
+      const filter = button.dataset.filter || button.dataset.group;
+      if (!filter) return false;
+      event.stopPropagation();
+      Core.applyFilterIntent(state, filter, intent);
+      renderClips();
+      return true;
+    }
+
     filterChips.addEventListener("click", (event) => {
       const clear = event.target.closest("[data-action='clear-search-filters']");
       if (clear) {
@@ -633,6 +645,7 @@
         event.stopPropagation();
         const group = groupDelete.dataset.group;
         state.filters.delete(group);
+        state.excludedFilters.delete(group);
         labels = labels.filter((label) => label !== group);
         clips = clips.map((clip) => {
           if (!clip.pin || !Array.isArray(clip.pin.groups)) return clip;
@@ -645,12 +658,13 @@
         renderClips();
         return;
       }
-      const button = event.target.closest(".filter-tag[data-filter], .filter-tag[data-group]");
-      if (!button) return;
-      const filter = button.dataset.filter || button.dataset.group;
-      if (state.filters.has(filter)) state.filters.delete(filter);
-      else state.filters.add(filter);
-      renderClips();
+      handleDemoFilterIntent(event, "include");
+    });
+
+    filterChips.addEventListener("contextmenu", (event) => {
+      if (handleDemoFilterIntent(event, "exclude")) {
+        event.preventDefault();
+      }
     });
 
     search.addEventListener("input", () => {

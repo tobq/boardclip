@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Approve AI action</title>
+<script>
+  document.documentElement.dataset.theme = matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+</script>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL@20..48,400,1&display=swap" rel="stylesheet">
+<style>
+  /* Tokens copied from the app so the modal matches BoardClip exactly. */
+  :root { color-scheme:dark; --bg:#0c0c0c; --surface:#131313; --surface2:#1a1a1a; --input:#0a0a0a; --text:#ccc; --text-dim:#777;
+          --line:#222; --line-strong:#333; --accent:#a78bfa; --accent-bg:#1a1030; --green:#34d399; --red:#f87171; --red-bg:#2a1414; --shadow:rgba(0,0,0,.5); }
+  :root[data-theme="light"] { color-scheme:light; --bg:#f4f4f5; --surface:#fff; --surface2:#f4f4f5; --input:#fff; --text:#18181b; --text-dim:#71717a;
+          --line:#e4e4e7; --line-strong:#d4d4d8; --accent:#7c3aed; --accent-bg:#f1ecff; --green:#059669; --red:#dc2626; --red-bg:#fdeaea; --shadow:rgba(24,24,27,.14); }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html, body { background:var(--surface); }
+  body { font-family:'Segoe UI',system-ui,sans-serif; color:var(--text); user-select:none; overflow:hidden; }
+  .bar { -webkit-app-region:drag; height:24px; display:flex; align-items:center; padding:0 14px; color:var(--text-dim); font-size:9.5px; letter-spacing:.06em; text-transform:uppercase; }
+  .wrap { padding:2px 16px 15px; display:flex; flex-direction:column; gap:11px; }
+  .head { display:flex; gap:11px; align-items:flex-start; }
+  .badge { width:34px; height:34px; border-radius:9px; flex-shrink:0; display:flex; align-items:center; justify-content:center;
+           background:var(--accent-bg); color:var(--accent); }
+  .badge .mi { font-family:'Material Symbols Rounded'; font-size:19px; line-height:1; }
+  .badge.danger { background:var(--red-bg); color:var(--red); }
+  h1 { font-size:14px; font-weight:600; line-height:1.3; }
+  .who { font-size:11px; color:var(--text-dim); margin-top:2px; line-height:1.4; }
+  .who b { color:var(--text); font-weight:600; }
+  .card { background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:9px 11px; }
+  .card .label { font-size:9px; text-transform:uppercase; letter-spacing:.06em; color:var(--text-dim); margin-bottom:5px; }
+  .detail { font-family:'Cascadia Code',Consolas,monospace; font-size:11px; line-height:1.5; color:var(--text);
+            white-space:pre-wrap; word-break:break-word; max-height:96px; overflow:auto; }
+  .detail.empty { color:var(--text-dim); font-style:italic; font-family:inherit; }
+  .meter { height:3px; border-radius:2px; background:var(--line); overflow:hidden; }
+  .meter > span { display:block; height:100%; width:100%; background:var(--accent); transition:width 1s linear; }
+  .meter.danger > span { background:var(--red); }
+  .countdown { font-size:10.5px; color:var(--text-dim); display:flex; justify-content:space-between; margin-top:6px; }
+  .acts { display:flex; flex-direction:column; gap:7px; margin-top:1px; }
+  .row2 { display:flex; gap:7px; }
+  button { font:inherit; border-radius:6px; cursor:pointer; transition:all .12s; border:1px solid var(--line-strong); background:var(--surface2); color:var(--text); }
+  .primary { padding:9px; font-size:12.5px; font-weight:600; background:var(--accent); border-color:var(--accent); color:#fff; }
+  .primary:hover { filter:brightness(1.08); }
+  .primary.danger { background:var(--red); border-color:var(--red); }
+  .row2 button { flex:1; padding:7px; font-size:11.5px; font-weight:500; color:var(--text-dim); }
+  .row2 button:hover { border-color:var(--accent); color:var(--text); }
+  .deny { padding:7px; font-size:11.5px; font-weight:500; color:var(--text-dim); }
+  .deny:hover { border-color:var(--red); color:var(--red); }
+</style></head>
+<body>
+  <div class="bar">BoardClip - AI action</div>
+  <div class="wrap" id="wrap">
+    <div class="head">
+      <div class="badge" id="badge"><span class="mi" id="badgeIcon">smart_toy</span></div>
+      <div>
+        <h1 id="title">An AI assistant wants to act</h1>
+        <div class="who"><b id="client">an AI assistant</b> requested this via BoardClip's MCP server.</div>
+      </div>
+    </div>
+    <div class="card" id="detailCard">
+      <div class="label" id="detailLabel">What it will do</div>
+      <div class="detail" id="detail"></div>
+    </div>
+    <div>
+      <div class="meter" id="meter"><span id="meterBar"></span></div>
+      <div class="countdown"><span>Denies automatically if you don't respond</span><span id="countNum"></span></div>
+    </div>
+    <div class="acts">
+      <button class="primary" id="allowOnce">Allow once</button>
+      <div class="row2">
+        <button id="allowSession">This session</button>
+        <button id="allowAlways">Always allow</button>
+      </div>
+      <button class="deny" id="deny">Deny</button>
+    </div>
+  </div>
+
+<script>
+  const $ = id => document.getElementById(id);
+  let current = null, remaining = 60, timer = null, decided = false;
+  const ICONS = {
+    delete_clip:'delete', copy_to_clipboard:'content_paste', paste_clip:'content_paste_go',
+    add_clip:'add', pin_clip:'push_pin', set_numpad:'dialpad', assign_group:'folder',
+    create_group:'create_new_folder', delete_group:'folder_delete', read_clip:'lock_open',
+    search_all:'search', image_path:'image',
+  };
+
+  function fit() {
+    const h = Math.ceil(document.getElementById('wrap').getBoundingClientRect().bottom) + 4;
+    if (window.approval && window.approval.resize) window.approval.resize(h);
+  }
+  function decide(choice) {
+    if (decided || !current) return;
+    decided = true;
+    if (timer) clearInterval(timer);
+    window.approval.decide(current.id, choice);
+  }
+  function tick() {
+    remaining -= 1;
+    $('countNum').textContent = remaining + 's';
+    $('meterBar').style.width = Math.max(0, (remaining / (current.timeoutSec || 60)) * 100) + '%';
+    if (remaining <= 0) decide('timeout');
+  }
+
+  window.approval.onRequest(req => {
+    current = req;
+    remaining = req.timeoutSec || 60;
+    const danger = !!req.danger;
+    $('title').textContent = req.title || 'An AI assistant wants to act';
+    $('client').textContent = req.client || 'an AI assistant';
+    $('badgeIcon').textContent = ICONS[req.tool] || 'smart_toy';
+    $('badge').classList.toggle('danger', danger);
+    $('meter').classList.toggle('danger', danger);
+    $('allowOnce').classList.toggle('danger', danger);
+    const detail = (req.detail || '').trim();
+    // No preview to show -> hide the whole card rather than show an empty placeholder.
+    if (detail) { $('detail').textContent = detail; $('detailCard').style.display = ''; }
+    else { $('detailCard').style.display = 'none'; }
+    $('countNum').textContent = remaining + 's';
+    timer = setInterval(tick, 1000);
+    requestAnimationFrame(fit);
+  });
+
+  $('allowOnce').onclick = () => decide('once');
+  $('allowSession').onclick = () => decide('session');
+  $('allowAlways').onclick = () => decide('always');
+  $('deny').onclick = () => decide('deny');
+  window.addEventListener('keydown', e => { if (e.key === 'Escape') decide('deny'); if (e.key === 'Enter') decide('once'); });
+</script>
+</body></html>

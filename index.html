@@ -78,6 +78,21 @@
   .sync-status.error, .settings-status.error { color:var(--red); }
   .build-info { display:flex; flex-direction:column; gap:2px; min-width:0; max-width:100%; overflow:hidden; font-size:10px; color:var(--text-dim); margin-top:12px; font-family:'Cascadia Code','Consolas',monospace; }
   .build-info-line { display:block; max-width:100%; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  /* AI Access */
+  .ai-hint { font-size:11px; color:var(--text-dim); line-height:1.5; margin:2px 0 8px; }
+  .ai-hint b { color:var(--accent); font-weight:600; }
+  .ai-subhead { font-size:10px; text-transform:uppercase; letter-spacing:.05em; color:var(--text-dim); margin:12px 0 5px; font-weight:600; }
+  .ai-client-row { display:flex; align-items:center; gap:8px; padding:5px 0; font-size:12px; }
+  .ai-client-row input { width:auto; accent-color:var(--accent); flex-shrink:0; cursor:pointer; }
+  .ai-client-row .ai-client-name { flex:1; color:var(--text); }
+  .ai-client-row.undetected .ai-client-name { color:var(--text-dim); }
+  .ai-dot { width:7px; height:7px; border-radius:50%; background:var(--line-strong); flex-shrink:0; }
+  .ai-dot.on { background:var(--green); }
+  .ai-secret-row, .ai-grant-row { display:flex; align-items:center; gap:8px; padding:5px 0; font-size:12px; border-top:1px solid var(--line-soft); }
+  .ai-secret-row .ai-secret-prev { flex:1; font-family:"Cascadia Code",monospace; font-size:11px; color:var(--text-dim); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .ai-grant-row .ai-grant-name { flex:1; font-family:"Cascadia Code",monospace; font-size:11px; color:var(--text); }
+  .gp-share { color:var(--text-dim); }
+  .gp-share.on { color:var(--accent); }
 </style></head><body>
 
 <div id="popupShell"></div>
@@ -180,6 +195,27 @@ document.getElementById('popupShell').innerHTML = Core.renderPopupShell({
         <span class="switch" aria-hidden="true"></span>
       </label>
       <div class="settings-status" id="diagnosticsStatus"></div>
+    </div>
+    <div class="settings-section">
+      <h3>AI Access</h3>
+      <label class="setting-row switch-row" for="aiAccessEnabled">
+        <span>Let local AI assistants use BoardClip</span>
+        <input id="aiAccessEnabled" type="checkbox">
+        <span class="switch" aria-hidden="true"></span>
+      </label>
+      <div class="settings-status" id="aiAccessStatus"></div>
+      <div id="aiAccessBody" class="hidden">
+        <div class="ai-hint">AI assistants can read clips in groups you share, and act with your approval. Drop clips into the <b>AI</b> group (or share any group below) to expose them.</div>
+        <div class="ai-subhead">Installed in</div>
+        <div id="aiClients"></div>
+        <button class="settings-secondary" id="aiMoreClients" type="button" style="display:none"></button>
+        <div id="aiClientsMore" class="hidden"></div>
+        <div class="ai-subhead" id="aiSecretsHead" style="display:none">Hidden from AI (look like secrets)</div>
+        <div id="aiSecrets"></div>
+        <div class="ai-subhead" id="aiAlwaysHead" style="display:none">Always allowed actions</div>
+        <div id="aiAlwaysAllow"></div>
+        <div class="setting-row"><label>Approval timeout (seconds)</label><input id="aiTimeout" type="number" min="5" max="600" step="5"></div>
+      </div>
     </div>
     <div class="settings-section">
       <h3>Groups</h3>
@@ -1210,16 +1246,30 @@ async function openSettings() {
     });
   });
 
+  // AI Access (renders before groups so the shared-group set is ready)
+  await renderAiAccess();
+
   // Group slots
   const groupsEl = document.getElementById('groupSlots');
   groupsEl.innerHTML = '';
   groups.forEach(g => {
     const count = groupCounts.get(g) || 0;
+    const shared = aiSharedGroups.has(g);
+    const isAiGroup = g === aiGroupName;
     groupsEl.innerHTML += `<div class="group-slot">
       <span class="gp-name">${esc(g)}</span>
       <span class="gp-count">${count} item${count!==1?'s':''}</span>
-      <button class="icon-btn gp-del" data-group="${esc(g)}" title="Delete group"><span class="mi">close</span></button>
+      <button class="icon-btn gp-share${shared?' on':''}" data-group="${esc(g)}" title="${shared?'Shared with AI - click to stop sharing':'Share this group with AI'}"><span class="mi">smart_toy</span></button>
+      <button class="icon-btn gp-del" data-group="${esc(g)}" title="Delete group"${isAiGroup?' style="visibility:hidden"':''}><span class="mi">close</span></button>
     </div>`;
+  });
+  groupsEl.querySelectorAll('.gp-share').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const g = btn.dataset.group;
+      await window.api.setGroupSharedAi(g, !aiSharedGroups.has(g));
+      openSettings();
+    });
   });
   groupsEl.querySelectorAll('.gp-del').forEach(btn => {
     btn.addEventListener('click', async (e) => {
@@ -1241,6 +1291,133 @@ function closeSettings() {
   document.getElementById('settingsView').classList.remove('show');
   document.getElementById('mainView').classList.remove('hidden');
   searchEl.focus();
+}
+
+// --- AI Access (MCP) ---
+let aiSharedGroups = new Set();
+let aiGroupName = 'AI';
+
+async function renderAiAccess() {
+  const st = await window.api.getAiAccess().catch(() => null);
+  if (!st) return;
+  applyAiAccess(st);
+  document.getElementById('aiAccessEnabled').onchange = async (e) => {
+    document.getElementById('aiAccessStatus').textContent = e.target.checked ? 'Starting…' : 'Turning off…';
+    const next = await window.api.setAiAccessEnabled(e.target.checked).catch(() => null);
+    if (next) { await refreshGroupsAndList(); openSettings(); }
+  };
+  document.getElementById('aiTimeout').onchange = async (e) => {
+    const next = await window.api.setAiApprovalTimeout(parseInt(e.target.value) || 60).catch(() => null);
+    if (next) applyAiAccess(next);
+  };
+  document.getElementById('aiMoreClients').onclick = () => {
+    document.getElementById('aiClientsMore').classList.toggle('hidden');
+  };
+}
+
+function applyAiAccess(st) {
+  aiSharedGroups = new Set(st.sharedGroups || []);
+  aiGroupName = st.aiGroup || 'AI';
+  document.getElementById('aiAccessEnabled').checked = !!st.enabled;
+  document.getElementById('aiAccessBody').classList.toggle('hidden', !st.enabled);
+  const statusEl = document.getElementById('aiAccessStatus');
+  statusEl.textContent = st.enabled ? (st.running ? 'Active - assistants can connect' : 'Enabled') : 'Off';
+  statusEl.className = 'settings-status' + (st.enabled ? ' active' : '');
+  document.getElementById('aiTimeout').value = st.timeoutSec;
+  renderAiClients(st);
+  renderAiAlwaysAllow(st);
+  renderAiSecrets();
+}
+
+function aiClientRow(c) {
+  const row = document.createElement('label');
+  row.className = 'ai-client-row' + (c.detected ? '' : ' undetected');
+  const cb = document.createElement('input');
+  cb.type = 'checkbox';
+  cb.checked = !!c.enabled;
+  cb.onchange = async () => {
+    const next = await window.api.setMcpClientEnabled(c.id, cb.checked).catch(() => null);
+    if (next) applyAiAccess(next);
+  };
+  const dot = document.createElement('span');
+  dot.className = 'ai-dot' + (c.enabled ? ' on' : '');
+  const name = document.createElement('span');
+  name.className = 'ai-client-name';
+  name.textContent = c.label + (c.detected ? '' : ' (not detected)');
+  row.append(cb, dot, name);
+  return row;
+}
+
+function renderAiClients(st) {
+  const clients = st.clients || [];
+  const detected = clients.filter(c => c.detected);
+  const undetected = clients.filter(c => !c.detected);
+  const wrap = document.getElementById('aiClients');
+  wrap.innerHTML = '';
+  if (!detected.length) wrap.innerHTML = '<div class="settings-status">No AI clients detected on this machine.</div>';
+  detected.forEach(c => wrap.appendChild(aiClientRow(c)));
+  const moreWrap = document.getElementById('aiClientsMore');
+  moreWrap.innerHTML = '';
+  undetected.forEach(c => moreWrap.appendChild(aiClientRow(c)));
+  const moreBtn = document.getElementById('aiMoreClients');
+  if (undetected.length) { moreBtn.style.display = ''; moreBtn.textContent = `More clients (${undetected.length})`; }
+  else { moreBtn.style.display = 'none'; moreWrap.classList.add('hidden'); }
+}
+
+function renderAiAlwaysAllow(st) {
+  const head = document.getElementById('aiAlwaysHead');
+  const wrap = document.getElementById('aiAlwaysAllow');
+  wrap.innerHTML = '';
+  const grants = st.alwaysAllow || [];
+  head.style.display = grants.length ? '' : 'none';
+  grants.forEach(tool => {
+    const row = document.createElement('div');
+    row.className = 'ai-grant-row';
+    const name = document.createElement('span');
+    name.className = 'ai-grant-name';
+    name.textContent = tool;
+    const btn = document.createElement('button');
+    btn.className = 'icon-btn danger';
+    btn.title = 'Revoke';
+    btn.innerHTML = '<span class="mi">close</span>';
+    btn.onclick = async () => { const next = await window.api.revokeAiAlwaysAllow(tool).catch(() => null); if (next) applyAiAccess(next); };
+    row.append(name, btn);
+    wrap.appendChild(row);
+  });
+}
+
+async function renderAiSecrets() {
+  const head = document.getElementById('aiSecretsHead');
+  const wrap = document.getElementById('aiSecrets');
+  wrap.innerHTML = '';
+  const ids = await window.api.getAiSecretIds().catch(() => []);
+  const shown = [];
+  for (const id of ids) {
+    const it = itemById(id);
+    if (!it) continue;
+    const inShared = groupsOf(it).some(g => aiSharedGroups.has(g));
+    if (inShared) shown.push(it);
+  }
+  head.style.display = shown.length ? '' : 'none';
+  shown.forEach(it => {
+    const row = document.createElement('div');
+    row.className = 'ai-secret-row';
+    const prev = document.createElement('span');
+    prev.className = 'ai-secret-prev';
+    prev.textContent = (it.text || '').replace(/\n/g, ' ').slice(0, 60) || '[secret]';
+    const btn = document.createElement('button');
+    btn.className = 'settings-secondary';
+    btn.textContent = 'Share anyway';
+    btn.onclick = async () => { await window.api.setClipShareAnyway(it.id, true); renderAiSecrets(); };
+    row.append(prev, btn);
+    wrap.appendChild(row);
+  });
+}
+
+if (window.api && window.api.onAiAccessChanged) {
+  window.api.onAiAccessChanged(() => {
+    if (document.getElementById('settingsView').classList.contains('show')) renderAiAccess();
+  });
 }
 
 

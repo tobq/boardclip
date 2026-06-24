@@ -50,4 +50,18 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.on('color-scheme-changed', listener);
     return () => ipcRenderer.removeListener('color-scheme-changed', listener);
   },
+  // AI Access (MCP)
+  getAiAccess: () => ipcRenderer.invoke('get-ai-access'),
+  setAiAccessEnabled: (enabled) => ipcRenderer.invoke('set-ai-access-enabled', enabled),
+  setMcpClientEnabled: (id, enabled) => ipcRenderer.invoke('set-mcp-client-enabled', id, enabled),
+  setGroupSharedAi: (name, shared) => ipcRenderer.invoke('set-group-shared-ai', name, shared),
+  revokeAiAlwaysAllow: (tool) => ipcRenderer.invoke('revoke-ai-always-allow', tool),
+  setAiApprovalTimeout: (sec) => ipcRenderer.invoke('set-ai-approval-timeout', sec),
+  getAiSecretIds: () => ipcRenderer.invoke('get-ai-secret-ids'),
+  setClipShareAnyway: (id, value) => ipcRenderer.invoke('set-clip-share-anyway', id, value),
+  onAiAccessChanged: (callback) => {
+    const listener = () => callback();
+    ipcRenderer.on('ai-access-changed', listener);
+    return () => ipcRenderer.removeListener('ai-access-changed', listener);
+  },
 });

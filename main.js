@@ -22,6 +22,12 @@ const { createAutoUpdater, updateSupport } = require('./lib/auto-update');
 const syncPaths = require('./lib/sync-paths');
 const { Diagnostics } = require('./lib/diagnostics');
 const { ensureDirectory } = require('./lib/ensure-directory');
+const hmacAuth = require('./lib/hmac-auth');
+const mcpCore = require('./lib/mcp-core');
+const mcpPaths = require('./lib/mcp-paths');
+const mcpInstallers = require('./lib/mcp-installers');
+const secretGuard = require('./lib/secret-guard');
+const { ControlServer } = require('./lib/control-server');
 
 function guardBrokenPipe(stream) {
   try {
@@ -48,7 +54,10 @@ app.setName('BoardClip');
 
 // --- Paths ---
 const SCRIPT_DIR = __dirname;
-const DATA_DIR = app.isPackaged ? app.getPath('userData') : SCRIPT_DIR;
+// BOARDCLIP_DATA_DIR points the app at a custom data directory (used for an
+// isolated test/second instance, or to relocate data); otherwise packaged builds
+// use Electron's per-user data dir and source checkouts use the checkout itself.
+const DATA_DIR = process.env.BOARDCLIP_DATA_DIR || (app.isPackaged ? app.getPath('userData') : SCRIPT_DIR);
 const DB_PATH = path.join(DATA_DIR, 'clipboard-history.json');
 const SETTINGS_PATH = path.join(DATA_DIR, 'clipboard-settings.json');
 const IMG_DIR = path.join(DATA_DIR, 'clipboard-images');
@@ -765,6 +774,12 @@ function remoteSettingsPayload() {
   delete remoteSave.quick_paste_shortcut;
   delete remoteSave.p2p_device_id;
   delete remoteSave.popup_size;
+  // AI Access: per-machine, never synced. (groups_shared_with_ai DOES sync - it
+  // is user curation that should travel between machines.)
+  delete remoteSave.mcp_secret;
+  delete remoteSave.ai_access_enabled;
+  delete remoteSave.ai_always_allow;
+  delete remoteSave.ai_approval_timeout_sec;
   return remoteSave;
 }
 
@@ -1262,12 +1277,8 @@ function p2pSecretHash() {
   return crypto.createHash('sha256').update(String(settings.p2p_secret || '')).digest('hex').slice(0, 16);
 }
 
-function p2pHmac(payload) {
-  return crypto.createHmac('sha256', String(settings.p2p_secret || '')).update(payload).digest('hex');
-}
-
 function p2pSignature(method, requestPath, timestamp, bodyHash) {
-  return p2pHmac(`${method}\n${requestPath}\n${timestamp}\n${bodyHash || ''}`);
+  return hmacAuth.sign(settings.p2p_secret, method, requestPath, timestamp, bodyHash);
 }
 
 function safeImageName(name) {
@@ -1330,16 +1341,14 @@ function p2pStatePayload() {
 }
 
 function p2pVerifyRequest(req, bodyBuffer) {
-  const timestamp = Number(req.headers['x-boardclip-ts']) || 0;
-  if (!timestamp || Math.abs(Date.now() - timestamp) > P2P_AUTH_WINDOW_MS) return false;
-  const signature = String(req.headers['x-boardclip-sig'] || '');
-  const bodyHash = crypto.createHash('sha256').update(bodyBuffer || Buffer.alloc(0)).digest('hex');
-  const expected = p2pSignature(req.method, req.url, timestamp, bodyHash);
-  try {
-    return crypto.timingSafeEqual(Buffer.from(signature, 'hex'), Buffer.from(expected, 'hex'));
-  } catch {
-    return false;
-  }
+  return hmacAuth.verify(settings.p2p_secret, {
+    method: req.method,
+    path: req.url,
+    timestamp: Number(req.headers['x-boardclip-ts']) || 0,
+    signature: String(req.headers['x-boardclip-sig'] || ''),
+    body: bodyBuffer || Buffer.alloc(0),
+    windowMs: P2P_AUTH_WINDOW_MS,
+  });
 }
 
 function p2pSendJson(res, status, payload) {
@@ -1454,13 +1463,7 @@ function p2pRequestHandler(req, res) {
 }
 
 function p2pAuthHeaders(method, requestPath, body = Buffer.alloc(0)) {
-  const timestamp = Date.now();
-  const bodyHash = crypto.createHash('sha256').update(body).digest('hex');
-  return {
-    'x-boardclip-device': settings.p2p_device_id,
-    'x-boardclip-ts': String(timestamp),
-    'x-boardclip-sig': p2pSignature(method, requestPath, timestamp, bodyHash),
-  };
+  return hmacAuth.signedHeaders(settings.p2p_secret, settings.p2p_device_id, method, requestPath, body);
 }
 
 function p2pHttpRequest(peer, requestPath, { binary = false, method = 'GET', body = Buffer.alloc(0) } = {}) {
@@ -2880,6 +2883,475 @@ function openEditor(id) {
   proc.unref();
 }
 
+// ===========================================================================
+// AI Access - local MCP server
+//
+// The standalone stdio MCP helper (mcp/boardclip-mcp.js) reads shared clips
+// straight from the data files. For anything beyond the allowlist, any mutation,
+// and any clipboard write, it calls this process over the local control channel
+// (named pipe / Unix socket), where the action is gated behind the approval
+// modal. All mutation logic is REUSED from the apply* helpers below, which the
+// IPC handlers also use - no duplication.
+// ===========================================================================
+
+// ---- Reusable mutation primitives (shared by IPC + MCP) ----
+function applyPinToggle(id) {
+  const item = findHistoryItem(id);
+  if (!item) return false;
+  if (!item.pin) {
+    item.pin = {};
+  } else if (typeof item.pin.number === 'number') {
+    delete item.pin.number;
+    touchPinNumber(item);
+    saveHistory();
+    return true;
+  } else {
+    item.pin = null;
+  }
+  touchPin(item);
+  saveHistory();
+  return true;
+}
+
+function applyNumpadAssign(id, slot) {
+  const item = findHistoryItem(id);
+  if (typeof slot !== 'number' || slot < 1 || slot > 9 || !item) return false;
+  const now = Date.now();
+  for (const h of history) {
+    if (hasNumpadSlot(h, slot)) {
+      delete h.pin.number;
+      touchPinNumber(h, now);
+    }
+  }
+  const pin = ensurePin(item);
+  pin.number = slot;
+  touchPinNumber(item, now);
+  saveHistory();
+  return true;
+}
+
+function applyGroupCreate(name) {
+  if (!name) return false;
+  if (!settings.groups) settings.groups = [];
+  settings.group_tombstones = normalizeGroupTombstones(settings.group_tombstones)
+    .filter(t => t.name !== name);
+  if (!settings.groups.includes(name)) settings.groups.push(name);
+  saveSettingsFile();
+  return true;
+}
+
+function applyGroupDelete(name) {
+  const groups = settings.groups || [];
+  const idx = groups.indexOf(name);
+  if (idx < 0) return false;
+  addGroupTombstone(name);
+  groups.splice(idx, 1);
+  const now = Date.now();
+  for (const h of history) {
+    if (h.pin && h.pin.groups) {
+      h.pin.groups = h.pin.groups.filter(g => g !== name);
+      if (h.pin.groups.length === 0) delete h.pin.groups;
+      touchPinGroups(h, now);
+    }
+  }
+  // Keep the AI-share allowlist consistent when a group is removed.
+  if (Array.isArray(settings.groups_shared_with_ai)) {
+    settings.groups_shared_with_ai = settings.groups_shared_with_ai.filter(g => g !== name);
+  }
+  saveSettingsFile();
+  saveHistory();
+  return true;
+}
+
+// Toggle membership in a group. Multi-group: an item can belong to many.
+function applyGroupAssign(id, group) {
+  const item = findHistoryItem(id);
+  if (!item || !group) return false;
+  const pin = ensurePin(item);
+  if (!pin.groups) pin.groups = [];
+  const gIdx = pin.groups.indexOf(group);
+  if (gIdx >= 0) {
+    pin.groups.splice(gIdx, 1);
+    if (pin.groups.length === 0) delete pin.groups;
+  } else {
+    pin.groups.push(group);
+  }
+  touchPinGroups(item);
+  saveHistory();
+  return true;
+}
+
+function applyDeleteItem(id) {
+  const index = findHistoryIndex(id);
+  if (index < 0) return false;
+  deleteHistoryIndex(index);
+  saveSettingsFile();
+  saveHistory();
+  return true;
+}
+
+function applyAddText(text, group) {
+  const value = String(text || '');
+  if (!value) return false;
+  addToHistory({ type: 'text', text: value, ts: Date.now() / 1000 }, it => it.type !== 'image' && it.text === value);
+  if (group) {
+    const item = history.find(it => it.type !== 'image' && it.text === value);
+    if (item) {
+      if (!settings.groups || !settings.groups.includes(group)) applyGroupCreate(group);
+      const pin = ensurePin(item);
+      if (!pin.groups) pin.groups = [];
+      if (!pin.groups.includes(group)) {
+        pin.groups.push(group);
+        touchPinGroups(item);
+        saveHistory();
+      }
+    }
+  }
+  return true;
+}
+
+// ---- MCP identity + runtime command ----
+function ensureMcpIdentity() {
+  if (!settings.mcp_secret) {
+    settings.mcp_secret = crypto.randomBytes(32).toString('hex');
+    return true;
+  }
+  return false;
+}
+
+// The exact command an MCP client should spawn. Electron-as-node works for both
+// source checkouts and packaged builds (no `node` on PATH required, pure-JS
+// requires resolve through asar), so one unified command covers every install.
+function mcpRuntimeCommand() {
+  const entry = path.join(SCRIPT_DIR, 'mcp', 'boardclip-mcp.js');
+  return { command: process.execPath, args: [entry], env: { ELECTRON_RUN_AS_NODE: '1' } };
+}
+
+// ---- Control server lifecycle ----
+let mcpControlServer = null;
+const mcpSessionAllow = new Set();
+let approvalSeq = 0;
+const pendingApprovals = new Map();
+
+function clampApprovalTimeout(value) {
+  const n = Math.round(Number(value));
+  if (!Number.isFinite(n)) return 60;
+  return Math.min(600, Math.max(5, n));
+}
+
+function writeMcpDiscovery(pipePath) {
+  const cmd = mcpRuntimeCommand();
+  try {
+    mcpPaths.writeDiscovery({
+      dataDir: DATA_DIR,
+      pipePath,
+      secret: settings.mcp_secret,
+      appVersion: BUILD_INFO.label,
+      command: cmd.command,
+      args: cmd.args,
+      env: cmd.env,
+      pid: process.pid,
+    });
+  } catch (error) {
+    diagnostics.record('mcp.discovery.write_failed', { error: error && error.message }, { forceFile: true });
+  }
+}
+
+async function startMcpControlServer() {
+  if (mcpControlServer) return;
+  if (ensureMcpIdentity()) saveSettingsFile();
+  const pipePath = mcpPaths.defaultPipePath();
+  const server = new ControlServer({
+    pipePath,
+    secret: settings.mcp_secret,
+    handleRequest: mcpHandleRequest,
+    onError: error => diagnostics.record('mcp.control.error', { error: error && error.message }, { forceFile: true }),
+  });
+  try {
+    await server.start();
+    mcpControlServer = server;
+    writeMcpDiscovery(pipePath);
+    diagnostics.record('mcp.control.started', { pipe: pipePath }, { forceFile: true });
+  } catch (error) {
+    diagnostics.record('mcp.control.start_failed', { error: error && error.message }, { forceFile: true });
+  }
+}
+
+async function stopMcpControlServer() {
+  if (mcpControlServer) {
+    try { await mcpControlServer.stop(); } catch {}
+    mcpControlServer = null;
+  }
+  mcpPaths.clearDiscovery();
+}
+
+// ---- Client registration ----
+function mcpAutoRegister() {
+  try { return mcpInstallers.enableDetected(mcpRuntimeCommand()); } catch { return []; }
+}
+
+function mcpUnregisterAll() {
+  try { mcpInstallers.disableAll(); } catch {}
+}
+
+// ---- Allowlist / AI group ----
+function ensureAiGroupShared() {
+  let changed = false;
+  if (!settings.groups) settings.groups = [];
+  if (!settings.groups.includes(mcpCore.AI_GROUP_NAME)) {
+    applyGroupCreate(mcpCore.AI_GROUP_NAME);
+  }
+  if (!Array.isArray(settings.groups_shared_with_ai)) settings.groups_shared_with_ai = [];
+  if (!settings.groups_shared_with_ai.includes(mcpCore.AI_GROUP_NAME)) {
+    settings.groups_shared_with_ai.push(mcpCore.AI_GROUP_NAME);
+    changed = true;
+  }
+  if (changed) saveSettingsFile();
+}
+
+function setGroupSharedWithAi(name, shared) {
+  if (!name) return;
+  if (!Array.isArray(settings.groups_shared_with_ai)) settings.groups_shared_with_ai = [];
+  const has = settings.groups_shared_with_ai.includes(name);
+  if (shared && !has) settings.groups_shared_with_ai.push(name);
+  else if (!shared && has) settings.groups_shared_with_ai = settings.groups_shared_with_ai.filter(g => g !== name);
+  else return;
+  saveSettingsFile();
+  notifyAiAccessChanged();
+}
+
+function isItemSharedWithAi(item) {
+  return item ? mcpCore.isShared(item, mcpCore.sharedGroupSet(settings)) : false;
+}
+
+async function setAiAccessEnabled(enabled) {
+  settings.ai_access_enabled = !!enabled;
+  saveSettingsFile();
+  if (settings.ai_access_enabled) {
+    ensureAiGroupShared();
+    await startMcpControlServer();
+    mcpAutoRegister();
+  } else {
+    await stopMcpControlServer();
+    mcpUnregisterAll();
+  }
+  notifyAiAccessChanged();
+  return aiAccessState();
+}
+
+function aiAccessState() {
+  return {
+    enabled: !!settings.ai_access_enabled,
+    running: !!mcpControlServer,
+    clients: mcpInstallers.statuses(),
+    sharedGroups: Array.isArray(settings.groups_shared_with_ai) ? settings.groups_shared_with_ai.slice() : [],
+    aiGroup: mcpCore.AI_GROUP_NAME,
+    alwaysAllow: Array.isArray(settings.ai_always_allow) ? settings.ai_always_allow.slice() : [],
+    timeoutSec: clampApprovalTimeout(settings.ai_approval_timeout_sec),
+    command: mcpRuntimeCommand(),
+  };
+}
+
+function notifyAiAccessChanged() {
+  if (win && !win.isDestroyed()) {
+    try { win.webContents.send('ai-access-changed'); } catch {}
+  }
+}
+
+// Ids of clips the secret guard would withhold - surfaced so the UI can badge
+// risky clips. Computed on a copy; never mutates or persists the history items.
+function aiSecretFlags() {
+  const ids = [];
+  for (const item of history) {
+    if (item.type === 'image' || item.shareAnyway) continue;
+    if (secretGuard.isLikelySecret(item.text != null ? item.text : item.textPreview)) ids.push(itemKey(item));
+  }
+  return ids;
+}
+
+// ---- Approval modal ----
+function requestApproval(request) {
+  return new Promise(resolve => {
+    const id = `appr-${++approvalSeq}`;
+    const timeoutSec = clampApprovalTimeout(settings.ai_approval_timeout_sec);
+    const payload = { ...request, id, timeoutSec };
+    let settled = false;
+    const finish = decision => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      pendingApprovals.delete(id);
+      try { if (modal && !modal.isDestroyed()) modal.close(); } catch {}
+      diagnostics.record('mcp.approval', { tool: request.tool, client: request.client, decision }, { forceFile: true });
+      resolve(decision);
+    };
+    const timer = setTimeout(() => finish('timeout'), (timeoutSec + 3) * 1000);
+
+    const modal = new BrowserWindow({
+      width: 440,
+      height: 360,
+      useContentSize: true,
+      frame: false,
+      resizable: false,
+      maximizable: false,
+      fullscreenable: false,
+      alwaysOnTop: true,
+      center: true,
+      show: false,
+      skipTaskbar: false,
+      title: 'BoardClip - approve AI action',
+      backgroundColor: appBackgroundColor(),
+      icon: APP_ICON_PATH,
+      webPreferences: {
+        preload: path.join(SCRIPT_DIR, 'mcp-approval-preload.js'),
+        contextIsolation: true,
+        nodeIntegration: false,
+      },
+    });
+    modal.setAlwaysOnTop(true, 'screen-saver');
+    pendingApprovals.set(id, { finish });
+    modal.loadFile(path.join(SCRIPT_DIR, 'mcp-approval.html'));
+    modal.once('ready-to-show', () => { try { modal.show(); modal.focus(); } catch {} });
+    modal.webContents.on('did-finish-load', () => {
+      try { modal.webContents.send('approval-request', payload); } catch {}
+    });
+    modal.on('closed', () => finish('deny'));
+  });
+}
+
+function buildApprovalRequest(tool, args, targetItem, client) {
+  const dangerTools = new Set(['delete_clip', 'copy_to_clipboard', 'paste_clip']);
+  // Read tools (list_context/list_clips/get_clip-shared/search-shared) are served
+  // locally in the helper and never reach this function - so only forwarded/gated
+  // tools need entries here.
+  const meta = {
+    add_clip: 'Add a new clip to your history',
+    pin_clip: 'Pin / unpin a clip',
+    set_numpad: 'Assign a clip to a numpad slot',
+    assign_group: 'Change a clip\'s group',
+    create_group: 'Create a group',
+    delete_group: 'Delete a group',
+    delete_clip: 'Delete a clip from your history',
+    copy_to_clipboard: 'Put content on your system clipboard',
+    paste_clip: 'Put a clip on the clipboard and paste it',
+    read_clip: 'Read the full text of a clip you have NOT shared with AI',
+    search_all: 'Search across ALL clips, including ones not shared with AI',
+    image_path: 'Get the file path of an image clip',
+  };
+  let detail = '';
+  if (tool === 'add_clip') detail = String(args.text || '');
+  else if (tool === 'copy_to_clipboard') detail = args.text != null ? String(args.text) : previewForItem(targetItem);
+  else if (tool === 'search_all') detail = `Query: ${args.query || ''}`;
+  else if (tool === 'create_group' || tool === 'delete_group') detail = `Group: ${args.name || ''}`;
+  else if (targetItem) detail = previewForItem(targetItem);
+  return {
+    tool,
+    client: client || 'an AI assistant',
+    title: meta[tool] || `Run ${tool}`,
+    summary: meta[tool] || tool,
+    detail: detail.length > 4000 ? `${detail.slice(0, 4000)}…` : detail,
+    danger: dangerTools.has(tool),
+  };
+}
+
+function previewForItem(item) {
+  if (!item) return '';
+  if (item.type === 'image') return `[image ${item.image || ''}]`;
+  textBlobStore.hydrateTextItem(item, TEXT_DIR);
+  const text = String(item.text || '');
+  return text.length > 600 ? `${text.slice(0, 600)}…` : text;
+}
+
+// ---- Action gating + dispatch ----
+const MCP_ALWAYS_GATED = new Set(['delete_clip', 'copy_to_clipboard', 'paste_clip', 'read_clip', 'search_all', 'image_path']);
+const MCP_MANAGE_FREE_ON_SHARED = new Set(['pin_clip', 'set_numpad', 'assign_group', 'create_group', 'delete_group', 'add_clip']);
+
+function mcpNeedsApproval(tool, targetItem) {
+  if (mcpSessionAllow.has(tool)) return false;
+  if (Array.isArray(settings.ai_always_allow) && settings.ai_always_allow.includes(tool)) return false;
+  if (MCP_ALWAYS_GATED.has(tool)) return true;
+  if (MCP_MANAGE_FREE_ON_SHARED.has(tool)) {
+    if (!targetItem) return false;          // create/delete group, add_clip with no clip target
+    return !isItemSharedWithAi(targetItem); // free on shared clips, gated on non-shared
+  }
+  return true;
+}
+
+async function mcpHandleRequest(reqPath, payload) {
+  const { tool, args = {}, client } = payload || {};
+  if (!tool) throw new Error('missing_tool');
+  if (!settings.ai_access_enabled) throw new Error('ai_access_disabled');
+  const targetId = args.id || null;
+  const targetItem = targetId ? findHistoryItem(targetId) : null;
+
+  let decision = 'auto';
+  if (mcpNeedsApproval(tool, targetItem)) {
+    decision = await requestApproval(buildApprovalRequest(tool, args, targetItem, client));
+    if (decision === 'deny') throw new Error('denied');
+    if (decision === 'timeout') throw new Error('timed_out');
+    if (decision === 'session') mcpSessionAllow.add(tool);
+    if (decision === 'always') {
+      if (!Array.isArray(settings.ai_always_allow)) settings.ai_always_allow = [];
+      if (!settings.ai_always_allow.includes(tool)) { settings.ai_always_allow.push(tool); saveSettingsFile(); }
+      notifyAiAccessChanged();
+    }
+  }
+  diagnostics.record('mcp.tool', { tool, client, decision }, { forceFile: true });
+  // Re-check after the (possibly long) approval await: if AI access was toggled
+  // off while the modal was open, refuse before performing the action.
+  if (!settings.ai_access_enabled) throw new Error('ai_access_disabled');
+  return mcpExecute(tool, args);
+}
+
+function mcpExecute(tool, args) {
+  switch (tool) {
+    case 'read_clip': {
+      const item = findHistoryItem(args.id);
+      if (!item) throw new Error('not_found');
+      const sharedSet = mcpCore.sharedGroupSet(settings);
+      if (item.type === 'image') return mcpCore.clipView(item, { sharedSet });
+      textBlobStore.hydrateTextItem(item, TEXT_DIR);
+      return { ...mcpCore.fullTextResult(item, sharedSet), viaApproval: true };
+    }
+    case 'search_all':
+      return mcpCore.searchClips(history, settings, { query: args.query, regex: !!args.regex, scope: 'all', limit: args.limit || mcpCore.DEFAULT_LIST_LIMIT });
+    case 'image_path': {
+      const item = findHistoryItem(args.id);
+      if (!item || item.type !== 'image') throw new Error('not_an_image');
+      const p = path.join(IMG_DIR, item.image);
+      if (!fs.existsSync(p)) throw new Error('image_missing');
+      return { path: p };
+    }
+    case 'add_clip':
+      return { ok: applyAddText(args.text, args.group || null) };
+    case 'pin_clip':
+      return { ok: applyPinToggle(args.id) };
+    case 'set_numpad':
+      return { ok: applyNumpadAssign(args.id, args.slot) };
+    case 'assign_group':
+      return { ok: applyGroupAssign(args.id, args.group) };
+    case 'create_group':
+      return { ok: applyGroupCreate(args.name) };
+    case 'delete_group':
+      return { ok: applyGroupDelete(args.name) };
+    case 'delete_clip':
+      return { ok: applyDeleteItem(args.id) };
+    case 'copy_to_clipboard': {
+      if (args.text != null) { clipboard.writeText(String(args.text)); return { ok: true }; }
+      const item = findHistoryItem(args.id);
+      if (!item) throw new Error('not_found');
+      setClipboardToItem(item);
+      return { ok: true };
+    }
+    case 'paste_clip': {
+      if (!findHistoryItem(args.id)) throw new Error('not_found');
+      return pasteAndHide(args.id).then(() => ({ ok: true }));
+    }
+    default:
+      throw new Error(`unknown_tool:${tool}`);
+  }
+}
+
 // --- IPC handlers ---
 function setupIPC() {
   ipcMain.handle('get-history', () => history);
@@ -2925,13 +3397,7 @@ function setupIPC() {
 
   ipcMain.handle('copy', (_, text) => clipboard.writeText(text || ''));
 
-  ipcMain.handle('delete-item', (_, id) => {
-    const index = findHistoryIndex(id);
-    if (index < 0) return;
-    deleteHistoryIndex(index);
-    saveSettingsFile();
-    saveHistory();
-  });
+  ipcMain.handle('delete-item', (_, id) => applyDeleteItem(id));
 
   ipcMain.handle('delete-all', () => {
     const kept = [];
@@ -2952,39 +3418,9 @@ function setupIPC() {
   //   - unpinned        → star it (pin = {})
   //   - starred+numbered → remove the number, keep starred
   //   - starred (any)   → fully unpin (pin = null, clears groups too)
-  ipcMain.handle('pin', (_, id) => {
-    const item = findHistoryItem(id);
-    if (!item) return;
-    if (!item.pin) {
-      item.pin = {};
-    } else if (typeof item.pin.number === 'number') {
-      delete item.pin.number;
-      touchPinNumber(item);
-      saveHistory();
-      return;
-    } else {
-      item.pin = null;
-    }
-    touchPin(item);
-    saveHistory();
-  });
+  ipcMain.handle('pin', (_, id) => applyPinToggle(id));
 
-  ipcMain.handle('numpad-assign', (_, id, slot) => {
-    const item = findHistoryItem(id);
-    if (typeof slot !== 'number' || slot < 1 || slot > 9 || !item) return;
-    const now = Date.now();
-    // Strip the slot from any other item without unpinning them.
-    for (const h of history) {
-      if (hasNumpadSlot(h, slot)) {
-        delete h.pin.number;
-        touchPinNumber(h, now);
-      }
-    }
-    const pin = ensurePin(item);
-    pin.number = slot;
-    touchPinNumber(item, now);
-    saveHistory();
-  });
+  ipcMain.handle('numpad-assign', (_, id, slot) => applyNumpadAssign(id, slot));
 
   ipcMain.handle('numpad-unassign', (_, slot) => {
     if (typeof slot !== 'number' || slot < 1 || slot > 9) return;
@@ -3016,55 +3452,11 @@ function setupIPC() {
     return hook ? hook.resolveShortcutFromCurrentModifiers(shortcut) : shortcut;
   });
 
-  ipcMain.handle('group-create', (_, name) => {
-    if (!name) return;
-    if (!settings.groups) settings.groups = [];
-    settings.group_tombstones = normalizeGroupTombstones(settings.group_tombstones)
-      .filter(t => t.name !== name);
-    if (!settings.groups.includes(name)) {
-      settings.groups.push(name);
-      saveSettingsFile();
-    } else {
-      saveSettingsFile();
-    }
-  });
+  ipcMain.handle('group-create', (_, name) => applyGroupCreate(name));
 
-  ipcMain.handle('group-delete', (_, name) => {
-    const groups = settings.groups || [];
-    const idx = groups.indexOf(name);
-    if (idx >= 0) {
-      addGroupTombstone(name);
-      groups.splice(idx, 1);
-      const now = Date.now();
-      for (const h of history) {
-        if (h.pin && h.pin.groups) {
-          h.pin.groups = h.pin.groups.filter(g => g !== name);
-          if (h.pin.groups.length === 0) delete h.pin.groups;
-          touchPinGroups(h, now);
-        }
-      }
-      saveSettingsFile();
-      saveHistory();
-    }
-  });
+  ipcMain.handle('group-delete', (_, name) => applyGroupDelete(name));
 
-  // Toggle membership in a group. Multi-group: an item can belong to many.
-  // Adding to any group implicitly pins the item (creates pin object).
-  ipcMain.handle('group-assign', (_, id, group) => {
-    const item = findHistoryItem(id);
-    if (!item || !group) return;
-    const pin = ensurePin(item);
-    if (!pin.groups) pin.groups = [];
-    const gIdx = pin.groups.indexOf(group);
-    if (gIdx >= 0) {
-      pin.groups.splice(gIdx, 1);
-      if (pin.groups.length === 0) delete pin.groups;
-    } else {
-      pin.groups.push(group);
-    }
-    touchPinGroups(item);
-    saveHistory();
-  });
+  ipcMain.handle('group-assign', (_, id, group) => applyGroupAssign(id, group));
 
   ipcMain.handle('copy-image-path', (_, id) => {
     const item = findHistoryItem(id);
@@ -3172,6 +3564,62 @@ function setupIPC() {
   });
 
   ipcMain.handle('get-color-scheme', () => currentColorScheme());
+
+  // --- AI Access (MCP) ---
+  ipcMain.handle('get-ai-access', () => aiAccessState());
+  ipcMain.handle('set-ai-access-enabled', (_, enabled) => setAiAccessEnabled(enabled));
+  ipcMain.handle('set-mcp-client-enabled', (_, id, enabled) => {
+    try {
+      if (enabled) mcpInstallers.enable(id, mcpRuntimeCommand());
+      else mcpInstallers.disable(id);
+    } catch (error) {
+      diagnostics.record('mcp.client.toggle_failed', { id, error: error && error.message }, { forceFile: true });
+    }
+    return aiAccessState();
+  });
+  ipcMain.handle('set-group-shared-ai', (_, name, shared) => {
+    setGroupSharedWithAi(name, shared);
+    return aiAccessState();
+  });
+  ipcMain.handle('revoke-ai-always-allow', (_, tool) => {
+    if (Array.isArray(settings.ai_always_allow)) {
+      settings.ai_always_allow = settings.ai_always_allow.filter(t => t !== tool);
+      saveSettingsFile();
+    }
+    mcpSessionAllow.delete(tool);
+    return aiAccessState();
+  });
+  ipcMain.handle('set-ai-approval-timeout', (_, sec) => {
+    settings.ai_approval_timeout_sec = clampApprovalTimeout(sec);
+    saveSettingsFile();
+    return aiAccessState();
+  });
+  ipcMain.handle('get-ai-secret-ids', () => aiSecretFlags());
+  ipcMain.handle('set-clip-share-anyway', (_, id, value) => {
+    const item = findHistoryItem(id);
+    if (!item) return false;
+    if (value) item.shareAnyway = true;
+    else delete item.shareAnyway;
+    saveHistory();
+    return true;
+  });
+
+  // Approval modal -> main bridge.
+  ipcMain.on('approval-decide', (_, id, choice) => {
+    const pending = pendingApprovals.get(id);
+    if (pending) pending.finish(choice);
+  });
+  // Modal asks to size itself to its content so there is never an empty gap.
+  ipcMain.on('approval-resize', (event, height) => {
+    const w = BrowserWindow.fromWebContents(event.sender);
+    if (!w || w.isDestroyed()) return;
+    const h = Math.max(180, Math.min(560, Math.round(Number(height) || 360)));
+    try {
+      const [width] = w.getContentSize();
+      w.setContentSize(width, h);
+      w.center();
+    } catch {}
+  });
 }
 
 // --- Global shortcuts ---
@@ -3427,6 +3875,14 @@ app.whenReady().then(() => {
   startP2PSync();
   autoUpdater.start();
 
+  // AI Access: if enabled, bring up the control channel + idempotently repair the
+  // MCP registration in every detected client (also refreshes the discovery file
+  // so the helper always has current paths).
+  if (settings.ai_access_enabled) {
+    ensureAiGroupShared();
+    startMcpControlServer().then(() => { mcpAutoRegister(); }).catch(() => {});
+  }
+
   // Sync with shared folder on startup + every 30s
   syncMerge({ force: true });
   pollClipboard();
@@ -3441,5 +3897,9 @@ app.on('will-quit', () => {
   if (windowsHook) windowsHook.uninstall();
   if (macosHotkey) macosHotkey.uninstall();
   stopP2PSync();
+  // Best-effort: stop the control server and clear the discovery file so a stale
+  // pipe/secret isn't left advertised after the app exits.
+  if (mcpControlServer) { try { mcpControlServer.stop(); } catch {} mcpControlServer = null; }
+  try { mcpPaths.clearDiscovery(); } catch {}
 });
 app.on('window-all-closed', () => { /* keep running as tray app */ });

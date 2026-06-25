@@ -121,6 +121,10 @@
 .switch-row input:checked + .switch::after { left: 16px; background: var(--accent); }
 .switch-row:hover .switch { border-color: var(--accent); }
 .switch-row:focus-within .switch { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(167,139,250,.18); }
+.seg { display: inline-flex; padding: 2px; gap: 2px; background: var(--input); border: 1px solid var(--line); border-radius: 6px; }
+.seg-btn { border: none; background: transparent; color: var(--text-dim); font-size: 11px; font-family: inherit; padding: 3px 9px; border-radius: 4px; cursor: pointer; transition: all .12s; }
+.seg-btn:hover { color: var(--text); }
+.seg-btn.active { background: var(--accent); color: var(--active-fg); }
 .settings-section { margin-top: 16px; }
 .settings-section h3 { font-size: 12px; color: var(--text-dim); margin: 0 0 8px; text-transform: uppercase; letter-spacing: .5px; }
 .settings-usage { font-size: 11px; color: var(--text-dim); margin-top: 12px; }
@@ -145,3 +149,116 @@
   .item { padding-inline: 10px; }
   .preview img { max-width: 78px; max-height: 50px; }
 }
+
+/* ============================================================
+   Popup theme variables — single source of truth shared by the
+   desktop app (:root[data-theme], set on <html>) and the website
+   demo (.bc-popup[data-theme], set on the demo-window so the
+   marketing page chrome stays untouched). Keeping ONE definition is
+   what keeps the app and demo palettes from drifting.
+   ============================================================ */
+:root[data-theme], .bc-popup[data-theme] {
+  --glass-blur: blur(14px) saturate(1.35);
+  --list-scrollbar-width: thin;
+  --list-scrollbar-size: 8px;
+  --list-scrollbar-thumb: var(--line-strong);
+  --list-scrollbar-thumb-hover: var(--text-dim);
+  --list-scrollbar-border: 2px solid var(--surface);
+}
+:root[data-theme="dark"], .bc-popup[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0c0c0c; --surface: #131313; --surface2: #1a1a1a; --input: #0a0a0a; --text: #ccc; --text-dim: #555;
+  --line: #222; --line-strong: #333; --line-soft: #111; --hover: #ffffff10; --hover-strong: #252525;
+  --accent-bg: #1a1030; --accent-bg-strong: #251545; --active-fg: #000; --shadow: rgba(0,0,0,.5);
+  --accent: #a78bfa; --green: #34d399; --green-bg: #0f2a1f; --red: #f87171; --pin: #f59e0b;
+  --glass-bg: rgba(19,19,19,.72); --glass-input: rgba(10,10,10,.72); --glass-border: rgba(255,255,255,.1);
+  --mark-bg: rgba(167,139,250,.2); --mark-fg: #c4b5fd;
+}
+:root[data-theme="light"], .bc-popup[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f4f4f5; --surface: #ffffff; --surface2: #f4f4f5; --input: #ffffff; --text: #18181b; --text-dim: #71717a;
+  --line: #e4e4e7; --line-strong: #d4d4d8; --line-soft: #ececef; --hover: #00000008; --hover-strong: #e4e4e7;
+  --accent-bg: #f1ecff; --accent-bg-strong: #e6dcff; --active-fg: #fff; --shadow: rgba(24,24,27,.14);
+  --accent: #7c3aed; --green: #059669; --green-bg: #dcfce7; --red: #dc2626; --pin: #d97706;
+  --glass-bg: rgba(255,255,255,.72); --glass-input: rgba(255,255,255,.62); --glass-border: rgba(24,24,27,.12);
+  --mark-bg: rgba(124,58,237,.18); --mark-fg: #6d28d9;
+}
+
+/* The popup root carries the base text color so popup content never inherits a
+   host page's color (the website embeds the popup inside the grey marketing
+   page; the desktop app sets this on <body>). Without it, unstyled text like
+   the dialog title rendered dark-on-dark. */
+.bc-popup { color: var(--text); }
+.hidden { display: none; }
+mark { background: var(--mark-bg); color: var(--mark-fg); border-radius: 2px; padding: 0 1px; }
+.dialog h3 { color: var(--text); }
+
+/* Toast */
+.toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%) translateY(16px); background: var(--green); color: var(--active-fg);
+         padding: 6px 16px; border-radius: 16px; font-size: 12px; font-weight: 500; opacity: 0; transition: all .2s; pointer-events: none; z-index: 50; }
+.toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+/* Confirm / prompt dialog */
+.overlay { display: none; pointer-events: none; position: fixed; inset: 0; background: rgba(0,0,0,.5); z-index: 30; align-items: center; justify-content: center; }
+.overlay.show { display: flex; pointer-events: auto; }
+.dialog { background: var(--surface); border: 1px solid var(--line-strong); border-radius: 10px; padding: 16px 20px; max-width: 320px; width: 90%; box-shadow: 0 8px 24px var(--shadow); }
+.dialog h3 { font-size: 13px; font-weight: 500; margin-bottom: 6px; }
+.dialog p { font-size: 11px; color: var(--text-dim); margin-bottom: 12px; font-family: 'Cascadia Code', monospace; word-break: break-word; }
+.dialog-btns { display: flex; gap: 8px; justify-content: flex-end; }
+.dialog-btns button { border: none; border-radius: 6px; padding: 6px 16px; cursor: pointer; font-size: 12px; transition: all .15s; }
+.btn-confirm { background: var(--green); color: var(--active-fg); }
+.btn-confirm:hover { filter: brightness(1.1); }
+.btn-cancel { background: var(--line); color: var(--text-dim); }
+.btn-cancel:hover { background: var(--line-strong); color: var(--text); }
+.prompt-input { width: 100%; background: var(--input); border: 1px solid var(--line); border-radius: 4px; padding: 7px 10px; color: var(--text); font-size: 13px; outline: none; margin-bottom: 12px; font-family: inherit; }
+.prompt-input:focus { border-color: var(--accent); }
+
+/* Settings: shortcuts, footer, sync, AI, build info — shared app + demo */
+.settings-hdr { -webkit-app-region: drag; }
+.settings-hdr button { -webkit-app-region: no-drag; }
+.shortcut-row { align-items: flex-start; gap: 10px; }
+.shortcut-row > label { padding-top: 6px; flex-shrink: 0; }
+.shortcut-control { display: flex; align-items: center; justify-content: flex-end; gap: 6px; min-width: 0; }
+.shortcut-btn { min-width: 130px; max-width: 190px; background: var(--input); border: 1px solid var(--line); border-radius: 4px; color: var(--text);
+                padding: 5px 8px; font-size: 11px; font-family: 'Cascadia Code', 'Consolas', monospace; white-space: nowrap; overflow: hidden;
+                text-overflow: ellipsis; cursor: pointer; text-align: left; }
+.shortcut-btn:hover { border-color: var(--accent); }
+.shortcut-btn.recording { border-color: var(--accent); color: var(--accent); background: var(--accent-bg); }
+.shortcut-reset .mi { font-size: 14px; }
+.shortcut-status { min-height: 14px; font-size: 10px; color: var(--text-dim); margin-top: -4px; }
+.shortcut-status.error { color: var(--red); }
+.settings-footer { margin-top: 24px; padding: 12px 0 8px; border-top: 1px solid var(--line); }
+.settings-footer-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.settings-clear { border: 1px solid var(--red); background: transparent; color: var(--red); padding: 6px 14px; border-radius: 6px; cursor: pointer; font-size: 11px; font-weight: 500; }
+.settings-clear:hover { background: var(--red); color: var(--active-fg); }
+.settings-secondary { border: 1px solid var(--line-strong); background: transparent; color: var(--text-dim); padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 11px; font-weight: 500; }
+.settings-secondary:hover { border-color: var(--accent); color: var(--accent); }
+.sync-add-folder { width: 100%; margin-top: 6px; }
+.add-group-btn { background: none; border: 1px dashed var(--line-strong); border-radius: 4px; color: var(--text-dim); cursor: pointer; font-size: 11px;
+                 padding: 6px; width: 100%; margin-top: 4px; transition: all .15s; }
+.add-group-btn:hover { border-color: var(--accent); color: var(--accent); }
+.sync-row, .settings-action-row { display: flex; align-items: flex-start; gap: 6px; padding: 6px 0; min-width: 0; }
+.sync-btn, .settings-icon-btn { background: none; border: 1px solid var(--line-strong); border-radius: 4px; color: var(--text-dim); cursor: pointer;
+            font-size: 11px; padding: 4px 8px; transition: all .15s; white-space: nowrap; flex-shrink: 0; }
+.sync-btn:hover, .settings-icon-btn:hover { border-color: var(--accent); color: var(--accent); }
+.sync-btn:disabled, .settings-icon-btn:disabled { opacity: .45; cursor: not-allowed; }
+.sync-btn:disabled:hover, .settings-icon-btn:disabled:hover { border-color: var(--line-strong); color: var(--text-dim); }
+.sync-status, .settings-status { font-size: 10px; color: var(--text-dim); margin-top: 2px; }
+.sync-status.active, .settings-status.active { color: var(--green); }
+.sync-status.error, .settings-status.error { color: var(--red); }
+.build-info { display: flex; flex-direction: column; gap: 2px; min-width: 0; max-width: 100%; overflow: hidden; font-size: 10px; color: var(--text-dim); margin-top: 12px; font-family: 'Cascadia Code', 'Consolas', monospace; }
+.build-info-line { display: block; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ai-hint { font-size: 11px; color: var(--text-dim); line-height: 1.5; margin: 2px 0 8px; }
+.ai-hint b { color: var(--accent); font-weight: 600; }
+.ai-subhead { font-size: 10px; text-transform: uppercase; letter-spacing: .05em; color: var(--text-dim); margin: 12px 0 5px; font-weight: 600; }
+.ai-client-row { display: flex; align-items: center; gap: 8px; padding: 5px 0; font-size: 12px; }
+.ai-client-row input { width: auto; accent-color: var(--accent); flex-shrink: 0; cursor: pointer; }
+.ai-client-row .ai-client-name { flex: 1; color: var(--text); }
+.ai-client-row.undetected .ai-client-name { color: var(--text-dim); }
+.ai-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--line-strong); flex-shrink: 0; }
+.ai-dot.on { background: var(--green); }
+.ai-secret-row, .ai-grant-row { display: flex; align-items: center; gap: 8px; padding: 5px 0; font-size: 12px; border-top: 1px solid var(--line-soft); }
+.ai-secret-row .ai-secret-prev { flex: 1; font-family: "Cascadia Code", monospace; font-size: 11px; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ai-grant-row .ai-grant-name { flex: 1; font-family: "Cascadia Code", monospace; font-size: 11px; color: var(--text); }
+.gp-share { color: var(--text-dim); }
+.gp-share.on { color: var(--accent); }

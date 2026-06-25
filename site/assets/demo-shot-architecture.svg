@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="240" height="86" viewBox="0 0 240 86" role="img" aria-label="Architecture diagram">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#052e2b"/>
+      <stop offset="1" stop-color="#0f766e"/>
+    </linearGradient>
+  </defs>
+  <rect width="240" height="86" rx="6" fill="url(#g)"/>
+  <g fill="none" stroke="#5eead4" stroke-width="2">
+    <line x1="60" y1="43" x2="100" y2="43"/>
+    <line x1="140" y1="43" x2="180" y2="43"/>
+  </g>
+  <g fill="#134e4a" stroke="#2dd4bf" stroke-width="2">
+    <rect x="18" y="30" width="42" height="26" rx="4"/>
+    <rect x="99" y="30" width="42" height="26" rx="4"/>
+    <rect x="180" y="30" width="42" height="26" rx="4"/>
+  </g>
+  <g fill="#99f6e4" font-family="monospace" font-size="9" text-anchor="middle">
+    <text x="39" y="46">app</text>
+    <text x="120" y="46">sync</text>
+    <text x="201" y="46">cloud</text>
+  </g>
+</svg>

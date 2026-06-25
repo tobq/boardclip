@@ -6,14 +6,9 @@
 <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="site/shared/clipboard-popup.css">
 <style>
-  :root { color-scheme:dark; --bg: #0c0c0c; --surface: #131313; --surface2: #1a1a1a; --input:#0a0a0a; --text: #ccc; --text-dim: #555;
-          --line:#222; --line-strong:#333; --line-soft:#111; --hover:#ffffff10; --hover-strong:#252525; --accent-bg:#1a1030; --accent-bg-strong:#251545; --active-fg:#000; --shadow:rgba(0,0,0,.5);
-          --accent: #a78bfa; --green: #34d399; --green-bg:#0f2a1f; --red: #f87171; --pin: #f59e0b;
-          --glass-bg:rgba(19,19,19,.72); --glass-input:rgba(10,10,10,.72); --glass-border:rgba(255,255,255,.1); --glass-blur:blur(14px) saturate(1.35);
-          --list-scrollbar-width: thin; --list-scrollbar-size: 8px; --list-scrollbar-thumb: var(--line-strong); --list-scrollbar-thumb-hover: var(--text-dim); --list-scrollbar-border: 2px solid var(--surface); }
-  :root[data-theme="light"] { color-scheme:light; --bg:#f4f4f5; --surface:#ffffff; --surface2:#f4f4f5; --input:#ffffff; --text:#18181b; --text-dim:#71717a;
-          --line:#e4e4e7; --line-strong:#d4d4d8; --line-soft:#ececef; --hover:#00000008; --hover-strong:#e4e4e7; --accent-bg:#f1ecff; --accent-bg-strong:#e6dcff; --active-fg:#fff; --shadow:rgba(24,24,27,.14);
-          --accent:#7c3aed; --green:#059669; --green-bg:#dcfce7; --red:#dc2626; --pin:#d97706; --glass-bg:rgba(255,255,255,.72); --glass-input:rgba(255,255,255,.62); --glass-border:rgba(24,24,27,.12); }
+  /* Popup theme variables + all popup component styles now live in the shared
+     site/shared/clipboard-popup.css (single source of truth with the website
+     demo). Only the app-window shell rules stay here. */
   * { margin:0; padding:0; box-sizing:border-box; }
   html, body { height:100%; overflow:hidden; }
   body { font-family:'Segoe UI',system-ui,sans-serif; background:var(--glass-bg); color:var(--text); display:flex; flex-direction:column; backdrop-filter:var(--glass-blur); -webkit-backdrop-filter:var(--glass-blur); }
@@ -22,224 +17,26 @@
   }
   ::-webkit-scrollbar { width:0; }
   #popupShell { flex:1; min-height:0; height:100%; display:flex; flex-direction:column; overflow:hidden; }
-
-  mark { background:rgba(167,139,250,.2); color:#c4b5fd; border-radius:2px; padding:0 1px; }
-  .toast { position:fixed; bottom:16px; left:50%; transform:translateX(-50%) translateY(16px); background:var(--green); color:var(--active-fg);
-           padding:6px 16px; border-radius:16px; font-size:12px; font-weight:500; opacity:0; transition:all .2s; pointer-events:none; z-index:50; }
-  .toast.show { opacity:1; transform:translateX(-50%) translateY(0); }
-  /* Confirm dialog */
-  .overlay { display:none; pointer-events:none; position:fixed; inset:0; background:rgba(0,0,0,.5); z-index:30; align-items:center; justify-content:center; }
-  .overlay.show { display:flex; pointer-events:auto; }
-  .dialog { background:var(--surface); border:1px solid var(--line-strong); border-radius:10px; padding:16px 20px; max-width:320px; width:90%; box-shadow:0 8px 24px var(--shadow); }
-  .dialog h3 { font-size:13px; font-weight:500; margin-bottom:6px; }
-  .dialog p { font-size:11px; color:var(--text-dim); margin-bottom:12px; font-family:'Cascadia Code',monospace; word-break:break-word; }
-  .dialog-btns { display:flex; gap:8px; justify-content:flex-end; }
-  .dialog-btns button { border:none; border-radius:6px; padding:6px 16px; cursor:pointer; font-size:12px; transition:all .15s; }
-  .btn-confirm { background:var(--green); color:var(--active-fg); }
-  .btn-confirm:hover { filter:brightness(1.1); }
-  .btn-cancel { background:var(--line); color:var(--text-dim); }
-  .btn-cancel:hover { background:var(--line-strong); color:var(--text); }
-  .prompt-input { width:100%; background:var(--input); border:1px solid var(--line); border-radius:4px;
-                  padding:7px 10px; color:var(--text); font-size:13px; outline:none;
-                  margin-bottom:12px; font-family:inherit; }
-  .prompt-input:focus { border-color:var(--accent); }
-
-  .settings-hdr { -webkit-app-region:drag; }
-  .settings-hdr button { -webkit-app-region:no-drag; }
-  .shortcut-row { align-items:flex-start; gap:10px; }
-  .shortcut-row > label { padding-top:6px; flex-shrink:0; }
-  .shortcut-control { display:flex; align-items:center; justify-content:flex-end; gap:6px; min-width:0; }
-  .shortcut-btn { min-width:130px; max-width:190px; background:var(--input); border:1px solid var(--line); border-radius:4px; color:var(--text);
-                  padding:5px 8px; font-size:11px; font-family:'Cascadia Code','Consolas',monospace; white-space:nowrap; overflow:hidden;
-                  text-overflow:ellipsis; cursor:pointer; text-align:left; }
-  .shortcut-btn:hover { border-color:var(--accent); }
-  .shortcut-btn.recording { border-color:var(--accent); color:var(--accent); background:var(--accent-bg); }
-  .shortcut-reset .mi { font-size:14px; }
-  .shortcut-status { min-height:14px; font-size:10px; color:var(--text-dim); margin-top:-4px; }
-  .shortcut-status.error { color:var(--red); }
-  .settings-footer { margin-top:24px; padding:12px 0 8px; border-top:1px solid var(--line); }
-  .settings-footer-actions { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
-  .settings-clear { border:1px solid var(--red); background:transparent; color:var(--red); padding:6px 14px; border-radius:6px; cursor:pointer; font-size:11px; font-weight:500; }
-  .settings-clear:hover { background:var(--red); color:var(--active-fg); }
-  .settings-secondary { border:1px solid var(--line-strong); background:transparent; color:var(--text-dim); padding:6px 12px; border-radius:6px; cursor:pointer; font-size:11px; font-weight:500; }
-  .settings-secondary:hover { border-color:var(--accent); color:var(--accent); }
-  .sync-add-folder { width:100%; margin-top:6px; }
-  .add-group-btn { background:none; border:1px dashed var(--line-strong); border-radius:4px; color:var(--text-dim); cursor:pointer; font-size:11px;
-                   padding:6px; width:100%; margin-top:4px; transition:all .15s; }
-  .add-group-btn:hover { border-color:var(--accent); color:var(--accent); }
-  .sync-row, .settings-action-row { display:flex; align-items:flex-start; gap:6px; padding:6px 0; min-width:0; }
-  .sync-btn, .settings-icon-btn { background:none; border:1px solid var(--line-strong); border-radius:4px; color:var(--text-dim); cursor:pointer;
-              font-size:11px; padding:4px 8px; transition:all .15s; white-space:nowrap; flex-shrink:0; }
-  .sync-btn:hover, .settings-icon-btn:hover { border-color:var(--accent); color:var(--accent); }
-  .sync-btn:disabled, .settings-icon-btn:disabled { opacity:.45; cursor:not-allowed; }
-  .sync-btn:disabled:hover, .settings-icon-btn:disabled:hover { border-color:var(--line-strong); color:var(--text-dim); }
-  .sync-status, .settings-status { font-size:10px; color:var(--text-dim); margin-top:2px; }
-  .sync-status.active, .settings-status.active { color:var(--green); }
-  .sync-status.error, .settings-status.error { color:var(--red); }
-  .build-info { display:flex; flex-direction:column; gap:2px; min-width:0; max-width:100%; overflow:hidden; font-size:10px; color:var(--text-dim); margin-top:12px; font-family:'Cascadia Code','Consolas',monospace; }
-  .build-info-line { display:block; max-width:100%; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-  /* AI Access */
-  .ai-hint { font-size:11px; color:var(--text-dim); line-height:1.5; margin:2px 0 8px; }
-  .ai-hint b { color:var(--accent); font-weight:600; }
-  .ai-subhead { font-size:10px; text-transform:uppercase; letter-spacing:.05em; color:var(--text-dim); margin:12px 0 5px; font-weight:600; }
-  .ai-client-row { display:flex; align-items:center; gap:8px; padding:5px 0; font-size:12px; }
-  .ai-client-row input { width:auto; accent-color:var(--accent); flex-shrink:0; cursor:pointer; }
-  .ai-client-row .ai-client-name { flex:1; color:var(--text); }
-  .ai-client-row.undetected .ai-client-name { color:var(--text-dim); }
-  .ai-dot { width:7px; height:7px; border-radius:50%; background:var(--line-strong); flex-shrink:0; }
-  .ai-dot.on { background:var(--green); }
-  .ai-secret-row, .ai-grant-row { display:flex; align-items:center; gap:8px; padding:5px 0; font-size:12px; border-top:1px solid var(--line-soft); }
-  .ai-secret-row .ai-secret-prev { flex:1; font-family:"Cascadia Code",monospace; font-size:11px; color:var(--text-dim); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-  .ai-grant-row .ai-grant-name { flex:1; font-family:"Cascadia Code",monospace; font-size:11px; color:var(--text); }
-  .gp-share { color:var(--text-dim); }
-  .gp-share.on { color:var(--accent); }
 </style></head><body>
 
 <div id="popupShell"></div>
 
-<div class="overlay" id="confirmOverlay">
-  <div class="dialog">
-    <h3 id="confirmTitle"></h3>
-    <p id="confirmMsg"></p>
-    <div class="dialog-btns">
-      <button class="btn-cancel" id="confirmNo">Cancel</button>
-      <button class="btn-confirm" id="confirmYes">Replace</button>
-    </div>
-  </div>
-</div>
-
-<div class="overlay" id="promptOverlay">
-  <div class="dialog">
-    <h3 id="promptTitle"></h3>
-    <input class="prompt-input" id="promptInput" type="text" autocomplete="off" spellcheck="false">
-    <div class="dialog-btns">
-      <button class="btn-cancel" id="promptNo">Cancel</button>
-      <button class="btn-confirm" id="promptYes">OK</button>
-    </div>
-  </div>
-</div>
-
+<!-- Confirm + prompt dialogs are created by the shared Core.createDialogs. -->
 <div class="toast" id="toast">Copied</div>
 
 <script src="site/shared/clipboard-ui-core.js"></script>
 <script>
 const Core = window.BoardClipCore;
 document.getElementById('popupShell').innerHTML = Core.renderPopupShell({
-  headerActionsHtml: `
-    <button class="icon-btn accent" id="syncHeaderBtn" type="button" title="Sync now" aria-label="Sync now"><span class="mi">sync</span></button>
-  `,
-  settingsBodyHtml: `
-    <label class="setting-row switch-row" for="autoLaunch">
-      <span>Launch on startup</span>
-      <input id="autoLaunch" type="checkbox">
-      <span class="switch" aria-hidden="true"></span>
-    </label>
-    <div class="setting-row shortcut-row">
-      <label>Popup shortcut</label>
-      <div class="shortcut-control">
-        <button class="shortcut-btn" id="shortcutRecord" type="button"></button>
-        <button class="icon-btn shortcut-reset" id="shortcutReset" title="Reset shortcut" type="button"><span class="mi">restart_alt</span></button>
-      </div>
-    </div>
-    <div class="shortcut-status" id="shortcutStatus"></div>
-    <div class="setting-row shortcut-row">
-      <label>Quick paste</label>
-      <div class="shortcut-control">
-        <button class="shortcut-btn" id="quickPasteRecord" type="button"></button>
-        <button class="icon-btn shortcut-reset" id="quickPasteReset" title="Reset quick paste shortcut" type="button"><span class="mi">restart_alt</span></button>
-      </div>
-    </div>
-    <div class="shortcut-status" id="quickPasteStatus"></div>
-    <div class="setting-row"><label>Max age (days)</label><input id="maxAge" type="number" min="1"></div>
-    <div class="setting-row"><label>Max size (GB)</label><input id="maxSize" type="number" min="0.1" step="0.1"></div>
-    <div class="settings-usage" id="usage"></div>
-    <div class="settings-section">
-      <h3>Numpad Shortcuts</h3>
-      <div id="numpadSlots"></div>
-    </div>
-    <div class="settings-section">
-      <h3>Sync</h3>
-      <div class="sync-row">
-        <div class="sync-list" id="syncAccounts"></div>
-        <button class="sync-btn" id="syncNow" title="Sync now"><span class="mi" style="font-size:14px;vertical-align:middle">sync</span></button>
-      </div>
-      <button class="settings-secondary sync-add-folder" id="addSyncFolder" type="button"><span class="mi" style="font-size:14px;vertical-align:middle">create_new_folder</span> Add sync folder</button>
-      <div class="sync-status" id="syncStatus"></div>
-      <label class="setting-row switch-row" for="p2pEnabled">
-        <span>Local network fast sync</span>
-        <input id="p2pEnabled" type="checkbox">
-        <span class="switch" aria-hidden="true"></span>
-      </label>
-      <div class="sync-status" id="p2pStatus"></div>
-    </div>
-    <div class="settings-section">
-      <h3>Updates</h3>
-      <div class="settings-action-row">
-        <div class="settings-action-list">
-          <div class="settings-action-card">
-            <span class="settings-action-main">
-              <span class="settings-action-title" id="updateBuild"></span>
-              <span class="settings-action-detail" id="updateDetail"></span>
-            </span>
-          </div>
-        </div>
-        <button class="settings-icon-btn" id="updateNow" title="Check for updates"><span class="mi" style="font-size:14px;vertical-align:middle">system_update_alt</span></button>
-      </div>
-      <div class="settings-status" id="updateStatus"></div>
-    </div>
-    <div class="settings-section">
-      <h3>Diagnostics</h3>
-      <label class="setting-row switch-row" for="diagnosticsEnabled">
-        <span>Performance logging</span>
-        <input id="diagnosticsEnabled" type="checkbox">
-        <span class="switch" aria-hidden="true"></span>
-      </label>
-      <div class="settings-status" id="diagnosticsStatus"></div>
-    </div>
-    <div class="settings-section">
-      <h3>AI Access</h3>
-      <label class="setting-row switch-row" for="aiAccessEnabled">
-        <span>Let local AI assistants use BoardClip</span>
-        <input id="aiAccessEnabled" type="checkbox">
-        <span class="switch" aria-hidden="true"></span>
-      </label>
-      <div class="settings-status" id="aiAccessStatus"></div>
-      <div id="aiAccessBody" class="hidden">
-        <div class="ai-hint">AI assistants can read clips in groups you share, and act with your approval. Drop clips into the <b>AI</b> group (or share any group below) to expose them.</div>
-        <div class="ai-subhead">Installed in</div>
-        <div id="aiClients"></div>
-        <button class="settings-secondary" id="aiMoreClients" type="button" style="display:none"></button>
-        <div id="aiClientsMore" class="hidden"></div>
-        <div class="ai-subhead" id="aiSecretsHead" style="display:none">Hidden from AI (look like secrets)</div>
-        <div id="aiSecrets"></div>
-        <div class="ai-subhead" id="aiAlwaysHead" style="display:none">Always allowed actions</div>
-        <div id="aiAlwaysAllow"></div>
-        <div class="setting-row"><label>Approval timeout (seconds)</label><input id="aiTimeout" type="number" min="5" max="600" step="5"></div>
-      </div>
-    </div>
-    <div class="settings-section">
-      <h3>Groups</h3>
-      <div id="groupSlots"></div>
-      <button class="add-group-btn" id="addGroupBtn"><span class="mi" style="font-size:14px;vertical-align:middle">add</span> New Group</button>
-    </div>
-    <div class="settings-footer">
-      <div class="settings-footer-actions">
-        <button class="settings-clear" id="clearAll">Clear All</button>
-        <button class="settings-secondary" id="copyDiagnostics">Copy Diagnostics</button>
-      </div>
-      <div class="build-info" id="buildInfo"></div>
-    </div>
-  `,
+  settingsBodyHtml: Core.renderSettingsBody(),
 });
 const listEl = document.getElementById('list');
 const toast = document.getElementById('toast');
 const searchEl = document.getElementById('search');
 const countEl = document.getElementById('count');
 const regexBtn = document.getElementById('regexBtn');
-let toastTimer, items = [], expanded = new Set(), query = '', regexOn = false, selectedIdx = -1;
+let toastTimer, items = [], query = '', regexOn = false, selectedIdx = -1;
 const BATCH = 30;
-const COLLAPSED_PREVIEW_CHARS = 700;
-const SEARCH_PREVIEW_CONTEXT = 260;
 let rendered = 0, filtered = [];
 let groups = [], activeFilters = new Set(), excludedFilters = new Set();
 let dataRevision = -1;
@@ -263,35 +60,27 @@ function recordRendererPerf(event, startedAt, details = {}, thresholdMs = 50) {
   return ms;
 }
 
+let themeMode = 'system';
+let systemDark = matchMedia('(prefers-color-scheme: dark)').matches;
+function refreshTheme() {
+  Core.applyTheme(document.documentElement, themeMode, systemDark);
+  Core.setActiveThemeSeg(document.getElementById('themeMode'), themeMode);
+}
 function applyColorScheme(scheme) {
-  document.documentElement.dataset.theme = scheme === 'light' ? 'light' : 'dark';
+  systemDark = scheme !== 'light';
+  refreshTheme();
+}
+function setThemeMode(mode) {
+  themeMode = (mode === 'light' || mode === 'dark') ? mode : 'system';
+  refreshTheme();
 }
 if (window.api.getColorScheme) window.api.getColorScheme().then(applyColorScheme).catch(() => {});
 if (window.api.onColorSchemeChanged) window.api.onColorSchemeChanged(applyColorScheme);
+if (window.api.getSettings) window.api.getSettings().then(s => { if (s && s.theme_mode) setThemeMode(s.theme_mode); }).catch(() => {});
 
 // --- Helpers ---
 function ago(ts) { return Core.ago(ts); }
 function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
-function queryMatchIndex(text, q) {
-  const queryText = String(q || '').trim();
-  if (!queryText) return -1;
-  if (regexOn) {
-    try {
-      const match = new RegExp(queryText, 'i').exec(text);
-      return match ? match.index : -1;
-    } catch { return -1; }
-  }
-  return String(text || '').toLowerCase().indexOf(queryText.toLowerCase());
-}
-function collapsedPreviewText(text, q) {
-  const singleLine = String(text || '').replace(/\r?\n/g, ' ');
-  if (singleLine.length <= COLLAPSED_PREVIEW_CHARS) return singleLine;
-  const matchIndex = queryMatchIndex(singleLine, q);
-  const center = matchIndex >= 0 ? Math.max(0, matchIndex - SEARCH_PREVIEW_CONTEXT) : 0;
-  const start = Math.min(center, Math.max(0, singleLine.length - COLLAPSED_PREVIEW_CHARS));
-  const end = Math.min(singleLine.length, start + COLLAPSED_PREVIEW_CHARS);
-  return `${start > 0 ? '...' : ''}${singleLine.slice(start, end)}${end < singleLine.length ? '...' : ''}`;
-}
 function providerName(acc) {
   const provider = acc && acc.provider ? String(acc.provider) : 'cloud';
   return provider.charAt(0).toUpperCase() + provider.slice(1);
@@ -300,35 +89,11 @@ function syncAccountLabel(acc) {
   if (acc && acc.provider === 'custom') return `Custom folder · ${acc.label || acc.path}`;
   return `${providerName(acc)} · ${acc.label || acc.email || acc.path}`;
 }
-function highlight(text, q) {
-  const raw = String(text || '');
-  const queryText = String(q || '').trim();
-  if (!queryText) return esc(raw);
-  try {
-    const re = regexOn ? new RegExp(queryText, 'gi') : new RegExp(queryText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
-    let out = '';
-    let last = 0;
-    let count = 0;
-    let match;
-    while ((match = re.exec(raw)) && count < 100) {
-      if (match[0] === '') {
-        re.lastIndex += 1;
-        continue;
-      }
-      out += esc(raw.slice(last, match.index));
-      out += `<mark>${esc(match[0])}</mark>`;
-      last = match.index + match[0].length;
-      count += 1;
-    }
-    return out + esc(raw.slice(last));
-  } catch { return esc(raw); }
-}
 // --- Pin model helpers ---
 // item.pin: null/undefined = unpinned. Object = pinned. Shape: { number?: 1-9, groups?: string[] }
 function isPinned(item) { return Core.isPinned(item); }
 function numpadOf(item) { return Core.numpadOf(item); }
 function groupsOf(item) { return Core.groupsOf(item); }
-function isInGroup(item, g) { return Core.isInGroup(item, g); }
 function itemId(item) { return Core.itemId(item); }
 function itemById(id) { return itemLookup.get(id) || items.find(it => itemId(it) === id); }
 function showToast(msg) { toast.textContent = msg||'Copied'; toast.classList.add('show'); clearTimeout(toastTimer); toastTimer = setTimeout(()=>toast.classList.remove('show'),1200); }
@@ -439,17 +204,14 @@ function scheduleRelativeTimeRefresh() {
 
 function buildItem(it, ri, nmap) {
   const id = itemId(it);
-  const isImage = it.type === 'image';
   const el = document.createElement('div');
   const pickerHtml = Core.renderItemPicker(it, { items, groups, numpadMap: nmap });
-
-  // Build group picker buttons — items can belong to multiple groups
-  const actionsHtml = `${!isImage && ((it.text||'').length > 120 || /\n/.test(it.text||'')) ? `<button class="icon-btn accent" data-action="expand" data-id="${esc(id)}" title="${expanded.has(id)?'Collapse':'Expand'}"><span class="mi">${expanded.has(id)?'unfold_less':'unfold_more'}</span></button>` : ''}${isImage ? `<button class="icon-btn accent" data-action="open-img" data-id="${esc(id)}" title="Open image"><span class="mi">open_in_new</span></button><button class="icon-btn accent" data-action="save-img" data-id="${esc(id)}" title="Copy to Downloads"><span class="mi">save</span></button>` : `<button class="icon-btn accent" data-action="edit" data-id="${esc(id)}" title="Open in editor"><span class="mi">open_in_new</span></button>`}<button class="icon-btn danger" data-action="del" data-id="${esc(id)}" title="Delete"><span class="mi">close</span></button>`;
+  const actionsHtml = Core.renderClipActions(it, { expanded: controller.isExpanded(id) });
   el.innerHTML = Core.renderClipItem(it, {
-    expanded: expanded.has(id),
+    expanded: controller.isExpanded(id),
     imageSrc: item => `clip-img:///${esc(item.image)}`,
-    previewText: item => expanded.has(itemId(item)) ? item.text || '' : collapsedPreviewText(item.text || '', query),
-    highlight: text => highlight(text, query),
+    previewText: item => controller.isExpanded(itemId(item)) ? item.text || '' : Core.collapsedPreviewText(item.text || '', query, regexOn),
+    highlight: text => Core.highlight(text, query, regexOn),
     pickerHtml,
     actionsHtml,
   });
@@ -487,208 +249,69 @@ listEl.addEventListener('scroll', () => {
   }
 });
 
-function handleFilterTagIntent(e, intent) {
-  const tag = e.target.closest('.filter-tag[data-filter], .filter-tag[data-group]');
-  if (!tag || e.target.closest('[data-action="delete-group"]')) return false;
-  const filter = tag.dataset.filter || tag.dataset.group;
-  if (!filter) return false;
-  e.stopPropagation();
-  Core.applyFilterIntent({ filters: activeFilters, excludedFilters }, filter, intent);
-  updateClearControls();
-  rerenderList();
-  return true;
-}
+// --- Shared interaction controller ---
+// The app drives the SAME Core.createClipController the website demo uses; the
+// adapter maps each action to the exact window.api call the app already made, so
+// behavior is preserved and the dispatch can no longer drift from the demo.
+const appAdapter = {
+  deletedToast: null, // the app pastes/hides; no per-action toast
+  items: () => items,
+  groups: () => groups,
+  itemById: (id) => itemById(id),
+  numpadMap: () => numpadMap(),
+  protectedGroups: () => new Set([aiGroupName]),
+  setFilterIntent: (filter, intent) => { Core.applyFilterIntent({ filters: activeFilters, excludedFilters }, filter, intent); updateClearControls(); },
+  clearFilters: () => clearSearchAndFilters(),
+  focusSearch: () => searchEl.focus(),
+  pin: (id) => window.api.pin(id),
+  numpadAssign: (id, slot) => window.api.numpadAssign(id, slot),
+  numpadUnassign: (slot) => window.api.numpadUnassign(slot),
+  toggleGroup: (id, group) => window.api.groupAssign(id, group), // applyGroupAssign toggles
+  createGroup: async (name) => { await window.api.groupCreate(name); await refreshGroups({ render: false }); },
+  deleteGroup: async (group) => { activeFilters.delete(group); excludedFilters.delete(group); await window.api.groupDelete(group); await refreshGroups({ render: false }); },
+  deleteClip: (id) => window.api.deleteItem(id),
+  clearUnpinned: () => window.api.deleteAll(),
+  setGroupSharedAi: (group) => window.api.setGroupSharedAi(group, !aiSharedGroups.has(group)),
+  copyNumpadSlot: (id) => { const it = itemById(id); if (!it) return; return it.type === 'image' ? window.api.paste(id) : window.api.copy(it.text || ''); },
+  activateClip: (id) => window.api.pasteAndHide(id),
+  editClip: (id) => window.api.openEditor(id),
+  openImage: (item) => window.api.openImage(itemId(item)),
+  saveImage: async (item) => { const d = await window.api.copyImagePath(itemId(item)); return d && d.path ? 'Path copied' : null; },
+  promptGroupName: () => appDialogs.prompt({ title: 'New group name' }),
+  isSettingsOpen: () => document.getElementById('settingsView').classList.contains('show'),
+  closeSettings: () => closeSettings(),
+  hidePopup: () => window.api.hidePopup(),
+  moveSelection: (dir) => moveSelection(dir),
+  activateSelected: () => { if (selectedIdx >= 0 && selectedIdx < filtered.length) { const item = items[filtered[selectedIdx]]; if (item) window.api.pasteAndHide(itemId(item)); } },
+  toast: (msg) => showToast(msg),
+  render: () => { refresh({ force: true }); if (document.getElementById('settingsView').classList.contains('show')) openSettings(); },
+};
+const controller = Core.createClipController(appAdapter);
+const appDialogs = controller.dialogs;
 
-// --- Event delegation ---
-document.addEventListener('click', async (e) => {
-  const clearFilters = e.target.closest('[data-action="clear-search-filters"]');
-  if (clearFilters) {
-    e.stopPropagation();
-    clearSearchAndFilters();
-    searchEl.focus();
-    return;
-  }
-  // Group delete x on tag
-  const gtagX = e.target.closest('[data-action="delete-group"]');
-  if (gtagX) {
-    e.stopPropagation();
-    const g = gtagX.dataset.group;
-    document.getElementById('confirmTitle').textContent = `Delete group "${g}"?`;
-    document.getElementById('confirmMsg').textContent = `Items will be ungrouped but not deleted.`;
-    document.getElementById('confirmYes').textContent = 'Delete';
-    pendingAssign = {deleteGroup: g};
-    document.getElementById('confirmOverlay').classList.add('show');
-    return;
-  }
-  // Built-in filter tags
-  if (handleFilterTagIntent(e, 'include')) return;
-  // Group picker buttons
-  const gpBtn = e.target.closest('.gp-btn');
-  if (gpBtn) {
-    e.stopPropagation();
-    if (gpBtn.dataset.action === 'add-group') {
-      const item = gpBtn.closest('.item');
-      if (!item) return;
-      const id = item.dataset.id;
-      const name = await promptDialog('New group name');
-      if (name) {
-        await window.api.groupCreate(name);
-        const current = itemById(id);
-        if (current && !isInGroup(current, name)) await window.api.groupAssign(id, name);
-        await refreshGroupsAndList();
-      }
-    } else {
-      const item = gpBtn.closest('.item');
-      if (!item) return;
-      window.api.groupAssign(item.dataset.id, gpBtn.dataset.group).then(refresh);
-    }
-    return;
-  }
-  // Numpad picker
-  const npBtn = e.target.closest('.np-btn');
-  if (npBtn) {
-    e.stopPropagation();
-    const n = +npBtn.dataset.n;
-    const item = npBtn.closest('.item');
-    if (!item) return;
-    tryAssignNumpad(n, item.dataset.id);
-    return;
-  }
-  // Star/pin
-  const star = e.target.closest('[data-action="pin"]');
-  if (star) { e.stopPropagation(); window.api.pin(star.dataset.id).then(refresh); return; }
-  // Open image in default viewer
-  const openImg = e.target.closest('[data-action="open-img"]');
-  if (openImg) { e.stopPropagation(); window.api.openImage(openImg.dataset.id); return; }
-  // Save image to Downloads
-  const saveImg = e.target.closest('[data-action="save-img"]');
-  if (saveImg) { e.stopPropagation(); window.api.copyImagePath(saveImg.dataset.id).then(d => { if(d && d.path) showToast('Path copied'); }); return; }
-  // Edit in editor
-  const edit = e.target.closest('[data-action="edit"]');
-  if (edit) { e.stopPropagation(); window.api.openEditor(edit.dataset.id); return; }
-  // Expand
-  const exp = e.target.closest('[data-action="expand"]');
-  if (exp) { e.stopPropagation(); const id=exp.dataset.id; expanded.has(id)?expanded.delete(id):expanded.add(id); applyFilter(); return; }
-  // Delete
-  const del = e.target.closest('[data-action="del"]');
-  if (del) { e.stopPropagation(); window.api.deleteItem(del.dataset.id).then(refresh); return; }
-  // Click item to paste
-  const item = e.target.closest('.item');
-  if (item) {
-    window.api.pasteAndHide(item.dataset.id);
-    return;
-  }
-});
+document.addEventListener('click', (e) => controller.onClick(e));
+document.addEventListener('contextmenu', (e) => controller.onContextmenu(e));
 
-document.addEventListener('contextmenu', (e) => {
-  if (handleFilterTagIntent(e, 'exclude')) {
-    e.preventDefault();
-  }
-});
-
-// --- Prompt dialog (Electron disables window.prompt) ---
-let activePromptCancel = null;
-function promptDialog(title) {
-  return new Promise((resolve) => {
-    if (activePromptCancel) activePromptCancel();
-    const overlay = document.getElementById('promptOverlay');
-    const input = document.getElementById('promptInput');
-    const yes = document.getElementById('promptYes');
-    const no = document.getElementById('promptNo');
-    document.getElementById('promptTitle').textContent = title;
-    input.value = '';
-    overlay.classList.add('show');
-    setTimeout(() => input.focus(), 0);
-
-    const cleanup = () => {
-      overlay.classList.remove('show');
-      yes.removeEventListener('click', onYes);
-      no.removeEventListener('click', onNo);
-      document.removeEventListener('keydown', onKey, true);
-      if (activePromptCancel === onNo) activePromptCancel = null;
-    };
-    const onYes = () => { const v = input.value.trim(); cleanup(); resolve(v || null); };
-    const onNo = () => { cleanup(); resolve(null); };
-    const onKey = (e) => {
-      if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); onYes(); }
-      else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); onNo(); }
-    };
-    yes.addEventListener('click', onYes);
-    no.addEventListener('click', onNo);
-    document.addEventListener('keydown', onKey, true); // capture phase: beats global nav handler
-    activePromptCancel = onNo;
-  });
-}
-
-// --- Numpad assign with confirm ---
-let pendingAssign = null;
+// Popup reset (called by the main process when the window is shown).
 window.resetPopupState = function() {
-  pendingAssign = null;
-  if (activePromptCancel) activePromptCancel();
-  document.getElementById('confirmOverlay')?.classList.remove('show');
-  document.getElementById('promptOverlay')?.classList.remove('show');
+  appDialogs.dismiss();
   document.getElementById('settingsView')?.classList.remove('show');
   document.getElementById('mainView')?.classList.remove('hidden');
   document.body.style.pointerEvents = '';
   window.focusSearch();
 };
 
-function tryAssignNumpad(slot, id) {
-  const nmap = numpadMap();
-  if (slot in nmap && nmap[slot] !== id) {
-    const existing = itemById(nmap[slot]);
-    if (!existing) return;
-    const preview = existing.type === 'image' ? '[image]' : (existing.text||'').slice(0,80);
-    document.getElementById('confirmTitle').textContent = `Numpad ${slot} already assigned:`;
-    document.getElementById('confirmMsg').textContent = preview;
-    document.getElementById('confirmYes').textContent = 'Replace';
-    pendingAssign = {slot, id};
-    document.getElementById('confirmOverlay').classList.add('show');
-  } else {
-    window.api.numpadAssign(id, slot).then(refresh);
-  }
-}
-document.getElementById('confirmYes').addEventListener('click', async () => {
-  if (pendingAssign) {
-    if (pendingAssign.clearAll) {
-      await window.api.deleteAll();
-      await refresh();
-      openSettings();
-    } else if (pendingAssign.deleteGroup) {
-      const g = pendingAssign.deleteGroup;
-      activeFilters.delete(g);
-      excludedFilters.delete(g);
-      await window.api.groupDelete(g);
-      await refreshGroupsAndList();
-    } else {
-      await window.api.numpadAssign(pendingAssign.id, pendingAssign.slot);
-      await refresh();
-    }
-  }
-  pendingAssign = null;
-  document.getElementById('confirmOverlay').classList.remove('show');
-});
-document.getElementById('confirmNo').addEventListener('click', () => {
-  pendingAssign = null;
-  document.getElementById('confirmOverlay').classList.remove('show');
-});
-
-// Global function called from main process for numpad assign
+// Global numpad hotkey from the main process: assign the selected row's clip
+// (inherits the shared replace-confirm via the controller).
 window.assignNumpad = function(slot) {
   if (selectedIdx >= 0 && selectedIdx < filtered.length) {
     const item = items[filtered[selectedIdx]];
-    if (item) tryAssignNumpad(slot, itemId(item));
+    if (item) controller.tryAssignNumpad(itemId(item), slot);
   }
 };
 
-// --- Clear all ---
-document.getElementById('clearAll').addEventListener('click', () => {
-  document.getElementById('confirmTitle').textContent = 'Clear all unpinned items?';
-  document.getElementById('confirmMsg').textContent = 'Pinned items will be kept.';
-  document.getElementById('confirmYes').textContent = 'Clear';
-  pendingAssign = {clearAll: true};
-  document.getElementById('confirmOverlay').classList.add('show');
-});
+// Clear all (Settings)
+document.getElementById('clearAll').addEventListener('click', () => controller.clearAll());
 document.getElementById('copyDiagnostics').addEventListener('click', async () => {
   const diagnostics = await window.api.getSyncDiagnostics();
   await window.api.copy(JSON.stringify(diagnostics, null, 2));
@@ -719,28 +342,8 @@ regexBtn.addEventListener('click', () => {
   rerenderList();
 });
 
-// --- Keyboard nav ---
-document.addEventListener('keydown', e => {
-  if (e.key === 'Escape') {
-    if (document.getElementById('confirmOverlay').classList.contains('show')) {
-      document.getElementById('confirmOverlay').classList.remove('show');
-      pendingAssign = null;
-    } else if (document.getElementById('settingsView').classList.contains('show')) {
-      closeSettings();
-    } else {
-      window.api.hidePopup();
-    }
-    return;
-  }
-  if (document.getElementById('settingsView').classList.contains('show')) return;
-  if (e.key === 'ArrowDown') { e.preventDefault(); moveSelection(1); }
-  else if (e.key === 'ArrowUp') { e.preventDefault(); moveSelection(-1); }
-  else if (e.key === 'Enter' && selectedIdx >= 0 && selectedIdx < filtered.length) {
-    e.preventDefault();
-    const item = items[filtered[selectedIdx]];
-    if (item) window.api.pasteAndHide(itemId(item));
-  }
-});
+// --- Keyboard nav (Escape cascade + arrows + Enter, via the shared controller) ---
+document.addEventListener('keydown', (e) => controller.onKeydown(e));
 
 function moveSelection(dir) {
   const items_els = listEl.querySelectorAll('.item');
@@ -1016,14 +619,7 @@ document.addEventListener('keydown', async (e) => {
   await applyShortcut(kind, resolved);
 }, true);
 
-document.getElementById('addGroupBtn').addEventListener('click', async () => {
-  const name = await promptDialog('New group name');
-  if (name) {
-    await window.api.groupCreate(name);
-    await refreshGroupsAndList();
-    openSettings();
-  }
-});
+document.getElementById('addGroupBtn').addEventListener('click', () => controller.addGroup(null));
 document.getElementById('syncAccounts').addEventListener('change', async (e) => {
   const toggle = e.target.closest('[data-sync-path]');
   if (!toggle) return;
@@ -1128,6 +724,13 @@ async function openSettings() {
   const autoLaunchEl = document.getElementById('autoLaunch');
   autoLaunchEl.checked = await window.api.getAutoLaunch();
   autoLaunchEl.onchange = (e) => window.api.setAutoLaunch(e.target.checked);
+  setThemeMode(s.theme_mode || themeMode);
+  document.getElementById('themeMode').onclick = (e) => {
+    const btn = e.target.closest('[data-theme-mode]');
+    if (!btn) return;
+    setThemeMode(btn.dataset.themeMode);
+    window.api.saveSettings({ theme_mode: btn.dataset.themeMode });
+  };
   renderShortcutSettings(s);
   const maxAgeEl = document.getElementById('maxAge');
   const maxSizeEl = document.getElementById('maxSize');
@@ -1224,27 +827,8 @@ async function openSettings() {
       ${has ? `<button class="icon-btn np-remove" data-slot="${n}" title="Unassign"><span class="mi">close</span></button>` : ''}
     </div>`;
   }
-  slotsEl.querySelectorAll('.np-remove').forEach(btn => {
-    btn.addEventListener('click', async (e) => {
-      e.stopPropagation();
-      await window.api.numpadUnassign(+btn.dataset.slot);
-      await refresh();
-      openSettings();
-    });
-  });
-  slotsEl.querySelectorAll('.np-slot.has-content').forEach(slot => {
-    slot.addEventListener('click', async () => {
-      const id = slot.dataset.slotId;
-      const it = itemById(id);
-      if (!it) return;
-      if (it.type === 'image') {
-        await window.api.paste(id);
-      } else {
-        await window.api.copy(it.text || '');
-      }
-      showToast('Copied');
-    });
-  });
+  // np-remove (unassign) + np-slot.has-content (copy) are handled by the shared
+  // controller's settings dispatch.
 
   // AI Access (renders before groups so the shared-group set is ready)
   await renderAiAccess();
@@ -1263,25 +847,8 @@ async function openSettings() {
       <button class="icon-btn gp-del" data-group="${esc(g)}" title="Delete group"${isAiGroup?' style="visibility:hidden"':''}><span class="mi">close</span></button>
     </div>`;
   });
-  groupsEl.querySelectorAll('.gp-share').forEach(btn => {
-    btn.addEventListener('click', async (e) => {
-      e.stopPropagation();
-      const g = btn.dataset.group;
-      await window.api.setGroupSharedAi(g, !aiSharedGroups.has(g));
-      openSettings();
-    });
-  });
-  groupsEl.querySelectorAll('.gp-del').forEach(btn => {
-    btn.addEventListener('click', async (e) => {
-      e.stopPropagation();
-      const g = btn.dataset.group;
-      activeFilters.delete(g);
-      excludedFilters.delete(g);
-      await window.api.groupDelete(g);
-      await refreshGroupsAndList();
-      openSettings();
-    });
-  });
+  // gp-share (toggle AI sharing) + gp-del (delete group, with the shared confirm)
+  // are handled by the shared controller's settings dispatch.
 
   document.getElementById('mainView').classList.add('hidden');
   document.getElementById('settingsView').classList.add('show');

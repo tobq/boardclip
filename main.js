@@ -3448,6 +3448,7 @@ function setupIPC() {
     if (body.max_age_days !== undefined) settings.max_age_days = Math.max(1, parseInt(body.max_age_days));
     if (body.max_size_gb !== undefined) settings.max_size_gb = Math.max(0.1, parseFloat(body.max_size_gb));
     if (body.regex_search !== undefined) settings.regex_search = !!body.regex_search;
+    if (body.theme_mode !== undefined && ['system', 'light', 'dark'].includes(body.theme_mode)) settings.theme_mode = body.theme_mode;
     if (body.diagnostics_enabled !== undefined) settings.diagnostics_enabled = !!body.diagnostics_enabled;
     saveSettingsFile();
     pruneHistory();

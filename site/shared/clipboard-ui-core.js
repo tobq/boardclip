@@ -377,6 +377,7 @@
     const ids = {
       mainView: 'mainView',
       count: 'count',
+      syncHeaderBtn: 'syncHeaderBtn',
       settingsBtn: 'settingsBtn',
       closeBtn: 'closeBtn',
       search: 'search',
@@ -401,6 +402,7 @@
       <div class="sticky">
         <header>
           <span class="count" id="${esc(ids.count)}"></span>
+          ${opts.showSyncButton === false ? '' : `<button class="icon-btn accent" id="${esc(ids.syncHeaderBtn)}" type="button" title="Sync now" aria-label="Sync now"><span class="mi">sync</span></button>`}
           ${headerActionsHtml}
           <button class="icon-btn accent" id="${esc(ids.settingsBtn)}" type="button" title="Settings" aria-label="Settings" aria-expanded="false" aria-controls="${esc(ids.settingsView)}"><span class="mi filled">settings</span></button>
           <button class="icon-btn close-btn" id="${esc(ids.closeBtn)}" type="button" title="Close (Esc)"${closeStyle}>&times;</button>
@@ -428,6 +430,420 @@
         ${settingsBodyHtml}
       </div>
     </div>`;
+  }
+  const COLLAPSED_PREVIEW_CHARS = 700;
+  const SEARCH_PREVIEW_CONTEXT = 260;
+  function queryMatchIndex(text, query, regex) {
+    const queryText = String(query || '').trim();
+    if (!queryText) return -1;
+    if (regex) {
+      try {
+        const match = new RegExp(queryText, 'i').exec(text);
+        return match ? match.index : -1;
+      } catch { return -1; }
+    }
+    return String(text || '').toLowerCase().indexOf(queryText.toLowerCase());
+  }
+  function collapsedPreviewText(text, query, regex) {
+    const singleLine = String(text || '').replace(/\r?\n/g, ' ');
+    if (singleLine.length <= COLLAPSED_PREVIEW_CHARS) return singleLine;
+    const matchIndex = queryMatchIndex(singleLine, query, regex);
+    const center = matchIndex >= 0 ? Math.max(0, matchIndex - SEARCH_PREVIEW_CONTEXT) : 0;
+    const start = Math.min(center, Math.max(0, singleLine.length - COLLAPSED_PREVIEW_CHARS));
+    const end = Math.min(singleLine.length, start + COLLAPSED_PREVIEW_CHARS);
+    return `${start > 0 ? '...' : ''}${singleLine.slice(start, end)}${end < singleLine.length ? '...' : ''}`;
+  }
+  function highlight(text, query, regex) {
+    const raw = String(text || '');
+    const queryText = String(query || '').trim();
+    if (!queryText) return escapeHtml(raw);
+    try {
+      const re = regex ? new RegExp(queryText, 'gi') : new RegExp(queryText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+      let out = '';
+      let last = 0;
+      let count = 0;
+      let match;
+      while ((match = re.exec(raw)) && count < 100) {
+        if (match[0] === '') { re.lastIndex += 1; continue; }
+        out += escapeHtml(raw.slice(last, match.index));
+        out += `<mark>${escapeHtml(match[0])}</mark>`;
+        last = match.index + match[0].length;
+        count += 1;
+      }
+      return out + escapeHtml(raw.slice(last));
+    } catch { return escapeHtml(raw); }
+  }
+  // Shared per-clip action row. App wires window.api; demo wires in-browser
+  // equivalents. Markup MUST stay identical so the two popups never drift.
+  function renderClipActions(item, options) {
+    const opts = options || {};
+    const id = itemId(item) || '';
+    const isImage = item && item.type === 'image';
+    const expanded = !!opts.expanded;
+    const text = (item && item.text) || '';
+    const canExpand = !isImage && (text.length > 120 || /\n/.test(text));
+    let html = '';
+    if (canExpand) {
+      html += `<button class="icon-btn accent" data-action="expand" data-id="${escapeHtml(id)}" title="${expanded ? 'Collapse' : 'Expand'}"><span class="mi">${expanded ? 'unfold_less' : 'unfold_more'}</span></button>`;
+    }
+    if (isImage) {
+      html += `<button class="icon-btn accent" data-action="open-img" data-id="${escapeHtml(id)}" title="Open image"><span class="mi">open_in_new</span></button><button class="icon-btn accent" data-action="save-img" data-id="${escapeHtml(id)}" title="Copy to Downloads"><span class="mi">save</span></button>`;
+    } else {
+      html += `<button class="icon-btn accent" data-action="edit" data-id="${escapeHtml(id)}" title="Open in editor"><span class="mi">open_in_new</span></button>`;
+    }
+    html += `<button class="icon-btn danger" data-action="del" data-id="${escapeHtml(id)}" title="Delete"><span class="mi">close</span></button>`;
+    return html;
+  }
+  // The full settings panel body, shared verbatim by the app and the demo. The
+  // app fills the dynamic containers (numpadSlots/groupSlots/syncAccounts/
+  // aiClients/buildInfo/usage) from window.api; the demo fills them with sample
+  // data. One source means the two settings panels are structurally identical.
+  function renderSettingsBody() {
+    return `
+    <label class="setting-row switch-row" for="autoLaunch">
+      <span>Launch on startup</span>
+      <input id="autoLaunch" type="checkbox">
+      <span class="switch" aria-hidden="true"></span>
+    </label>
+    <div class="setting-row">
+      <label>Theme</label>
+      <div class="seg" id="themeMode" role="group" aria-label="Theme">
+        <button type="button" class="seg-btn" data-theme-mode="system" title="Follow your desktop">System</button>
+        <button type="button" class="seg-btn" data-theme-mode="light" title="Always light">Light</button>
+        <button type="button" class="seg-btn" data-theme-mode="dark" title="Always dark">Dark</button>
+      </div>
+    </div>
+    <div class="setting-row shortcut-row">
+      <label>Popup shortcut</label>
+      <div class="shortcut-control">
+        <button class="shortcut-btn" id="shortcutRecord" type="button"></button>
+        <button class="icon-btn shortcut-reset" id="shortcutReset" title="Reset shortcut" type="button"><span class="mi">restart_alt</span></button>
+      </div>
+    </div>
+    <div class="shortcut-status" id="shortcutStatus"></div>
+    <div class="setting-row shortcut-row">
+      <label>Quick paste</label>
+      <div class="shortcut-control">
+        <button class="shortcut-btn" id="quickPasteRecord" type="button"></button>
+        <button class="icon-btn shortcut-reset" id="quickPasteReset" title="Reset quick paste shortcut" type="button"><span class="mi">restart_alt</span></button>
+      </div>
+    </div>
+    <div class="shortcut-status" id="quickPasteStatus"></div>
+    <div class="setting-row"><label>Max age (days)</label><input id="maxAge" type="number" min="1"></div>
+    <div class="setting-row"><label>Max size (GB)</label><input id="maxSize" type="number" min="0.1" step="0.1"></div>
+    <div class="settings-usage" id="usage"></div>
+    <div class="settings-section">
+      <h3>Numpad Shortcuts</h3>
+      <div id="numpadSlots"></div>
+    </div>
+    <div class="settings-section">
+      <h3>Sync</h3>
+      <div class="sync-row">
+        <div class="sync-list" id="syncAccounts"></div>
+        <button class="sync-btn" id="syncNow" title="Sync now"><span class="mi" style="font-size:14px;vertical-align:middle">sync</span></button>
+      </div>
+      <button class="settings-secondary sync-add-folder" id="addSyncFolder" type="button"><span class="mi" style="font-size:14px;vertical-align:middle">create_new_folder</span> Add sync folder</button>
+      <div class="sync-status" id="syncStatus"></div>
+      <label class="setting-row switch-row" for="p2pEnabled">
+        <span>Local network fast sync</span>
+        <input id="p2pEnabled" type="checkbox">
+        <span class="switch" aria-hidden="true"></span>
+      </label>
+      <div class="sync-status" id="p2pStatus"></div>
+    </div>
+    <div class="settings-section">
+      <h3>Updates</h3>
+      <div class="settings-action-row">
+        <div class="settings-action-list">
+          <div class="settings-action-card">
+            <span class="settings-action-main">
+              <span class="settings-action-title" id="updateBuild"></span>
+              <span class="settings-action-detail" id="updateDetail"></span>
+            </span>
+          </div>
+        </div>
+        <button class="settings-icon-btn" id="updateNow" title="Check for updates"><span class="mi" style="font-size:14px;vertical-align:middle">system_update_alt</span></button>
+      </div>
+      <div class="settings-status" id="updateStatus"></div>
+    </div>
+    <div class="settings-section">
+      <h3>Diagnostics</h3>
+      <label class="setting-row switch-row" for="diagnosticsEnabled">
+        <span>Performance logging</span>
+        <input id="diagnosticsEnabled" type="checkbox">
+        <span class="switch" aria-hidden="true"></span>
+      </label>
+      <div class="settings-status" id="diagnosticsStatus"></div>
+    </div>
+    <div class="settings-section">
+      <h3>AI Access</h3>
+      <label class="setting-row switch-row" for="aiAccessEnabled">
+        <span>Let local AI assistants use BoardClip</span>
+        <input id="aiAccessEnabled" type="checkbox">
+        <span class="switch" aria-hidden="true"></span>
+      </label>
+      <div class="settings-status" id="aiAccessStatus"></div>
+      <div id="aiAccessBody" class="hidden">
+        <div class="ai-hint">AI assistants can read clips in groups you share, and act with your approval. Drop clips into the <b>AI</b> group (or share any group below) to expose them.</div>
+        <div class="ai-subhead">Installed in</div>
+        <div id="aiClients"></div>
+        <button class="settings-secondary" id="aiMoreClients" type="button" style="display:none"></button>
+        <div id="aiClientsMore" class="hidden"></div>
+        <div class="ai-subhead" id="aiSecretsHead" style="display:none">Hidden from AI (look like secrets)</div>
+        <div id="aiSecrets"></div>
+        <div class="ai-subhead" id="aiAlwaysHead" style="display:none">Always allowed actions</div>
+        <div id="aiAlwaysAllow"></div>
+        <div class="setting-row"><label>Approval timeout (seconds)</label><input id="aiTimeout" type="number" min="5" max="600" step="5"></div>
+      </div>
+    </div>
+    <div class="settings-section">
+      <h3>Groups</h3>
+      <div id="groupSlots"></div>
+      <button class="add-group-btn" id="addGroupBtn"><span class="mi" style="font-size:14px;vertical-align:middle">add</span> New Group</button>
+    </div>
+    <div class="settings-footer">
+      <div class="settings-footer-actions">
+        <button class="settings-clear" id="clearAll">Clear All</button>
+        <button class="settings-secondary" id="copyDiagnostics">Copy Diagnostics</button>
+      </div>
+      <div class="build-info" id="buildInfo"></div>
+    </div>
+  `;
+  }
+  // Theme: shared by the app (sets data-theme on <html>) and the demo (sets it
+  // on the .bc-popup window). mode is 'system' | 'light' | 'dark'.
+  function resolveTheme(mode, systemDark) {
+    if (mode === 'light' || mode === 'dark') return mode;
+    return systemDark ? 'dark' : 'light';
+  }
+  function applyTheme(rootEl, mode, systemDark) {
+    const theme = resolveTheme(mode, systemDark);
+    if (rootEl && rootEl.setAttribute) rootEl.setAttribute('data-theme', theme);
+    return theme;
+  }
+  function setActiveThemeSeg(containerEl, mode) {
+    if (!containerEl || !containerEl.querySelectorAll) return;
+    const active = mode === 'light' || mode === 'dark' ? mode : 'system';
+    containerEl.querySelectorAll('[data-theme-mode]').forEach((btn) => {
+      btn.classList.toggle('active', btn.dataset.themeMode === active);
+    });
+  }
+  // Shared confirm/prompt dialogs — ONE implementation for the app and the demo
+  // so a confirm flow (group delete, numpad replace, clear all, add-group name)
+  // can never drift between them. Creates its own DOM in `host`; Promise-based;
+  // Escape + backdrop dismiss; capture-phase keys so they beat global nav.
+  function createDialogs(host) {
+    if (typeof document === 'undefined') {
+      return { confirm: () => Promise.resolve(false), prompt: () => Promise.resolve(null), isOpen: () => false, dismiss: () => {} };
+    }
+    const root = host || document.body;
+    const make = (inner) => {
+      const overlay = document.createElement('div');
+      overlay.className = 'overlay';
+      overlay.innerHTML = inner;
+      root.appendChild(overlay);
+      return overlay;
+    };
+    const confirmEl = make('<div class="dialog"><h3 data-x="title"></h3><p data-x="msg"></p><div class="dialog-btns"><button class="btn-cancel" data-x="no"></button><button class="btn-confirm" data-x="yes"></button></div></div>');
+    const promptEl = make('<div class="dialog"><h3 data-x="title"></h3><input class="prompt-input" type="text" autocomplete="off" spellcheck="false" data-x="input"><div class="dialog-btns"><button class="btn-cancel" data-x="no"></button><button class="btn-confirm" data-x="yes"></button></div></div>');
+    const q = (parent, name) => parent.querySelector(`[data-x="${name}"]`);
+    let activeCancel = null;
+    function run(overlay, setup, getValue) {
+      return new Promise((resolve) => {
+        setup();
+        overlay.classList.add('show');
+        const yesBtn = q(overlay, 'yes');
+        const noBtn = q(overlay, 'no');
+        const finish = (value) => {
+          overlay.classList.remove('show');
+          yesBtn.removeEventListener('click', onYes);
+          noBtn.removeEventListener('click', onNo);
+          overlay.removeEventListener('click', onBackdrop);
+          document.removeEventListener('keydown', onKey, true);
+          activeCancel = null;
+          resolve(value);
+        };
+        const onYes = () => finish(getValue());
+        const onNo = () => finish(getValue(true));
+        const onBackdrop = (e) => { if (e.target === overlay) onNo(); };
+        const onKey = (e) => {
+          if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); onYes(); }
+          else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); onNo(); }
+        };
+        yesBtn.addEventListener('click', onYes);
+        noBtn.addEventListener('click', onNo);
+        overlay.addEventListener('click', onBackdrop);
+        document.addEventListener('keydown', onKey, true);
+        activeCancel = onNo;
+      });
+    }
+    function confirm(opts) {
+      const o = opts || {};
+      return run(confirmEl, () => {
+        q(confirmEl, 'title').textContent = o.title || '';
+        q(confirmEl, 'msg').textContent = o.message || '';
+        q(confirmEl, 'yes').textContent = o.okLabel || 'OK';
+        q(confirmEl, 'no').textContent = o.cancelLabel || 'Cancel';
+      }, (cancelled) => !cancelled);
+    }
+    function prompt(opts) {
+      const o = typeof opts === 'string' ? { title: opts } : (opts || {});
+      const input = q(promptEl, 'input');
+      const result = run(promptEl, () => {
+        q(promptEl, 'title').textContent = o.title || '';
+        input.value = o.value || '';
+        q(promptEl, 'yes').textContent = o.okLabel || 'OK';
+        q(promptEl, 'no').textContent = o.cancelLabel || 'Cancel';
+        setTimeout(() => input.focus(), 0);
+      }, (cancelled) => cancelled ? null : (input.value.trim() || null));
+      return result;
+    }
+    return {
+      confirm,
+      prompt,
+      isOpen: () => confirmEl.classList.contains('show') || promptEl.classList.contains('show'),
+      dismiss: () => { if (activeCancel) activeCancel(); },
+    };
+  }
+  // Shared interaction controller. ONE dispatch table + confirm/prompt-gated
+  // flows for the popup, driven by a backend `adapter`. The desktop app supplies
+  // an adapter backed by window.api; the website demo supplies one backed by the
+  // in-memory Core mutators + browser APIs. This is what stops the click handlers
+  // from drifting (e.g. a confirm dialog present in one popup but not the other).
+  //
+  // Adapter contract (all backend ops may return a Promise; the controller awaits
+  // then calls adapter.render()):
+  //   data:    items(), groups(), itemById(id), numpadMap(), protectedGroups()
+  //   dialogs: dialogs ({confirm,prompt}) OR dialogHost (an element to mount into)
+  //   filter:  setFilterIntent(filter,intent), clearFilters(), focusSearch()
+  //   mutate:  pin(id), numpadAssign(id,slot), numpadUnassign(slot),
+  //            toggleGroup(id,group) [add-or-remove], createGroup(name),
+  //            deleteGroup(group), deleteClip(id), clearUnpinned(),
+  //            setGroupSharedAi(group), copyNumpadSlot(id)
+  //   actions: activateClip(id), editClip(id,itemEl), openImage(item),
+  //            saveImage(item)->feedbackString|null
+  //   keyboard:isSettingsOpen(), closeSettings(), hidePopup(),
+  //            moveSelection(dir), activateSelected()
+  //   ui:      render(), toast(msg), deletedToast (string|null), promptGroupName()
+  function createClipController(adapter) {
+    const a = adapter || {};
+    const expanded = new Set();
+    const dialogs = a.dialogs || createDialogs(a.dialogHost);
+    const render = () => { if (a.render) a.render(); };
+    const toast = (msg) => { if (a.toast && msg) a.toast(msg); };
+    const protectedHas = (group) => {
+      const p = a.protectedGroups && a.protectedGroups();
+      return !!(p && typeof p.has === 'function' && p.has(group));
+    };
+
+    async function deleteGroup(group) {
+      if (!group || protectedHas(group)) return;
+      const ok = await dialogs.confirm({ title: `Delete group "${group}"?`, message: 'Items will be ungrouped but not deleted.', okLabel: 'Delete' });
+      if (!ok) return;
+      await a.deleteGroup(group);
+      render();
+    }
+    async function tryAssignNumpad(id, slot) {
+      const nmap = a.numpadMap ? a.numpadMap() : {};
+      if (slot in nmap && nmap[slot] !== id) {
+        const existing = a.itemById(nmap[slot]);
+        const preview = existing ? (existing.type === 'image' ? '[image]' : String(existing.text || '').replace(/\s+/g, ' ').slice(0, 80)) : '';
+        const ok = await dialogs.confirm({ title: `Numpad ${slot} already assigned:`, message: preview, okLabel: 'Replace' });
+        if (!ok) return;
+      }
+      await a.numpadAssign(id, slot);
+      render();
+    }
+    async function addGroup(id) {
+      const name = a.promptGroupName ? await a.promptGroupName() : await dialogs.prompt({ title: 'New group name' });
+      if (!name) return;
+      await a.createGroup(name);
+      if (id != null && a.toggleGroup) await a.toggleGroup(id, name); // clip is not yet in the new group, so this adds
+      render();
+    }
+    async function clearAll() {
+      const ok = await dialogs.confirm({ title: 'Clear all unpinned items?', message: 'Pinned items will be kept.', okLabel: 'Clear' });
+      if (!ok) return;
+      await a.clearUnpinned();
+      render();
+    }
+
+    async function onClick(event) {
+      const t = event.target;
+      if (t.closest('[data-action="clear-search-filters"]')) { event.stopPropagation(); if (a.clearFilters) a.clearFilters(); if (a.focusSearch) a.focusSearch(); return true; }
+      const gx = t.closest('[data-action="delete-group"]');
+      if (gx) { event.stopPropagation(); deleteGroup(gx.dataset.group); return true; }
+      const ftag = t.closest('.filter-tag[data-filter], .filter-tag[data-group]');
+      if (ftag) { event.stopPropagation(); if (a.setFilterIntent) a.setFilterIntent(ftag.dataset.filter || ftag.dataset.group, 'include'); render(); return true; }
+      const npRemove = t.closest('.np-remove');
+      if (npRemove) { event.stopPropagation(); await a.numpadUnassign(Number(npRemove.dataset.slot)); render(); return true; }
+      const slotEl = t.closest('.np-slot.has-content');
+      if (slotEl && slotEl.dataset.slotId) { event.stopPropagation(); await a.copyNumpadSlot(slotEl.dataset.slotId); toast('Copied'); return true; }
+      const share = t.closest('.gp-share');
+      if (share) { event.stopPropagation(); await a.setGroupSharedAi(share.dataset.group); render(); return true; }
+      const gpDel = t.closest('.gp-del');
+      if (gpDel) { event.stopPropagation(); deleteGroup(gpDel.dataset.group); return true; }
+      const gpBtn = t.closest('.gp-btn');
+      if (gpBtn) {
+        event.stopPropagation();
+        const item = gpBtn.closest('.item');
+        if (!item) return true;
+        if (gpBtn.dataset.action === 'add-group') addGroup(item.dataset.id);
+        else if (gpBtn.dataset.group) { await a.toggleGroup(item.dataset.id, gpBtn.dataset.group); render(); }
+        return true;
+      }
+      const npBtn = t.closest('.np-btn');
+      if (npBtn) { event.stopPropagation(); const item = npBtn.closest('.item'); if (item) tryAssignNumpad(item.dataset.id, Number(npBtn.dataset.n)); return true; }
+      const pin = t.closest('[data-action="pin"]');
+      if (pin) { event.stopPropagation(); await a.pin(pin.dataset.id); render(); return true; }
+      const openImg = t.closest('[data-action="open-img"]');
+      if (openImg) { event.stopPropagation(); await a.openImage(a.itemById(openImg.dataset.id)); return true; }
+      const saveImg = t.closest('[data-action="save-img"]');
+      if (saveImg) { event.stopPropagation(); toast(await a.saveImage(a.itemById(saveImg.dataset.id))); return true; }
+      const edit = t.closest('[data-action="edit"]');
+      if (edit) { event.stopPropagation(); await a.editClip(edit.dataset.id, edit.closest('.item')); return true; }
+      const exp = t.closest('[data-action="expand"]');
+      if (exp) { event.stopPropagation(); const id = exp.dataset.id; if (expanded.has(id)) expanded.delete(id); else expanded.add(id); render(); return true; }
+      const del = t.closest('[data-action="del"]');
+      if (del) { event.stopPropagation(); const id = del.dataset.id; await a.deleteClip(id); expanded.delete(id); render(); toast(a.deletedToast); return true; }
+      const item = t.closest('.item');
+      if (item) { await a.activateClip(item.dataset.id); return true; }
+      return false;
+    }
+    function onContextmenu(event) {
+      const ftag = event.target.closest('.filter-tag[data-filter], .filter-tag[data-group]');
+      if (!ftag || event.target.closest('[data-action="delete-group"]')) return false;
+      event.preventDefault();
+      event.stopPropagation();
+      if (a.setFilterIntent) a.setFilterIntent(ftag.dataset.filter || ftag.dataset.group, 'exclude');
+      render();
+      return true;
+    }
+    function onKeydown(event) {
+      if (dialogs.isOpen()) return; // dialogs own their keys via capture phase
+      if (event.key === 'Escape') {
+        if (a.isSettingsOpen && a.isSettingsOpen()) { if (a.closeSettings) a.closeSettings(); }
+        else if (a.hidePopup) a.hidePopup();
+        return;
+      }
+      if (a.isSettingsOpen && a.isSettingsOpen()) return;
+      if (event.key === 'ArrowDown') { event.preventDefault(); if (a.moveSelection) a.moveSelection(1); }
+      else if (event.key === 'ArrowUp') { event.preventDefault(); if (a.moveSelection) a.moveSelection(-1); }
+      else if (event.key === 'Enter') { if (a.activateSelected) { event.preventDefault(); a.activateSelected(); } }
+    }
+    return {
+      expanded,
+      dialogs,
+      isExpanded: (id) => expanded.has(id),
+      onClick,
+      onContextmenu,
+      onKeydown,
+      deleteGroup,
+      tryAssignNumpad,
+      addGroup,
+      clearAll,
+      render,
+    };
   }
   function sortItems(items) {
     return [...(items || [])].sort((a, b) => (b.ts || 0) - (a.ts || 0));
@@ -531,7 +947,17 @@
     renderFilterBar,
     renderItemPicker,
     renderClipItem,
+    renderClipActions,
     renderPopupShell,
+    renderSettingsBody,
+    queryMatchIndex,
+    collapsedPreviewText,
+    highlight,
+    resolveTheme,
+    applyTheme,
+    setActiveThemeSeg,
+    createDialogs,
+    createClipController,
     sortItems,
     touchItem,
     togglePin,

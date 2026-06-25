@@ -316,59 +316,56 @@ code {
   min-width: 0;
   position: relative;
 }
-.demo-foot button {
+.demo-foot-actions { display: flex; align-items: center; gap: 6px; }
+.demo-foot button,
+.demo-foot-btn {
   min-height: 30px;
   padding: 0 10px;
-  color: #c7d0da;
-  background: #11151a;
-  border: 1px solid #2a333d;
+  color: var(--text-dim);
+  background: var(--input);
+  border: 1px solid var(--line-strong);
   border-radius: 6px;
   cursor: pointer;
   font-size: 12px;
 }
-.demo-foot button:hover {
+.demo-foot button:hover,
+.demo-foot-btn:hover {
   color: var(--accent);
   border-color: var(--accent);
 }
+.demo-foot-btn { display: inline-flex; align-items: center; justify-content: center; min-width: 30px; padding: 0 8px; }
+.demo-foot-btn .mi { font-size: 16px; }
 
+/* The popup theme variables now come from the shared clipboard-popup.css via
+   the .bc-popup[data-theme] selector on the demo window, so the demo and the
+   real app render from one palette. Only the window frame lives here. */
 .demo-window {
-  --surface2: #1a1a1a;
-  --input: #0a0a0a;
-  --text: #e6edf3;
-  --text-dim: #6f7a86;
-  --line-strong: #343840;
-  --hover: rgba(255,255,255,.06);
-  --active-fg: #060608;
-  --bg: #0a0a0a;
-  --ink: var(--text);
-  --muted: var(--text-dim);
-  --dim: var(--text-dim);
+  position: relative;
   height: min(620px, calc(100vh - 128px));
   min-height: 500px;
   display: flex;
   flex-direction: column;
   background: var(--surface);
-  border: 1px solid #27272a;
+  border: 1px solid var(--line-strong);
   border-radius: 10px;
   box-shadow: 0 22px 60px var(--demo-shadow);
   overflow: hidden;
 }
-.setting-value {
-  color: var(--ink);
-  background: #11151a;
-  border: 1px solid #20262d;
-  border-radius: 4px;
-  padding: 2px 6px;
-  font: 11px/1.3 "Cascadia Code", Consolas, monospace;
-}
+/* Keep the popup's toast / dialogs / lightbox inside the demo window
+   (the shared CSS positions them fixed for the real Electron window). */
+.demo-window .toast,
+.demo-window .overlay { position: absolute; }
+.demo-lightbox { cursor: zoom-out; }
+.demo-lightbox img { max-width: 86%; max-height: 78%; border-radius: 8px; box-shadow: 0 14px 44px rgba(0, 0, 0, .5); background: var(--surface); }
+.demo-window .preview.editing { outline: 1px solid var(--accent); border-radius: 4px; padding: 4px 6px; white-space: pre-wrap; word-break: break-word; background: var(--bg); cursor: text; }
 .demo-foot {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
   padding: 8px 12px;
-  color: var(--dim);
-  border-top: 1px solid #171b20;
+  color: var(--text-dim);
+  border-top: 1px solid var(--line-soft);
   font-size: 11px;
 }
 .demo-guide {
@@ -458,46 +455,6 @@ code {
   --hint-bg: #a2a29d;
   --hint-foreground: #18181b;
   --hint-shadow: rgba(24, 24, 27, .1);
-}
-
-:root[data-system-theme="light"] .demo-window {
-  --surface: #ffffff;
-  --surface2: #f4f4f5;
-  --input: #ffffff;
-  --text: #18181b;
-  --text-dim: #71717a;
-  --line: #d4d4d8;
-  --line-strong: #d4d4d8;
-  --line-soft: #e4e4e7;
-  --hover: rgba(0,0,0,.06);
-  --active-fg: #ffffff;
-  --bg: #f4f4f5;
-  --ink: var(--text);
-  --muted: var(--text-dim);
-  --dim: var(--text-dim);
-  --accent: #7c3aed;
-  --green: #059669;
-  --pin: #d97706;
-  border-color: #d4d4d8;
-}
-:root[data-system-theme="light"] .demo-window .search-row,
-:root[data-system-theme="light"] .demo-window .preview img {
-  background: #ffffff;
-  border-color: #d4d4d8;
-}
-:root[data-system-theme="light"] .demo-window .item,
-:root[data-system-theme="light"] .demo-window .demo-foot {
-  border-color: #e4e4e7;
-}
-:root[data-system-theme="light"] .demo-window .preview,
-:root[data-system-theme="light"] .demo-window .setting-row {
-  color: #18181b;
-}
-:root[data-system-theme="light"] .demo-window .setting-row code,
-:root[data-system-theme="light"] .demo-window .demo-foot button {
-  color: #52525b;
-  background: #f4f4f5;
-  border-color: #e4e4e7;
 }
 
 section {

@@ -412,9 +412,13 @@ function text(text, extra = {}) {
   assert(appHtml.includes('site/shared/clipboard-popup.css'));
   assert(siteHtml.includes('/shared/clipboard-popup.css'));
   assert(appHtml.includes('Core.renderFilterBar'));
-  assert(appHtml.includes('id="quickPasteRecord"'));
+  // The settings markup now lives in the shared renderer (Core.renderSettingsBody),
+  // not inline in index.html — but the app still wires its handlers.
+  assert(appHtml.includes('Core.renderSettingsBody'));
+  assert(siteHtml.includes('Core.renderSettingsBody'));
+  assert(ui.renderSettingsBody().includes('id="quickPasteRecord"'));
+  assert(ui.renderSettingsBody().includes('Quick paste'));
   assert(appHtml.includes('window.api.setQuickPasteShortcut'));
-  assert(appHtml.includes('Quick paste'));
   assert(siteHtml.includes('Core.renderFilterBar'));
   assert(appHtml.includes('Core.renderClipItem'));
   assert(siteHtml.includes('Core.renderClipItem'));

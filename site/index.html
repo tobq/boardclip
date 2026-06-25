@@ -81,7 +81,7 @@
       </div>
 
       <div class="demo" aria-label="Interactive BoardClip demo">
-        <div class="demo-window" id="demo-window"></div>
+        <div class="demo-window bc-popup" id="demo-window" data-theme="dark"></div>
         <div class="demo-guide" id="demo-guide" aria-hidden="true">
           <svg class="demo-guide-cursor" viewBox="0 0 24 32" aria-hidden="true">
             <path d="M3 2.5v24l6.2-6.1 4.2 8.7 4.4-2.1-4.2-8.3h8.8L3 2.5Z"/>
@@ -144,10 +144,15 @@
   <script src="/shared/clipboard-ui-core.js"></script>
   <script>
     const Core = window.BoardClipCore;
-    document.getElementById("demo-window").innerHTML = Core.renderPopupShell({
+    const escapeHtml = Core.escapeHtml;
+    // The demo renders the EXACT same shell + settings body as the desktop app
+    // (one shared source). Only the data and the in-browser hooks differ.
+    const demoWindowEl = document.getElementById("demo-window");
+    demoWindowEl.innerHTML = Core.renderPopupShell({
       ids: {
         mainView: "demo-main-view",
         count: "clip-count",
+        syncHeaderBtn: "demo-sync-header",
         settingsBtn: "demo-settings-button",
         closeBtn: "demo-close-button",
         search: "demo-search",
@@ -160,36 +165,7 @@
         settingsCloseBtn: "demo-settings-close",
       },
       settingsNote: "Demo",
-      settingsBodyHtml: `
-        <label class="setting-row switch-row">
-          <span>Launch on startup</span>
-          <input class="demo-toggle-input" type="checkbox" checked>
-          <span class="switch" aria-hidden="true"></span>
-        </label>
-        <div class="setting-row"><label>Search mode</label><span class="setting-value" id="demo-search-mode">plain</span></div>
-        <div class="settings-usage" id="demo-usage">100 items, 0.0 MB</div>
-        <div class="settings-section">
-          <h3>Numpad Shortcuts</h3>
-          <div id="demo-numpad-slots"></div>
-        </div>
-        <div class="settings-section">
-          <h3>Sync</h3>
-          <div class="sync-row">
-            <div class="sync-list">
-              <label class="sync-account"><input type="checkbox" checked><span class="sync-account-main"><span class="sync-provider">Google Drive</span><span class="sync-account-path">Demo cloud folder</span></span></label>
-              <label class="sync-account"><input type="checkbox" checked><span class="sync-account-main"><span class="sync-provider">OneDrive</span><span class="sync-account-path">Demo cloud folder</span></span></label>
-              <label class="sync-account"><input type="checkbox" checked><span class="sync-account-main"><span class="sync-provider">iCloud</span><span class="sync-account-path">Demo cloud folder</span></span></label>
-            </div>
-            <button class="sync-btn" type="button" title="Sync now"><span class="mi" style="font-size:14px;vertical-align:middle">sync</span></button>
-          </div>
-          <button class="settings-secondary sync-add-folder" type="button"><span class="mi" style="font-size:14px;vertical-align:middle">create_new_folder</span> Add sync folder</button>
-          <div class="sync-status active">3/3 providers enabled; syncs on change + every 30s</div>
-        </div>
-        <div class="settings-section">
-          <h3>Groups</h3>
-          <div id="demo-group-slots"></div>
-        </div>
-      `,
+      settingsBodyHtml: Core.renderSettingsBody(),
       afterListHtml: `
         <div class="demo-foot">
           <span>Try: "invoice", "api", "meeting", "image", "thanks"</span>
@@ -197,6 +173,14 @@
         </div>
       `,
     });
+    // Toast + lightbox live INSIDE the demo window so they inherit the popup
+    // theme variables. The confirm/prompt dialogs come from the SHARED
+    // Core.createDialogs (same implementation the desktop app uses).
+    demoWindowEl.insertAdjacentHTML("beforeend", `
+      <div class="toast" id="demo-toast">Copied</div>
+      <div class="overlay demo-lightbox" id="demo-lightbox"><img alt="clip image" id="demo-lightbox-img"></div>
+    `);
+    const dialogs = Core.createDialogs(demoWindowEl);
     const osLabels = {
       mac: "macOS terminal",
       linux: "Linux terminal",
@@ -241,6 +225,7 @@
         url: `${releaseBase}BoardClip-Linux.AppImage`
       }
     };
+    const DEMO_SHOTS = ["/assets/demo-shot-waveform.svg", "/assets/demo-shot-dashboard.svg", "/assets/demo-shot-architecture.svg"];
     let labels = ["work", "code", "support", "ideas", "legal", "sales", "design", "finance", "ops", "personal", "release", "meeting", "writing", "bug", "social"];
     const numpadSlots = new Map([
       [0, 1],
@@ -251,27 +236,28 @@
     ]);
     const examples = [
       { text: "npm run build && git push origin main" },
+      { text: "Release notes v2.1.0\n- Shared popup renderer between the app and the website demo\n- Numpad quick-paste reliability on Windows\n- Cloud sync conflict resolution by newest updatedAt then stable id\n- Inline edit, image lightbox, and theme toggle in the live demo" },
       { text: "Yep, found the shape of it. Live prod mitigations first, then clean patch." },
       { text: "https://github.com/tobq/boardclip/issues/new" },
       { text: "Invoice #BC-2048 paid via card ending 1234" },
-      { text: "Audio visualizer reference", image: "https://picsum.photos/seed/boardclip-waveform/240/82" },
+      { text: "Audio visualizer reference", image: "/assets/demo-shot-waveform.svg" },
       { text: "curl -fsSL https://boardclip.sh/install.sh | sh" },
       { text: "Meeting notes: launch site, DNS, update scripts, README polish" },
       { text: "SELECT id, content, created_at FROM clips WHERE pinned = 1;" },
       { text: "Can you send over the repro steps and expected behavior?" },
       { text: "BOARDCLIP_APP_DIR=$HOME/.local/share/boardclip" },
-      { text: "Screenshot 2026-05-17 at 13.15.png", image: "https://picsum.photos/seed/boardclip-dashboard/120/90" },
+      { text: "Screenshot 2026-05-17 at 13.15.png", image: "/assets/demo-shot-dashboard.svg" },
       { text: "API key rotated; update local env before deploy" },
       { text: "OneDrive sync conflict resolved by newest updatedAt then stable id" },
       { text: "Customer reply: happy to extend the trial while we fix this" },
       { text: "Reddit draft: I built a tiny clipboard tray app because I kept losing useful snippets" },
       { text: "C:\\Users\\Tobi\\AppData\\Local\\BoardClip" },
-      { text: "Product mockup crop", image: "https://picsum.photos/seed/boardclip-laptop/120/90" },
+      { text: "Product mockup crop", image: "/assets/demo-shot-dashboard.svg" },
       { text: "Brand copy: fast clipboard memory without another cloud account" },
       { text: "Launch checklist: domain, Netlify, TLS, scripts, README" },
       { text: "macOS accessibility permissions need to be granted once" },
       { text: "Fix: Windows key release should not open Win+V after BoardClip handles it" },
-      { text: "Architecture diagram", image: "https://picsum.photos/seed/boardclip-architecture/140/80" },
+      { text: "Architecture diagram", image: "/assets/demo-shot-architecture.svg" },
       { text: "Support macro: Could you try updating to the latest build and relaunching?" },
       { text: "PR summary: unify provider detection and remove duplicated sync paths" },
       { text: "npx --yes netlify-cli@latest deploy --prod --dir site" }
@@ -289,7 +275,7 @@
       return {
         id: `demo:${index + 1}`,
         text: isImage && !/png|screenshot|image/i.test(text) ? `Image clip: product-mockup-${String(index + 1).padStart(2, "0")}.png` : text,
-        imageSrc: example.image || (isImage ? `https://picsum.photos/seed/boardclip-${index + 1}/150/86` : null),
+        imageSrc: example.image || (isImage ? DEMO_SHOTS[index % DEMO_SHOTS.length] : null),
         width: isImage ? 150 : undefined,
         height: isImage ? 86 : undefined,
         pin: hasPin ? pin : null,
@@ -311,12 +297,22 @@
     const settingsBack = document.getElementById("demo-settings-back");
     const settingsPanel = document.getElementById("demo-settings");
     const demoMainView = document.getElementById("demo-main-view");
-    const searchMode = document.getElementById("demo-search-mode");
-    const demoUsage = document.getElementById("demo-usage");
-    const demoNumpadSlots = document.getElementById("demo-numpad-slots");
-    const demoGroupSlots = document.getElementById("demo-group-slots");
+    const demoUsage = document.getElementById("usage");
+    const demoNumpadSlots = document.getElementById("numpadSlots");
+    const demoGroupSlots = document.getElementById("groupSlots");
     const demoWindow = document.querySelector(".demo-window");
     const demoGuide = document.getElementById("demo-guide");
+    const demoToast = document.getElementById("demo-toast");
+    const demoSharedGroups = new Set(["work"]);
+    const aiSampleClients = [
+      { label: "Claude Desktop", detected: true, enabled: true },
+      { label: "Cursor", detected: true, enabled: true },
+      { label: "VS Code", detected: true, enabled: false },
+      { label: "Claude Code", detected: false, enabled: false },
+      { label: "Codex", detected: false, enabled: false },
+    ];
+    let demoSettingsInit = false;
+    let toastTimer = 0;
     let pointer = null;
     let guideTimer = 0;
     let guideRuns = 0;
@@ -379,47 +375,128 @@
 
     function renderClips() {
       const visible = Core.filterItems(clips, state);
+      if (demoSelectedIdx >= visible.length) demoSelectedIdx = visible.length ? visible.length - 1 : -1;
       clipCount.textContent = Core.itemCountLabel(clips.length, visible.length, state);
       updateClearControls();
       renderFilterChips();
       renderDemoSettings();
-      clipList.innerHTML = visible.slice(0, 18).map((clip, index) => Core.renderClipItem(clip, {
-        selected: index === 0,
+      const nmap = Core.numpadMap(clips);
+      const isExpanded = (clip) => controller.isExpanded(Core.itemId(clip));
+      clipList.innerHTML = visible.map((clip, index) => Core.renderClipItem(clip, {
+        expanded: isExpanded(clip),
+        selected: index === demoSelectedIdx,
         imageSrc: item => item.imageSrc,
-        pickerHtml: Core.renderItemPicker(clip, { items: clips, groups: labels }),
+        previewText: item => isExpanded(item) ? (item.text || "") : Core.collapsedPreviewText(item.text || "", state.query, state.regex),
+        highlight: text => Core.highlight(text, state.query, state.regex),
+        pickerHtml: Core.renderItemPicker(clip, { items: clips, groups: labels, numpadMap: nmap }),
+        actionsHtml: Core.renderClipActions(clip, { expanded: isExpanded(clip) }),
       })).join("") || `<div class="empty">No clips found. Try a different search.</div>`;
       scheduleRelativeTimeRefresh();
     }
 
     function renderDemoSettings() {
+      if (!demoSettingsInit) initDemoSettings();
       const nmap = Core.numpadMap(clips);
       const bytes = clips.reduce((sum, clip) => sum + (clip.text || "").length, 0);
-      demoUsage.textContent = `${clips.length} items, ${(bytes / 1048576).toFixed(1)} MB`;
+      demoUsage.textContent = `Current: ${clips.length} items, ${(bytes / 1048576).toFixed(1)} MB`;
       demoNumpadSlots.innerHTML = Array.from({ length: 9 }, (_, i) => {
         const n = i + 1;
         const id = nmap[n];
         const clip = clips.find((item) => Core.itemId(item) === id);
-        const text = clip ? (clip.type === "image" ? "[image]" : clip.text.replace(/\s+/g, " ").slice(0, 52)) : "empty";
-        return `<div class="np-slot${clip ? " has-content" : ""}"><span class="np-num">${n}</span><span class="np-text${clip ? "" : " empty"}">${escapeHtml(text)}</span></div>`;
+        const has = Boolean(clip);
+        const text = has ? (clip.type === "image" ? "[image]" : (clip.text || "").replace(/\n/g, " ").slice(0, 60)) : "";
+        return `<div class="np-slot${has ? " has-content" : ""}" data-slot-id="${has ? escapeHtml(id) : ""}">
+          <span class="np-num">${n}</span>
+          <span class="np-text${has ? "" : " empty"}">${has ? escapeHtml(text) : "empty"}</span>
+          ${has ? `<button class="icon-btn np-remove" data-slot="${n}" title="Unassign"><span class="mi">close</span></button>` : ""}
+        </div>`;
       }).join("");
-      demoGroupSlots.innerHTML = labels.slice(0, 8).map((group) => {
+      demoGroupSlots.innerHTML = labels.map((group) => {
         const count = clips.filter((clip) => Core.isInGroup(clip, group)).length;
-        return `<div class="group-slot"><span class="gp-name">${escapeHtml(group)}</span><span class="gp-count">${count} item${count === 1 ? "" : "s"}</span></div>`;
+        const shared = demoSharedGroups.has(group);
+        return `<div class="group-slot">
+          <span class="gp-name">${escapeHtml(group)}</span>
+          <span class="gp-count">${count} item${count !== 1 ? "s" : ""}</span>
+          <button class="icon-btn gp-share${shared ? " on" : ""}" data-group="${escapeHtml(group)}" title="${shared ? "Shared with AI - click to stop sharing" : "Share this group with AI"}"><span class="mi">smart_toy</span></button>
+          <button class="icon-btn gp-del" data-group="${escapeHtml(group)}" title="Delete group"><span class="mi">close</span></button>
+        </div>`;
       }).join("");
+    }
+
+    function aiClientRowHtml(client) {
+      return `<label class="ai-client-row${client.detected ? "" : " undetected"}"><input type="checkbox"${client.enabled ? " checked" : ""}><span class="ai-dot${client.enabled ? " on" : ""}"></span><span class="ai-client-name">${escapeHtml(client.label)}${client.detected ? "" : " (not detected)"}</span></label>`;
+    }
+
+    // One-time sample data for the OS-only settings sections (sync providers, AI
+    // clients, shortcuts, build info, updates). Inert in the browser, but the
+    // panel looks exactly like the real app's.
+    function initDemoSettings() {
+      demoSettingsInit = true;
+      const isMac = detectOS() === "mac";
+      const mod = isMac ? "⌘" : "Ctrl";
+      document.getElementById("autoLaunch").checked = true;
+      document.getElementById("maxAge").value = 30;
+      document.getElementById("maxSize").value = 1.0;
+      document.getElementById("shortcutRecord").textContent = `${mod} + Shift + V`;
+      document.getElementById("quickPasteRecord").textContent = `${mod} + Shift + B`;
+      const providers = [
+        { name: "Google Drive", path: isMac ? "~/Library/CloudStorage/GoogleDrive/BoardClip" : "G:\\My Drive\\BoardClip" },
+        { name: "OneDrive", path: isMac ? "~/Library/CloudStorage/OneDrive/BoardClip" : "C:\\Users\\you\\OneDrive\\BoardClip" },
+        { name: "iCloud Drive", path: isMac ? "~/Library/Mobile Documents/com~apple~CloudDocs/BoardClip" : "C:\\Users\\you\\iCloudDrive\\BoardClip" },
+      ];
+      document.getElementById("syncAccounts").innerHTML = providers.map((p) =>
+        `<label class="sync-account"><input type="checkbox" checked><span class="sync-account-main"><span class="sync-provider">${escapeHtml(p.name)}</span><span class="sync-account-path">${escapeHtml(p.path)}</span></span></label>`
+      ).join("");
+      const syncStatus = document.getElementById("syncStatus");
+      syncStatus.textContent = "3/3 providers enabled; syncs on change + every 30s";
+      syncStatus.className = "sync-status active";
+      document.getElementById("updateBuild").textContent = "BoardClip v2.1.0";
+      document.getElementById("updateDetail").textContent = "Up to date";
+      document.getElementById("aiAccessEnabled").checked = true;
+      document.getElementById("aiAccessBody").classList.remove("hidden");
+      document.getElementById("aiTimeout").value = 30;
+      document.getElementById("aiClients").innerHTML = aiSampleClients.filter((c) => c.detected).map(aiClientRowHtml).join("");
+      const undetected = aiSampleClients.filter((c) => !c.detected);
+      document.getElementById("aiClientsMore").innerHTML = undetected.map(aiClientRowHtml).join("");
+      const moreBtn = document.getElementById("aiMoreClients");
+      moreBtn.style.display = "";
+      moreBtn.textContent = `More clients (${undetected.length})`;
+      document.getElementById("buildInfo").innerHTML = `<span class="build-info-line">App ${isMac ? "~/.boardclip" : "C:\\Users\\you\\AppData\\Local\\BoardClip"}</span><span class="build-info-line">Build v2.1.0 (open source)</span>`;
+      wireDemoSettingsHandlers();
+    }
+
+    function wireDemoSettingsHandlers() {
+      const syncToast = () => showToast("Synced");
+      document.getElementById("syncNow").addEventListener("click", syncToast);
+      document.getElementById("demo-sync-header").addEventListener("click", syncToast);
+      document.getElementById("addSyncFolder").addEventListener("click", () => showToast("Pick a folder in the app"));
+      document.getElementById("updateNow").addEventListener("click", () => showToast("You're up to date"));
+      document.getElementById("copyDiagnostics").addEventListener("click", () => showToast("Diagnostics copied"));
+      document.getElementById("aiMoreClients").addEventListener("click", () => {
+        document.getElementById("aiClientsMore").classList.toggle("hidden");
+      });
+      document.getElementById("aiAccessEnabled").addEventListener("change", (event) => {
+        document.getElementById("aiAccessBody").classList.toggle("hidden", !event.target.checked);
+      });
+      document.getElementById("clearAll").addEventListener("click", () => controller.clearAll());
+      document.getElementById("addGroupBtn").addEventListener("click", () => controller.addGroup(null));
     }
 
     function renderFilterChips() {
       filterChips.innerHTML = Core.renderFilterBar({
         items: clips,
-        groups: ["work", "code", "support", "ideas"],
+        groups: labels,
         activeFilters: state.filters,
         excludedFilters: state.excludedFilters,
         query: state.query,
       });
     }
 
-    function escapeHtml(value) {
-      return value.replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[char]));
+    function showToast(message) {
+      demoToast.textContent = message || "Copied";
+      demoToast.classList.add("show");
+      window.clearTimeout(toastTimer);
+      toastTimer = window.setTimeout(() => demoToast.classList.remove("show"), 1200);
     }
 
     async function copyCommand(id, trigger) {
@@ -622,53 +699,111 @@
       if (text) window.setTimeout(() => addCopiedText(text), 0);
     });
 
-    function handleDemoFilterIntent(event, intent) {
-      const button = event.target.closest(".filter-tag[data-filter], .filter-tag[data-group]");
-      if (!button || event.target.closest("[data-action='delete-group']")) return false;
-      const filter = button.dataset.filter || button.dataset.group;
-      if (!filter) return false;
-      event.stopPropagation();
-      Core.applyFilterIntent(state, filter, intent);
-      renderClips();
-      return true;
+    // ---- Interaction layer ----
+    // The demo drives the SAME shared Core.createClipController the desktop app
+    // uses, via an adapter backed by the in-memory clips + browser APIs. Click
+    // routing, confirm/prompt dialogs, numpad-replace, add-group and keyboard nav
+    // therefore behave identically to the app and cannot drift.
+    let demoSelectedIdx = 0;
+    function visibleClips() { return Core.filterItems(clips, state); }
+    function stripGroupFromClips(group) {
+      clips = clips.map((clip) => {
+        if (!clip.pin || !Array.isArray(clip.pin.groups)) return clip;
+        const groups = clip.pin.groups.filter((label) => label !== group);
+        const nextPin = { ...clip.pin };
+        if (groups.length) nextPin.groups = groups; else delete nextPin.groups;
+        return { ...clip, pin: Object.keys(nextPin).length ? nextPin : null };
+      });
     }
-
-    filterChips.addEventListener("click", (event) => {
-      const clear = event.target.closest("[data-action='clear-search-filters']");
-      if (clear) {
-        clearSearchAndFilters();
-        search.focus();
-        return;
-      }
-      const groupDelete = event.target.closest("[data-action='delete-group']");
-      if (groupDelete) {
-        event.stopPropagation();
-        const group = groupDelete.dataset.group;
-        state.filters.delete(group);
-        state.excludedFilters.delete(group);
-        labels = labels.filter((label) => label !== group);
+    function closeDemoSettings() {
+      settingsPanel.classList.remove("show");
+      demoMainView.classList.remove("hidden");
+      settingsButton.classList.remove("active");
+      settingsButton.setAttribute("aria-expanded", "false");
+      search.focus();
+    }
+    function applyDemoSelection() {
+      const items = clipList.querySelectorAll(".item");
+      items.forEach((el, i) => el.classList.toggle("selected", i === demoSelectedIdx));
+      const sel = items[demoSelectedIdx];
+      if (sel) sel.scrollIntoView({ block: "nearest" });
+    }
+    const demoAdapter = {
+      dialogs,
+      deletedToast: "Deleted",
+      items: () => clips,
+      groups: () => labels,
+      itemById: (id) => clips.find((item) => Core.itemId(item) === id),
+      numpadMap: () => Core.numpadMap(clips),
+      protectedGroups: () => new Set(),
+      setFilterIntent: (filter, intent) => Core.applyFilterIntent(state, filter, intent),
+      clearFilters: () => clearSearchAndFilters(),
+      focusSearch: () => search.focus(),
+      pin: (id) => { clips = Core.togglePin(clips, id); },
+      numpadAssign: (id, slot) => { clips = Core.assignNumpad(clips, id, slot); },
+      numpadUnassign: (slot) => {
         clips = clips.map((clip) => {
-          if (!clip.pin || !Array.isArray(clip.pin.groups)) return clip;
-          const groups = clip.pin.groups.filter((label) => label !== group);
-          const nextPin = { ...clip.pin };
-          if (groups.length) nextPin.groups = groups;
-          else delete nextPin.groups;
-          return { ...clip, pin: Object.keys(nextPin).length ? nextPin : null };
+          if (Core.numpadOf(clip) !== slot) return clip;
+          const pin = { ...clip.pin }; delete pin.number;
+          return { ...clip, pin: Object.keys(pin).length ? pin : null };
         });
+      },
+      toggleGroup: (id, group) => { clips = Core.toggleGroup(clips, id, group); }, // matches the app's applyGroupAssign (toggles)
+      createGroup: (name) => { if (!labels.includes(name)) labels.push(name); },
+      deleteGroup: (group) => { labels = labels.filter((l) => l !== group); state.filters.delete(group); state.excludedFilters.delete(group); stripGroupFromClips(group); },
+      deleteClip: (id) => { clips = Core.deleteItem(clips, id); },
+      clearUnpinned: () => { clips = clips.filter((clip) => Core.isPinned(clip)); },
+      setGroupSharedAi: (group) => { if (demoSharedGroups.has(group)) demoSharedGroups.delete(group); else demoSharedGroups.add(group); },
+      copyNumpadSlot: async (id) => {
+        const clip = demoAdapter.itemById(id);
+        if (!clip) return;
+        if (clip.type === "image") { const ok = await writeImageClipboard(clip).catch(() => false); if (!ok) await writeBrowserClipboard(clip.text || ""); }
+        else await writeBrowserClipboard(clip.text || "");
+      },
+      activateClip: async (id) => {
+        const clip = demoAdapter.itemById(id);
+        if (!clip) return;
+        if (clip.type === "image") { const ok = await writeImageClipboard(clip).catch(() => false); if (!ok) await writeBrowserClipboard(clip.text || ""); }
+        else await writeBrowserClipboard(clip.text || "");
+        clips = Core.touchItem(clips, id);
+        showToast("Copied");
         renderClips();
-        return;
-      }
-      handleDemoFilterIntent(event, "include");
-    });
+      },
+      editClip: (id, itemEl) => startInlineEdit(itemEl, id),
+      openImage: (item) => { if (item && item.imageSrc) openLightbox(item.imageSrc); },
+      saveImage: (item) => {
+        if (!item || !item.imageSrc) return null;
+        const link = document.createElement("a");
+        link.href = item.imageSrc;
+        link.download = (item.text || "boardclip-image").replace(/[^\w.-]+/g, "-").slice(0, 40) + ".svg";
+        document.body.appendChild(link); link.click(); link.remove();
+        return "Saved to Downloads";
+      },
+      promptGroupName: () => dialogs.prompt({ title: "New group name" }),
+      isSettingsOpen: () => settingsPanel.classList.contains("show"),
+      closeSettings: () => closeDemoSettings(),
+      hidePopup: () => {},
+      moveSelection: (dir) => {
+        const count = visibleClips().length;
+        if (!count) return;
+        demoSelectedIdx = Math.max(0, Math.min((demoSelectedIdx < 0 ? 0 : demoSelectedIdx) + dir, count - 1));
+        applyDemoSelection();
+      },
+      activateSelected: () => {
+        const clip = visibleClips()[demoSelectedIdx];
+        if (clip) demoAdapter.activateClip(Core.itemId(clip));
+      },
+      toast: (msg) => showToast(msg),
+      render: () => renderClips(),
+    };
+    const controller = Core.createClipController(demoAdapter);
 
-    filterChips.addEventListener("contextmenu", (event) => {
-      if (handleDemoFilterIntent(event, "exclude")) {
-        event.preventDefault();
-      }
-    });
+    filterChips.addEventListener("click", (event) => controller.onClick(event));
+    filterChips.addEventListener("contextmenu", (event) => controller.onContextmenu(event));
 
     search.addEventListener("input", () => {
       state.query = search.value;
+      demoSelectedIdx = 0;
       renderClips();
     });
     clearSearch.addEventListener("click", () => {
@@ -678,7 +813,6 @@
     regexButton.addEventListener("click", () => {
       state.regex = !state.regex;
       regexButton.classList.toggle("active", state.regex);
-      searchMode.textContent = state.regex ? "regex" : "plain";
       renderClips();
       search.focus();
     });
@@ -689,55 +823,72 @@
       settingsButton.classList.toggle("active", open);
       settingsButton.setAttribute("aria-expanded", String(open));
     });
-    settingsBack.addEventListener("click", () => {
-      settingsPanel.classList.remove("show");
-      demoMainView.classList.remove("hidden");
-      settingsButton.classList.remove("active");
-      settingsButton.setAttribute("aria-expanded", "false");
-      search.focus();
+    settingsBack.addEventListener("click", closeDemoSettings);
+
+    clipList.addEventListener("click", (event) => controller.onClick(event));
+    // Keyboard nav (arrows/Enter/Escape) when focus is inside the demo window,
+    // so the demo honors its own "type, press Enter, and paste" pitch.
+    demoWindowEl.addEventListener("keydown", (event) => {
+      const lightbox = document.getElementById("demo-lightbox");
+      if (lightbox.classList.contains("show")) {
+        if (event.key === "Escape") { event.preventDefault(); closeLightbox(); }
+        return;
+      }
+      controller.onKeydown(event);
     });
 
-    clipList.addEventListener("click", async (event) => {
-      const clipButton = event.target.closest(".item");
-      if (!clipButton) return;
-      const id = clipButton.dataset.id;
-      const groupButton = event.target.closest(".gp-btn");
-      if (groupButton) {
-        event.stopPropagation();
-        if (groupButton.dataset.action === "add-group") {
-          const nextGroup = "demo";
-          if (!labels.includes(nextGroup)) labels.push(nextGroup);
-          clips = Core.toggleGroup(clips, id, nextGroup);
-        } else if (groupButton.dataset.group) {
-          clips = Core.toggleGroup(clips, id, groupButton.dataset.group);
+    function startInlineEdit(itemEl, id) {
+      const clip = clips.find((item) => Core.itemId(item) === id);
+      if (!clip || clip.type === "image") return;
+      const preview = itemEl.querySelector(".preview");
+      if (!preview) return;
+      preview.textContent = clip.text || "";
+      preview.classList.add("editing");
+      preview.setAttribute("contenteditable", "true");
+      preview.focus();
+      const range = document.createRange();
+      range.selectNodeContents(preview);
+      range.collapse(false);
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      let done = false;
+      const commit = (save) => {
+        if (done) return;
+        done = true;
+        preview.removeEventListener("blur", onBlur);
+        preview.removeEventListener("keydown", onKey);
+        const next = preview.textContent;
+        preview.removeAttribute("contenteditable");
+        preview.classList.remove("editing");
+        if (save && next !== (clip.text || "")) {
+          clips = clips.map((item) => Core.itemId(item) === id ? { ...item, text: next } : item);
+          clips = Core.touchItem(clips, id);
+          showToast("Saved");
         }
         renderClips();
-        return;
-      }
-      const numpadButton = event.target.closest(".np-btn");
-      if (numpadButton) {
-        event.stopPropagation();
-        clips = Core.assignNumpad(clips, id, Number(numpadButton.dataset.n));
-        renderClips();
-        return;
-      }
-      if (event.target.closest("[data-action='pin']")) {
-        event.stopPropagation();
-        clips = Core.togglePin(clips, id);
-        renderClips();
-        return;
-      }
-      const clip = clips.find((item) => Core.itemId(item) === id);
-      if (!clip) return;
-      if (clip.type === "image") {
-        const copiedImage = await writeImageClipboard(clip).catch(() => false);
-        if (!copiedImage) await writeBrowserClipboard(clip.text || "");
-      } else {
-        await writeBrowserClipboard(clip.text || "");
-      }
-      clips = Core.touchItem(clips, id);
-      renderClips();
-    });
+      };
+      const onBlur = () => commit(true);
+      const onKey = (event) => {
+        if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); event.stopPropagation(); commit(true); }
+        else if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); commit(false); }
+      };
+      preview.addEventListener("blur", onBlur);
+      preview.addEventListener("keydown", onKey);
+    }
+
+    function openLightbox(src) {
+      document.getElementById("demo-lightbox-img").src = src;
+      document.getElementById("demo-lightbox").classList.add("show");
+    }
+    function closeLightbox() {
+      document.getElementById("demo-lightbox").classList.remove("show");
+    }
+    document.getElementById("demo-lightbox").addEventListener("click", closeLightbox);
+
+    // Settings panel: numpad-remove / slot-copy / group-share / group-delete all
+    // route through the SAME shared controller dispatch as the desktop app.
+    settingsPanel.addEventListener("click", (event) => controller.onClick(event));
 
     document.getElementById("random-query").addEventListener("click", () => {
       const queries = ["invoice", "api", "meeting", "image", "thanks", "dns", "launch", "sync", "windows"];
@@ -760,8 +911,20 @@
 
     const detectedOS = detectOS();
     const themeQuery = matchMedia("(prefers-color-scheme: dark)");
+    let demoThemeMode = "system"; // system | light | dark — chosen via Settings > Theme
+    function applyDemoTheme() {
+      Core.applyTheme(demoWindowEl, demoThemeMode, themeQuery.matches);
+      Core.setActiveThemeSeg(document.getElementById("themeMode"), demoThemeMode);
+    }
+    document.getElementById("themeMode").addEventListener("click", (event) => {
+      const btn = event.target.closest("[data-theme-mode]");
+      if (!btn) return;
+      demoThemeMode = btn.dataset.themeMode;
+      applyDemoTheme();
+    });
     function syncTheme() {
       document.documentElement.dataset.systemTheme = themeQuery.matches ? "dark" : "light";
+      applyDemoTheme();
     }
     themeQuery.addEventListener("change", syncTheme);
     syncTheme();

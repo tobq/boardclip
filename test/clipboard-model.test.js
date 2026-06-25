@@ -260,6 +260,10 @@ function text(text, extra = {}) {
   assert.strictEqual(result.reason, 'conflict_created');
   assert.strictEqual(history.length, 2);
   assert.strictEqual(history[0].text, 'editor result');
+  // The diverged live clip must SURVIVE - a stale-based save forks, never
+  // overwrites. This is the guarantee that stops a second editor's stale
+  // buffer from destroying newer work.
+  assert.ok(history.some(h => h.text === 'changed elsewhere'), 'diverged clip preserved on conflict');
   assert.strictEqual(model.numpadSlotOf(history[0]), null);
   assert.deepStrictEqual(model.groupsOf(history[0]), ['work', 'ideas']);
   assert.deepStrictEqual(result.tombstoneIds, []);

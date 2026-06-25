@@ -1,5 +1,5 @@
 const { app, BrowserWindow, Tray, Menu, globalShortcut, clipboard, nativeImage,
-        ipcMain, protocol, screen, shell, nativeTheme, dialog } = require('electron');
+        ipcMain, protocol, screen, shell, nativeTheme, dialog, Notification } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
@@ -2868,24 +2868,67 @@ function refreshTray() {
 }
 
 // --- Open in editor ---
+// Active external-edit sessions keyed by the clip id captured when the editor
+// opened. Two editors open on the SAME clip is the classic stale-buffer clobber:
+// each window holds a divergent base and the one that saves last wins, so an
+// older buffer can bury newer work. We prevent the second editor entirely (one
+// base of truth), and the write path (applyExternalTextEdit) is conflict-safe -
+// an edit whose base no longer matches the live clip FORKS into a new clip
+// instead of overwriting, so no save can ever destroy a diverged version.
+const activeEdits = new Map();
+
+function spawnTextEditor(tmpPath) {
+  const cmd = process.platform === 'darwin' ? 'open' : 'notepad.exe';
+  const args = process.platform === 'darwin' ? ['-t', '-W', tmpPath] : [tmpPath];
+  return spawn(cmd, args, { detached: true, stdio: 'ignore' });
+}
+
+// Surface the conflict-fork outcome so a stale-based save is never again
+// mistaken for a clobber: the user's edit was kept as a new clip, untouched.
+function notifyEditOutcome(result) {
+  if (!result || (result.reason !== 'conflict_created' && result.reason !== 'conflict_merged')) return;
+  try {
+    if (Notification && Notification.isSupported && Notification.isSupported()) {
+      new Notification({
+        title: 'BoardClip - saved as a separate clip',
+        body: 'This clip changed while you were editing, so your version was kept as a new clip instead of overwriting. Nothing was lost.',
+        silent: true,
+      }).show();
+    }
+  } catch {}
+}
+
 function openEditor(id) {
   const item = findHistoryItem(id);
   if (!item || item.type === 'image') return;
   textBlobStore.hydrateTextItem(item, TEXT_DIR);
   const originalId = itemKey(item);
+
+  // Same clip already open in an editor: don't spawn a second window with its
+  // own base. Re-surface the existing temp file so both edits share one base.
+  const existing = activeEdits.get(originalId);
+  if (existing) {
+    try { const p = spawnTextEditor(existing.tmpPath); p.unref(); } catch {}
+    return;
+  }
+
   const originalText = item.text || '';
   const sourceGroups = [...groupsOf(item)];
-  const tmpPath = path.join(os.tmpdir(), `clip-${Date.now()}.txt`);
+  // Tag the temp file with the base-content hash so an edit's lineage (which
+  // version it descends from) is explicit and recoverable from the filename.
+  const baseHash = clipboardModel.textHashForText(originalText);
+  const tmpPath = path.join(os.tmpdir(), `boardclip-edit-${baseHash.slice(0, 12)}-${Date.now()}.txt`);
   fs.writeFileSync(tmpPath, originalText, 'utf-8');
 
-  const cmd = process.platform === 'darwin' ? 'open' : 'notepad.exe';
-  const args = process.platform === 'darwin' ? ['-t', '-W', tmpPath] : [tmpPath];
-  const proc = spawn(cmd, args, { detached: true, stdio: 'ignore' });
+  const proc = spawnTextEditor(tmpPath);
+  activeEdits.set(originalId, { tmpPath, proc });
 
   proc.on('exit', () => {
+    activeEdits.delete(originalId);
     try {
       const newText = fs.readFileSync(tmpPath, 'utf-8');
-      applyExternalTextEdit({ id: originalId, originalText, sourceGroups, newText });
+      const result = applyExternalTextEdit({ id: originalId, originalText, sourceGroups, newText });
+      notifyEditOutcome(result);
     } catch {}
     try { fs.unlinkSync(tmpPath); } catch {}
   });

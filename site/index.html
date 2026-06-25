@@ -731,8 +731,6 @@
     const demoAdapter = {
       dialogs,
       deletedToast: "Deleted",
-      items: () => clips,
-      groups: () => labels,
       itemById: (id) => clips.find((item) => Core.itemId(item) === id),
       numpadMap: () => Core.numpadMap(clips),
       protectedGroups: () => new Set(),
@@ -779,7 +777,6 @@
         document.body.appendChild(link); link.click(); link.remove();
         return "Saved to Downloads";
       },
-      promptGroupName: () => dialogs.prompt({ title: "New group name" }),
       isSettingsOpen: () => settingsPanel.classList.contains("show"),
       closeSettings: () => closeDemoSettings(),
       hidePopup: () => {},

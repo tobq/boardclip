@@ -711,11 +711,14 @@
   // in-memory Core mutators + browser APIs. This is what stops the click handlers
   // from drifting (e.g. a confirm dialog present in one popup but not the other).
   //
-  // Adapter contract (all backend ops may return a Promise; the controller awaits
-  // then calls adapter.render()):
-  //   data:    items(), groups(), itemById(id), numpadMap(), protectedGroups()
+  // Adapter contract (backend ops may return a Promise; the controller awaits,
+  // then re-renders via render() for view-only changes or refresh() after a
+  // data mutation):
+  //   data:    itemById(id), numpadMap(), protectedGroups()
   //   dialogs: dialogs ({confirm,prompt}) OR dialogHost (an element to mount into)
-  //   filter:  setFilterIntent(filter,intent), clearFilters(), focusSearch()
+  //   filter:  setFilterIntent(filter,intent) [controller renders], clearFilters()
+  //            [self-renders — also called directly by the search-clear button],
+  //            focusSearch()
   //   mutate:  pin(id), numpadAssign(id,slot), numpadUnassign(slot),
   //            toggleGroup(id,group) [add-or-remove], createGroup(name),
   //            deleteGroup(group), deleteClip(id), clearUnpinned(),
@@ -724,12 +727,16 @@
   //            saveImage(item)->feedbackString|null
   //   keyboard:isSettingsOpen(), closeSettings(), hidePopup(),
   //            moveSelection(dir), activateSelected()
-  //   ui:      render(), toast(msg), deletedToast (string|null), promptGroupName()
+  //   ui:      render() [cheap re-render of current data — view-only changes like
+  //            expand/filter], refresh() [re-fetch + re-render after a data
+  //            mutation; falls back to render() if absent], toast(msg),
+  //            deletedToast (string|null)
   function createClipController(adapter) {
     const a = adapter || {};
     const expanded = new Set();
     const dialogs = a.dialogs || createDialogs(a.dialogHost);
     const render = () => { if (a.render) a.render(); };
+    const refresh = () => { if (a.refresh) a.refresh(); else render(); };
     const toast = (msg) => { if (a.toast && msg) a.toast(msg); };
     const protectedHas = (group) => {
       const p = a.protectedGroups && a.protectedGroups();
@@ -741,7 +748,7 @@
       const ok = await dialogs.confirm({ title: `Delete group "${group}"?`, message: 'Items will be ungrouped but not deleted.', okLabel: 'Delete' });
       if (!ok) return;
       await a.deleteGroup(group);
-      render();
+      refresh();
     }
     async function tryAssignNumpad(id, slot) {
       const nmap = a.numpadMap ? a.numpadMap() : {};
@@ -752,20 +759,20 @@
         if (!ok) return;
       }
       await a.numpadAssign(id, slot);
-      render();
+      refresh();
     }
     async function addGroup(id) {
-      const name = a.promptGroupName ? await a.promptGroupName() : await dialogs.prompt({ title: 'New group name' });
+      const name = await dialogs.prompt({ title: 'New group name' });
       if (!name) return;
       await a.createGroup(name);
       if (id != null && a.toggleGroup) await a.toggleGroup(id, name); // clip is not yet in the new group, so this adds
-      render();
+      refresh();
     }
     async function clearAll() {
       const ok = await dialogs.confirm({ title: 'Clear all unpinned items?', message: 'Pinned items will be kept.', okLabel: 'Clear' });
       if (!ok) return;
       await a.clearUnpinned();
-      render();
+      refresh();
     }
 
     async function onClick(event) {
@@ -776,11 +783,11 @@
       const ftag = t.closest('.filter-tag[data-filter], .filter-tag[data-group]');
       if (ftag) { event.stopPropagation(); if (a.setFilterIntent) a.setFilterIntent(ftag.dataset.filter || ftag.dataset.group, 'include'); render(); return true; }
       const npRemove = t.closest('.np-remove');
-      if (npRemove) { event.stopPropagation(); await a.numpadUnassign(Number(npRemove.dataset.slot)); render(); return true; }
+      if (npRemove) { event.stopPropagation(); await a.numpadUnassign(Number(npRemove.dataset.slot)); refresh(); return true; }
       const slotEl = t.closest('.np-slot.has-content');
       if (slotEl && slotEl.dataset.slotId) { event.stopPropagation(); await a.copyNumpadSlot(slotEl.dataset.slotId); toast('Copied'); return true; }
       const share = t.closest('.gp-share');
-      if (share) { event.stopPropagation(); await a.setGroupSharedAi(share.dataset.group); render(); return true; }
+      if (share) { event.stopPropagation(); await a.setGroupSharedAi(share.dataset.group); refresh(); return true; }
       const gpDel = t.closest('.gp-del');
       if (gpDel) { event.stopPropagation(); deleteGroup(gpDel.dataset.group); return true; }
       const gpBtn = t.closest('.gp-btn');
@@ -789,13 +796,13 @@
         const item = gpBtn.closest('.item');
         if (!item) return true;
         if (gpBtn.dataset.action === 'add-group') addGroup(item.dataset.id);
-        else if (gpBtn.dataset.group) { await a.toggleGroup(item.dataset.id, gpBtn.dataset.group); render(); }
+        else if (gpBtn.dataset.group) { await a.toggleGroup(item.dataset.id, gpBtn.dataset.group); refresh(); }
         return true;
       }
       const npBtn = t.closest('.np-btn');
       if (npBtn) { event.stopPropagation(); const item = npBtn.closest('.item'); if (item) tryAssignNumpad(item.dataset.id, Number(npBtn.dataset.n)); return true; }
       const pin = t.closest('[data-action="pin"]');
-      if (pin) { event.stopPropagation(); await a.pin(pin.dataset.id); render(); return true; }
+      if (pin) { event.stopPropagation(); await a.pin(pin.dataset.id); refresh(); return true; }
       const openImg = t.closest('[data-action="open-img"]');
       if (openImg) { event.stopPropagation(); await a.openImage(a.itemById(openImg.dataset.id)); return true; }
       const saveImg = t.closest('[data-action="save-img"]');
@@ -805,7 +812,7 @@
       const exp = t.closest('[data-action="expand"]');
       if (exp) { event.stopPropagation(); const id = exp.dataset.id; if (expanded.has(id)) expanded.delete(id); else expanded.add(id); render(); return true; }
       const del = t.closest('[data-action="del"]');
-      if (del) { event.stopPropagation(); const id = del.dataset.id; await a.deleteClip(id); expanded.delete(id); render(); toast(a.deletedToast); return true; }
+      if (del) { event.stopPropagation(); const id = del.dataset.id; await a.deleteClip(id); expanded.delete(id); refresh(); toast(a.deletedToast); return true; }
       const item = t.closest('.item');
       if (item) { await a.activateClip(item.dataset.id); return true; }
       return false;

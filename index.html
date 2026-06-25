@@ -255,8 +255,6 @@ listEl.addEventListener('scroll', () => {
 // behavior is preserved and the dispatch can no longer drift from the demo.
 const appAdapter = {
   deletedToast: null, // the app pastes/hides; no per-action toast
-  items: () => items,
-  groups: () => groups,
   itemById: (id) => itemById(id),
   numpadMap: () => numpadMap(),
   protectedGroups: () => new Set([aiGroupName]),
@@ -277,14 +275,14 @@ const appAdapter = {
   editClip: (id) => window.api.openEditor(id),
   openImage: (item) => window.api.openImage(itemId(item)),
   saveImage: async (item) => { const d = await window.api.copyImagePath(itemId(item)); return d && d.path ? 'Path copied' : null; },
-  promptGroupName: () => appDialogs.prompt({ title: 'New group name' }),
   isSettingsOpen: () => document.getElementById('settingsView').classList.contains('show'),
   closeSettings: () => closeSettings(),
   hidePopup: () => window.api.hidePopup(),
   moveSelection: (dir) => moveSelection(dir),
   activateSelected: () => { if (selectedIdx >= 0 && selectedIdx < filtered.length) { const item = items[filtered[selectedIdx]]; if (item) window.api.pasteAndHide(itemId(item)); } },
   toast: (msg) => showToast(msg),
-  render: () => { refresh({ force: true }); if (document.getElementById('settingsView').classList.contains('show')) openSettings(); },
+  render: () => rerenderList(), // view-only re-render (expand/filter): no IPC
+  refresh: async () => { await refresh({ force: true }); if (document.getElementById('settingsView').classList.contains('show')) openSettings(); }, // after a mutation: re-fetch history THEN re-render settings if open (await so the settings panel reads rebuilt indexes, not stale ones)
 };
 const controller = Core.createClipController(appAdapter);
 const appDialogs = controller.dialogs;

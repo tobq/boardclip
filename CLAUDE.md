@@ -132,26 +132,32 @@ clear-all). All popup CSS + theme variables live in `site/shared/clipboard-popup
 
 ## Deploy (boardclip.app)
 
-**The site does NOT auto-deploy on push.** `.github/workflows/netlify.yml` has a
-"Check Netlify token" gate and `NETLIFY_AUTH_TOKEN` is unset as a repo secret, so
-every Actions run reports success but the deploy step is SKIPPED. This is the
-cause of the chronic "live site is stale" problem — pushing to `main` updates the
-repo but NOT boardclip.app.
+**Pushes to `main` auto-deploy `site/` to boardclip.app** via Netlify's native
+GitHub integration (connected 2026-06-25). The Netlify project `boardclip-app`
+(siteId `4ff28f37-765a-4482-a5ea-162fd7513013`, team TwoShot) is linked to
+`tobq/boardclip`, branch `main`, **publish directory `site`** (no build command —
+static). CRITICAL: the publish dir MUST stay `site`; the repo ROOT `index.html`
+is the desktop-app popup, so publishing the root would put the app popup on the
+homepage.
 
-To actually publish, deploy manually from the repo (the Netlify CLI is
-authenticated as `tobi@twoshot.app`, linked to project `boardclip-app`, siteId
-`4ff28f37-765a-4482-a5ea-162fd7513013` via `.netlify/state.json` + `netlify.toml`):
+History: for its first ~5 weeks the site was a CLI-only Netlify project (provider
+`netlify-git`, not Git-linked), so pushes never deployed — that was the chronic
+"live site is stale" bug. The `.github/workflows/netlify.yml` Actions workflow was
+a never-finished band-aid (it skips without a `NETLIFY_AUTH_TOKEN` secret) and is
+now redundant — the native integration handles deploys.
+
+Manual deploy (fallback, e.g. to publish without a push) — the Netlify CLI is
+authenticated as `tobi@twoshot.app`:
 
 ```
 npx --yes netlify-cli@latest deploy --prod --dir site
 ```
 
-Verify the edge served the new bytes (bypasses browser cache):
+Verify the edge served new bytes (bypasses browser cache):
 `curl -s "https://boardclip.app/shared/clipboard-ui-core.js?cb=$(date +%s)" | grep -c createClipController`.
 
-To make pushes auto-deploy, add `NETLIFY_AUTH_TOKEN` as a GitHub repo secret (or
-connect Netlify's own Git integration). The desktop app does NOT deploy from
-`main` — it ships via the release-binaries workflow on a release/tag.
+The desktop app does NOT deploy from `main` — it ships via the release-binaries
+workflow on a release/tag.
 
 ## Debugging
 

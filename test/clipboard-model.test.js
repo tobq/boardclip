@@ -169,6 +169,152 @@ function text(text, extra = {}) {
 }
 
 {
+  const unchanged = text('unchanged', { ts: 10, updatedAt: 10000 });
+  const other = text('other', { ts: 20, updatedAt: 20000 });
+  const history = [other, unchanged];
+  const before = JSON.stringify(history);
+  const result = model.applyTextEdit(history, {
+    id: unchanged.id,
+    originalText: 'unchanged',
+    newText: 'unchanged',
+    now: 50000,
+  });
+  assert.strictEqual(result.changed, false);
+  assert.strictEqual(result.reason, 'unchanged');
+  assert.strictEqual(JSON.stringify(history), before);
+}
+
+{
+  const item = text('nonblank', { ts: 10, updatedAt: 10000 });
+  const history = [item];
+  const before = JSON.stringify(history);
+  const result = model.applyTextEdit(history, {
+    id: item.id,
+    originalText: 'nonblank',
+    newText: ' \n\t ',
+    now: 50000,
+  });
+  assert.strictEqual(result.changed, false);
+  assert.strictEqual(result.reason, 'blank');
+  assert.strictEqual(JSON.stringify(history), before);
+}
+
+{
+  const other = text('top', { ts: 100, updatedAt: 100000 });
+  const item = text('old macro', {
+    ts: 10,
+    updatedAt: 10000,
+    pinUpdatedAt: 9000,
+    pin: { number: 3, groups: ['work'], updatedAt: 9000, numberUpdatedAt: 9000 },
+  });
+  const oldId = item.id;
+  const history = [other, item];
+  const result = model.applyTextEdit(history, {
+    id: oldId,
+    originalText: 'old macro',
+    newText: 'new macro',
+    now: 50000,
+  });
+  assert.strictEqual(result.changed, true);
+  assert.strictEqual(result.reason, 'updated');
+  assert.strictEqual(history[0].text, 'new macro');
+  assert.strictEqual(history[0].ts, 50);
+  assert.strictEqual(history[0].updatedAt, 50000);
+  assert.strictEqual(model.numpadSlotOf(history[0]), 3);
+  assert.deepStrictEqual(model.groupsOf(history[0]), ['work']);
+  assert.strictEqual(history[0].pin.numberUpdatedAt, 50000);
+  assert.deepStrictEqual(result.tombstoneIds, [oldId]);
+}
+
+{
+  const duplicate = text('same', { ts: 10, updatedAt: 10000, pin: { groups: ['dest'], updatedAt: 10000 } });
+  const item = text('old', { ts: 20, updatedAt: 20000, pin: { groups: ['source'], updatedAt: 20000 } });
+  const oldId = item.id;
+  const history = [item, duplicate];
+  const result = model.applyTextEdit(history, {
+    id: oldId,
+    originalText: 'old',
+    newText: 'same',
+    now: 60000,
+  });
+  assert.strictEqual(result.changed, true);
+  assert.strictEqual(result.reason, 'merged');
+  assert.strictEqual(history.length, 1);
+  assert.strictEqual(history[0].text, 'same');
+  assert.strictEqual(history[0].ts, 60);
+  assert.deepStrictEqual(model.groupsOf(history[0]).sort(), ['dest', 'source']);
+  assert.deepStrictEqual(result.tombstoneIds, [oldId]);
+}
+
+{
+  const changedElsewhere = text('changed elsewhere', { ts: 30, updatedAt: 30000, pin: { number: 5, groups: ['old'], updatedAt: 30000 } });
+  const history = [changedElsewhere];
+  const result = model.applyTextEdit(history, {
+    id: changedElsewhere.id,
+    originalText: 'opened text',
+    newText: 'editor result',
+    sourceGroups: ['work', 'ideas'],
+    now: 70000,
+  });
+  assert.strictEqual(result.changed, true);
+  assert.strictEqual(result.reason, 'conflict_created');
+  assert.strictEqual(history.length, 2);
+  assert.strictEqual(history[0].text, 'editor result');
+  assert.strictEqual(model.numpadSlotOf(history[0]), null);
+  assert.deepStrictEqual(model.groupsOf(history[0]), ['work', 'ideas']);
+  assert.deepStrictEqual(result.tombstoneIds, []);
+}
+
+{
+  const changedToSameText = text('editor result', {
+    ts: 30,
+    updatedAt: 30000,
+    pin: { number: 5, updatedAt: 30000, numberUpdatedAt: 30000 },
+  });
+  const other = text('other', { ts: 40, updatedAt: 40000 });
+  const history = [other, changedToSameText];
+  const result = model.applyTextEdit(history, {
+    id: changedToSameText.id,
+    originalText: 'opened text',
+    newText: 'editor result',
+    sourceGroups: ['work'],
+    now: 75000,
+  });
+  assert.strictEqual(result.changed, true);
+  assert.strictEqual(result.reason, 'conflict_merged');
+  assert.strictEqual(history.length, 2);
+  assert.strictEqual(history[0].text, 'editor result');
+  assert.strictEqual(model.numpadSlotOf(history[0]), 5);
+  assert.deepStrictEqual(model.groupsOf(history[0]), ['work']);
+  assert.deepStrictEqual(result.tombstoneIds, []);
+}
+
+{
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'boardclip-edit-'));
+  try {
+    const longText = 'a'.repeat(textBlobStore.TEXT_BLOB_THRESHOLD_BYTES + 20);
+    const editedText = 'b'.repeat(textBlobStore.TEXT_BLOB_THRESHOLD_BYTES + 40);
+    const item = text(longText, { ts: 10, updatedAt: 10000 });
+    const stored = textBlobStore.prepareHistoryForStorage([item], dir);
+    const hydrated = textBlobStore.hydrateHistory(stored, dir);
+    assert.strictEqual(hydrated[0].text, longText);
+
+    const result = model.applyTextEdit(hydrated, {
+      id: hydrated[0].id,
+      originalText: longText,
+      newText: editedText,
+      now: 80000,
+    });
+    assert.strictEqual(result.changed, true);
+    const restored = textBlobStore.prepareHistoryForStorage(hydrated, dir);
+    assert(restored[0].textRef);
+    assert.strictEqual(fs.readFileSync(path.join(dir, restored[0].textRef), 'utf8'), editedText);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+{
   const winner = text('winner', { ts: 200, pin: { number: 7 } });
   const loser = text('loser', { ts: 100, pin: { number: 7 } });
   assert.strictEqual(model.dedupeNumpadSlots([winner, loser]), true);

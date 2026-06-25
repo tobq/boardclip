@@ -587,37 +587,50 @@ function clonePin(pin) {
   };
 }
 
-function updateTextItem(item, text) {
-  if (!item || item.type === 'image') return null;
-  const oldId = itemKey(item);
-  const now = Date.now();
-  const next = { ...item, text: text || '', updatedAt: now };
-  textBlobStore.setInlineText(next, text);
-  next.id = legacyContentKey(next);
-  if (numpadSlotOf(next) != null) touchPinNumber(next, now);
-
-  const existingIdx = history.findIndex(h => h !== item && itemKey(h) === next.id);
-  if (existingIdx >= 0) {
-    const existing = history[existingIdx];
-    textBlobStore.setInlineText(existing, next.text);
-    existing.ts = Math.max(existing.ts || 0, next.ts || 0);
-    const existingPinUpdated = clipboardModel.pinUpdatedAt(existing);
-    const nextPinUpdated = clipboardModel.pinUpdatedAt(next);
-    existing.updatedAt = Math.max(existing.updatedAt || 0, next.updatedAt || 0);
-    existing.pin = mergePins(existing.pin, next.pin, existingPinUpdated, nextPinUpdated);
-    existing.pinUpdatedAt = Math.max(existingPinUpdated, nextPinUpdated) || undefined;
-    const oldIdx = history.indexOf(item);
-    if (oldIdx >= 0) history.splice(oldIdx, 1);
-    addTombstone(oldId);
-    return existing;
+function writeEditedTextToClipboard(text) {
+  if (!pollGate) {
+    diagnostics.record('editor.clipboard_sync_skipped', { reason: 'poll_gate' }, { forceFile: diagnostics.isEnabled() });
+    return false;
   }
+  pollGate = false;
+  try {
+    clipboard.writeText(String(text || ''));
+    lastText = String(text || '');
+    lastImgHash = '';
+    lastCapturedImageToken = '';
+    diagnostics.record('editor.clipboard_synced', { text_len: lastText.length }, { forceFile: diagnostics.isEnabled() });
+    return true;
+  } catch (error) {
+    diagnostics.record('editor.clipboard_sync_error', { error: error && error.message }, { forceFile: true });
+    return false;
+  } finally {
+    const timer = setTimeout(() => { pollGate = true; }, 150);
+    if (timer.unref) timer.unref();
+  }
+}
 
-  textBlobStore.setInlineText(item, next.text);
-  item.id = next.id;
-  item.updatedAt = next.updatedAt;
-  if (numpadSlotOf(item) != null) touchPinNumber(item, now);
-  if (oldId !== item.id) addTombstone(oldId);
-  return item;
+function applyExternalTextEdit({ id, originalText, sourceGroups, newText }) {
+  const result = clipboardModel.applyTextEdit(history, {
+    id,
+    originalText,
+    newText,
+    sourceGroups,
+    groupTombstones: settings.group_tombstones,
+    now: Date.now(),
+    ignoreBlank: true,
+  });
+  if (!result.changed) return result;
+
+  for (const tombstoneId of result.tombstoneIds || []) addTombstone(tombstoneId);
+  if (result.tombstoneIds && result.tombstoneIds.length) saveSettingsFile();
+  saveHistory();
+  writeEditedTextToClipboard(newText);
+  diagnostics.record('editor.text_applied', {
+    reason: result.reason,
+    tombstones: (result.tombstoneIds || []).length,
+    text_len: String(newText || '').length,
+  }, { forceFile: diagnostics.isEnabled() });
+  return result;
 }
 
 function getStorageBytes() {
@@ -2859,7 +2872,9 @@ function openEditor(id) {
   const item = findHistoryItem(id);
   if (!item || item.type === 'image') return;
   textBlobStore.hydrateTextItem(item, TEXT_DIR);
+  const originalId = itemKey(item);
   const originalText = item.text || '';
+  const sourceGroups = [...groupsOf(item)];
   const tmpPath = path.join(os.tmpdir(), `clip-${Date.now()}.txt`);
   fs.writeFileSync(tmpPath, originalText, 'utf-8');
 
@@ -2870,12 +2885,7 @@ function openEditor(id) {
   proc.on('exit', () => {
     try {
       const newText = fs.readFileSync(tmpPath, 'utf-8');
-      // Use item reference — survives index shifts from deletes/adds
-      if (newText !== originalText && item.text === originalText) {
-        updateTextItem(item, newText);
-        saveSettingsFile();
-        saveHistory();
-      }
+      applyExternalTextEdit({ id: originalId, originalText, sourceGroups, newText });
     } catch {}
     try { fs.unlinkSync(tmpPath); } catch {}
   });

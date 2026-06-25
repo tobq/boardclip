@@ -102,7 +102,61 @@ Otherwise the key passes through so normal numpad typing works. Main thread call
 - **Continue is intentionally NOT installed** - it uses a YAML `mcpServers:` list, not the shared JSON-map adapter. Add a dedicated YAML adapter to support it for real.
 - **secret-guard test fixtures trip GitHub push protection.** The detector tests necessarily contain secret-shaped strings (Slack `xoxb-`, `ghp_`, `sk-`, `AIza`, JWT, etc.); a full provider-token literal in the source blocks `git push` (GH013). Assemble them from split parts at runtime (`const j=(...p)=>p.join(''); j('ghp','_AbCd...')`) so no contiguous token literal sits in the committed file - the runtime value (and the test) is unchanged.
 
+## Website Demo + Single-Source UI
+
+The marketing site (`site/`) embeds an interactive demo of the popup. The
+desktop app popup (`index.html`) and the demo (`site/index.html`) are a SINGLE
+SOURCE — both drive the shared layer in `site/shared/clipboard-ui-core.js`
+(`BoardClipCore`): `renderPopupShell` / `renderSettingsBody` / `renderClipItem`
+/ `renderClipActions` / `renderFilterBar` (markup), `createDialogs(host)`
+(confirm/prompt), and `createClipController(adapter)` (click dispatch + keyboard
+nav + the confirm-gated flows: group-delete, numpad-replace, add-group,
+clear-all). All popup CSS + theme variables live in `site/shared/clipboard-popup.css`
+(`:root[data-theme]` for the app, `.bc-popup[data-theme]` for the demo window).
+
+- **Do NOT add a per-side click handler, dialog, or popup CSS rule.** Extend the
+  controller/adapter or the shared renderers. Each side only supplies a backend
+  ADAPTER (app → `window.api`; demo → in-memory Core mutators + browser APIs) and
+  its own data. This is what stopped the two popups from drifting (a confirm
+  dialog used to exist in one but not the other).
+- `test/ui-parity.test.js` enforces it: both consumers must call the shared
+  renderers + `createClipController`, route through `controller.onClick/onKeydown`,
+  never re-inline a bespoke dialog (`pendingAssign`/`confirmOverlay`/`demo-confirm`),
+  and keep popup CSS/theme vars only in the shared sheet. Run `npm test`.
+- `applyGroupAssign` (main.js) TOGGLES group membership; the per-clip group chip
+  is therefore add-or-remove on both sides (no separate unassign endpoint).
+- Theme: `settings.theme_mode` ('system'|'light'|'dark') persists the popup theme;
+  whitelisted in the `save-settings` IPC handler + `DEFAULT_SETTINGS`; applied via
+  `Core.applyTheme`. The Theme control lives in the shared settings body, so it
+  shows in BOTH the app and the demo.
+
+## Deploy (boardclip.app)
+
+**The site does NOT auto-deploy on push.** `.github/workflows/netlify.yml` has a
+"Check Netlify token" gate and `NETLIFY_AUTH_TOKEN` is unset as a repo secret, so
+every Actions run reports success but the deploy step is SKIPPED. This is the
+cause of the chronic "live site is stale" problem — pushing to `main` updates the
+repo but NOT boardclip.app.
+
+To actually publish, deploy manually from the repo (the Netlify CLI is
+authenticated as `tobi@twoshot.app`, linked to project `boardclip-app`, siteId
+`4ff28f37-765a-4482-a5ea-162fd7513013` via `.netlify/state.json` + `netlify.toml`):
+
+```
+npx --yes netlify-cli@latest deploy --prod --dir site
+```
+
+Verify the edge served the new bytes (bypasses browser cache):
+`curl -s "https://boardclip.app/shared/clipboard-ui-core.js?cb=$(date +%s)" | grep -c createClipController`.
+
+To make pushes auto-deploy, add `NETLIFY_AUTH_TOKEN` as a GitHub repo secret (or
+connect Netlify's own Git integration). The desktop app does NOT deploy from
+`main` — it ships via the release-binaries workflow on a release/tag.
+
 ## Debugging
 
 - Run `npx electron .` directly (not via start.sh) to see stdout/stderr
 - Main process errors go to terminal, renderer errors to DevTools (Cmd+Option+I)
+- To test the app's renderer (`index.html`) without Electron, serve the repo root
+  and load it with a stubbed `window.api` (CDP `Page.addScriptToEvaluateOnNewDocument`)
+  — it renders the popup + settings and exercises the shared controller/dialogs.

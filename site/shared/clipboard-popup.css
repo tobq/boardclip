@@ -262,3 +262,23 @@ mark { background: var(--mark-bg); color: var(--mark-fg); border-radius: 2px; pa
 .ai-grant-row .ai-grant-name { flex: 1; font-family: "Cascadia Code", monospace; font-size: 11px; color: var(--text); }
 .gp-share { color: var(--text-dim); }
 .gp-share.on { color: var(--accent); }
+
+/* --- Shared plain-text editor (Core.createEditor): app window + demo overlay --- */
+.bc-editor { display: flex; flex-direction: column; height: 100%; width: 100%; background: var(--bg); color: var(--text); min-height: 0; }
+.bc-editor-bar { -webkit-app-region: drag; display: flex; align-items: center; gap: 8px; padding: 0 6px 0 12px; height: 30px; flex-shrink: 0; border-bottom: 1px solid var(--line); background: var(--surface); }
+.bc-editor-title { -webkit-app-region: drag; flex: 1; font-size: 11px; color: var(--text-dim); letter-spacing: .04em; text-transform: uppercase; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bc-editor-bar-actions { -webkit-app-region: no-drag; display: flex; align-items: center; gap: 2px; }
+.bc-find { -webkit-app-region: no-drag; display: flex; align-items: center; gap: 6px; padding: 5px 8px; flex-shrink: 0; border-bottom: 1px solid var(--line); background: var(--surface2); }
+.bc-find[hidden] { display: none; }
+.bc-find-input { flex: 1; min-width: 0; background: var(--input); border: 1px solid var(--line-strong); border-radius: 6px; color: var(--text); font: inherit; font-size: 12px; padding: 4px 8px; outline: none; }
+.bc-find-input:focus { border-color: var(--accent); }
+.bc-find-count { font-size: 10.5px; color: var(--text-dim); min-width: 34px; text-align: right; font-variant-numeric: tabular-nums; }
+.bc-editor-area { flex: 1; min-height: 0; width: 100%; resize: none; border: 0; outline: none; background: var(--bg); color: var(--text);
+  font-family: 'Cascadia Code', 'Consolas', ui-monospace, monospace; font-size: 13px; line-height: 1.5; padding: 12px 14px; tab-size: 4; white-space: pre-wrap; word-break: break-word; }
+.bc-editor-area::placeholder { color: var(--text-dim); }
+.bc-editor-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 4px 12px; height: 24px; flex-shrink: 0; border-top: 1px solid var(--line); background: var(--surface); font-size: 10.5px; color: var(--text-dim); }
+.bc-editor-hint { white-space: nowrap; }
+/* Demo overlay host: the editor floats over the demo popup window */
+.bc-editor-overlay { position: absolute; inset: 0; z-index: 40; display: none; }
+.bc-editor-overlay.show { display: block; }
+.bc-editor-overlay .bc-editor { box-shadow: 0 8px 30px var(--shadow); }

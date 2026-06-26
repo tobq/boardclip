@@ -852,6 +852,171 @@
       render,
     };
   }
+  // Pure find helpers (shared by the editor's find bar). findAllMatches returns
+  // every {start,end} span so the editor can navigate/count; countWords for the
+  // footer stats. Kept pure so they're unit-testable without a DOM.
+  function findAllMatches(text, query, regex) {
+    const raw = String(text || '');
+    const q = String(query || '');
+    if (!q) return [];
+    const out = [];
+    try {
+      const re = regex
+        ? new RegExp(q, 'gi')
+        : new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+      let m;
+      let guard = 0;
+      while ((m = re.exec(raw)) && guard < 100000) {
+        if (m[0] === '') { re.lastIndex += 1; continue; }
+        out.push({ start: m.index, end: m.index + m[0].length });
+        guard += 1;
+      }
+    } catch { return []; }
+    return out;
+  }
+  function countWords(text) {
+    const t = String(text || '').trim();
+    return t ? (t.match(/\S+/g) || []).length : 0;
+  }
+  // Shared plain-text editor — ONE implementation mounted by BOTH the desktop
+  // app (in its own frameless window) and the website demo (in an in-page
+  // overlay). Edits are captured live: every keystroke fires onInput (the host
+  // persists a crash-safe draft), and after a short idle / on close / on Ctrl+S
+  // onCommit fires (the host writes the clip). Find (Ctrl+F), word/char count,
+  // revert-to-original, Tab-inserts-tab. The host owns persistence; this owns UI.
+  //   opts: { initialText, title, idleMs, onInput(text), onCommit(text), onClose() }
+  function createEditor(opts) {
+    if (typeof document === 'undefined') return null;
+    const o = opts || {};
+    const idleMs = o.idleMs || 1200;
+    const original = String(o.initialText || '');
+    const root = document.createElement('div');
+    root.className = 'bc-editor';
+    root.innerHTML = `
+      <div class="bc-editor-bar">
+        <span class="bc-editor-title"></span>
+        <div class="bc-editor-bar-actions">
+          <button class="icon-btn" type="button" data-x="find" title="Find (Ctrl+F)"><span class="mi">search</span></button>
+          <button class="icon-btn" type="button" data-x="revert" title="Revert to original"><span class="mi">undo</span></button>
+          <button class="icon-btn close-btn" type="button" data-x="close" title="Close (Esc)">&times;</button>
+        </div>
+      </div>
+      <div class="bc-find" data-x="findbar" hidden>
+        <input class="bc-find-input" type="text" placeholder="Find" spellcheck="false" autocomplete="off" data-x="findinput">
+        <span class="bc-find-count" data-x="findcount"></span>
+        <button class="icon-btn" type="button" data-x="findprev" title="Previous (Shift+Enter)"><span class="mi">keyboard_arrow_up</span></button>
+        <button class="icon-btn" type="button" data-x="findnext" title="Next (Enter)"><span class="mi">keyboard_arrow_down</span></button>
+        <button class="icon-btn" type="button" data-x="findclose" title="Close (Esc)"><span class="mi">close</span></button>
+      </div>
+      <textarea class="bc-editor-area" spellcheck="false" wrap="soft"></textarea>
+      <div class="bc-editor-foot">
+        <span data-x="stats"></span>
+        <span class="bc-editor-hint">Saved automatically</span>
+      </div>`;
+    const q = (name) => root.querySelector(`[data-x="${name}"]`);
+    const area = root.querySelector('.bc-editor-area');
+    const titleEl = root.querySelector('.bc-editor-title');
+    const statsEl = q('stats');
+    const findBar = q('findbar');
+    const findInput = q('findinput');
+    const findCount = q('findcount');
+    area.value = original;
+    titleEl.textContent = o.title || 'Edit clip';
+
+    let idleTimer = null;
+    let lastCommitted = original;
+    let matches = [];
+    let findIdx = -1;
+
+    function updateStats() {
+      const t = area.value;
+      statsEl.textContent = `${countWords(t)} word${countWords(t) === 1 ? '' : 's'} · ${t.length.toLocaleString()} char${t.length === 1 ? '' : 's'}`;
+    }
+    function commit() {
+      if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
+      const t = area.value;
+      if (t === lastCommitted) return;
+      lastCommitted = t;
+      if (o.onCommit) o.onCommit(t);
+    }
+    function scheduleCommit() {
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = setTimeout(commit, idleMs);
+    }
+    function insertAtCursor(s) {
+      const start = area.selectionStart;
+      const end = area.selectionEnd;
+      area.value = area.value.slice(0, start) + s + area.value.slice(end);
+      area.selectionStart = area.selectionEnd = start + s.length;
+      area.dispatchEvent(new Event('input'));
+    }
+    function selectMatch() {
+      if (findIdx < 0 || !matches[findIdx]) { findCount.textContent = findInput.value ? '0/0' : ''; return; }
+      const m = matches[findIdx];
+      area.focus();
+      area.setSelectionRange(m.start, m.end);
+      findCount.textContent = `${findIdx + 1}/${matches.length}`;
+    }
+    function recomputeMatches() {
+      matches = findAllMatches(area.value, findInput.value);
+      if (!matches.length) { findIdx = -1; findCount.textContent = findInput.value ? '0/0' : ''; }
+      else if (findIdx < 0 || findIdx >= matches.length) findIdx = 0;
+    }
+    function step(dir) {
+      if (!matches.length) return;
+      findIdx = (findIdx + dir + matches.length) % matches.length;
+      selectMatch();
+    }
+    function openFind() {
+      findBar.hidden = false;
+      const sel = area.value.slice(area.selectionStart, area.selectionEnd);
+      if (sel && !sel.includes('\n')) findInput.value = sel.slice(0, 120);
+      recomputeMatches();
+      selectMatch();
+      findInput.focus();
+      findInput.select();
+    }
+    function closeFind() { findBar.hidden = true; area.focus(); }
+
+    area.addEventListener('input', () => {
+      updateStats();
+      if (o.onInput) o.onInput(area.value);
+      scheduleCommit();
+      if (!findBar.hidden) { recomputeMatches(); }
+    });
+    area.addEventListener('keydown', (e) => {
+      if (e.key === 'Tab') { e.preventDefault(); insertAtCursor('\t'); }
+      else if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 's') { e.preventDefault(); commit(); }
+      else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') { e.preventDefault(); openFind(); }
+    });
+    findInput.addEventListener('input', () => { findIdx = -1; recomputeMatches(); selectMatch(); });
+    findInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); step(e.shiftKey ? -1 : 1); }
+      else if (e.key === 'Escape') { e.preventDefault(); closeFind(); }
+    });
+    q('findprev').onclick = () => step(-1);
+    q('findnext').onclick = () => step(1);
+    q('findclose').onclick = closeFind;
+    q('find').onclick = openFind;
+    q('revert').onclick = () => { area.value = original; updateStats(); if (o.onInput) o.onInput(area.value); commit(); area.focus(); };
+    q('close').onclick = () => { commit(); if (o.onClose) o.onClose(); };
+    root.addEventListener('keydown', (e) => {
+      if (e.key !== 'Escape') return;
+      if (!findBar.hidden) { e.preventDefault(); e.stopPropagation(); closeFind(); }
+      else { e.preventDefault(); e.stopPropagation(); commit(); if (o.onClose) o.onClose(); }
+    });
+
+    updateStats();
+    setTimeout(() => area.focus(), 0);
+    return {
+      el: root,
+      getText: () => area.value,
+      setText: (t) => { area.value = String(t || ''); updateStats(); },
+      commit,
+      focus: () => area.focus(),
+      openFind,
+    };
+  }
   function sortItems(items) {
     return [...(items || [])].sort((a, b) => (b.ts || 0) - (a.ts || 0));
   }
@@ -965,6 +1130,9 @@
     setActiveThemeSeg,
     createDialogs,
     createClipController,
+    findAllMatches,
+    countWords,
+    createEditor,
     sortItems,
     touchItem,
     togglePin,

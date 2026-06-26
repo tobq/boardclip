@@ -30,6 +30,7 @@ contextBridge.exposeInMainWorld('api', {
   groupAssign: (id, group) => ipcRenderer.invoke('group-assign', id, group),
   copyImagePath: (id) => ipcRenderer.invoke('copy-image-path', id),
   openEditor: (id) => ipcRenderer.invoke('open-editor', id),
+  newNote: () => ipcRenderer.invoke('new-note'),
   openImage: (id) => ipcRenderer.invoke('open-image', id),
   platform: process.platform,
   setSyncPath: (path) => ipcRenderer.invoke('set-sync-path', path),

@@ -121,4 +121,19 @@ const siteCss = read('site/styles.css');
   }
 }
 
+// 8) The built-in editor is single-sourced too: both the app editor window
+//    (editor.html) and the website demo mount the SAME Core.createEditor, and
+//    the demo must not keep a bespoke contenteditable inline-edit.
+{
+  const editorHtml = read('editor.html');
+  assert.ok(editorHtml.includes('Core.createEditor('), 'editor.html must mount the shared Core.createEditor');
+  assert.ok(siteHtml.includes('Core.createEditor('), 'site/index.html must mount the shared Core.createEditor');
+  assert.ok(!siteHtml.includes('contenteditable'), 'site/index.html still uses a bespoke contenteditable edit; use Core.createEditor');
+  assert.ok(typeof ui.createEditor === 'function', 'core must export createEditor');
+  // Editor styles live in the shared stylesheet, not re-declared per consumer.
+  const declares = (css, sel) => new RegExp(`(^|[\\s,])\\.${sel}\\s*[,{]`, 'm').test(css);
+  assert.ok(declares(popupCss, 'bc-editor'), 'clipboard-popup.css should define .bc-editor');
+  assert.ok(!declares(siteCss, 'bc-editor-area'), 'site/styles.css re-declares editor style (belongs in clipboard-popup.css)');
+}
+
 console.log('ui-parity.test.js: all parity guards passed');

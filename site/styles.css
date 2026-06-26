@@ -357,7 +357,8 @@ code {
 .demo-window .overlay { position: absolute; }
 .demo-lightbox { cursor: zoom-out; }
 .demo-lightbox img { max-width: 86%; max-height: 78%; border-radius: 8px; box-shadow: 0 14px 44px rgba(0, 0, 0, .5); background: var(--surface); }
-.demo-window .preview.editing { outline: 1px solid var(--accent); border-radius: 4px; padding: 4px 6px; white-space: pre-wrap; word-break: break-word; background: var(--bg); cursor: text; }
+/* The editor overlay is absolute within the demo window (shared bc-editor-* styles). */
+.demo-window .bc-editor-overlay { position: absolute; }
 .demo-foot {
   display: flex;
   align-items: center;

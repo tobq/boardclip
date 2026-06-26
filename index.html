@@ -29,7 +29,9 @@
 const Core = window.BoardClipCore;
 document.getElementById('popupShell').innerHTML = Core.renderPopupShell({
   settingsBodyHtml: Core.renderSettingsBody(),
+  headerActionsHtml: '<button class="icon-btn accent" id="newNoteBtn" type="button" title="New note" aria-label="New note"><span class="mi">edit_note</span></button>',
 });
+document.getElementById('newNoteBtn').addEventListener('click', () => { window.api.newNote(); });
 const listEl = document.getElementById('list');
 const toast = document.getElementById('toast');
 const searchEl = document.getElementById('search');

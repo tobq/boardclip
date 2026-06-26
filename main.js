@@ -6,7 +6,7 @@ const crypto = require('crypto');
 const os = require('os');
 const http = require('http');
 const dgram = require('dgram');
-const { exec, execFile, spawn } = require('child_process');
+const { exec, execFile } = require('child_process');
 
 // Windows-specific fast input (keybd_event, Get/SetForegroundWindow).
 // Module is a no-op on non-Windows platforms so it's safe to require unconditionally.
@@ -803,6 +803,7 @@ function remoteSettingsPayload() {
   delete remoteSave.quick_paste_shortcut;
   delete remoteSave.p2p_device_id;
   delete remoteSave.popup_size;
+  delete remoteSave.editor_bounds;
   // AI Access: per-machine, never synced. (groups_shared_with_ai DOES sync - it
   // is user curation that should travel between machines.)
   delete remoteSave.mcp_secret;
@@ -2884,42 +2885,33 @@ function refreshTray() {
 }
 
 // --- Open in editor ---
-// External text editing is the classic place to lose work, so it's defended in
-// layers (a hash-chain, anchored on the base-content hash captured at open):
+// Built-in clip editor. Editing a clip opens BoardClip's OWN editor window
+// (editor.html, which mounts the shared Core.createEditor - the same editor the
+// website demo uses). Edits are captured live: the renderer streams a draft on
+// EVERY keystroke (persisted to a crash-safe file under EDIT_ARCHIVE_DIR) and
+// commits to the clip on idle / Ctrl+S / close. This closes the unsaved-keystroke
+// gap an external editor (Notepad) left open. Layered defences, all anchored on
+// the base-content hash captured at open:
+//   1. One window per clip - re-triggering edit focuses the open window.
+//   2. Fork on divergence - a commit whose base no longer matches the live clip
+//      forks into a new clip instead of overwriting (applyTextEdit is conflict-safe).
+//   3. Live draft - every keystroke hits disk, surviving a crash/restart.
+//   4. Orphan recovery - a draft never committed (crash mid-edit) is re-applied
+//      on next startup (in-flight `boardclip-edit-*`; committed ones get a `done-`
+//      prefix so they're retained but not resurrected).
+//   5. Disk retention - finished drafts are kept (LRU-pruned) as a last resort.
 //
-//   1. FIRST defence - one window per clip. If the user triggers an editor for a
-//      clip that's already being edited, we focus/re-surface the EXISTING editor
-//      on the SAME temp file instead of spawning a second window. One window =
-//      one base = divergence is structurally impossible.
-//   2. SECOND defence - if a divergence IS detected (the live clip's hash no
-//      longer matches the base hash this edit descends from, e.g. a sync or a
-//      second writer moved it), the save FORKS into a new clip instead of
-//      overwriting - the write path (applyTextEdit) is conflict-safe.
-//   3. CAPTURE ON SAVE, not just on exit. We watch the temp file and persist
-//      every Ctrl+S immediately, then re-anchor the chain to what we just saved.
-//      So a saved buffer survives even an unclean editor close or a BoardClip
-//      restart mid-edit (which would otherwise never reach the exit handler).
-//   4. ORPHAN RECOVERY on startup - any boardclip-edit-* temp left behind by a
-//      previous session (app died while an editor was open) is re-applied.
-//   5. DISK RETENTION BUFFER - finished edit temps are ARCHIVED (not deleted) to
-//      EDIT_ARCHIVE_DIR, LRU-pruned to a size cap + max age, so the raw saved
-//      text is recoverable straight off disk even if every layer above failed.
-//
-// activeEdits: originalId(at open) -> session. The session's `baseText`/`currentId`
-// are re-anchored after each captured save so the chain stays contiguous.
-const activeEdits = new Map();
-const EDIT_TMP_RE = /^boardclip-edit-[0-9a-f]{12}-\d+\.txt$/;
+// editSessions: sessionId -> session. editWindowsByClip: originalId -> sessionId
+// (enforces one window per clip). A session re-anchors baseText/currentId after
+// each commit so the chain stays contiguous (in-place, not a fork).
+const editSessions = new Map();
+const editWindowsByClip = new Map();
+const EDIT_DRAFT_RE = /^boardclip-edit-[0-9a-f]{12}-\d+\.txt$/;   // in-flight drafts only
+let editSessionSeq = 0;
 
-function spawnTextEditor(tmpPath) {
-  const cmd = process.platform === 'darwin' ? 'open' : 'notepad.exe';
-  const args = process.platform === 'darwin' ? ['-t', '-W', tmpPath] : [tmpPath];
-  return spawn(cmd, args, { detached: true, stdio: 'ignore' });
-}
-
-// LRU-prune the edit archive (size cap + max age). Runs on every archive write
-// ("on write auto clean") so the buffer self-bounds without a timer. Reuses the
-// shared pruneDirectory / planRetention path - same machinery as the history
-// backups, just a different policy.
+// LRU-prune the edit archive (size cap + max age). Runs on every draft finish
+// ("auto clean") so the buffer self-bounds without a timer. Reuses the shared
+// pruneDirectory / planRetention path - same machinery as the history backups.
 function pruneEditArchive() {
   pruneDirectory(EDIT_ARCHIVE_DIR, {
     maxBytes: EDIT_ARCHIVE_MAX_BYTES,
@@ -2928,21 +2920,11 @@ function pruneEditArchive() {
   });
 }
 
-// Archive an external-edit temp instead of deleting it - keeps the raw saved
-// text on disk as a last-resort recovery buffer. Falls back to copy+unlink if
-// the temp and the archive live on different volumes.
-function archiveEditTemp(tmpPath) {
+function writeDraftFile(session) {
   try {
-    let text = fs.readFileSync(tmpPath, 'utf-8');
-    if (!text.trim()) { try { fs.unlinkSync(tmpPath); } catch {} return; }
     fs.mkdirSync(EDIT_ARCHIVE_DIR, { recursive: true });
-    const dest = path.join(EDIT_ARCHIVE_DIR, path.basename(tmpPath));
-    try { fs.renameSync(tmpPath, dest); }
-    catch { fs.writeFileSync(dest, text, 'utf-8'); try { fs.unlinkSync(tmpPath); } catch {} }
-    pruneEditArchive();
-  } catch {
-    try { fs.unlinkSync(tmpPath); } catch {}
-  }
+    fs.writeFileSync(session.draftPath, session.draftText != null ? session.draftText : '', 'utf-8');
+  } catch {}
 }
 
 function showEditNotification(title, body) {
@@ -2953,8 +2935,8 @@ function showEditNotification(title, body) {
   } catch {}
 }
 
-// Surface the conflict-fork outcome so a stale-based save is never again
-// mistaken for a clobber: the user's edit was kept as a new clip, untouched.
+// Surface the conflict-fork outcome so a stale-based commit is never mistaken
+// for a clobber: the user's edit was kept as a new clip, untouched.
 function notifyEditOutcome(result) {
   if (!result || (result.reason !== 'conflict_created' && result.reason !== 'conflict_merged')) return;
   showEditNotification(
@@ -2963,99 +2945,177 @@ function notifyEditOutcome(result) {
   );
 }
 
-// Persist the editor's current on-disk content (a Ctrl+S, or the final read on
-// exit). Re-anchors the session chain so the next save descends from this one
-// (otherwise every intermediate save would look diverged and needlessly fork).
-function captureExternalEdit(session, { final = false } = {}) {
-  let newText;
-  try { newText = fs.readFileSync(session.tmpPath, 'utf-8'); } catch { return; }
-  if (newText === session.lastCaptured) return;
+// Commit `text` to the clip, re-anchoring the session chain so the next commit
+// descends from this one (in-place, not a fork). For a new-note session the
+// first non-blank commit creates the clip.
+function commitEditSession(session, text, { final = false } = {}) {
+  if (text == null || text === session.lastCommitted) return null;
   const result = applyExternalTextEdit({
     id: session.currentId,
     originalText: session.baseText,
     sourceGroups: session.sourceGroups,
-    newText,
-    writeClipboard: final,   // don't hijack the clipboard on intermediate auto-saves
+    newText: text,
+    writeClipboard: final,   // only a deliberate finish puts the text on the clipboard
   });
   if (result && result.changed) {
-    session.lastCaptured = newText;
-    session.baseText = newText;                                  // re-anchor the chain
-    if (result.item) session.currentId = itemKey(result.item);
+    session.lastCommitted = text;
+    session.baseText = text;
+    if (result.item) { session.currentId = itemKey(result.item); session.isNew = false; }
     notifyEditOutcome(result);
-  } else if (final && result && result.reason === 'blank') {
-    // editor saved an empty buffer then closed - leave the clip as-is.
   }
+  return result;
 }
 
-function openEditor(id) {
-  const item = findHistoryItem(id);
-  if (!item || item.type === 'image') return;
-  textBlobStore.hydrateTextItem(item, TEXT_DIR);
-  const originalId = itemKey(item);
+// Editor window bounds persistence (full bounds, unlike the cursor-positioned
+// popup which only stores size). Debounced like schedulePopupSizeSave.
+function editorBoundsFromSettings() {
+  const b = settings.editor_bounds && typeof settings.editor_bounds === 'object' ? settings.editor_bounds : {};
+  const width = Math.max(360, Math.round(Number(b.width) || 560));
+  const height = Math.max(240, Math.round(Number(b.height) || 520));
+  const out = { width, height };
+  if (Number.isFinite(Number(b.x)) && Number.isFinite(Number(b.y))) { out.x = Math.round(Number(b.x)); out.y = Math.round(Number(b.y)); }
+  return out;
+}
+let saveEditorBoundsTimer = null;
+function scheduleEditorBoundsSave(editorWin) {
+  if (!editorWin || editorWin.isDestroyed()) return;
+  if (saveEditorBoundsTimer) clearTimeout(saveEditorBoundsTimer);
+  saveEditorBoundsTimer = setTimeout(() => {
+    saveEditorBoundsTimer = null;
+    if (!editorWin || editorWin.isDestroyed()) return;
+    const { x, y, width, height } = editorWin.getBounds();
+    settings.editor_bounds = { x, y, width: Math.max(360, width), height: Math.max(240, height) };
+    saveSettingsFile();
+  }, 300);
+  if (saveEditorBoundsTimer.unref) saveEditorBoundsTimer.unref();
+}
 
-  // FIRST defence: same clip already open -> focus the existing editor on the
-  // same temp file rather than spawning a second window with its own base.
-  const existing = activeEdits.get(originalId);
-  if (existing) {
-    try { const p = spawnTextEditor(existing.tmpPath); p.unref(); } catch {}
-    return;
-  }
-
-  const originalText = item.text || '';
-  const sourceGroups = [...groupsOf(item)];
-  // Tag the temp with the base-content hash (the chain anchor) so an edit's
-  // lineage is explicit and recoverable straight from the filename.
-  const baseHash = clipboardModel.textHashForText(originalText);
-  const tmpPath = path.join(os.tmpdir(), `boardclip-edit-${baseHash.slice(0, 12)}-${Date.now()}.txt`);
-  fs.writeFileSync(tmpPath, originalText, 'utf-8');
-
-  const proc = spawnTextEditor(tmpPath);
-  const session = { tmpPath, proc, currentId: originalId, baseText: originalText, lastCaptured: originalText, sourceGroups };
-
-  // CAPTURE ON SAVE: persist each Ctrl+S immediately (debounced - fs.watch can
-  // fire several events per write). Means a saved buffer is never lost to an
-  // unclean close or an app restart that the exit handler would miss.
-  let saveTimer = null;
-  try {
-    session.watcher = fs.watch(tmpPath, () => {
-      clearTimeout(saveTimer);
-      saveTimer = setTimeout(() => { if (activeEdits.get(originalId) === session) captureExternalEdit(session); }, 250);
-    });
-  } catch {}
-
-  activeEdits.set(originalId, session);
-
-  proc.on('exit', () => {
-    activeEdits.delete(originalId);
-    clearTimeout(saveTimer);
-    try { if (session.watcher) session.watcher.close(); } catch {}
-    captureExternalEdit(session, { final: true });
-    archiveEditTemp(tmpPath);   // keep the raw text on disk as a recovery buffer
+function createEditorWindow(session) {
+  const editorWin = new BrowserWindow({
+    ...editorBoundsFromSettings(),
+    minWidth: 360,
+    minHeight: 240,
+    frame: false,
+    resizable: true,
+    show: false,
+    skipTaskbar: false,
+    title: 'BoardClip - editor',
+    backgroundColor: appBackgroundColor(),
+    icon: APP_ICON_PATH,
+    webPreferences: {
+      preload: path.join(SCRIPT_DIR, 'editor-preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
   });
-
-  proc.unref();
+  session.win = editorWin;
+  editorWin.loadFile(path.join(SCRIPT_DIR, 'editor.html'));
+  editorWin.once('ready-to-show', () => { try { editorWin.show(); editorWin.focus(); } catch {} });
+  editorWin.webContents.on('did-finish-load', () => {
+    try {
+      editorWin.webContents.send('editor-init', {
+        sessionId: session.id,
+        text: session.baseText,
+        title: session.isNew ? 'New clip' : 'Edit clip',
+        isNew: session.isNew,
+        themeMode: settings.theme_mode || 'system',
+      });
+    } catch {}
+  });
+  editorWin.on('resize', () => scheduleEditorBoundsSave(editorWin));
+  editorWin.on('move', () => scheduleEditorBoundsSave(editorWin));
+  editorWin.on('closed', () => {
+    editSessions.delete(session.id);
+    if (session.originalId != null && editWindowsByClip.get(session.originalId) === session.id) {
+      editWindowsByClip.delete(session.originalId);
+    }
+    // Safety net: commit the latest on-disk draft (the IPC commit may have raced
+    // the window teardown), then mark the draft finished so it's retained but not
+    // re-recovered, and prune.
+    let draftText = null;
+    try { draftText = fs.readFileSync(session.draftPath, 'utf-8'); } catch {}
+    if (draftText != null) commitEditSession(session, draftText, { final: true });
+    try {
+      const done = path.join(path.dirname(session.draftPath), `done-${path.basename(session.draftPath)}`);
+      fs.renameSync(session.draftPath, done);
+    } catch {}
+    pruneEditArchive();
+  });
 }
 
-// ORPHAN RECOVERY: re-apply any external-edit temp left behind by a previous
-// session (BoardClip died/restarted while an editor was still open, so the
-// exit handler never ran). Called once after history is loaded at startup.
-function recoverOrphanedEdits() {
-  let files;
-  try { files = fs.readdirSync(os.tmpdir()); } catch { return; }
-  let recovered = 0;
-  for (const name of files) {
-    if (!EDIT_TMP_RE.test(name)) continue;
-    const p = path.join(os.tmpdir(), name);
-    let text;
-    try { text = fs.readFileSync(p, 'utf-8'); } catch { continue; }
-    // Only recover if the content isn't already present as a live clip (i.e. it
-    // really never got applied). Add as a new clip - fork-safe, never overwrites.
-    if (text.trim() && !history.some(it => (it.text || '') === text)) {
-      const result = applyExternalTextEdit({ id: '', originalText: '', sourceGroups: [], newText: text, writeClipboard: false });
-      if (result && result.changed) recovered++;
+// Open the editor for clip `id`, or a blank new-note editor when id is null.
+function openEditor(id) {
+  if (id != null) {
+    const openSessionId = editWindowsByClip.get(id);
+    if (openSessionId) {
+      const s = editSessions.get(openSessionId);
+      if (s && s.win && !s.win.isDestroyed()) { try { s.win.show(); s.win.focus(); } catch {} return; }
     }
-    archiveEditTemp(p);   // retain the orphan's raw text on disk too
   }
+  let baseText = '';
+  let sourceGroups = [];
+  let isNew = true;
+  let originalId = null;
+  if (id != null) {
+    const item = findHistoryItem(id);
+    if (!item || item.type === 'image') return;
+    textBlobStore.hydrateTextItem(item, TEXT_DIR);
+    baseText = item.text || '';
+    sourceGroups = [...groupsOf(item)];
+    isNew = false;
+    originalId = itemKey(item);
+  }
+  const baseHash = clipboardModel.textHashForText(baseText);
+  editSessionSeq += 1;
+  const session = {
+    id: `e${editSessionSeq}`,
+    originalId,
+    currentId: originalId || '',
+    baseText,
+    lastCommitted: baseText,
+    sourceGroups,
+    isNew,
+    draftText: baseText,
+    // Tag the draft with the base-content hash (the chain anchor) so its lineage
+    // is explicit and recoverable straight from the filename.
+    draftPath: path.join(EDIT_ARCHIVE_DIR, `boardclip-edit-${baseHash.slice(0, 12)}-${Date.now()}-${editSessionSeq}.txt`),
+    win: null,
+  };
+  writeDraftFile(session);
+  editSessions.set(session.id, session);
+  if (originalId != null) editWindowsByClip.set(originalId, session.id);
+  createEditorWindow(session);
+}
+
+// ORPHAN RECOVERY: re-apply any in-flight edit draft left behind by a previous
+// session (BoardClip died/restarted while an editor was open, so it never
+// committed). Committed drafts carry a `done-` prefix and are skipped here.
+// Also migrates any legacy Notepad temps from os.tmpdir. Runs once at startup.
+function recoverOrphanedEdits() {
+  let recovered = 0;
+  for (const dir of [EDIT_ARCHIVE_DIR, os.tmpdir()]) {
+    let files;
+    try { files = fs.readdirSync(dir); } catch { continue; }
+    for (const name of files) {
+      if (!EDIT_DRAFT_RE.test(name)) continue;
+      const p = path.join(dir, name);
+      let text;
+      try { text = fs.readFileSync(p, 'utf-8'); } catch { continue; }
+      // Recover only if not already a live clip (i.e. never committed). Add as a
+      // new clip - fork-safe, never overwrites.
+      if (text.trim() && !history.some(it => (it.text || '') === text)) {
+        const result = applyExternalTextEdit({ id: '', originalText: '', sourceGroups: [], newText: text, writeClipboard: false });
+        if (result && result.changed) recovered++;
+      }
+      // Retire the draft: rename to done- in the archive dir (retained, not re-recovered).
+      try {
+        fs.mkdirSync(EDIT_ARCHIVE_DIR, { recursive: true });
+        const done = path.join(EDIT_ARCHIVE_DIR, `done-${name}`);
+        fs.renameSync(p, done);
+      } catch { try { fs.unlinkSync(p); } catch {} }
+    }
+  }
+  pruneEditArchive();
   if (recovered > 0) {
     showEditNotification(
       'BoardClip - recovered unsaved edits',
@@ -3654,6 +3714,29 @@ function setupIPC() {
 
   ipcMain.handle('open-editor', (_, id) => {
     openEditor(id);
+  });
+  ipcMain.handle('new-note', () => {
+    openEditor(null);
+  });
+
+  // Built-in editor window streams: draft on every keystroke (crash-safe),
+  // commit on idle/save/close, close. Keyed by the session id main assigned.
+  ipcMain.on('editor-draft', (_, sessionId, text) => {
+    const session = editSessions.get(sessionId);
+    if (!session) return;
+    session.draftText = String(text == null ? '' : text);
+    writeDraftFile(session);
+  });
+  ipcMain.on('editor-commit', (_, sessionId, text) => {
+    const session = editSessions.get(sessionId);
+    if (!session) return;
+    session.draftText = String(text == null ? '' : text);
+    writeDraftFile(session);
+    commitEditSession(session, session.draftText);
+  });
+  ipcMain.on('editor-close', (_, sessionId) => {
+    const session = editSessions.get(sessionId);
+    if (session && session.win && !session.win.isDestroyed()) { try { session.win.close(); } catch {} }
   });
 
   ipcMain.handle('open-image', (_, id) => {

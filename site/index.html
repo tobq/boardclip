@@ -165,6 +165,7 @@
         settingsCloseBtn: "demo-settings-close",
       },
       settingsNote: "Demo",
+      headerActionsHtml: '<button class="icon-btn accent" id="demo-new-note" type="button" title="New note" aria-label="New note"><span class="mi">edit_note</span></button>',
       settingsBodyHtml: Core.renderSettingsBody(),
       afterListHtml: `
         <div class="demo-foot">
@@ -179,6 +180,7 @@
     demoWindowEl.insertAdjacentHTML("beforeend", `
       <div class="toast" id="demo-toast">Copied</div>
       <div class="overlay demo-lightbox" id="demo-lightbox"><img alt="clip image" id="demo-lightbox-img"></div>
+      <div class="bc-editor-overlay" id="demo-editor-overlay"></div>
     `);
     const dialogs = Core.createDialogs(demoWindowEl);
     const osLabels = {
@@ -767,7 +769,7 @@
         showToast("Copied");
         renderClips();
       },
-      editClip: (id, itemEl) => startInlineEdit(itemEl, id),
+      editClip: (id) => openDemoEditor(id),
       openImage: (item) => { if (item && item.imageSrc) openLightbox(item.imageSrc); },
       saveImage: (item) => {
         if (!item || !item.imageSrc) return null;
@@ -834,45 +836,44 @@
       controller.onKeydown(event);
     });
 
-    function startInlineEdit(itemEl, id) {
-      const clip = clips.find((item) => Core.itemId(item) === id);
-      if (!clip || clip.type === "image") return;
-      const preview = itemEl.querySelector(".preview");
-      if (!preview) return;
-      preview.textContent = clip.text || "";
-      preview.classList.add("editing");
-      preview.setAttribute("contenteditable", "true");
-      preview.focus();
-      const range = document.createRange();
-      range.selectNodeContents(preview);
-      range.collapse(false);
-      const selection = window.getSelection();
-      selection.removeAllRanges();
-      selection.addRange(range);
-      let done = false;
-      const commit = (save) => {
-        if (done) return;
-        done = true;
-        preview.removeEventListener("blur", onBlur);
-        preview.removeEventListener("keydown", onKey);
-        const next = preview.textContent;
-        preview.removeAttribute("contenteditable");
-        preview.classList.remove("editing");
-        if (save && next !== (clip.text || "")) {
-          clips = clips.map((item) => Core.itemId(item) === id ? { ...item, text: next } : item);
-          clips = Core.touchItem(clips, id);
-          showToast("Saved");
-        }
-        renderClips();
-      };
-      const onBlur = () => commit(true);
-      const onKey = (event) => {
-        if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); event.stopPropagation(); commit(true); }
-        else if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); commit(false); }
-      };
-      preview.addEventListener("blur", onBlur);
-      preview.addEventListener("keydown", onKey);
+    // The demo mounts the SAME shared Core.createEditor the desktop app uses,
+    // in an in-page overlay (a web page can't open an OS window). Editing an
+    // existing clip commits in place; a null id is a new note that becomes a
+    // clip on first commit. One editor open at a time in the demo.
+    const demoEditorOverlay = document.getElementById("demo-editor-overlay");
+    let demoEditor = null;
+    function closeDemoEditor() {
+      demoEditorOverlay.classList.remove("show");
+      demoEditorOverlay.innerHTML = "";
+      demoEditor = null;
+      search.focus();
     }
+    function openDemoEditor(id) {
+      const clip = id != null ? clips.find((item) => Core.itemId(item) === id) : null;
+      if (id != null && (!clip || clip.type === "image")) return;
+      let currentId = id;
+      demoEditorOverlay.innerHTML = "";
+      demoEditor = Core.createEditor({
+        initialText: clip ? (clip.text || "") : "",
+        title: clip ? "Edit clip" : "New clip",
+        onCommit: (text) => {
+          if (currentId != null) {
+            clips = clips.map((item) => Core.itemId(item) === currentId ? { ...item, text } : item);
+            clips = Core.touchItem(clips, currentId);
+          } else if (text.trim()) {
+            clips = Core.addClipboardText(clips, text);
+            const created = clips.find((item) => item.text === text);
+            if (created) currentId = Core.itemId(created);
+          }
+          renderClips();
+        },
+        onClose: closeDemoEditor,
+      });
+      demoEditorOverlay.appendChild(demoEditor.el);
+      demoEditorOverlay.classList.add("show");
+      demoEditor.focus();
+    }
+    document.getElementById("demo-new-note").addEventListener("click", () => openDemoEditor(null));
 
     function openLightbox(src) {
       document.getElementById("demo-lightbox-img").src = src;

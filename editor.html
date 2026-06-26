@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Editor</title>
+<script>
+  document.documentElement.dataset.theme = matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+</script>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="site/shared/clipboard-popup.css">
+<style>
+  /* Editor window shell only; the editor itself + theme vars come from the
+     shared clipboard-popup.css + Core.createEditor (single source with demo). */
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html, body { height:100%; overflow:hidden; }
+  body { font-family:'Segoe UI',system-ui,sans-serif; background:var(--bg); color:var(--text); }
+  #editorHost { height:100%; }
+  ::-webkit-scrollbar { width:10px; }
+  ::-webkit-scrollbar-thumb { background:var(--line-strong); border-radius:5px; }
+</style></head><body>
+<div id="editorHost"></div>
+<script src="site/shared/clipboard-ui-core.js"></script>
+<script>
+const Core = window.BoardClipCore;
+const host = document.getElementById('editorHost');
+
+// Theme: follow the app's theme_mode setting + live system changes, exactly
+// like the popup (Core.applyTheme on <html>).
+let themeMode = 'system';
+let systemDark = matchMedia('(prefers-color-scheme: dark)').matches;
+function refreshTheme() { Core.applyTheme(document.documentElement, themeMode, systemDark); }
+if (window.editorApi.getColorScheme) window.editorApi.getColorScheme().then((s) => { systemDark = s !== 'light'; refreshTheme(); }).catch(() => {});
+if (window.editorApi.onColorSchemeChanged) window.editorApi.onColorSchemeChanged((s) => { systemDark = s !== 'light'; refreshTheme(); });
+
+let editor = null;
+window.editorApi.onInit((init) => {
+  themeMode = (init.themeMode === 'light' || init.themeMode === 'dark') ? init.themeMode : 'system';
+  refreshTheme();
+  host.innerHTML = '';
+  editor = Core.createEditor({
+    initialText: init.text || '',
+    title: init.title || (init.isNew ? 'New clip' : 'Edit clip'),
+    onInput: (text) => window.editorApi.draft(text),     // live crash-safe draft, every keystroke
+    onCommit: (text) => window.editorApi.commit(text),   // idle / Ctrl+S / close -> write the clip
+    onClose: () => window.editorApi.close(),
+  });
+  host.appendChild(editor.el);
+  editor.focus();
+});
+
+// Commit any pending edit if the window is closing out from under us.
+window.addEventListener('beforeunload', () => { if (editor) editor.commit(); });
+</script>
+</body></html>

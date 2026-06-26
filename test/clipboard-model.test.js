@@ -270,6 +270,32 @@ function text(text, extra = {}) {
 }
 
 {
+  // Capture-on-save chain: the editor auto-saves several times. Each save is
+  // anchored to what the PREVIOUS save produced (originalText = prior newText),
+  // so the chain stays in-place (no spurious forks) and the clip ends on the
+  // latest content - the data-preservation path that makes intermediate saves
+  // survive an unclean close / app restart.
+  let history = [text('v0 base', { ts: 10, updatedAt: 10000 })];
+  let base = 'v0 base';
+  let curId = model.itemKey(history[0]);
+  for (const [i, next] of ['v0 base draft', 'v0 base draft more', 'v0 base draft more FINAL'].entries()) {
+    const r = model.applyTextEdit(history, { id: curId, originalText: base, newText: next, sourceGroups: [], now: 20000 + i * 1000 });
+    assert.strictEqual(r.changed, true);
+    assert.strictEqual(r.reason, 'updated', `save ${i} should chain in-place, not fork`);
+    base = next;                       // re-anchor like captureExternalEdit does
+    curId = model.itemKey(r.item);
+  }
+  assert.strictEqual(history.length, 1, 'chained saves stay one clip');
+  assert.strictEqual(history[0].text, 'v0 base draft more FINAL');
+
+  // But a writer still anchored on the ORIGINAL base (a stale second editor)
+  // must fork, not bury the chained-forward content.
+  const stale = model.applyTextEdit(history, { id: curId, originalText: 'v0 base', newText: 'stale short', sourceGroups: [], now: 26000 });
+  assert.strictEqual(stale.reason, 'conflict_created');
+  assert.ok(history.some(h => h.text === 'v0 base draft more FINAL'), 'chained content survives a stale forked save');
+}
+
+{
   const changedToSameText = text('editor result', {
     ts: 30,
     updatedAt: 30000,

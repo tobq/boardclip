@@ -609,7 +609,7 @@ function writeEditedTextToClipboard(text) {
   }
 }
 
-function applyExternalTextEdit({ id, originalText, sourceGroups, newText }) {
+function applyExternalTextEdit({ id, originalText, sourceGroups, newText, writeClipboard = true }) {
   const result = clipboardModel.applyTextEdit(history, {
     id,
     originalText,
@@ -624,7 +624,9 @@ function applyExternalTextEdit({ id, originalText, sourceGroups, newText }) {
   for (const tombstoneId of result.tombstoneIds || []) addTombstone(tombstoneId);
   if (result.tombstoneIds && result.tombstoneIds.length) saveSettingsFile();
   saveHistory();
-  writeEditedTextToClipboard(newText);
+  // Only put the edited text on the clipboard for a deliberate finish (editor
+  // close / final save), not every intermediate auto-captured Ctrl+S.
+  if (writeClipboard) writeEditedTextToClipboard(newText);
   diagnostics.record('editor.text_applied', {
     reason: result.reason,
     tombstones: (result.tombstoneIds || []).length,
@@ -2868,14 +2870,28 @@ function refreshTray() {
 }
 
 // --- Open in editor ---
-// Active external-edit sessions keyed by the clip id captured when the editor
-// opened. Two editors open on the SAME clip is the classic stale-buffer clobber:
-// each window holds a divergent base and the one that saves last wins, so an
-// older buffer can bury newer work. We prevent the second editor entirely (one
-// base of truth), and the write path (applyExternalTextEdit) is conflict-safe -
-// an edit whose base no longer matches the live clip FORKS into a new clip
-// instead of overwriting, so no save can ever destroy a diverged version.
+// External text editing is the classic place to lose work, so it's defended in
+// layers (a hash-chain, anchored on the base-content hash captured at open):
+//
+//   1. FIRST defence - one window per clip. If the user triggers an editor for a
+//      clip that's already being edited, we focus/re-surface the EXISTING editor
+//      on the SAME temp file instead of spawning a second window. One window =
+//      one base = divergence is structurally impossible.
+//   2. SECOND defence - if a divergence IS detected (the live clip's hash no
+//      longer matches the base hash this edit descends from, e.g. a sync or a
+//      second writer moved it), the save FORKS into a new clip instead of
+//      overwriting - the write path (applyTextEdit) is conflict-safe.
+//   3. CAPTURE ON SAVE, not just on exit. We watch the temp file and persist
+//      every Ctrl+S immediately, then re-anchor the chain to what we just saved.
+//      So a saved buffer survives even an unclean editor close or a BoardClip
+//      restart mid-edit (which would otherwise never reach the exit handler).
+//   4. ORPHAN RECOVERY on startup - any boardclip-edit-* temp left behind by a
+//      previous session (app died while an editor was open) is re-applied.
+//
+// activeEdits: originalId(at open) -> session. The session's `baseText`/`currentId`
+// are re-anchored after each captured save so the chain stays contiguous.
 const activeEdits = new Map();
+const EDIT_TMP_RE = /^boardclip-edit-[0-9a-f]{12}-\d+\.txt$/;
 
 function spawnTextEditor(tmpPath) {
   const cmd = process.platform === 'darwin' ? 'open' : 'notepad.exe';
@@ -2883,19 +2899,46 @@ function spawnTextEditor(tmpPath) {
   return spawn(cmd, args, { detached: true, stdio: 'ignore' });
 }
 
+function showEditNotification(title, body) {
+  try {
+    if (Notification && Notification.isSupported && Notification.isSupported()) {
+      new Notification({ title, body, silent: true }).show();
+    }
+  } catch {}
+}
+
 // Surface the conflict-fork outcome so a stale-based save is never again
 // mistaken for a clobber: the user's edit was kept as a new clip, untouched.
 function notifyEditOutcome(result) {
   if (!result || (result.reason !== 'conflict_created' && result.reason !== 'conflict_merged')) return;
-  try {
-    if (Notification && Notification.isSupported && Notification.isSupported()) {
-      new Notification({
-        title: 'BoardClip - saved as a separate clip',
-        body: 'This clip changed while you were editing, so your version was kept as a new clip instead of overwriting. Nothing was lost.',
-        silent: true,
-      }).show();
-    }
-  } catch {}
+  showEditNotification(
+    'BoardClip - saved as a separate clip',
+    'This clip changed while you were editing, so your version was kept as a new clip instead of overwriting. Nothing was lost.'
+  );
+}
+
+// Persist the editor's current on-disk content (a Ctrl+S, or the final read on
+// exit). Re-anchors the session chain so the next save descends from this one
+// (otherwise every intermediate save would look diverged and needlessly fork).
+function captureExternalEdit(session, { final = false } = {}) {
+  let newText;
+  try { newText = fs.readFileSync(session.tmpPath, 'utf-8'); } catch { return; }
+  if (newText === session.lastCaptured) return;
+  const result = applyExternalTextEdit({
+    id: session.currentId,
+    originalText: session.baseText,
+    sourceGroups: session.sourceGroups,
+    newText,
+    writeClipboard: final,   // don't hijack the clipboard on intermediate auto-saves
+  });
+  if (result && result.changed) {
+    session.lastCaptured = newText;
+    session.baseText = newText;                                  // re-anchor the chain
+    if (result.item) session.currentId = itemKey(result.item);
+    notifyEditOutcome(result);
+  } else if (final && result && result.reason === 'blank') {
+    // editor saved an empty buffer then closed - leave the clip as-is.
+  }
 }
 
 function openEditor(id) {
@@ -2904,8 +2947,8 @@ function openEditor(id) {
   textBlobStore.hydrateTextItem(item, TEXT_DIR);
   const originalId = itemKey(item);
 
-  // Same clip already open in an editor: don't spawn a second window with its
-  // own base. Re-surface the existing temp file so both edits share one base.
+  // FIRST defence: same clip already open -> focus the existing editor on the
+  // same temp file rather than spawning a second window with its own base.
   const existing = activeEdits.get(originalId);
   if (existing) {
     try { const p = spawnTextEditor(existing.tmpPath); p.unref(); } catch {}
@@ -2914,26 +2957,65 @@ function openEditor(id) {
 
   const originalText = item.text || '';
   const sourceGroups = [...groupsOf(item)];
-  // Tag the temp file with the base-content hash so an edit's lineage (which
-  // version it descends from) is explicit and recoverable from the filename.
+  // Tag the temp with the base-content hash (the chain anchor) so an edit's
+  // lineage is explicit and recoverable straight from the filename.
   const baseHash = clipboardModel.textHashForText(originalText);
   const tmpPath = path.join(os.tmpdir(), `boardclip-edit-${baseHash.slice(0, 12)}-${Date.now()}.txt`);
   fs.writeFileSync(tmpPath, originalText, 'utf-8');
 
   const proc = spawnTextEditor(tmpPath);
-  activeEdits.set(originalId, { tmpPath, proc });
+  const session = { tmpPath, proc, currentId: originalId, baseText: originalText, lastCaptured: originalText, sourceGroups };
+
+  // CAPTURE ON SAVE: persist each Ctrl+S immediately (debounced - fs.watch can
+  // fire several events per write). Means a saved buffer is never lost to an
+  // unclean close or an app restart that the exit handler would miss.
+  let saveTimer = null;
+  try {
+    session.watcher = fs.watch(tmpPath, () => {
+      clearTimeout(saveTimer);
+      saveTimer = setTimeout(() => { if (activeEdits.get(originalId) === session) captureExternalEdit(session); }, 250);
+    });
+  } catch {}
+
+  activeEdits.set(originalId, session);
 
   proc.on('exit', () => {
     activeEdits.delete(originalId);
-    try {
-      const newText = fs.readFileSync(tmpPath, 'utf-8');
-      const result = applyExternalTextEdit({ id: originalId, originalText, sourceGroups, newText });
-      notifyEditOutcome(result);
-    } catch {}
+    clearTimeout(saveTimer);
+    try { if (session.watcher) session.watcher.close(); } catch {}
+    captureExternalEdit(session, { final: true });
     try { fs.unlinkSync(tmpPath); } catch {}
   });
 
   proc.unref();
+}
+
+// ORPHAN RECOVERY: re-apply any external-edit temp left behind by a previous
+// session (BoardClip died/restarted while an editor was still open, so the
+// exit handler never ran). Called once after history is loaded at startup.
+function recoverOrphanedEdits() {
+  let files;
+  try { files = fs.readdirSync(os.tmpdir()); } catch { return; }
+  let recovered = 0;
+  for (const name of files) {
+    if (!EDIT_TMP_RE.test(name)) continue;
+    const p = path.join(os.tmpdir(), name);
+    let text;
+    try { text = fs.readFileSync(p, 'utf-8'); } catch { continue; }
+    // Only recover if the content isn't already present as a live clip (i.e. it
+    // really never got applied). Add as a new clip - fork-safe, never overwrites.
+    if (text.trim() && !history.some(it => (it.text || '') === text)) {
+      const result = applyExternalTextEdit({ id: '', originalText: '', sourceGroups: [], newText: text, writeClipboard: false });
+      if (result && result.changed) recovered++;
+    }
+    try { fs.unlinkSync(p); } catch {}
+  }
+  if (recovered > 0) {
+    showEditNotification(
+      'BoardClip - recovered unsaved edits',
+      `${recovered} edit${recovered === 1 ? '' : 's'} from a previous session ${recovered === 1 ? 'was' : 'were'} restored as new clip${recovered === 1 ? '' : 's'}.`
+    );
+  }
 }
 
 // ===========================================================================
@@ -3920,6 +4002,7 @@ app.whenReady().then(() => {
   if (process.platform === 'darwin') app.dock.hide();
 
   migrateNumpad();
+  recoverOrphanedEdits();   // restore any external edit orphaned by a prior crash/restart
   writeHistoryStorageFile();
   setupIPC();
   createPopup();

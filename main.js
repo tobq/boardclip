@@ -18,7 +18,7 @@ const blobStore = require('./lib/blob-store');
 const clipboardModel = require('./lib/clipboard-model');
 const clipboardCapture = require('./lib/clipboard-capture');
 const textBlobStore = require('./lib/text-blob-store');
-const { planEditArchivePrune } = require('./lib/edit-archive');
+const { planRetention } = require('./lib/retention');
 const { createAutoUpdater, updateSupport } = require('./lib/auto-update');
 const syncPaths = require('./lib/sync-paths');
 const { Diagnostics } = require('./lib/diagnostics');
@@ -221,22 +221,29 @@ function slotFingerprintFromItems(items) {
   return JSON.stringify(slots);
 }
 
-function pruneHistoryBackups() {
-  let files = [];
+// Enumerate a retention dir, apply a planRetention policy, and unlink the
+// evicted files. Shared by every on-disk buffer (history backups, edit archive)
+// so the "list -> decide -> delete" loop lives in exactly one place.
+function pruneDirectory(dir, policy, { ext } = {}) {
+  let entries;
   try {
-    files = fs.readdirSync(HISTORY_BACKUP_DIR)
-      .filter(name => name.endsWith('.json'))
+    entries = fs.readdirSync(dir)
+      .filter(name => !ext || name.endsWith(ext))
       .map(name => {
-        const filePath = path.join(HISTORY_BACKUP_DIR, name);
-        try { return { name, filePath, mtimeMs: fs.statSync(filePath).mtimeMs }; } catch { return null; }
+        const filePath = path.join(dir, name);
+        try { const st = fs.statSync(filePath); return { filePath, mtimeMs: st.mtimeMs, size: st.size }; }
+        catch { return null; }
       })
-      .filter(Boolean)
-      .sort((a, b) => b.mtimeMs - a.mtimeMs);
+      .filter(Boolean);
   } catch { return; }
 
-  for (const file of files.slice(HISTORY_BACKUP_MAX_FILES)) {
-    try { fs.rmSync(file.filePath, { force: true }); } catch {}
+  for (const e of planRetention(entries, policy)) {
+    try { fs.rmSync(e.filePath, { force: true }); } catch {}
   }
+}
+
+function pruneHistoryBackups() {
+  pruneDirectory(HISTORY_BACKUP_DIR, { maxFiles: HISTORY_BACKUP_MAX_FILES }, { ext: '.json' });
 }
 
 function maybeBackupHistoryBeforeWrite(nextStoredHistory) {
@@ -2909,28 +2916,16 @@ function spawnTextEditor(tmpPath) {
   return spawn(cmd, args, { detached: true, stdio: 'ignore' });
 }
 
-// LRU-prune the edit archive: drop anything past the max age, then evict the
-// oldest files until the total is under the size cap. Runs on every archive
-// write ("on write auto clean") so the buffer self-bounds without a timer. The
-// eviction decision is the pure planEditArchivePrune helper (unit-tested).
+// LRU-prune the edit archive (size cap + max age). Runs on every archive write
+// ("on write auto clean") so the buffer self-bounds without a timer. Reuses the
+// shared pruneDirectory / planRetention path - same machinery as the history
+// backups, just a different policy.
 function pruneEditArchive() {
-  let entries;
-  try {
-    entries = fs.readdirSync(EDIT_ARCHIVE_DIR).map((name) => {
-      const filePath = path.join(EDIT_ARCHIVE_DIR, name);
-      try { const st = fs.statSync(filePath); return { filePath, mtimeMs: st.mtimeMs, size: st.size }; }
-      catch { return null; }
-    }).filter(Boolean);
-  } catch { return; }
-
-  const toRemove = planEditArchivePrune(entries, {
+  pruneDirectory(EDIT_ARCHIVE_DIR, {
     maxBytes: EDIT_ARCHIVE_MAX_BYTES,
     maxAgeMs: EDIT_ARCHIVE_MAX_AGE_MS,
     now: Date.now(),
   });
-  for (const e of toRemove) {
-    try { fs.unlinkSync(e.filePath); } catch {}
-  }
 }
 
 // Archive an external-edit temp instead of deleting it - keeps the raw saved

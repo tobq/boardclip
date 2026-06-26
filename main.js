@@ -18,6 +18,7 @@ const blobStore = require('./lib/blob-store');
 const clipboardModel = require('./lib/clipboard-model');
 const clipboardCapture = require('./lib/clipboard-capture');
 const textBlobStore = require('./lib/text-blob-store');
+const { planEditArchivePrune } = require('./lib/edit-archive');
 const { createAutoUpdater, updateSupport } = require('./lib/auto-update');
 const syncPaths = require('./lib/sync-paths');
 const { Diagnostics } = require('./lib/diagnostics');
@@ -63,6 +64,12 @@ const SETTINGS_PATH = path.join(DATA_DIR, 'clipboard-settings.json');
 const IMG_DIR = path.join(DATA_DIR, 'clipboard-images');
 const TEXT_DIR = path.join(DATA_DIR, textBlobStore.TEXT_BLOB_DIRNAME);
 const HISTORY_BACKUP_DIR = path.join(DATA_DIR, 'clipboard-backups');
+// Retention buffer of raw external-edit text. Editor temps are ARCHIVED here on
+// finish (not deleted), so a saved buffer is recoverable straight off disk even
+// if every in-memory defence failed. LRU-pruned to a size cap + max age.
+const EDIT_ARCHIVE_DIR = path.join(DATA_DIR, 'clipboard-edit-archive');
+const EDIT_ARCHIVE_MAX_BYTES = 100 * 1024 * 1024; // 100 MB
+const EDIT_ARCHIVE_MAX_AGE_MS = 365 * 86400 * 1000; // 1 year
 const APP_ICON_PATH = path.join(SCRIPT_DIR, 'icon.png');
 const DIAGNOSTICS_PATH = path.join(DATA_DIR, 'boardclip-diagnostics.jsonl');
 const HISTORY_BACKUP_MAX_FILES = 100;
@@ -2887,6 +2894,9 @@ function refreshTray() {
 //      restart mid-edit (which would otherwise never reach the exit handler).
 //   4. ORPHAN RECOVERY on startup - any boardclip-edit-* temp left behind by a
 //      previous session (app died while an editor was open) is re-applied.
+//   5. DISK RETENTION BUFFER - finished edit temps are ARCHIVED (not deleted) to
+//      EDIT_ARCHIVE_DIR, LRU-pruned to a size cap + max age, so the raw saved
+//      text is recoverable straight off disk even if every layer above failed.
 //
 // activeEdits: originalId(at open) -> session. The session's `baseText`/`currentId`
 // are re-anchored after each captured save so the chain stays contiguous.
@@ -2897,6 +2907,47 @@ function spawnTextEditor(tmpPath) {
   const cmd = process.platform === 'darwin' ? 'open' : 'notepad.exe';
   const args = process.platform === 'darwin' ? ['-t', '-W', tmpPath] : [tmpPath];
   return spawn(cmd, args, { detached: true, stdio: 'ignore' });
+}
+
+// LRU-prune the edit archive: drop anything past the max age, then evict the
+// oldest files until the total is under the size cap. Runs on every archive
+// write ("on write auto clean") so the buffer self-bounds without a timer. The
+// eviction decision is the pure planEditArchivePrune helper (unit-tested).
+function pruneEditArchive() {
+  let entries;
+  try {
+    entries = fs.readdirSync(EDIT_ARCHIVE_DIR).map((name) => {
+      const filePath = path.join(EDIT_ARCHIVE_DIR, name);
+      try { const st = fs.statSync(filePath); return { filePath, mtimeMs: st.mtimeMs, size: st.size }; }
+      catch { return null; }
+    }).filter(Boolean);
+  } catch { return; }
+
+  const toRemove = planEditArchivePrune(entries, {
+    maxBytes: EDIT_ARCHIVE_MAX_BYTES,
+    maxAgeMs: EDIT_ARCHIVE_MAX_AGE_MS,
+    now: Date.now(),
+  });
+  for (const e of toRemove) {
+    try { fs.unlinkSync(e.filePath); } catch {}
+  }
+}
+
+// Archive an external-edit temp instead of deleting it - keeps the raw saved
+// text on disk as a last-resort recovery buffer. Falls back to copy+unlink if
+// the temp and the archive live on different volumes.
+function archiveEditTemp(tmpPath) {
+  try {
+    let text = fs.readFileSync(tmpPath, 'utf-8');
+    if (!text.trim()) { try { fs.unlinkSync(tmpPath); } catch {} return; }
+    fs.mkdirSync(EDIT_ARCHIVE_DIR, { recursive: true });
+    const dest = path.join(EDIT_ARCHIVE_DIR, path.basename(tmpPath));
+    try { fs.renameSync(tmpPath, dest); }
+    catch { fs.writeFileSync(dest, text, 'utf-8'); try { fs.unlinkSync(tmpPath); } catch {} }
+    pruneEditArchive();
+  } catch {
+    try { fs.unlinkSync(tmpPath); } catch {}
+  }
 }
 
 function showEditNotification(title, body) {
@@ -2984,7 +3035,7 @@ function openEditor(id) {
     clearTimeout(saveTimer);
     try { if (session.watcher) session.watcher.close(); } catch {}
     captureExternalEdit(session, { final: true });
-    try { fs.unlinkSync(tmpPath); } catch {}
+    archiveEditTemp(tmpPath);   // keep the raw text on disk as a recovery buffer
   });
 
   proc.unref();
@@ -3008,7 +3059,7 @@ function recoverOrphanedEdits() {
       const result = applyExternalTextEdit({ id: '', originalText: '', sourceGroups: [], newText: text, writeClipboard: false });
       if (result && result.changed) recovered++;
     }
-    try { fs.unlinkSync(p); } catch {}
+    archiveEditTemp(p);   // retain the orphan's raw text on disk too
   }
   if (recovered > 0) {
     showEditNotification(

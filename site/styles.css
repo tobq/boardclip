@@ -1,63 +1,36 @@
+@import url("shared/clipboard-tokens.css");
+
 :root {
-  color-scheme: light dark;
-  --page: #8b8b87;
-  --card: color-mix(in srgb, var(--page), #ffffff 16%);
-  --foreground: #101010;
-  --muted-page: #343432;
-  --border-page: color-mix(in srgb, var(--page), #000000 10%);
-  --border-strong: color-mix(in srgb, var(--page), #000000 18%);
-  --primary: #18181b;
-  --primary-hover: #27272a;
-  --primary-foreground: #fafafa;
+  color-scheme: dark;
+  /* Marketing page chrome maps onto the shared graphite primitives (from
+     clipboard-tokens.css) so the site and the app speak one visual language.
+     The demo popup themes itself independently via .bc-popup[data-theme]. */
+  --page: var(--g-900);
+  --card: var(--g-850);
+  --foreground: var(--g-100);
+  --muted-page: var(--g-400);
+  --border-page: var(--g-750);
+  --border-strong: var(--g-700);
+  --primary: var(--blue-500);
+  --primary-hover: var(--blue-400);
+  --primary-foreground: var(--g-950);
   --topbar-bg: transparent;
-  --badge-bg: color-mix(in srgb, var(--page), #ffffff 9%);
-  --tabs-bg: color-mix(in srgb, var(--page), #000000 5%);
-  --command-bg: #09090b;
-  --command-border: #27272a;
-  --command-button-bg: #18181b;
-  --command-button-border: #3f3f46;
-  --command-button-hover: #27272a;
-  --demo-shadow: rgba(24, 24, 27, .24);
-  --hint-bg: #ffffff;
-  --hint-foreground: #18181b;
-  --hint-shadow: rgba(24, 24, 27, .1);
-  --surface: #131313;
+  --badge-bg: var(--g-800);
+  --tabs-bg: var(--g-850);
+  --command-bg: var(--g-950);
+  --command-border: var(--g-750);
+  --command-button-bg: var(--g-800);
+  --command-button-border: var(--g-700);
+  --command-button-hover: var(--g-700);
+  --demo-shadow: rgba(0, 0, 0, .5);
+  --hint-bg: var(--g-100);
+  --hint-foreground: var(--g-950);
+  --hint-shadow: rgba(0, 0, 0, .4);
+  --radius: var(--r-3);
+  /* Page-chrome aliases (a few rules outside the demo popup reference these). */
   --ink: var(--foreground);
   --muted: var(--muted-page);
-  --dim: #4f5964;
-  --line: #252c34;
-  --line-soft: #171b20;
-  --accent: #8b5cf6;
-  --green: #10b981;
-  --pin: #f59e0b;
-  --blue: #7dd3fc;
-  --radius: 8px;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --page: #7c7c78;
-    --card: color-mix(in srgb, var(--page), #ffffff 16%);
-    --foreground: #101010;
-    --muted-page: #30302e;
-    --border-page: color-mix(in srgb, var(--page), #000000 10%);
-    --border-strong: color-mix(in srgb, var(--page), #000000 18%);
-    --primary: #18181b;
-    --primary-hover: #27272a;
-    --primary-foreground: #fafafa;
-    --topbar-bg: transparent;
-    --badge-bg: color-mix(in srgb, var(--page), #ffffff 9%);
-    --tabs-bg: color-mix(in srgb, var(--page), #000000 5%);
-    --command-bg: #09090b;
-    --command-border: #27272a;
-    --command-button-bg: #18181b;
-    --command-button-border: #3f3f46;
-    --command-button-hover: #27272a;
-    --demo-shadow: rgba(24, 24, 27, .3);
-    --hint-bg: #a2a29d;
-    --hint-foreground: #18181b;
-    --hint-shadow: rgba(24, 24, 27, .12);
-  }
+  --accent: var(--blue-500);
 }
 
 * { box-sizing: border-box; }
@@ -279,7 +252,7 @@ h2 { margin: 0; color: var(--foreground); font-size: clamp(20px, 2vw, 28px); let
   cursor: pointer;
 }
 .command-line:focus {
-  outline: 2px solid rgba(139, 92, 246, .35);
+  outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent);
   outline-offset: 2px;
 }
 .command-copy {
@@ -289,7 +262,7 @@ h2 { margin: 0; color: var(--foreground); font-size: clamp(20px, 2vw, 28px); let
   z-index: 1;
   height: 26px;
   padding: 0 9px;
-  color: #d7dee8;
+  color: var(--g-300);
   background: var(--command-button-bg);
   border: 0;
   border-radius: 6px;
@@ -346,11 +319,13 @@ code {
   display: flex;
   flex-direction: column;
   background: var(--surface);
-  border: 1px solid var(--line-strong);
-  border-radius: 10px;
-  box-shadow: 0 22px 60px var(--demo-shadow);
+  border-radius: var(--r-4);
+  box-shadow: 0 22px 60px var(--demo-shadow), 0 0 0 1px var(--line-strong);
   overflow: hidden;
 }
+/* Glass demo: --surface is translucent (from the token layer), so blurring the
+   marketing page behind the popup gives a representative frosted-glass preview. */
+.demo-window[data-surface="glass"] { backdrop-filter: var(--glass-blur); -webkit-backdrop-filter: var(--glass-blur); }
 /* Keep the popup's toast / dialogs / lightbox inside the demo window
    (the shared CSS positions them fixed for the real Electron window). */
 .demo-window .toast,
@@ -409,55 +384,6 @@ code {
   .demo-guide { display: none; }
 }
 
-/* The page stays neutral grey; the product demo mirrors the OS theme. */
-:root[data-system-theme="dark"] {
-  --page: #7c7c78;
-  --card: color-mix(in srgb, var(--page), #ffffff 16%);
-  --foreground: #101010;
-  --muted-page: #30302e;
-  --border-page: color-mix(in srgb, var(--page), #000000 10%);
-  --border-strong: color-mix(in srgb, var(--page), #000000 18%);
-  --primary: #18181b;
-  --primary-hover: #27272a;
-  --primary-foreground: #fafafa;
-  --topbar-bg: transparent;
-  --badge-bg: color-mix(in srgb, var(--page), #ffffff 9%);
-  --tabs-bg: color-mix(in srgb, var(--page), #000000 5%);
-  --command-bg: #09090b;
-  --command-border: #27272a;
-  --command-button-bg: #18181b;
-  --command-button-border: #3f3f46;
-  --command-button-hover: #27272a;
-  --demo-shadow: rgba(24, 24, 27, .3);
-  --hint-bg: #94948f;
-  --hint-foreground: #18181b;
-  --hint-shadow: rgba(24, 24, 27, .1);
-}
-
-:root[data-system-theme="light"] {
-  --page: #8b8b87;
-  --card: color-mix(in srgb, var(--page), #ffffff 16%);
-  --foreground: #101010;
-  --muted-page: #343432;
-  --border-page: color-mix(in srgb, var(--page), #000000 10%);
-  --border-strong: color-mix(in srgb, var(--page), #000000 18%);
-  --primary: #18181b;
-  --primary-hover: #27272a;
-  --primary-foreground: #fafafa;
-  --topbar-bg: transparent;
-  --badge-bg: color-mix(in srgb, var(--page), #ffffff 9%);
-  --tabs-bg: color-mix(in srgb, var(--page), #000000 5%);
-  --command-bg: #09090b;
-  --command-border: #27272a;
-  --command-button-bg: #18181b;
-  --command-button-border: #3f3f46;
-  --command-button-hover: #27272a;
-  --demo-shadow: rgba(24, 24, 27, .24);
-  --hint-bg: #a2a29d;
-  --hint-foreground: #18181b;
-  --hint-shadow: rgba(24, 24, 27, .1);
-}
-
 section {
   padding: 64px 0;
 }
@@ -469,7 +395,7 @@ section {
   gap: 12px;
 }
 article {
-  min-height: 144px;
+  min-height: 120px;
   padding: 18px;
   background: var(--card);
   border-radius: var(--radius);

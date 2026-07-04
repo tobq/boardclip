@@ -1,0 +1,199 @@
+/* ============================================================
+   BoardClip design tokens — the single source of truth for the
+   whole product (app popup, editor, conflict view, AI-approval
+   modal, and the marketing site). Imported first by
+   clipboard-popup.css (@import) and by site/styles.css so every
+   surface renders from ONE palette/scale and cannot drift.
+
+   Three tiers:
+     (a) PRIMITIVES on :root         — raw, theme-independent scales
+     (b) SEMANTIC on [data-theme]    — the names components reference
+     (c) VARIANT overrides           — data-surface/-accent/-density/
+                                       -corners/-borders swap a small,
+                                       disjoint set of semantic tokens
+   Cascade (later wins on equal specificity):
+     primitives -> theme -> surface -> accent -> density -> corners/borders
+   All variant attributes ride on the SAME element that carries
+   data-theme (:root on <html> for the app/editor/modal, .bc-popup
+   on the demo window), mirrored in every selector below.
+   ============================================================ */
+
+/* (a) PRIMITIVES — raw scales, identical in every theme */
+:root {
+  /* Graphite ramp (cool-tinted neutral), dark -> light */
+  --g-950: #0b0d10;
+  --g-900: #0f1216;
+  --g-850: #14171b;
+  --g-800: #1b1f24;
+  --g-750: #23272e;
+  --g-700: #2d323a;
+  --g-600: #3f4650;
+  --g-500: #6b7280;
+  --g-400: #868d97;
+  --g-300: #a8afb8;
+  --g-200: #cdd2d8;
+  --g-100: #e6e8eb;
+  --g-050: #f4f5f7;
+
+  /* Brand accent (cool blue) + audition accents */
+  --blue-600: #2563eb;
+  --blue-500: #3b82f6;
+  --blue-400: #60a5fa;
+  --blue-300: #93c5fd;
+  --teal-500: #14b8a6;
+  --teal-400: #2dd4bf;
+
+  /* Functional status colours — never used as the brand accent */
+  --green-500: #34d399;
+  --amber-500: #f59e0b;
+  --red-500: #f87171;
+
+  /* Spacing scale (4/8-based) */
+  --sp-1: 2px;  --sp-2: 4px;  --sp-3: 6px;  --sp-4: 8px;   --sp-5: 10px;
+  --sp-6: 12px; --sp-7: 14px; --sp-8: 16px; --sp-10: 20px; --sp-12: 24px;
+
+  /* Radius scale */
+  --r-1: 4px; --r-2: 6px; --r-3: 8px; --r-4: 10px; --r-pill: 999px;
+
+  /* Type scale */
+  --fs-1: 10px; --fs-2: 11px; --fs-3: 12px; --fs-4: 13px; --fs-5: 14px; --fs-6: 18px;
+  --lh-tight: 1.3; --lh-body: 1.5;
+
+  /* Icon sizes (Material Symbols) */
+  --icon-sm: 14px; --icon-md: 16px; --icon-lg: 18px;
+
+  /* Motion */
+  --dur: 130ms;
+  --ease: cubic-bezier(.2, .7, .2, 1);
+
+  /* Fonts + glass blur (theme-independent) */
+  --font-mono: "Cascadia Code", "Consolas", ui-monospace, monospace;
+  --glass-blur: blur(14px) saturate(1.3);
+}
+
+/* Theme-agnostic derived vars (reference semantic tokens set below) */
+:root[data-theme], .bc-popup[data-theme] {
+  --list-scrollbar-width: thin;
+  --list-scrollbar-size: 8px;
+  --list-scrollbar-thumb: var(--line-strong);
+  --list-scrollbar-thumb-hover: var(--text-dim);
+  --list-scrollbar-border: 2px solid var(--surface);
+}
+
+/* (b) SEMANTIC — the ONLY names components reference. Keep names
+   stable across the redesign; only the mapped VALUES change. */
+:root[data-theme="dark"], .bc-popup[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: var(--g-950);
+  --surface: var(--g-850);
+  --surface2: var(--g-800);
+  --input: var(--g-900);
+  --menu: var(--g-800);                   /* floating menus/dialogs — stays OPAQUE under glass */
+  --menu-hover: var(--g-700);             /* menu-item hover — a step lighter than --menu so it reads */
+  --menu-edge: rgba(255, 255, 255, .15);  /* soft 1px ring so menus separate from the backdrop */
+  --text: var(--g-100);
+  --text-dim: var(--g-400);
+  --line: var(--g-750);
+  --line-strong: var(--g-700);
+  --line-soft: var(--g-900);
+  --hover: color-mix(in srgb, var(--g-100) 6%, transparent);
+  --hover-strong: var(--g-800);
+  --accent: var(--blue-500);
+  --accent-hover: var(--blue-400);
+  --accent-bg: color-mix(in srgb, var(--accent) 16%, transparent);
+  --accent-bg-strong: color-mix(in srgb, var(--accent) 26%, transparent);
+  --active-fg: var(--g-950);              /* dark ink on blue = 5.7:1, beats white */
+  --shadow: rgba(0, 0, 0, .5);
+  --green: var(--green-500);
+  --green-bg: color-mix(in srgb, var(--green) 16%, transparent);
+  --red: var(--red-500);
+  --red-bg: color-mix(in srgb, var(--red) 14%, transparent);
+  --pin: var(--amber-500);
+  --mark-bg: color-mix(in srgb, var(--accent) 22%, transparent);
+  --mark-fg: var(--blue-300);
+  --glass-tint: rgba(15, 18, 22, .62);
+  --glass-border: color-mix(in srgb, var(--g-100) 10%, transparent);
+}
+:root[data-theme="light"], .bc-popup[data-theme="light"] {
+  color-scheme: light;
+  --bg: var(--g-050);
+  --surface: #ffffff;
+  --surface2: var(--g-050);
+  --input: #ffffff;
+  --menu: #ffffff;                        /* floating menus/dialogs — stays OPAQUE under glass */
+  --menu-hover: var(--g-100);             /* menu-item hover — light grey on the white menu */
+  --menu-edge: rgba(24, 27, 31, .16);     /* soft 1px ring (dark, since white is invisible on white) */
+  --text: var(--g-900);
+  --text-dim: var(--g-500);
+  --line: var(--g-100);
+  --line-strong: var(--g-200);
+  --line-soft: color-mix(in srgb, var(--g-900) 8%, transparent); /* was invisible on white */
+  --hover: color-mix(in srgb, var(--g-900) 5%, transparent);
+  --hover-strong: var(--g-100);
+  --accent: var(--blue-600);
+  --accent-hover: var(--blue-500);
+  --accent-bg: color-mix(in srgb, var(--accent) 12%, transparent);
+  --accent-bg-strong: color-mix(in srgb, var(--accent) 20%, transparent);
+  --active-fg: #ffffff;                   /* white on blue-600 = 5.1:1, beats black */
+  --shadow: rgba(24, 24, 27, .14);
+  --green: #059669;
+  --green-bg: color-mix(in srgb, var(--green) 16%, transparent);
+  --red: #dc2626;
+  --red-bg: color-mix(in srgb, var(--red) 12%, transparent);
+  --pin: #d97706;
+  --mark-bg: color-mix(in srgb, var(--accent) 16%, transparent);
+  --mark-fg: var(--blue-600);
+  --glass-tint: rgba(255, 255, 255, .55);
+  --glass-border: color-mix(in srgb, var(--g-900) 12%, transparent);
+}
+
+/* (c) VARIANT OVERRIDES — small, disjoint sets, authored after the
+   theme blocks so they win by source order at equal specificity. */
+
+/* Surface: glass makes card surfaces translucent so the OS acrylic/
+   vibrancy backdrop shows through. color-mix can't read the token it
+   is redefining, so these are authored per-theme (higher specificity
+   than the plain theme block, so they also win cleanly). "solid" is a
+   no-op that exists so the switcher can force glass off. */
+:root[data-theme="dark"][data-surface="glass"], .bc-popup[data-theme="dark"][data-surface="glass"] {
+  --surface: color-mix(in srgb, var(--g-850) 58%, transparent);
+  --surface2: color-mix(in srgb, var(--g-800) 58%, transparent);
+  --input: color-mix(in srgb, var(--g-900) 62%, transparent);
+}
+:root[data-theme="light"][data-surface="glass"], .bc-popup[data-theme="light"][data-surface="glass"] {
+  --surface: color-mix(in srgb, #ffffff 62%, transparent);
+  --surface2: color-mix(in srgb, var(--g-050) 62%, transparent);
+  --input: color-mix(in srgb, #ffffff 66%, transparent);
+}
+
+/* Accent: blue is the default (no block). accent-bg / mark-bg re-derive
+   automatically because they are color-mix over --accent. */
+:root[data-accent="teal"], .bc-popup[data-accent="teal"] {
+  --accent: var(--teal-500);
+  --accent-hover: var(--teal-400);
+  --mark-fg: var(--teal-400);
+}
+:root[data-accent="mono"], .bc-popup[data-accent="mono"] {
+  --accent: var(--g-300);
+  --accent-hover: var(--g-200);
+  --active-fg: var(--g-950);
+  --mark-fg: var(--g-100);
+}
+
+/* Density: compact shrinks the spacing + type scale values only. */
+:root[data-density="compact"], .bc-popup[data-density="compact"] {
+  --sp-4: 6px; --sp-5: 8px; --sp-6: 10px; --sp-7: 12px; --sp-8: 12px;
+  --fs-3: 11px; --fs-4: 12px; --fs-5: 13px;
+}
+
+/* Corners: sharp tightens the radius scale. */
+:root[data-corners="sharp"], .bc-popup[data-corners="sharp"] {
+  --r-1: 2px; --r-2: 3px; --r-3: 4px; --r-4: 4px;
+}
+
+/* Borders: borderless dissolves divider lines (keeps a faint strong line). */
+:root[data-borders="borderless"], .bc-popup[data-borders="borderless"] {
+  --line: transparent;
+  --line-soft: transparent;
+  --line-strong: color-mix(in srgb, var(--text) 8%, transparent);
+}

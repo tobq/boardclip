@@ -40,4 +40,15 @@ const ui = require('../site/shared/clipboard-ui-core');
   assert.strictEqual(ui.countWords('a\nb\tc  d'), 4, 'splits on any whitespace');
 }
 
+// Editor find jump: browsers can select a textarea range without scrolling it,
+// so Core.createEditor uses this pure line-based fallback to force the match
+// into view while keeping focus in the find input.
+{
+  const text = Array.from({ length: 120 }, (_, i) => `line ${i + 1}`).join('\n');
+  const idx = text.indexOf('line 90');
+  assert.strictEqual(ui.lineNumberAtIndex(text, idx), 89);
+  assert.strictEqual(ui.editorScrollTopForIndex(text, idx, 20, 100, 10), 1755);
+  assert.strictEqual(ui.editorScrollTopForIndex(text, 0, 20, 100, 10), 0);
+}
+
 console.log('editor find tests passed');

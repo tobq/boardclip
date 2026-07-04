@@ -4,15 +4,12 @@ const assert = require('assert');
 const model = require('../lib/clipboard-model');
 const core = require('../lib/mcp-core');
 
-// Assembled so no full provider-token literal sits in source (push protection).
-const GHP = 'ghp' + '_AbCdEf0123456789AbCdEf0123456789abcd';
-
-function textItem(text, { groups, number, ts = 1, shareAnyway } = {}) {
+function textItem(text, { groups, number, ts = 1, title } = {}) {
   const item = { type: 'text', text, ts };
+  if (title) item.title = title;
   if (groups || number != null) item.pin = {};
   if (groups) item.pin.groups = groups;
   if (number != null) item.pin.number = number;
-  if (shareAnyway) item.shareAnyway = true;
   model.ensureItemId(item);
   return item;
 }
@@ -20,10 +17,10 @@ function textItem(text, { groups, number, ts = 1, shareAnyway } = {}) {
 const settings = { groups: ['AI', 'work', 'private'], groups_shared_with_ai: ['work'] };
 
 const history = [
-  textItem('shared work clip body', { groups: ['work'], ts: 5 }),
+  textItem('shared work clip body', { groups: ['work'], ts: 5, title: 'Shared title' }),
   textItem('ai bucket clip', { groups: ['AI'], number: 1, ts: 4 }),
   textItem('private secret stuff', { groups: ['private'], ts: 3 }),
-  textItem(GHP, { groups: ['work'], ts: 2 }), // secret in shared group
+  textItem('second work clip', { groups: ['work'], ts: 2 }),
   textItem('totally ungrouped clip', { ts: 1 }),
 ];
 
@@ -39,6 +36,7 @@ const history = [
 {
   const v = core.clipView(history[0], { sharedSet: core.sharedGroupSet(settings) });
   assert.strictEqual(v.shared, true);
+  assert.strictEqual(v.title, 'Shared title');
   assert.strictEqual(v.preview, 'shared work clip body');
   assert.deepStrictEqual(v.groups, ['work']);
 }
@@ -53,20 +51,11 @@ const history = [
   assert.ok('ts' in v);
 }
 
-// Secret in a shared group -> withheld
+// A second shared clip in the same group -> preview present (opt-in = shared as-is)
 {
   const v = core.clipView(history[3], { sharedSet: core.sharedGroupSet(settings) });
   assert.strictEqual(v.shared, true);
-  assert.strictEqual(v.secret, true);
-  assert.strictEqual(v.preview, '[likely secret, hidden]');
-}
-
-// shareAnyway override exposes a would-be secret
-{
-  const item = textItem(GHP, { groups: ['work'], ts: 9, shareAnyway: true });
-  const v = core.clipView(item, { sharedSet: core.sharedGroupSet(settings) });
-  assert.strictEqual(v.secret, undefined);
-  assert.ok(v.preview.startsWith('ghp_'));
+  assert.strictEqual(v.preview, 'second work clip');
 }
 
 // --- buildContext ---
@@ -74,7 +63,6 @@ const history = [
   const ctx = core.buildContext(history, settings);
   assert.strictEqual(ctx.totalClips, 5);
   assert.strictEqual(ctx.sharedClips, 3); // work x2 + AI x1
-  assert.strictEqual(ctx.withheldSecrets, 1);
   assert.deepStrictEqual(ctx.numpadSlots[1].type, 'text');
   const work = ctx.groups.find(g => g.name === 'work');
   assert.strictEqual(work.shared, true);
@@ -124,26 +112,25 @@ const history = [
   assert.strictEqual(res.matches[0].preview, 'totally ungrouped clip');
 }
 {
-  // SECURITY: a withheld-secret clip in a shared group must NOT appear in search
-  // results (its presence would be a match-oracle for the hidden value).
-  const res = core.searchClips(history, settings, { query: 'ghp_AbCdEf', regex: false });
-  assert.strictEqual(res.matches.length, 0, 'secret clip not revealed via search');
-  assert.strictEqual(res.withheldSecretMatches, 1);
-  // Even a regex prefix-probe (the char-by-char reconstruction attack) reveals nothing.
-  const probe = core.searchClips(history, settings, { query: '^ghp_A', regex: true });
-  assert.strictEqual(probe.matches.length, 0);
-  assert.strictEqual(probe.withheldSecretMatches, 1);
-  // shareAnyway clears the withhold so it becomes a normal shared match.
-  const okItem = textItem(GHP, { groups: ['work'], ts: 7, shareAnyway: true });
-  const withOverride = core.searchClips([okItem], settings, { query: 'ghp_AbCdEf' });
-  assert.strictEqual(withOverride.matches.length, 1);
-  assert.strictEqual(withOverride.matches[0].secret, undefined);
+  const res = core.searchClips(history, settings, { query: 'Shared title' });
+  assert.strictEqual(res.matches.length, 1);
+  assert.strictEqual(res.matches[0].title, 'Shared title');
 }
-
+{
+  const privateTitle = textItem('body does not match', { groups: ['private'], title: 'Private Roadmap' });
+  const hidden = core.searchClips([privateTitle], settings, { query: 'Private Roadmap' });
+  assert.strictEqual(hidden.matches.length, 0);
+  assert.strictEqual(hidden.nonSharedMatches, 0, 'private title is not searchable before all-scope approval');
+  const approved = core.searchClips([privateTitle], settings, { query: 'Private Roadmap', scope: 'all' });
+  assert.strictEqual(approved.matches.length, 1);
+  assert.strictEqual(approved.matches[0].title, 'Private Roadmap');
+  assert.strictEqual(approved.matches[0].viaApproval, true);
+}
 // --- fullTextResult: shared-only group filtering, shared by helper + app ---
 {
-  const item = textItem('full body here', { groups: ['AI', 'private'], ts: 9 });
+  const item = textItem('full body here', { groups: ['AI', 'private'], ts: 9, title: 'Full title' });
   const r = core.fullTextResult(item, core.sharedGroupSet(settings));
+  assert.strictEqual(r.title, 'Full title');
   assert.strictEqual(r.text, 'full body here');
   assert.deepStrictEqual(r.groups, ['AI']); // private filtered out
   assert.strictEqual(r.type, 'text');
@@ -153,7 +140,7 @@ const history = [
 {
   assert.strictEqual(core.resolveForRead(history, settings, model.itemKey(history[0])).reason, 'ok');
   assert.strictEqual(core.resolveForRead(history, settings, model.itemKey(history[2])).reason, 'not_shared');
-  assert.strictEqual(core.resolveForRead(history, settings, model.itemKey(history[3])).reason, 'secret_hidden');
+  assert.strictEqual(core.resolveForRead(history, settings, model.itemKey(history[3])).reason, 'ok');
   assert.strictEqual(core.resolveForRead(history, settings, 'txt:nope').reason, 'not_found');
 }
 

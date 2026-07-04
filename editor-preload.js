@@ -13,8 +13,19 @@ contextBridge.exposeInMainWorld('editorApi', {
       callback(init || {});
     });
   },
-  draft: (text) => ipcRenderer.send('editor-draft', sessionId, text),
-  commit: (text) => ipcRenderer.send('editor-commit', sessionId, text),
+  onFind: (callback) => {
+    const listener = (_, find) => callback(find || {});
+    ipcRenderer.on('editor-find', listener);
+    return () => ipcRenderer.removeListener('editor-find', listener);
+  },
+  onConflict: (callback) => {
+    const listener = (_, conflict) => callback(conflict || {});
+    ipcRenderer.on('editor-conflict', listener);
+    return () => ipcRenderer.removeListener('editor-conflict', listener);
+  },
+  draft: (payload) => ipcRenderer.send('editor-draft', sessionId, payload),
+  commit: (payload) => ipcRenderer.send('editor-commit', sessionId, payload),
+  resolveConflict: (payload) => ipcRenderer.invoke('resolve-conflict', payload),
   close: () => ipcRenderer.send('editor-close', sessionId),
   getColorScheme: () => ipcRenderer.invoke('get-color-scheme'),
   onColorSchemeChanged: (callback) => {

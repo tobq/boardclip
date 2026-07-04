@@ -91,16 +91,15 @@ Otherwise the key passes through so normal numpad typing works. Main thread call
 ## AI Access (local MCP server)
 
 - **Shape:** `mcp/boardclip-mcp.js` is a stdio MCP server (`@modelcontextprotocol/sdk` v1.x) spawned by AI clients. It reads shared clips straight from the JSON files (works app-closed); anything beyond the allowlist / any mutation / clipboard-write forwards to the running app over a **named pipe / Unix socket** control channel (`lib/control-server.js` in main.js, `lib/control-client.js` in the helper). NOT HTTP, no port. The helper never writes data files -> no races.
-- **Allowlist by curation:** a clip is AI-visible iff it's in a group listed in `settings.groups_shared_with_ai` (the auto-created **"AI"** group is always shared). Non-shared = metadata only. `lib/mcp-core.js` is the PURE boundary (whitelist + secret filtering + shaping), reused by both helper and app. `lib/secret-guard.js` withholds likely-secrets even inside shared groups (`shareAnyway` per-item override).
+- **Allowlist by curation (fully opt-in):** a clip is AI-visible iff it's in a group listed in `settings.groups_shared_with_ai` (the auto-created **"AI"** group is always shared). Non-shared = metadata only. `lib/mcp-core.js` is the PURE boundary (whitelist + shaping), reused by both helper and app. There is deliberately NO "looks like a secret" auto-withholding — group sharing is the single opt-in gate, so a clip the user put in a shared group is shared as-is. (A `secret-guard` heuristic layer existed and was removed as redundant/annoying; don't reintroduce it.)
 - **Gating:** `mcpNeedsApproval` -> delete/clipboard-write/paste + beyond-allowlist reads ALWAYS prompt; pin/group/numpad/add are free on *shared* clips. Approval modal = a native frameless BrowserWindow (`mcp-approval.html`, NOT a browser) with once/session/always-per-tool + deny-by-default countdown; `ai_always_allow` persists grants. Modal auto-sizes via the `approval-resize` IPC.
 - **Discovery:** app writes `~/.boardclip/mcp.json` `{dataDir,pipePath,secret,command,args,env,pid}` on launch when enabled; helper reads it (falls back to default userData for read-only). Registered command is **electron-as-node** (`process.execPath` + `ELECTRON_RUN_AS_NODE=1` + entry path) - works for source + packaged.
 - **Reuse, don't duplicate:** the `apply*` functions in main.js (applyPinToggle/applyGroupAssign/applyDeleteItem/...) are the SINGLE mutation path for BOTH the IPC handlers and the MCP dispatch. HMAC auth is `lib/hmac-auth.js`, shared by P2P + the control channel. DEFAULT_SETTINGS adds `ai_access_enabled/groups_shared_with_ai/ai_always_allow/ai_approval_timeout_sec/mcp_secret` (mcp_secret + the 3 ai_* prefs are excluded from sync in `remoteSettingsPayload`; groups_shared_with_ai DOES sync).
 - **Installers:** `lib/mcp-installers.js` - one shared JSON-map adapter factory covers most clients; Codex (TOML), VS Code (`servers`+type), Zed (nested command) are variants. Idempotent + non-clobbering. Settings shows detected-only + a "More" expander.
 - **Testability seams:** `BOARDCLIP_DATA_DIR` overrides the data dir; `BOARDCLIP_MCP_DISCOVERY` overrides the discovery-file path. Use a fake HOME (+ USERPROFILE/APPDATA/XDG_CONFIG_HOME) to test the registrar without touching real client configs. `ensureAiGroupShared()` must run on BOTH enable and launch (idempotent) so a pre-enabled restart still has the AI group.
-- **Secret-boundary invariants (don't regress):** (1) the helper reads UNHYDRATED history, so for large (>64KB) externalized clips `item.text` on disk is only the 1024-char preview - `get_clip` MUST hydrate then re-scan the full body with secret-guard before returning, else a secret past char 1024 leaks. (2) `searchClips` must withhold secret-flagged shared clips from results entirely (their mere presence is a match-oracle that reconstructs the value via regex probes). (3) only SHARED group names are ever exposed (clipView/buildContext filter to `groups_shared_with_ai`); private group names never leave the boundary. (4) `mcpHandleRequest` re-checks `ai_access_enabled` AFTER the approval await, not just before.
+- **Boundary invariants (don't regress):** (1) only SHARED group names are ever exposed (clipView/buildContext filter to `groups_shared_with_ai`); private group names never leave the boundary. (2) `mcpHandleRequest` re-checks `ai_access_enabled` AFTER the approval await, not just before.
 - **Per-user control channel:** the pipe (`\\.\pipe\boardclip-mcp-<user>`) / socket is per-user. Production is safe because the single-instance lock allows one BoardClip per user. BUT test instances launched with distinct `--user-data-dir` bypass that lock and will collide on EADDRINUSE + pile up as zombies (npx/electron children don't die from `timeout`/killing the wrapper PID) - always kill leftover `electron.exe` whose commandline contains your temp data-dir, and never kill the ones under `%APPDATA%/BoardClip` (the user's real app).
 - **Continue is intentionally NOT installed** - it uses a YAML `mcpServers:` list, not the shared JSON-map adapter. Add a dedicated YAML adapter to support it for real.
-- **secret-guard test fixtures trip GitHub push protection.** The detector tests necessarily contain secret-shaped strings (Slack `xoxb-`, `ghp_`, `sk-`, `AIza`, JWT, etc.); a full provider-token literal in the source blocks `git push` (GH013). Assemble them from split parts at runtime (`const j=(...p)=>p.join(''); j('ghp','_AbCd...')`) so no contiguous token literal sits in the committed file - the runtime value (and the test) is unchanged.
 
 ## Website Demo + Single-Source UI
 
@@ -125,10 +124,63 @@ clear-all). All popup CSS + theme variables live in `site/shared/clipboard-popup
   and keep popup CSS/theme vars only in the shared sheet. Run `npm test`.
 - `applyGroupAssign` (main.js) TOGGLES group membership; the per-clip group chip
   is therefore add-or-remove on both sides (no separate unassign endpoint).
+- **Editor find highlight** (`createEditor` in `clipboard-ui-core.js`): matches are painted
+  by a backdrop `<div class="bc-editor-hl">` that mirrors the textarea's text (transparent
+  text + `<mark>` spans) behind a transparent textarea — the standard "highlight in a
+  textarea" technique (a textarea can't hold markup; the CSS Custom Highlight API doesn't
+  work on textareas). The textarea forces `overflow-y: scroll` (always-on 10px gutter) so
+  both layers wrap at an identical width. Escape all mirrored text with `escapeHtml` (XSS).
+  **Scroll-to-match MUST measure the current `mark.offsetTop`, NOT a char-index→line-count
+  estimate** (`editorScrollTopForIndex` counts only `\n`, so it lands short on soft-wrapped
+  lines — the "highlights but doesn't scroll" bug). QA the editor with a doc of LONG WRAPPING
+  lines, not `\n`-separated short lines, or the wrap bug hides.
 - Theme: `settings.theme_mode` ('system'|'light'|'dark') persists the popup theme;
   whitelisted in the `save-settings` IPC handler + `DEFAULT_SETTINGS`; applied via
   `Core.applyTheme`. The Theme control lives in the shared settings body, so it
   shows in BOTH the app and the demo.
+
+## Design tokens, appearance variants, native glass
+
+- **ONE token layer** in `site/shared/clipboard-tokens.css`, `@import`ed as the
+  FIRST rule of `clipboard-popup.css` (relative path works for both app and site)
+  and by `site/styles.css`; also linked directly by `mcp-approval.html`. Three
+  tiers: (a) PRIMITIVES on `:root` (graphite `--g-050..--g-950`, `--blue-*`,
+  `--teal-*`, functional `--green-500/--amber-500/--red-500`, `--sp-*`, `--r-*`,
+  `--fs-*`, `--icon-sm/md/lg`, `--dur`+`--ease`); (b) SEMANTIC on `[data-theme]`
+  keeping the EXACT old names (`--bg/--surface/--text/--accent/--line/...`) so
+  component CSS needed only value swaps, no renames; `--accent-bg`/`--mark-bg`
+  derive via `color-mix` over `--accent`. Palette is **graphite + cool blue** —
+  the old purple (`#a78bfa/#7c3aed/#8b5cf6`) is gone (a `ui-tokens.test.js` guard
+  fails if it returns). Dark `--active-fg` is DARK ink (`--g-950`) because black
+  on `--blue-500` (5.7:1) beats white (3.7:1); light uses white on `--blue-600`.
+- **Appearance variants** are `data-*` attributes on the same root that carries
+  `data-theme`, swapping a small disjoint token set (see the tier-(c) blocks):
+  `data-surface` (glass/solid), `data-accent` (blue/teal/mono), `data-density`
+  (normal/compact), `data-corners` (soft/sharp), `data-borders`
+  (bordered/borderless). Applied by shared `Core.applyVariants(root, opts)`;
+  audited live via `Core.createVariantSwitcher` (reuses `.seg`/`.seg-btn`). The
+  app renders **Surface as a real user setting** + the other axes ONLY when
+  `runtime_info.debug_variants` (`!app.isPackaged || BOARDCLIP_DEBUG_VARIANTS`);
+  the demo renders all axes always-on, persisted to `localStorage`. Ship default
+  is graphite+blue+glass-where-supported+normal+soft. New settings keys
+  (`surface_style` + `accent_variant/ui_density/ui_corners/ui_borders`) are
+  per-machine — whitelisted in `save-settings`, deleted in `remoteSettingsPayload`.
+- **Native glass = popup pane ONLY** (editor/conflict/approval stay solid — better
+  for a text editor + a security prompt). Centralized in main.js
+  `glassSupport()` (macOS→vibrancy; Win build ≥22000→acrylic; else none),
+  `resolvedSurfaceStyle()`, `popupSurfaceOptions()` (spread into `createPopup`),
+  and `applySurfaceToPopup()` (live toggle, no window recreate: mac keeps
+  `transparent:true` always + `setVibrancy`, Win uses `setBackgroundMaterial`).
+  `notifyColorSchemeChanged` must NOT stamp an opaque bg while glass is on. The
+  renderer scrim (`:root[data-surface="glass"] body::before` with `--glass-tint`
+  + `backdrop-filter`) is in `index.html`; the OS provides the real blur behind a
+  transparent window (CSS `backdrop-filter` can't blur the desktop). Resolved
+  surface reaches the renderer via `runtime_info.surface_style` + the
+  `surface-changed` broadcast (`preload.onSurfaceChanged`); editor/conflict get
+  the non-surface axes via `appearanceVariantPayload()` on `editor-init`; the
+  approval modal via `approval-settings` (`mcp-approval-preload.onSettings`).
+- `.mi.sm/.mi.lg/.mi.mid` utilities replaced the ~10 inline icon `style=`s; the
+  `ui-tokens.test.js` guard fails if an inline `style="font-size` reappears.
 
 ## Deploy (boardclip.app)
 
@@ -161,6 +213,13 @@ workflow on a release/tag.
 
 ## Debugging
 
+- **The user's live app runs from `C:\Users\Tobi\AppData\Local\BoardClip`** (a separate
+  clone of this repo), NOT this dev checkout. Editing files here does nothing to the
+  running app until the change is mirrored there (copy the changed files, or commit+push
+  and run its `update.bat`). Renderer files (editor.html, site/shared/*) are loaded fresh
+  per window — a newly opened popup/editor window picks up mirrored changes without an app
+  restart, but ALREADY-OPEN windows keep the old code until closed and reopened. main.js
+  changes always need a full restart.
 - Run `npx electron .` directly (not via start.sh) to see stdout/stderr
 - Main process errors go to terminal, renderer errors to DevTools (Cmd+Option+I)
 - To test the app's renderer (`index.html`) without Electron, serve the repo root

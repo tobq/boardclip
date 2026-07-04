@@ -6,6 +6,7 @@ const os = require('os');
 const path = require('path');
 const model = require('../lib/clipboard-model');
 const ui = require('../site/shared/clipboard-ui-core');
+const conflictModel = require('../lib/conflict-model');
 const autoUpdate = require('../lib/auto-update');
 const syncPaths = require('../lib/sync-paths');
 const clipboardCapture = require('../lib/clipboard-capture');
@@ -365,32 +366,98 @@ function text(text, extra = {}) {
 }
 
 {
+  const item = text('body', { ts: 10, updatedAt: 10000, title: 'Old title', titleUpdatedAt: 10000 });
+  const history = [item];
+  const result = model.applyTextEdit(history, {
+    id: item.id,
+    originalText: 'body',
+    originalTitle: 'Old title',
+    newText: 'body',
+    newTitle: 'New title',
+    now: 50000,
+  });
+  assert.strictEqual(result.changed, true);
+  assert.strictEqual(result.reason, 'updated');
+  assert.strictEqual(history[0].text, 'body');
+  assert.strictEqual(model.titleOf(history[0]), 'New title');
+  assert.strictEqual(model.itemKey(history[0]), item.id, 'title metadata does not affect text identity');
+}
+
+{
+  const item = text('body', { ts: 10, updatedAt: 10000, title: 'Keep me', titleUpdatedAt: 10000 });
+  const history = [item];
+  const result = model.applyTextEdit(history, {
+    id: item.id,
+    originalText: 'body',
+    newText: 'body edited',
+    now: 51000,
+  });
+  assert.strictEqual(result.changed, true);
+  assert.strictEqual(model.titleOf(history[0]), 'Keep me', 'body-only edits preserve existing title metadata');
+}
+
+{
+  const local = text('same body', { ts: 10, updatedAt: 10000, title: 'Local title', titleUpdatedAt: 30000 });
+  const remote = text('same body', { ts: 20, updatedAt: 20000, title: 'Remote title', titleUpdatedAt: 20000 });
+  const merged = model.mergeHistories([local], [remote], {});
+  assert.strictEqual(merged.length, 1);
+  assert.strictEqual(model.titleOf(merged[0]), 'Local title', 'newer title metadata wins without changing body identity');
+  assert.strictEqual(model.titleConflict(local, remote), true);
+}
+
+{
+  assert.deepStrictEqual(ui.sourceGroupsFromFilters(new Set(['work/api', '__pinned__'])), ['work/api']);
+}
+
+{
+  const record = conflictModel.createConflictRecord({ kind: 'title', left: { text: 'a' }, right: { text: 'b' } }, { now: 1000 });
+  const stateA = conflictModel.normalizeConflictState({ records: [record] });
+  const stateB = conflictModel.removeConflictRecord(stateA, record.id, 2000);
+  const recurring = conflictModel.createConflictRecord({ kind: 'title', left: { text: 'a' }, right: { text: 'b' } }, { now: 3000 });
+  assert.strictEqual(recurring.id, record.id, 'same conflict content gets stable id');
+  const merged = conflictModel.mergeConflictStates({ records: [recurring] }, stateB, 4000);
+  assert.strictEqual(merged.records.length, 0, 'conflict tombstone removes old unresolved record');
+  assert.strictEqual(merged.tombstones.length, 1);
+}
+
+{
   const base = [
     { id: 'a', type: 'text', text: 'alpha invoice', ts: 10, pin: { groups: ['work'] } },
     { id: 'b', type: 'text', text: 'beta macro', ts: 20, pin: { number: 2, groups: ['code'] } },
+    { id: 'c', type: 'text', title: 'API plan', text: 'gamma note', ts: 30, pin: { groups: ['work/api'] } },
   ];
   assert.deepStrictEqual(ui.groupsOf({ id: 'legacy', type: 'text', text: 'legacy', ts: 1, labels: ['work'], pin: null }), []);
   assert.deepStrictEqual(ui.groupsOf(base[0]), model.groupsOf(base[0]));
   assert.deepStrictEqual(ui.filterItems(base, { filters: new Set(['__numbered__']), query: '', regex: false }).map(i => i.id), ['b']);
   assert.deepStrictEqual(ui.BUILTIN_FILTERS.map(f => f.id), ['__pinned__', '__numbered__', '__images__']);
+  assert.strictEqual(ui.builtinFilterTitle({ id: '__pinned__', label: 'Pinned', count: 2 }), '2 pinned items');
   assert.deepStrictEqual(ui.builtinFilters(base, new Set(['__numbered__'])).map(f => [f.id, f.count, f.active]), [
-    ['__pinned__', 2, false],
+    ['__pinned__', 3, false],
     ['__numbered__', 1, true],
   ]);
-  const filterBar = ui.renderFilterBar({ items: base, groups: ['code'], activeFilters: new Set(['__numbered__']), query: '' });
+  const filterBar = ui.renderFilterBar({ items: base, groups: ['code', 'work/api'], activeFilters: new Set(['__numbered__']), query: '' });
   assert(filterBar.includes('data-filter="__numbered__"'));
   assert(filterBar.includes('data-group="code"'));
+  assert(filterBar.includes('data-group="work"'));
+  assert(filterBar.includes('data-group="work/api"'));
+  assert(filterBar.includes('class="tag-submenu"'));
+  assert(!filterBar.includes('data-action="toggle-tag-parent"'));
   assert(!filterBar.includes('data-filter="image"'));
   assert(!filterBar.includes('class="chip'));
   const clipItem = ui.renderClipItem(base[1], { imageSrc: () => '' });
   assert(clipItem.includes('class="item has-pin"'));
   assert(clipItem.includes('class="numpad-tag">#2</span>'));
   assert(clipItem.includes('class="group-tag">code</span>'));
-  const picker = ui.renderItemPicker(base[1], { items: base, groups: ['code', 'work'] });
+  const picker = ui.renderItemPicker(base[1], { items: base, groups: ['code', 'work/api'] });
   assert(picker.includes('class="np-btn current" data-n="2"'));
-  assert(picker.includes('class="gp-btn assigned" data-group="code"'));
+  assert(/class="gp-btn assigned[^"]*" data-group="code"/.test(picker));
+  assert(picker.includes('data-group="work/api"'));
+  assert(picker.includes('class="tag-submenu"'));
   assert(picker.includes('data-action="add-group"'));
   assert.deepStrictEqual(ui.filterItems(base, { filters: new Set(['work']), query: 'invoice', regex: false }).map(i => i.id), ['a']);
+  assert.deepStrictEqual(ui.filterItems(base, { filters: new Set(['work']), query: '', regex: false }).map(i => i.id).sort(), ['a', 'c']);
+  assert.deepStrictEqual(ui.filterItems(base, { excludedFilters: new Set(['work']), query: '', regex: false }).map(i => i.id), ['b']);
+  assert.deepStrictEqual(ui.filterItems(base, { filters: new Set(), query: 'api plan', regex: false }).map(i => i.id), ['c']);
   assert.deepStrictEqual(ui.filterItemIndexes(base, { filters: new Set(['__numbered__', 'code']), query: 'macro', regex: false }), [1]);
   assert.deepStrictEqual(ui.filterItemIndexes(base, { filters: new Set(['__numbered__', 'work']), query: '', regex: false }), []);
   assert.deepStrictEqual(ui.filterItems(base, { filters: new Set(['code']), query: 'text', regex: false }).map(i => i.id), ['b']);
@@ -398,17 +465,17 @@ function text(text, extra = {}) {
   assert.strictEqual(ui.hasActiveFilters(filterState), false);
   assert.strictEqual(ui.applyFilterIntent(filterState, 'work', 'include'), true);
   assert.deepStrictEqual([...filterState.filters], ['work']);
-  assert.deepStrictEqual(ui.filterItems(base, { ...filterState, query: '', regex: false }).map(i => i.id), ['a']);
+  assert.deepStrictEqual(ui.filterItems(base, { ...filterState, query: '', regex: false }).map(i => i.id).sort(), ['a', 'c']);
   assert.strictEqual(ui.applyFilterIntent(filterState, 'code', 'exclude'), true);
   assert.deepStrictEqual([...filterState.excludedFilters], ['code']);
-  assert.deepStrictEqual(ui.filterItems(base, { ...filterState, query: '', regex: false }).map(i => i.id), ['a']);
+  assert.deepStrictEqual(ui.filterItems(base, { ...filterState, query: '', regex: false }).map(i => i.id).sort(), ['a', 'c']);
   assert.strictEqual(ui.applyFilterIntent(filterState, 'work', 'exclude'), true);
   assert.deepStrictEqual([...filterState.filters], []);
   assert.deepStrictEqual([...filterState.excludedFilters].sort(), ['code', 'work']);
   assert.deepStrictEqual(ui.filterItems(base, { ...filterState, query: '', regex: false }).map(i => i.id), []);
   assert.strictEqual(ui.applyFilterIntent(filterState, 'work', 'include'), true);
   assert.deepStrictEqual([...filterState.excludedFilters], ['code']);
-  assert.deepStrictEqual(ui.filterItems(base, { ...filterState, query: '', regex: false }).map(i => i.id), ['a']);
+  assert.deepStrictEqual(ui.filterItems(base, { ...filterState, query: '', regex: false }).map(i => i.id).sort(), ['a', 'c']);
   assert.strictEqual(ui.applyFilterIntent(filterState, 'code', 'exclude'), true);
   assert.strictEqual(ui.hasActiveFilters(filterState), false);
   assert.strictEqual(ui.itemCountLabel(2, 1, { excludedFilters: new Set(['code']) }), '1 of 2 items');

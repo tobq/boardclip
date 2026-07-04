@@ -228,7 +228,7 @@
       }
     };
     const DEMO_SHOTS = ["/assets/demo-shot-waveform.svg", "/assets/demo-shot-dashboard.svg", "/assets/demo-shot-architecture.svg"];
-    let labels = ["work", "code", "support", "ideas", "legal", "sales", "design", "finance", "ops", "personal", "release", "meeting", "writing", "bug", "social"];
+    let labels = ["work", "work/api", "work/release", "code", "code/review", "support", "ideas", "legal", "sales", "design", "finance", "ops", "personal", "release", "meeting", "writing", "bug", "social"];
     const numpadSlots = new Map([
       [0, 1],
       [5, 4],
@@ -276,6 +276,7 @@
       const hasPin = index % 19 === 0 || index < 2 || Object.keys(pin).length > 0;
       return {
         id: `demo:${index + 1}`,
+        title: !isImage && index % 9 === 0 ? ["Release note", "Support reply", "API reminder"][index % 3] : undefined,
         text: isImage && !/png|screenshot|image/i.test(text) ? `Image clip: product-mockup-${String(index + 1).padStart(2, "0")}.png` : text,
         imageSrc: example.image || (isImage ? DEMO_SHOTS[index % DEMO_SHOTS.length] : null),
         width: isImage ? 150 : undefined,
@@ -383,15 +384,14 @@
       renderFilterChips();
       renderDemoSettings();
       const nmap = Core.numpadMap(clips);
-      const isExpanded = (clip) => controller.isExpanded(Core.itemId(clip));
       clipList.innerHTML = visible.map((clip, index) => Core.renderClipItem(clip, {
-        expanded: isExpanded(clip),
         selected: index === demoSelectedIdx,
         imageSrc: item => item.imageSrc,
-        previewText: item => isExpanded(item) ? (item.text || "") : Core.collapsedPreviewText(item.text || "", state.query, state.regex),
+        previewText: item => Core.collapsedPreviewText(item.text || "", state.query, state.regex),
         highlight: text => Core.highlight(text, state.query, state.regex),
+        highlightTitle: text => Core.highlight(text, state.query, state.regex),
         pickerHtml: Core.renderItemPicker(clip, { items: clips, groups: labels, numpadMap: nmap }),
-        actionsHtml: Core.renderClipActions(clip, { expanded: isExpanded(clip) }),
+        actionsHtml: Core.renderClipActions(clip),
       })).join("") || `<div class="empty">No clips found. Try a different search.</div>`;
       scheduleRelativeTimeRefresh();
     }
@@ -401,6 +401,7 @@
       const nmap = Core.numpadMap(clips);
       const bytes = clips.reduce((sum, clip) => sum + (clip.text || "").length, 0);
       demoUsage.textContent = `Current: ${clips.length} items, ${(bytes / 1048576).toFixed(1)} MB`;
+      document.getElementById("conflictsSection").classList.add("hidden");
       demoNumpadSlots.innerHTML = Array.from({ length: 9 }, (_, i) => {
         const n = i + 1;
         const id = nmap[n];
@@ -545,7 +546,7 @@
       const ctx = canvas.getContext("2d");
       const gradient = ctx.createLinearGradient(0, 0, canvas.width, canvas.height);
       gradient.addColorStop(0, "#111827");
-      gradient.addColorStop(1, "#7c3aed");
+      gradient.addColorStop(1, "#2563eb");
       ctx.fillStyle = gradient;
       ctx.fillRect(0, 0, canvas.width, canvas.height);
 
@@ -748,7 +749,7 @@
           return { ...clip, pin: Object.keys(pin).length ? pin : null };
         });
       },
-      toggleGroup: (id, group) => { clips = Core.toggleGroup(clips, id, group); }, // matches the app's applyGroupAssign (toggles)
+      toggleGroup: (id, group) => { if (!labels.includes(group)) labels.push(group); clips = Core.toggleGroup(clips, id, group); }, // matches the app's applyGroupAssign (toggles)
       createGroup: (name) => { if (!labels.includes(name)) labels.push(name); },
       deleteGroup: (group) => { labels = labels.filter((l) => l !== group); state.filters.delete(group); state.excludedFilters.delete(group); stripGroupFromClips(group); },
       deleteClip: (id) => { clips = Core.deleteItem(clips, id); },
@@ -769,7 +770,8 @@
         showToast("Copied");
         renderClips();
       },
-      editClip: (id) => openDemoEditor(id),
+      editClip: (id, _itemEl, options) => openDemoEditor(id, { ...(state.query ? { find: state.query, regex: state.regex } : {}), ...(options || {}) }),
+      setClipTitle: (id, title) => { const t = (title || "").trim(); clips = clips.map((item) => Core.itemId(item) === id ? { ...item, title: t || undefined, titleUpdatedAt: Date.now() } : item); },
       openImage: (item) => { if (item && item.imageSrc) openLightbox(item.imageSrc); },
       saveImage: (item) => {
         if (!item || !item.imageSrc) return null;
@@ -848,23 +850,41 @@
       demoEditor = null;
       search.focus();
     }
-    function openDemoEditor(id) {
+    function openDemoEditor(id, options = {}) {
       const clip = id != null ? clips.find((item) => Core.itemId(item) === id) : null;
       if (id != null && (!clip || clip.type === "image")) return;
       let currentId = id;
+      let currentText = clip ? (clip.text || "") : "";
+      let currentTitle = clip ? Core.titleOf(clip) : "";
+      const sourceGroups = id == null ? Core.sourceGroupsFromFilters(state.filters) : [];
+      sourceGroups.forEach((group) => { if (!labels.includes(group)) labels.push(group); });
       demoEditorOverlay.innerHTML = "";
       demoEditor = Core.createEditor({
-        initialText: clip ? (clip.text || "") : "",
+        initialText: currentText,
+        initialTitle: currentTitle,
+        initialFind: options.find || "",
+        initialFindRegex: !!options.regex,
+        initialFocusTitle: !!options.focusTitle,
         title: clip ? "Edit clip" : "New clip",
-        onCommit: (text) => {
+        onCommit: (payload) => {
+          const nextText = String(payload && payload.text || "");
+          const nextTitle = Core.titleOf({ title: payload && payload.title });
+          if (nextText === currentText && nextTitle === currentTitle) return;
           if (currentId != null) {
-            clips = clips.map((item) => Core.itemId(item) === currentId ? { ...item, text } : item);
+            clips = clips.map((item) => Core.itemId(item) === currentId ? { ...item, text: nextText, title: nextTitle || undefined, titleUpdatedAt: Date.now() } : item);
             clips = Core.touchItem(clips, currentId);
-          } else if (text.trim()) {
-            clips = Core.addClipboardText(clips, text);
-            const created = clips.find((item) => item.text === text);
+          } else if (nextText.trim()) {
+            clips = Core.addClipboardText(clips, nextText);
+            const created = clips.find((item) => item.text === nextText);
+            if (created) {
+              created.title = nextTitle || undefined;
+              created.titleUpdatedAt = Date.now();
+              sourceGroups.forEach((group) => { if (!Core.groupsOf(created).includes(group)) clips = Core.toggleGroup(clips, Core.itemId(created), group); });
+            }
             if (created) currentId = Core.itemId(created);
           }
+          currentText = nextText;
+          currentTitle = nextTitle;
           renderClips();
         },
         onClose: closeDemoEditor,
@@ -920,6 +940,25 @@
       demoThemeMode = btn.dataset.themeMode;
       applyDemoTheme();
     });
+    // Appearance variants playground: always-on in the demo, all axes, persisted
+    // locally. Same shared Core.createVariantSwitcher the app uses.
+    const DEMO_VARIANT_KEY = "boardclip-demo-variants";
+    const demoVariantDefaults = { surfaceStyle: "solid", accentVariant: "blue", uiDensity: "normal", uiCorners: "soft", uiBorders: "bordered" };
+    let demoVariants = { ...demoVariantDefaults };
+    try { demoVariants = { ...demoVariants, ...(JSON.parse(localStorage.getItem(DEMO_VARIANT_KEY) || "{}") || {}) }; } catch {}
+    Core.applyVariants(demoWindowEl, demoVariants);
+    const variantHost = document.getElementById("appearanceVariants");
+    if (variantHost) {
+      const switcher = Core.createVariantSwitcher({
+        root: demoWindowEl,
+        initial: demoVariants,
+        onChange: (next) => {
+          demoVariants = next;
+          try { localStorage.setItem(DEMO_VARIANT_KEY, JSON.stringify(next)); } catch {}
+        },
+      });
+      variantHost.appendChild(switcher.el);
+    }
     function syncTheme() {
       document.documentElement.dataset.systemTheme = themeQuery.matches ? "dark" : "light";
       applyDemoTheme();

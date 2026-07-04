@@ -10,7 +10,18 @@
      shared clipboard-popup.css + Core.createEditor (single source with demo). */
   * { margin:0; padding:0; box-sizing:border-box; }
   html, body { height:100%; overflow:hidden; }
-  body { font-family:'Segoe UI',system-ui,sans-serif; background:var(--bg); color:var(--text); }
+  body { font-family:system-ui,'Segoe UI',sans-serif; background:var(--bg); color:var(--text); }
+  /* Frosted glass, same as the popup: the OS blurs behind a transparent window;
+     this scrim just tints for legibility. */
+  :root[data-surface="glass"] body { background:transparent; }
+  :root[data-surface="glass"] body::before {
+    content:""; position:fixed; inset:0; z-index:-1; background:var(--glass-tint);
+    backdrop-filter:var(--glass-blur); -webkit-backdrop-filter:var(--glass-blur);
+  }
+  @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+    :root[data-surface="glass"] body { background:var(--surface); }
+    :root[data-surface="glass"] body::before { display:none; }
+  }
   #editorHost { height:100%; }
   ::-webkit-scrollbar { width:10px; }
   ::-webkit-scrollbar-thumb { background:var(--line-strong); border-radius:5px; }
@@ -30,20 +41,55 @@ if (window.editorApi.getColorScheme) window.editorApi.getColorScheme().then((s) 
 if (window.editorApi.onColorSchemeChanged) window.editorApi.onColorSchemeChanged((s) => { systemDark = s !== 'light'; refreshTheme(); });
 
 let editor = null;
+let reconcileView = null;
 window.editorApi.onInit((init) => {
   themeMode = (init.themeMode === 'light' || init.themeMode === 'dark') ? init.themeMode : 'system';
   refreshTheme();
+  // Frosted glass + the other appearance axes, matching the popup.
+  Core.applyVariants(document.documentElement, {
+    surfaceStyle: init.surfaceStyle, accentVariant: init.accentVariant, uiDensity: init.uiDensity, uiCorners: init.uiCorners, uiBorders: init.uiBorders,
+  });
   host.innerHTML = '';
+  reconcileView = null;
   editor = Core.createEditor({
     initialText: init.text || '',
+    initialTitle: init.noteTitle || '',
+    initialFind: init.find || '',
+    initialFindRegex: !!init.findRegex,
+    initialFocusTitle: !!init.focusTitle,
     title: init.title || (init.isNew ? 'New clip' : 'Edit clip'),
-    onInput: (text) => window.editorApi.draft(text),     // live crash-safe draft, every keystroke
-    onCommit: (text) => window.editorApi.commit(text),   // idle / Ctrl+S / close -> write the clip
+    onInput: (payload) => window.editorApi.draft(payload),     // live crash-safe draft, every keystroke
+    onCommit: (payload) => window.editorApi.commit(payload),   // idle / Ctrl+S / close -> write the clip
     onClose: () => window.editorApi.close(),
   });
   host.appendChild(editor.el);
   editor.focus();
 });
+
+if (window.editorApi.onFind) {
+  window.editorApi.onFind((find) => {
+    if (!editor || !find) return;
+    if (find.focusTitle && editor.focusTitle) editor.focusTitle();
+    else if (find.query) editor.openFind(find.query, !!find.regex);
+  });
+}
+
+if (window.editorApi.onConflict) {
+  window.editorApi.onConflict((record) => {
+    if (!record || !record.id) return;
+    host.innerHTML = '';
+    editor = null;
+    reconcileView = Core.createReconciliationView({
+      record,
+      onResolve: async (resolution) => {
+        await window.editorApi.resolveConflict(resolution);
+        window.editorApi.close();
+      },
+      onClose: () => window.editorApi.close(),
+    });
+    host.appendChild(reconcileView.el);
+  });
+}
 
 // Commit any pending edit if the window is closing out from under us.
 window.addEventListener('beforeunload', () => { if (editor) editor.commit(); });

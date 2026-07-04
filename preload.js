@@ -29,8 +29,10 @@ contextBridge.exposeInMainWorld('api', {
   groupDelete: (name) => ipcRenderer.invoke('group-delete', name),
   groupAssign: (id, group) => ipcRenderer.invoke('group-assign', id, group),
   copyImagePath: (id) => ipcRenderer.invoke('copy-image-path', id),
-  openEditor: (id) => ipcRenderer.invoke('open-editor', id),
-  newNote: () => ipcRenderer.invoke('new-note'),
+  openEditor: (id, options) => ipcRenderer.invoke('open-editor', id, options || {}),
+  newNote: (options) => ipcRenderer.invoke('new-note', options || {}),
+  getConflicts: () => ipcRenderer.invoke('get-conflicts'),
+  openConflict: (id) => ipcRenderer.invoke('open-conflict', id),
   openImage: (id) => ipcRenderer.invoke('open-image', id),
   platform: process.platform,
   setSyncPath: (path) => ipcRenderer.invoke('set-sync-path', path),
@@ -51,15 +53,19 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.on('color-scheme-changed', listener);
     return () => ipcRenderer.removeListener('color-scheme-changed', listener);
   },
+  onSurfaceChanged: (callback) => {
+    const listener = (_, style) => callback(style);
+    ipcRenderer.on('surface-changed', listener);
+    return () => ipcRenderer.removeListener('surface-changed', listener);
+  },
   // AI Access (MCP)
   getAiAccess: () => ipcRenderer.invoke('get-ai-access'),
   setAiAccessEnabled: (enabled) => ipcRenderer.invoke('set-ai-access-enabled', enabled),
   setMcpClientEnabled: (id, enabled) => ipcRenderer.invoke('set-mcp-client-enabled', id, enabled),
   setGroupSharedAi: (name, shared) => ipcRenderer.invoke('set-group-shared-ai', name, shared),
   revokeAiAlwaysAllow: (tool) => ipcRenderer.invoke('revoke-ai-always-allow', tool),
+  setClipTitle: (id, title) => ipcRenderer.invoke('set-clip-title', id, title),
   setAiApprovalTimeout: (sec) => ipcRenderer.invoke('set-ai-approval-timeout', sec),
-  getAiSecretIds: () => ipcRenderer.invoke('get-ai-secret-ids'),
-  setClipShareAnyway: (id, value) => ipcRenderer.invoke('set-clip-share-anyway', id, value),
   onAiAccessChanged: (callback) => {
     const listener = () => callback();
     ipcRenderer.on('ai-access-changed', listener);

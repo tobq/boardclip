@@ -9,7 +9,7 @@
 //
 //   - Reads of clips in groups the user shared with AI are served directly from
 //     the data files (work even when the app is closed), filtered by the same
-//     allowlist + secret guard the app uses (lib/mcp-core).
+//     opt-in group allowlist the app uses (lib/mcp-core).
 //   - Anything beyond the allowlist, any mutation, and any clipboard write is
 //     forwarded to the running BoardClip app over the local control channel,
 //     where it is gated behind the approval modal. If the app is not running,
@@ -27,7 +27,6 @@ const model = require('../lib/clipboard-model');
 const textBlobStore = require('../lib/text-blob-store');
 const mcpCore = require('../lib/mcp-core');
 const mcpPaths = require('../lib/mcp-paths');
-const secretGuard = require('../lib/secret-guard');
 const controlClient = require('../lib/control-client');
 
 // --- Data location -----------------------------------------------------------
@@ -131,7 +130,7 @@ server.registerTool('search_clips', {
 });
 
 server.registerTool('get_clip', {
-  description: 'Get the full text of a clip by id. Shared, non-secret clips return immediately. A non-shared clip or one that looks like a secret requires the app and pops an approval prompt before the text is returned.',
+  description: 'Get the full text of a clip by id. Shared clips return immediately. A non-shared clip requires the app and pops an approval prompt before the text is returned.',
   inputSchema: { id: z.string() },
 }, async ({ id }) => {
   const settings = readSettings();
@@ -142,15 +141,9 @@ server.registerTool('get_clip', {
     const sharedSet = mcpCore.sharedGroupSet(settings);
     if (item.type === 'image') return jsonResult(mcpCore.clipView(item, { sharedSet }));
     textBlobStore.hydrateTextItem(item, TEXT_DIR);
-    // On disk a >64KB clip's `text` was only the 1024-char preview, so the secret
-    // scan in resolveForRead never saw content past it. Re-scan the FULL body now;
-    // if it now looks like a secret, route through the approval-gated read.
-    if (!item.shareAnyway && secretGuard.inspect(item.text || '').isSecret) {
-      return runForward('read_clip', { id, reason: 'secret_hidden' });
-    }
     return jsonResult(mcpCore.fullTextResult(item, sharedSet));
   }
-  // not_shared or secret_hidden -> approval-gated read through the app.
+  // not_shared -> approval-gated read through the app.
   return runForward('read_clip', { id, reason: resolved.reason });
 });
 

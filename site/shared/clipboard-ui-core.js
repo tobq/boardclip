@@ -10,6 +10,8 @@
     return item && item.pin && Array.isArray(item.pin.groups) ? [...new Set(item.pin.groups)] : [];
   }
   function isInGroup(item, group) { return groupsOf(item).includes(group); }
+  function cleanTitle(value) { return String(value == null ? '' : value).replace(/\s+/g, ' ').trim(); }
+  function titleOf(item) { return cleanTitle(item && item.title); }
   function itemId(item) { return item && item.id; }
   function ensurePin(item) {
     if (!item.pin) item.pin = {};
@@ -98,10 +100,110 @@
   function itemSearchText(item) {
     if (!item) return '';
     return [
+      titleOf(item),
       item.type === 'image' ? 'image' : item.text || '',
       item.type || '',
       ...groupsOf(item),
     ].join(' ');
+  }
+  function normalizeTagName(group) {
+    return String(group || '').split('/').map(part => part.trim()).filter(Boolean).join('/');
+  }
+  function tagParentPaths(group) {
+    const name = normalizeTagName(group);
+    if (!name) return [];
+    const parts = name.split('/');
+    const paths = [];
+    for (let i = 1; i <= parts.length; i += 1) paths.push(parts.slice(0, i).join('/'));
+    return paths;
+  }
+  function tagMatchesFilter(group, filter) {
+    const tag = normalizeTagName(group);
+    const parent = normalizeTagName(filter);
+    return !!parent && (tag === parent || tag.startsWith(`${parent}/`));
+  }
+  function itemMatchesGroupFilter(item, filter) {
+    return groupsOf(item).some(group => tagMatchesFilter(group, filter));
+  }
+  function groupFilterCount(items, filter) {
+    const key = normalizeTagName(filter);
+    if (!key) return 0;
+    return (items || []).filter(item => itemMatchesGroupFilter(item, key)).length;
+  }
+  function sourceGroupsFromFilters(filters) {
+    return [...asFilterSet(filters)]
+      .map(normalizeTagName)
+      .filter(group => group && !group.startsWith('__'));
+  }
+  function buildTagTree(groups) {
+    const roots = [];
+    const byName = new Map();
+    const sourceGroups = [...new Set((groups || []).map(normalizeTagName).filter(Boolean))];
+    function ensureNode(name, stored) {
+      const tag = normalizeTagName(name);
+      if (!tag) return null;
+      let node = byName.get(tag);
+      if (!node) {
+        node = { name: tag, label: tag.split('/').pop(), depth: tag.split('/').length - 1, stored: false, children: [] };
+        byName.set(tag, node);
+        const slash = tag.lastIndexOf('/');
+        if (slash >= 0) {
+          const parent = ensureNode(tag.slice(0, slash), false);
+          if (parent && !parent.children.includes(node)) parent.children.push(node);
+        } else if (!roots.includes(node)) roots.push(node);
+      }
+      if (stored) node.stored = true;
+      return node;
+    }
+    for (const group of sourceGroups) {
+      for (const path of tagParentPaths(group)) ensureNode(path, path === group);
+    }
+    const sortNodes = (nodes) => {
+      nodes.sort((a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: 'base', numeric: true }));
+      nodes.forEach(node => sortNodes(node.children));
+    };
+    sortNodes(roots);
+    return roots;
+  }
+  function renderTagTreeMenu(nodes, options, depth) {
+    const opts = options || {};
+    const level = Number(depth) || 0;
+    return (nodes || []).map((node) => renderTagTreeMenuNode(node, opts, level)).join('');
+  }
+  function renderTagTreeMenuNode(node, options, depth) {
+    const opts = options || {};
+    const mode = opts.mode || 'filter';
+    const isFilter = mode === 'filter';
+    const group = normalizeTagName(node && node.name);
+    if (!group) return '';
+    const activeFilters = asFilterSet(opts.activeFilters || opts.filters);
+    const excludedFilters = asFilterSet(opts.excludedFilters);
+    const itemGroups = asFilterSet(opts.itemGroups);
+    const label = escapeHtml(group);
+    const text = escapeHtml(node.label || group);
+    const hasChildren = !!(node.children && node.children.length);
+    const baseClass = isFilter ? 'filter-tag' : 'gp-btn';
+    const stateClass = isFilter
+      ? (activeFilters.has(group) ? ' active' : excludedFilters.has(group) ? ' excluded' : '')
+      : (itemGroups.has(group) ? ' assigned' : ' available');
+    const treeClass = `${hasChildren ? ' has-children' : ''}${node.stored ? '' : ' virtual'}`;
+    const count = isFilter ? groupFilterCount(opts.items || [], group) : 0;
+    const title = isFilter
+      ? (excludedFilters.has(group)
+        ? `Excluding ${group}`
+        : `${group} - ${count} item${count !== 1 ? 's' : ''}`)
+      : group;
+    const caret = hasChildren
+      ? `<span class="tag-caret mi" aria-hidden="true">${isFilter && depth === 0 ? 'expand_more' : 'chevron_right'}</span>`
+      : '';
+    const deleteHtml = isFilter && node.stored
+      ? `<span class="gtag-x mi" data-action="delete-group" data-group="${label}" title="Delete group">close</span>`
+      : '';
+    const control = `<span class="${baseClass}${stateClass}${treeClass}" data-group="${label}" title="${escapeHtml(title)}" aria-label="${label}"><span class="tag-label">${text}</span>${caret}${deleteHtml}</span>`;
+    const children = hasChildren
+      ? `<span class="tag-submenu" role="menu">${renderTagTreeMenu(node.children, opts, depth + 1)}</span>`
+      : '';
+    return `<span class="tag-menu-node${hasChildren ? ' has-children' : ''}">${control}${children}</span>`;
   }
   function prepareQuery(query, regex) {
     const q = String(query || '').trim();
@@ -152,7 +254,7 @@
     if (key === '__numbered__') return numpadOf(item) != null;
     if (key === '__images__') return item && item.type === 'image';
     if (key.startsWith('__')) return false;
-    return isInGroup(item, key);
+    return itemMatchesGroupFilter(item, key);
   }
   function matchesFilter(item, stateOrFilters) {
     const state = filterStateFrom(stateOrFilters);
@@ -236,7 +338,9 @@
   function builtinFilterTitle(filter) {
     if (!filter) return '';
     if (filter.id === '__numbered__') return `${filter.count} macro${filter.count !== 1 ? 's' : ''} set for numpad`;
-    return `${filter.count} ${filter.label.toLowerCase().replace(/s$/, '')}${filter.count !== 1 ? 's' : ''}`;
+    if (filter.id === '__pinned__') return `${filter.count} pinned item${filter.count !== 1 ? 's' : ''}`;
+    if (filter.id === '__images__') return `${filter.count} image clip${filter.count !== 1 ? 's' : ''}`;
+    return `${filter.count} ${filter.label.toLowerCase()}`;
   }
   function builtinFilterIconHtml(filter, options) {
     const iconMode = options && options.iconMode || 'material';
@@ -280,15 +384,13 @@
       const title = filter.excluded ? `Excluding ${filter.label}` : builtinFilterTitle(filter);
       html += `<span class="filter-tag builtin icon-filter${stateClass}" data-filter="${escapeHtml(filter.id)}" title="${escapeHtml(title)}" aria-label="${escapeHtml(filter.ariaLabel)}">${builtinFilterIconHtml(filter, options)}</span>`;
     }
-    html += groups.map((group) => {
-      const count = groupCounts && typeof groupCounts.get === 'function'
-        ? groupCounts.get(group) || 0
-        : items.filter((item) => isInGroup(item, group)).length;
-      const label = escapeHtml(group);
-      const stateClass = activeFilters.has(group) ? ' active' : excludedFilters.has(group) ? ' excluded' : '';
-      const title = excludedFilters.has(group) ? `Excluding ${group}` : `${count} item${count !== 1 ? 's' : ''} in ${group}`;
-      return `<span class="filter-tag${stateClass}" data-group="${label}" title="${escapeHtml(title)}">${label}<span class="gtag-x mi" data-action="delete-group" data-group="${label}">close</span></span>`;
-    }).join('');
+    html += renderTagTreeMenu(buildTagTree(groups), {
+      mode: 'filter',
+      items,
+      activeFilters,
+      excludedFilters,
+      groupCounts,
+    });
     if ((activeFilters.size || excludedFilters.size) && !query) {
       html += '<span class="filter-tag clear-filter icon-filter" data-action="clear-search-filters" title="Clear filters" aria-label="Clear filters"><span class="mi">close</span></span>';
     }
@@ -326,13 +428,12 @@
       npBtns += `<span class="np-btn ${cls}" data-n="${n}" title="${escapeHtml(title)}">${n}</span>`;
     }
     const itemGroups = new Set(groupsOf(item));
-    let gpBtns = groups.map((group) => {
-      const label = escapeHtml(group);
-      const cls = itemGroups.has(group) ? 'assigned' : 'available';
-      return `<span class="gp-btn ${cls}" data-group="${label}">${label}</span>`;
-    }).join('');
+    let gpBtns = renderTagTreeMenu(buildTagTree([...groups, ...itemGroups]), {
+      mode: 'picker',
+      itemGroups,
+    });
     if (opts.showAddGroup !== false) {
-      gpBtns += '<span class="gp-btn add-group" data-action="add-group" title="New group"><span class="mi" style="font-size:14px">add</span></span>';
+      gpBtns += '<span class="tag-menu-node"><span class="gp-btn add-group" data-action="add-group" title="New group"><span class="mi sm">add</span></span></span>';
     }
     return `<div class="numpad-picker">
       <div class="np-row">${npBtns}</div>
@@ -357,6 +458,11 @@
     if (np) metaHtml += `<span class="numpad-tag">#${np}</span>`;
     for (const group of groupsOf(item)) metaHtml += `<span class="group-tag">${escapeHtml(group)}</span>`;
     const previewClass = opts.expanded ? 'expanded' : 'collapsed';
+    // Both text and images can carry a title (images are named so they're searchable).
+    const title = titleOf(item);
+    const titleHtml = title
+      ? `<div class="clip-title">${opts.highlightTitle ? opts.highlightTitle(title) : escapeHtml(title)}</div>`
+      : '';
     const selected = opts.selected ? ' selected' : '';
     return `<div class="item${pinned ? ' has-pin' : ''}${selected}" data-id="${escapeHtml(id)}">
       <div class="item-row">
@@ -365,6 +471,7 @@
           ${opts.pickerHtml || ''}
         </div>
         <div class="content">
+          ${titleHtml}
           <div class="preview ${previewClass}">${defaultPreviewHtml(item, opts)}</div>
           <div class="meta">${metaHtml}</div>
         </div>
@@ -397,7 +504,7 @@
     const settingsNoteHtml = opts.settingsNote
       ? `<span class="settings-note">${esc(opts.settingsNote)}</span>`
       : '';
-    const closeStyle = opts.showCloseButtons ? '' : ' style="display:none"';
+    const closeCls = opts.showCloseButtons ? '' : ' hidden';
     return `<div class="main-view" id="${esc(ids.mainView)}">
       <div class="sticky">
         <header>
@@ -405,7 +512,7 @@
           ${opts.showSyncButton === false ? '' : `<button class="icon-btn accent" id="${esc(ids.syncHeaderBtn)}" type="button" title="Sync now" aria-label="Sync now"><span class="mi">sync</span></button>`}
           ${headerActionsHtml}
           <button class="icon-btn accent" id="${esc(ids.settingsBtn)}" type="button" title="Settings" aria-label="Settings" aria-expanded="false" aria-controls="${esc(ids.settingsView)}"><span class="mi filled">settings</span></button>
-          <button class="icon-btn close-btn" id="${esc(ids.closeBtn)}" type="button" title="Close (Esc)"${closeStyle}>&times;</button>
+          <button class="icon-btn close-btn${closeCls}" id="${esc(ids.closeBtn)}" type="button" title="Close (Esc)">&times;</button>
         </header>
         <div class="search-row">
           <input class="search" id="${esc(ids.search)}" type="text" placeholder="Search..." autocomplete="off" spellcheck="false">
@@ -424,7 +531,7 @@
         <button class="icon-btn" id="${esc(ids.settingsBack)}" type="button" title="Back" aria-label="Back"><span class="mi">arrow_back</span></button>
         <h2>Settings</h2>
         ${settingsNoteHtml}
-        <button class="icon-btn close-btn" id="${esc(ids.settingsCloseBtn)}" type="button" title="Close (Esc)"${closeStyle}>&times;</button>
+        <button class="icon-btn close-btn${closeCls}" id="${esc(ids.settingsCloseBtn)}" type="button" title="Close (Esc)">&times;</button>
       </div>
       <div class="settings-body">
         ${settingsBodyHtml}
@@ -479,13 +586,10 @@
     const opts = options || {};
     const id = itemId(item) || '';
     const isImage = item && item.type === 'image';
-    const expanded = !!opts.expanded;
-    const text = (item && item.text) || '';
-    const canExpand = !isImage && (text.length > 120 || /\n/.test(text));
     let html = '';
-    if (canExpand) {
-      html += `<button class="icon-btn accent" data-action="expand" data-id="${escapeHtml(id)}" title="${expanded ? 'Collapse' : 'Expand'}"><span class="mi">${expanded ? 'unfold_less' : 'unfold_more'}</span></button>`;
-    }
+    // 'rename' names the clip (a shared title prompt) for BOTH types so images
+    // become searchable by name; 'edit' opens the text editor (text only).
+    html += `<button class="icon-btn accent" data-action="rename" data-id="${escapeHtml(id)}" title="${isImage ? 'Name image' : 'Edit title'}"><span class="mi">drive_file_rename_outline</span></button>`;
     if (isImage) {
       html += `<button class="icon-btn accent" data-action="open-img" data-id="${escapeHtml(id)}" title="Open image"><span class="mi">open_in_new</span></button><button class="icon-btn accent" data-action="save-img" data-id="${escapeHtml(id)}" title="Copy to Downloads"><span class="mi">save</span></button>`;
     } else {
@@ -513,6 +617,7 @@
         <button type="button" class="seg-btn" data-theme-mode="dark" title="Always dark">Dark</button>
       </div>
     </div>
+    <div id="appearanceVariants"></div>
     <div class="setting-row shortcut-row">
       <label>Popup shortcut</label>
       <div class="shortcut-control">
@@ -540,9 +645,9 @@
       <h3>Sync</h3>
       <div class="sync-row">
         <div class="sync-list" id="syncAccounts"></div>
-        <button class="sync-btn" id="syncNow" title="Sync now"><span class="mi" style="font-size:14px;vertical-align:middle">sync</span></button>
+        <button class="sync-btn" id="syncNow" title="Sync now"><span class="mi sm mid">sync</span></button>
       </div>
-      <button class="settings-secondary sync-add-folder" id="addSyncFolder" type="button"><span class="mi" style="font-size:14px;vertical-align:middle">create_new_folder</span> Add sync folder</button>
+      <button class="settings-secondary sync-add-folder" id="addSyncFolder" type="button"><span class="mi sm mid">create_new_folder</span> Add sync folder</button>
       <div class="sync-status" id="syncStatus"></div>
       <label class="setting-row switch-row" for="p2pEnabled">
         <span>Local network fast sync</span>
@@ -562,7 +667,7 @@
             </span>
           </div>
         </div>
-        <button class="settings-icon-btn" id="updateNow" title="Check for updates"><span class="mi" style="font-size:14px;vertical-align:middle">system_update_alt</span></button>
+        <button class="settings-icon-btn" id="updateNow" title="Check for updates"><span class="mi sm mid">system_update_alt</span></button>
       </div>
       <div class="settings-status" id="updateStatus"></div>
     </div>
@@ -587,19 +692,21 @@
         <div class="ai-hint">AI assistants can read clips in groups you share, and act with your approval. Drop clips into the <b>AI</b> group (or share any group below) to expose them.</div>
         <div class="ai-subhead">Installed in</div>
         <div id="aiClients"></div>
-        <button class="settings-secondary" id="aiMoreClients" type="button" style="display:none"></button>
+        <button class="settings-secondary hidden" id="aiMoreClients" type="button"></button>
         <div id="aiClientsMore" class="hidden"></div>
-        <div class="ai-subhead" id="aiSecretsHead" style="display:none">Hidden from AI (look like secrets)</div>
-        <div id="aiSecrets"></div>
-        <div class="ai-subhead" id="aiAlwaysHead" style="display:none">Always allowed actions</div>
+        <div class="ai-subhead hidden" id="aiAlwaysHead">Always allowed actions</div>
         <div id="aiAlwaysAllow"></div>
         <div class="setting-row"><label>Approval timeout (seconds)</label><input id="aiTimeout" type="number" min="5" max="600" step="5"></div>
       </div>
     </div>
+    <div class="settings-section hidden" id="conflictsSection">
+      <h3>Conflicts</h3>
+      <div id="conflictSlots"></div>
+    </div>
     <div class="settings-section">
       <h3>Groups</h3>
       <div id="groupSlots"></div>
-      <button class="add-group-btn" id="addGroupBtn"><span class="mi" style="font-size:14px;vertical-align:middle">add</span> New Group</button>
+      <button class="add-group-btn" id="addGroupBtn"><span class="mi sm mid">add</span> New Group</button>
     </div>
     <div class="settings-footer">
       <div class="settings-footer-actions">
@@ -627,6 +734,89 @@
     containerEl.querySelectorAll('[data-theme-mode]').forEach((btn) => {
       btn.classList.toggle('active', btn.dataset.themeMode === active);
     });
+  }
+  // Appearance variants: sibling data-* attributes to data-theme that swap token
+  // values (see clipboard-tokens.css). ONE applier for app/editor/modal/demo so
+  // every surface renders identically. Defaults are omitted to keep the DOM clean.
+  const VARIANT_AXES = [
+    { key: 'surfaceStyle', attr: 'data-surface', label: 'Surface', def: 'auto', options: [['auto', 'Auto'], ['glass', 'Glass'], ['solid', 'Solid']] },
+    { key: 'accentVariant', attr: 'data-accent', label: 'Accent', def: 'blue', options: [['blue', 'Blue'], ['teal', 'Teal'], ['mono', 'Mono']] },
+    { key: 'uiDensity', attr: 'data-density', label: 'Density', def: 'normal', options: [['normal', 'Normal'], ['compact', 'Compact']] },
+    { key: 'uiCorners', attr: 'data-corners', label: 'Corners', def: 'soft', options: [['soft', 'Soft'], ['sharp', 'Sharp']] },
+    { key: 'uiBorders', attr: 'data-borders', label: 'Borders', def: 'bordered', options: [['bordered', 'Lines'], ['borderless', 'None']] },
+  ];
+  function applyVariants(rootEl, opts) {
+    if (!rootEl || !rootEl.setAttribute) return;
+    const o = opts || {};
+    // surface is always explicit (glass|solid) so the shell scrim + [data-surface]
+    // rules have something to key on; 'auto' resolves to glass for in-page preview
+    // (the app corrects it from main's resolved value via onSurfaceChanged).
+    if (o.surfaceStyle) rootEl.setAttribute('data-surface', o.surfaceStyle === 'solid' ? 'solid' : 'glass');
+    const setOrClear = (attr, value, def) => {
+      if (value && value !== def) rootEl.setAttribute(attr, value);
+      else rootEl.removeAttribute(attr);
+    };
+    setOrClear('data-accent', o.accentVariant, 'blue');
+    setOrClear('data-density', o.uiDensity, 'normal');
+    setOrClear('data-corners', o.uiCorners, 'soft');
+    setOrClear('data-borders', o.uiBorders, 'bordered');
+  }
+  function setActiveVariantSeg(seg, value) {
+    if (!seg || !seg.querySelectorAll) return;
+    seg.querySelectorAll('[data-value]').forEach((btn) => {
+      btn.classList.toggle('active', btn.dataset.value === value);
+    });
+  }
+  // A live playground of segmented controls, one row per axis. Reuses the shared
+  // .seg/.seg-btn styling. The app renders it dev-gated (plus Surface as a real
+  // setting); the demo renders it always-on. `fields` picks which axes appear.
+  function createVariantSwitcher(config) {
+    if (typeof document === 'undefined') return { el: null, set() {}, get: () => ({}) };
+    const cfg = config || {};
+    const fields = cfg.fields && cfg.fields.length ? cfg.fields : VARIANT_AXES.map((a) => a.key);
+    const axes = VARIANT_AXES.filter((a) => fields.includes(a.key));
+    const state = { ...(cfg.initial || {}) };
+    const root = cfg.root || null;
+    const el = document.createElement('div');
+    el.className = 'variant-switcher';
+    const segRefs = {};
+    for (const axis of axes) {
+      const row = document.createElement('div');
+      row.className = 'setting-row';
+      const label = document.createElement('label');
+      label.textContent = axis.label;
+      const seg = document.createElement('div');
+      seg.className = 'seg';
+      seg.setAttribute('role', 'group');
+      seg.setAttribute('aria-label', axis.label);
+      for (const [val, text] of axis.options) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'seg-btn';
+        btn.dataset.value = val;
+        btn.textContent = text;
+        btn.addEventListener('click', () => {
+          state[axis.key] = val;
+          setActiveVariantSeg(seg, val);
+          if (root) applyVariants(root, state);
+          if (typeof cfg.onChange === 'function') cfg.onChange({ ...state }, axis.key, val);
+        });
+        seg.appendChild(btn);
+      }
+      row.append(label, seg);
+      el.appendChild(row);
+      segRefs[axis.key] = seg;
+      setActiveVariantSeg(seg, state[axis.key] || axis.def);
+    }
+    return {
+      el,
+      set(next) {
+        Object.assign(state, next || {});
+        for (const axis of axes) setActiveVariantSeg(segRefs[axis.key], state[axis.key] || axis.def);
+        if (root) applyVariants(root, state);
+      },
+      get() { return { ...state }; },
+    };
   }
   // Shared confirm/prompt dialogs — ONE implementation for the app and the demo
   // so a confirm flow (group delete, numpad replace, clear all, add-group name)
@@ -733,7 +923,6 @@
   //            deletedToast (string|null)
   function createClipController(adapter) {
     const a = adapter || {};
-    const expanded = new Set();
     const dialogs = a.dialogs || createDialogs(a.dialogHost);
     const render = () => { if (a.render) a.render(); };
     const refresh = () => { if (a.refresh) a.refresh(); else render(); };
@@ -774,6 +963,15 @@
       await a.clearUnpinned();
       refresh();
     }
+    // Name a clip via the shared title prompt (text + images alike), prefilled
+    // with the current name. Reuses the same title field search indexes.
+    async function renameClip(id) {
+      const item = a.itemById(id);
+      const title = await dialogs.prompt({ title: 'Name this clip', value: item ? titleOf(item) : '', okLabel: 'Save' });
+      if (title === null) return;
+      if (a.setClipTitle) await a.setClipTitle(id, title);
+      refresh();
+    }
 
     async function onClick(event) {
       const t = event.target;
@@ -809,10 +1007,10 @@
       if (saveImg) { event.stopPropagation(); toast(await a.saveImage(a.itemById(saveImg.dataset.id))); return true; }
       const edit = t.closest('[data-action="edit"]');
       if (edit) { event.stopPropagation(); await a.editClip(edit.dataset.id, edit.closest('.item')); return true; }
-      const exp = t.closest('[data-action="expand"]');
-      if (exp) { event.stopPropagation(); const id = exp.dataset.id; if (expanded.has(id)) expanded.delete(id); else expanded.add(id); render(); return true; }
+      const rename = t.closest('[data-action="rename"]');
+      if (rename) { event.stopPropagation(); await renameClip(rename.dataset.id); return true; }
       const del = t.closest('[data-action="del"]');
-      if (del) { event.stopPropagation(); const id = del.dataset.id; await a.deleteClip(id); expanded.delete(id); refresh(); toast(a.deletedToast); return true; }
+      if (del) { event.stopPropagation(); await a.deleteClip(del.dataset.id); refresh(); toast(a.deletedToast); return true; }
       const item = t.closest('.item');
       if (item) { await a.activateClip(item.dataset.id); return true; }
       return false;
@@ -839,9 +1037,7 @@
       else if (event.key === 'Enter') { if (a.activateSelected) { event.preventDefault(); a.activateSelected(); } }
     }
     return {
-      expanded,
       dialogs,
-      isExpanded: (id) => expanded.has(id),
       onClick,
       onContextmenu,
       onKeydown,
@@ -878,18 +1074,36 @@
     const t = String(text || '').trim();
     return t ? (t.match(/\S+/g) || []).length : 0;
   }
+  function lineNumberAtIndex(text, index) {
+    const raw = String(text || '');
+    const end = Math.max(0, Math.min(Number(index) || 0, raw.length));
+    let line = 0;
+    for (let i = 0; i < end; i += 1) {
+      if (raw.charCodeAt(i) === 10) line += 1;
+    }
+    return line;
+  }
+  function editorScrollTopForIndex(text, index, lineHeight, clientHeight, paddingTop) {
+    const lh = Number(lineHeight) > 0 ? Number(lineHeight) : 18;
+    const view = Number(clientHeight) > 0 ? Number(clientHeight) : 0;
+    const pad = Number(paddingTop) > 0 ? Number(paddingTop) : 0;
+    const lineTop = lineNumberAtIndex(text, index) * lh + pad;
+    return Math.max(0, Math.floor(lineTop - view * 0.35));
+  }
   // Shared plain-text editor — ONE implementation mounted by BOTH the desktop
   // app (in its own frameless window) and the website demo (in an in-page
   // overlay). Edits are captured live: every keystroke fires onInput (the host
   // persists a crash-safe draft), and after a short idle / on close / on Ctrl+S
   // onCommit fires (the host writes the clip). Find (Ctrl+F), word/char count,
   // revert-to-original, Tab-inserts-tab. The host owns persistence; this owns UI.
-  //   opts: { initialText, title, idleMs, onInput(text), onCommit(text), onClose() }
+  //   opts: { initialText, initialTitle, initialFocusTitle, title, idleMs,
+  //           onInput(payload), onCommit(payload), onClose() }
   function createEditor(opts) {
     if (typeof document === 'undefined') return null;
     const o = opts || {};
     const idleMs = o.idleMs || 1200;
-    const original = String(o.initialText || '');
+    const originalText = String(o.initialText || '');
+    const originalTitle = cleanTitle(o.initialTitle != null ? o.initialTitle : o.noteTitle);
     const root = document.createElement('div');
     root.className = 'bc-editor';
     root.innerHTML = `
@@ -901,32 +1115,51 @@
           <button class="icon-btn close-btn" type="button" data-x="close" title="Close (Esc)">&times;</button>
         </div>
       </div>
+      <div class="bc-title-row" hidden>
+        <input class="bc-note-title" type="text" maxlength="240" placeholder="Title" autocomplete="off" spellcheck="false" data-x="titleinput">
+      </div>
       <div class="bc-find" data-x="findbar" hidden>
         <input class="bc-find-input" type="text" placeholder="Find" spellcheck="false" autocomplete="off" data-x="findinput">
+        <button class="icon-btn rx-btn" type="button" data-x="findregex" title="Regex find" aria-label="Regex find">.*</button>
         <span class="bc-find-count" data-x="findcount"></span>
         <button class="icon-btn" type="button" data-x="findprev" title="Previous (Shift+Enter)"><span class="mi">keyboard_arrow_up</span></button>
         <button class="icon-btn" type="button" data-x="findnext" title="Next (Enter)"><span class="mi">keyboard_arrow_down</span></button>
         <button class="icon-btn" type="button" data-x="findclose" title="Close (Esc)"><span class="mi">close</span></button>
       </div>
-      <textarea class="bc-editor-area" spellcheck="false" wrap="soft"></textarea>
+      <div class="bc-editor-area-wrap">
+        <div class="bc-editor-hl" aria-hidden="true" data-x="findhl"></div>
+        <textarea class="bc-editor-area" spellcheck="false" wrap="soft"></textarea>
+      </div>
       <div class="bc-editor-foot">
         <span data-x="stats"></span>
         <span class="bc-editor-hint">Saved automatically</span>
       </div>`;
     const q = (name) => root.querySelector(`[data-x="${name}"]`);
     const area = root.querySelector('.bc-editor-area');
+    const titleRow = root.querySelector('.bc-title-row');
+    const titleInput = q('titleinput');
     const titleEl = root.querySelector('.bc-editor-title');
     const statsEl = q('stats');
     const findBar = q('findbar');
     const findInput = q('findinput');
+    const findRegexBtn = q('findregex');
     const findCount = q('findcount');
-    area.value = original;
-    titleEl.textContent = o.title || 'Edit clip';
+    const findHl = q('findhl');
+    area.value = originalText;
+    titleInput.value = originalTitle;
+    titleEl.textContent = o.chromeTitle || o.title || 'Edit clip';
 
     let idleTimer = null;
-    let lastCommitted = original;
+    let lastCommittedText = originalText;
+    let lastCommittedTitle = originalTitle;
     let matches = [];
     let findIdx = -1;
+    let findRegex = !!o.initialFindRegex;
+
+    function payload() { return { text: area.value, title: cleanTitle(titleInput.value) }; }
+    function emitInput() { if (o.onInput) o.onInput(payload()); }
+    function updateRegexButton() { findRegexBtn.classList.toggle('active', findRegex); }
+    function showTitleInput() { titleRow.hidden = false; }
 
     function updateStats() {
       const t = area.value;
@@ -934,10 +1167,11 @@
     }
     function commit() {
       if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
-      const t = area.value;
-      if (t === lastCommitted) return;
-      lastCommitted = t;
-      if (o.onCommit) o.onCommit(t);
+      const next = payload();
+      if (next.text === lastCommittedText && next.title === lastCommittedTitle) return;
+      lastCommittedText = next.text;
+      lastCommittedTitle = next.title;
+      if (o.onCommit) o.onCommit(next);
     }
     function scheduleCommit() {
       if (idleTimer) clearTimeout(idleTimer);
@@ -950,55 +1184,131 @@
       area.selectionStart = area.selectionEnd = start + s.length;
       area.dispatchEvent(new Event('input'));
     }
-    function selectMatch() {
+    function selectMatch(options) {
       if (findIdx < 0 || !matches[findIdx]) { findCount.textContent = findInput.value ? '0/0' : ''; return; }
       const m = matches[findIdx];
-      area.focus();
+      const preserveFocus = options && options.preserveFocus;
+      const active = preserveFocus ? document.activeElement : null;
+      try { area.focus({ preventScroll: true }); } catch { area.focus(); }
       area.setSelectionRange(m.start, m.end);
+      renderFindHighlights();
+      scrollToCurrentMark();
+      if (preserveFocus && active && active !== area && active.focus) {
+        try { active.focus({ preventScroll: true }); } catch { active.focus(); }
+      }
       findCount.textContent = `${findIdx + 1}/${matches.length}`;
     }
+    // The textarea's own selection is invisible while focus stays in the find
+    // input (Chrome doesn't paint selection in unfocused textareas), so matches
+    // are highlighted via a backdrop div that mirrors the textarea's text with
+    // <mark> spans — all matches marked, the current one emphasized (.cur).
+    function syncHlScroll() { findHl.scrollTop = area.scrollTop; findHl.scrollLeft = area.scrollLeft; }
+    // Scroll the current match into view. The textarea is soft-wrapped, so a
+    // character index -> line count (editorScrollTopForIndex) undercounts wrapped
+    // visual rows and lands short. The highlight backdrop mirrors the textarea
+    // exactly, so the current <mark>'s measured offsetTop is the true visual
+    // position (wrap/tab/font accurate). Fall back to the estimate only when the
+    // backdrop is absent (huge-doc guard cleared it).
+    function scrollToCurrentMark() {
+      let target;
+      const cur = findHl.querySelector('mark.cur');
+      if (cur) {
+        target = cur.offsetTop - Math.round(area.clientHeight * 0.35);
+      } else {
+        const m = matches[findIdx];
+        if (!m) return;
+        const style = window.getComputedStyle ? window.getComputedStyle(area) : null;
+        const lineHeight = style ? parseFloat(style.lineHeight) : 0;
+        const paddingTop = style ? parseFloat(style.paddingTop) : 0;
+        target = editorScrollTopForIndex(area.value, m.start, lineHeight, area.clientHeight, paddingTop);
+      }
+      target = Math.max(0, Math.round(target));
+      area.scrollTop = target;
+      findHl.scrollTop = target;
+    }
+    function renderFindHighlights() {
+      const raw = area.value;
+      if (findBar.hidden || !matches.length || raw.length > 300000) {
+        findHl.textContent = '';
+        return;
+      }
+      let html = '';
+      let pos = 0;
+      for (let i = 0; i < matches.length; i += 1) {
+        const m = matches[i];
+        html += escapeHtml(raw.slice(pos, m.start));
+        html += `<mark${i === findIdx ? ' class="cur"' : ''}>${escapeHtml(raw.slice(m.start, m.end))}</mark>`;
+        pos = m.end;
+      }
+      html += escapeHtml(raw.slice(pos));
+      findHl.innerHTML = `${html}\n`;
+      syncHlScroll();
+    }
     function recomputeMatches() {
-      matches = findAllMatches(area.value, findInput.value);
+      matches = findAllMatches(area.value, findInput.value, findRegex);
       if (!matches.length) { findIdx = -1; findCount.textContent = findInput.value ? '0/0' : ''; }
       else if (findIdx < 0 || findIdx >= matches.length) findIdx = 0;
+      renderFindHighlights();
     }
     function step(dir) {
       if (!matches.length) return;
       findIdx = (findIdx + dir + matches.length) % matches.length;
-      selectMatch();
+      selectMatch({ preserveFocus: true });
     }
-    function openFind() {
+    function setFindQuery(query, options) {
+      const opt = options || {};
+      findBar.hidden = false;
+      if (query != null) findInput.value = String(query || '');
+      if (opt.regex != null) findRegex = !!opt.regex;
+      updateRegexButton();
+      findIdx = -1;
+      recomputeMatches();
+      selectMatch({ preserveFocus: true });
+      findInput.focus();
+      if (opt.select !== false) findInput.select();
+    }
+    function openFind(query, regex) {
+      if (query != null) { setFindQuery(query, { regex, select: true }); return; }
       findBar.hidden = false;
       const sel = area.value.slice(area.selectionStart, area.selectionEnd);
       if (sel && !sel.includes('\n')) findInput.value = sel.slice(0, 120);
+      updateRegexButton();
+      findIdx = -1;
       recomputeMatches();
-      selectMatch();
+      selectMatch({ preserveFocus: true });
       findInput.focus();
       findInput.select();
     }
-    function closeFind() { findBar.hidden = true; area.focus(); }
+    function closeFind() { findBar.hidden = true; renderFindHighlights(); area.focus(); }
 
     area.addEventListener('input', () => {
       updateStats();
-      if (o.onInput) o.onInput(area.value);
+      emitInput();
       scheduleCommit();
       if (!findBar.hidden) { recomputeMatches(); }
     });
+    area.addEventListener('scroll', syncHlScroll);
+    titleInput.addEventListener('input', () => { emitInput(); scheduleCommit(); });
     area.addEventListener('keydown', (e) => {
       if (e.key === 'Tab') { e.preventDefault(); insertAtCursor('\t'); }
       else if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 's') { e.preventDefault(); commit(); }
       else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') { e.preventDefault(); openFind(); }
     });
-    findInput.addEventListener('input', () => { findIdx = -1; recomputeMatches(); selectMatch(); });
+    titleInput.addEventListener('keydown', (e) => {
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 's') { e.preventDefault(); commit(); }
+      else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') { e.preventDefault(); openFind(); }
+    });
+    findInput.addEventListener('input', () => { findIdx = -1; recomputeMatches(); selectMatch({ preserveFocus: true }); });
     findInput.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') { e.preventDefault(); step(e.shiftKey ? -1 : 1); }
       else if (e.key === 'Escape') { e.preventDefault(); closeFind(); }
     });
+    findRegexBtn.onclick = () => { findRegex = !findRegex; updateRegexButton(); findIdx = -1; recomputeMatches(); selectMatch({ preserveFocus: true }); findInput.focus(); };
     q('findprev').onclick = () => step(-1);
     q('findnext').onclick = () => step(1);
     q('findclose').onclick = closeFind;
     q('find').onclick = openFind;
-    q('revert').onclick = () => { area.value = original; updateStats(); if (o.onInput) o.onInput(area.value); commit(); area.focus(); };
+    q('revert').onclick = () => { area.value = originalText; titleInput.value = originalTitle; updateStats(); emitInput(); commit(); area.focus(); };
     q('close').onclick = () => { commit(); if (o.onClose) o.onClose(); };
     root.addEventListener('keydown', (e) => {
       if (e.key !== 'Escape') return;
@@ -1007,15 +1317,108 @@
     });
 
     updateStats();
-    setTimeout(() => area.focus(), 0);
+    updateRegexButton();
+    setTimeout(() => {
+      if (o.initialFocusTitle) { showTitleInput(); titleInput.focus(); titleInput.select(); }
+      else if (o.initialFind) openFind(o.initialFind, !!o.initialFindRegex);
+      else area.focus();
+    }, 0);
     return {
       el: root,
       getText: () => area.value,
+      getTitle: () => cleanTitle(titleInput.value),
+      getValue: payload,
       setText: (t) => { area.value = String(t || ''); updateStats(); },
+      setTitle: (t) => { titleInput.value = cleanTitle(t); },
       commit,
       focus: () => area.focus(),
+      focusTitle: () => { showTitleInput(); titleInput.focus(); titleInput.select(); },
       openFind,
     };
+  }
+  function simpleTextHunks(leftText, rightText) {
+    const left = String(leftText || '');
+    const right = String(rightText || '');
+    if (left === right) return [{ type: 'same', text: left }];
+    return [
+      ...(left ? [{ type: 'remove', text: left }] : []),
+      ...(right ? [{ type: 'add', text: right }] : []),
+    ];
+  }
+  function snapshotLabel(snapshot, fallback) {
+    const title = titleOf(snapshot);
+    return title || fallback || 'Untitled';
+  }
+  function createReconciliationView(opts) {
+    if (typeof document === 'undefined') return null;
+    const o = opts || {};
+    const record = o.record || {};
+    const left = record.left || {};
+    const right = record.right || {};
+    const initial = record.result || right || left || {};
+    const hunks = Array.isArray(record.hunks) && record.hunks.length
+      ? record.hunks
+      : simpleTextHunks(left.text, right.text);
+    const root = document.createElement('div');
+    root.className = 'bc-reconcile';
+    root.innerHTML = `
+      <div class="bc-editor-bar">
+        <span class="bc-editor-title">Resolve conflict</span>
+        <div class="bc-editor-bar-actions">
+          <button class="icon-btn close-btn" type="button" data-x="close" title="Close (Esc)">&times;</button>
+        </div>
+      </div>
+      <div class="bc-reconcile-body">
+        <section class="bc-reconcile-side">
+          <div class="bc-reconcile-head">Current</div>
+          <div class="bc-reconcile-title">${escapeHtml(snapshotLabel(left, 'Current'))}</div>
+          <pre>${escapeHtml(left.text || '')}</pre>
+        </section>
+        <section class="bc-reconcile-side">
+          <div class="bc-reconcile-head">Incoming</div>
+          <div class="bc-reconcile-title">${escapeHtml(snapshotLabel(right, 'Incoming'))}</div>
+          <pre>${escapeHtml(right.text || '')}</pre>
+        </section>
+        <section class="bc-reconcile-merge">
+          <div class="bc-reconcile-head">Merged result</div>
+          <input class="bc-note-title" data-x="title" maxlength="240" placeholder="Title" autocomplete="off" spellcheck="false">
+          <textarea class="bc-editor-area" data-x="text" spellcheck="false" wrap="soft"></textarea>
+        </section>
+      </div>
+      <div class="bc-hunks">
+        ${hunks.map((hunk) => `<pre class="bc-hunk ${escapeHtml(hunk.type || 'same')}">${escapeHtml(hunk.text || '')}</pre>`).join('')}
+      </div>
+      <div class="bc-reconcile-actions">
+        <button type="button" data-x="left">Accept current</button>
+        <button type="button" data-x="right">Accept incoming</button>
+        <button type="button" data-x="both">Keep both</button>
+        <button type="button" data-x="remove">Remove conflict</button>
+        <button type="button" class="primary" data-x="save">Save merged</button>
+      </div>`;
+    const q = (name) => root.querySelector(`[data-x="${name}"]`);
+    const titleInput = q('title');
+    const textArea = q('text');
+    titleInput.value = cleanTitle(initial.title);
+    textArea.value = String(initial.text || '');
+    const value = () => ({ title: cleanTitle(titleInput.value), text: textArea.value });
+    const setSnapshot = (snapshot) => {
+      titleInput.value = titleOf(snapshot);
+      textArea.value = String(snapshot && snapshot.text || '');
+    };
+    const resolve = (action, extra) => {
+      if (o.onResolve) o.onResolve({ id: record.id, action, ...value(), ...(extra || {}) });
+    };
+    q('left').onclick = () => { setSnapshot(left); resolve('accept_left'); };
+    q('right').onclick = () => { setSnapshot(right); resolve('accept_right'); };
+    q('both').onclick = () => resolve('keep_both');
+    q('remove').onclick = () => resolve('remove');
+    q('save').onclick = () => resolve('save');
+    q('close').onclick = () => { if (o.onClose) o.onClose(); };
+    root.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') { event.preventDefault(); if (o.onClose) o.onClose(); }
+    });
+    setTimeout(() => textArea.focus(), 0);
+    return { el: root, getValue: value };
   }
   function sortItems(items) {
     return [...(items || [])].sort((a, b) => (b.ts || 0) - (a.ts || 0));
@@ -1090,6 +1493,7 @@
     numpadOf,
     groupsOf,
     isInGroup,
+    titleOf,
     itemId,
     createTextItem,
     ago,
@@ -1100,6 +1504,14 @@
     builtinFilterCount,
     builtinFilters,
     itemSearchText,
+    normalizeTagName,
+    tagParentPaths,
+    tagMatchesFilter,
+    itemMatchesGroupFilter,
+    groupFilterCount,
+    sourceGroupsFromFilters,
+    buildTagTree,
+    renderTagTreeMenu,
     prepareQuery,
     matchesQuery,
     asFilterSet,
@@ -1128,11 +1540,18 @@
     resolveTheme,
     applyTheme,
     setActiveThemeSeg,
+    applyVariants,
+    createVariantSwitcher,
+    setActiveVariantSeg,
     createDialogs,
     createClipController,
     findAllMatches,
     countWords,
+    lineNumberAtIndex,
+    editorScrollTopForIndex,
     createEditor,
+    simpleTextHunks,
+    createReconciliationView,
     sortItems,
     touchItem,
     togglePin,

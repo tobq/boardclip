@@ -4,44 +4,44 @@
   document.documentElement.dataset.theme = matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
 </script>
 <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL@20..48,400,1&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="site/shared/clipboard-tokens.css">
 <style>
-  /* Tokens copied from the app so the modal matches BoardClip exactly. */
-  :root { color-scheme:dark; --bg:#0c0c0c; --surface:#131313; --surface2:#1a1a1a; --input:#0a0a0a; --text:#ccc; --text-dim:#777;
-          --line:#222; --line-strong:#333; --accent:#a78bfa; --accent-bg:#1a1030; --green:#34d399; --red:#f87171; --red-bg:#2a1414; --shadow:rgba(0,0,0,.5); }
-  :root[data-theme="light"] { color-scheme:light; --bg:#f4f4f5; --surface:#fff; --surface2:#f4f4f5; --input:#fff; --text:#18181b; --text-dim:#71717a;
-          --line:#e4e4e7; --line-strong:#d4d4d8; --accent:#7c3aed; --accent-bg:#f1ecff; --green:#059669; --red:#dc2626; --red-bg:#fdeaea; --shadow:rgba(24,24,27,.14); }
+  /* Palette + tokens come from the shared clipboard-tokens.css so the modal can
+     never drift from the app. Only the modal's own layout lives here, and it
+     rides the same spacing/type/radius scale + borderless buttons as the popup. */
   * { margin:0; padding:0; box-sizing:border-box; }
   html, body { background:var(--surface); }
-  body { font-family:'Segoe UI',system-ui,sans-serif; color:var(--text); user-select:none; overflow:hidden; }
-  .bar { -webkit-app-region:drag; height:24px; display:flex; align-items:center; padding:0 14px; color:var(--text-dim); font-size:9.5px; letter-spacing:.06em; text-transform:uppercase; }
-  .wrap { padding:2px 16px 15px; display:flex; flex-direction:column; gap:11px; }
-  .head { display:flex; gap:11px; align-items:flex-start; }
-  .badge { width:34px; height:34px; border-radius:9px; flex-shrink:0; display:flex; align-items:center; justify-content:center;
+  body { font-family:system-ui,'Segoe UI',sans-serif; color:var(--text); user-select:none; overflow:hidden; }
+  .bar { -webkit-app-region:drag; height:24px; display:flex; align-items:center; padding:0 var(--sp-7); color:var(--text-dim); font-size:var(--fs-1); letter-spacing:.06em; text-transform:uppercase; }
+  .wrap { padding:var(--sp-1) var(--sp-8) var(--sp-6); display:flex; flex-direction:column; gap:var(--sp-5); }
+  .head { display:flex; gap:var(--sp-5); align-items:flex-start; }
+  .badge { width:34px; height:34px; border-radius:var(--r-3); flex-shrink:0; display:flex; align-items:center; justify-content:center;
            background:var(--accent-bg); color:var(--accent); }
-  .badge .mi { font-family:'Material Symbols Rounded'; font-size:19px; line-height:1; }
+  .badge .mi { font-family:'Material Symbols Rounded'; font-size:var(--icon-lg); line-height:1; }
   .badge.danger { background:var(--red-bg); color:var(--red); }
-  h1 { font-size:14px; font-weight:600; line-height:1.3; }
-  .who { font-size:11px; color:var(--text-dim); margin-top:2px; line-height:1.4; }
+  h1 { font-size:var(--fs-5); font-weight:600; line-height:1.3; }
+  .who { font-size:var(--fs-2); color:var(--text-dim); margin-top:var(--sp-1); line-height:1.4; }
   .who b { color:var(--text); font-weight:600; }
-  .card { background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:9px 11px; }
-  .card .label { font-size:9px; text-transform:uppercase; letter-spacing:.06em; color:var(--text-dim); margin-bottom:5px; }
-  .detail { font-family:'Cascadia Code',Consolas,monospace; font-size:11px; line-height:1.5; color:var(--text);
+  .card { background:var(--bg); border-radius:var(--r-3); padding:var(--sp-4) var(--sp-5); }
+  .card .label { font-size:var(--fs-1); text-transform:uppercase; letter-spacing:.06em; color:var(--text-dim); margin-bottom:var(--sp-2); }
+  .detail { font-family:var(--font-mono); font-size:var(--fs-2); line-height:1.5; color:var(--text);
             white-space:pre-wrap; word-break:break-word; max-height:96px; overflow:auto; }
   .detail.empty { color:var(--text-dim); font-style:italic; font-family:inherit; }
-  .meter { height:3px; border-radius:2px; background:var(--line); overflow:hidden; }
+  .meter { height:3px; border-radius:var(--r-pill); background:var(--line); overflow:hidden; }
   .meter > span { display:block; height:100%; width:100%; background:var(--accent); transition:width 1s linear; }
   .meter.danger > span { background:var(--red); }
-  .countdown { font-size:10.5px; color:var(--text-dim); display:flex; justify-content:space-between; margin-top:6px; }
-  .acts { display:flex; flex-direction:column; gap:7px; margin-top:1px; }
-  .row2 { display:flex; gap:7px; }
-  button { font:inherit; border-radius:6px; cursor:pointer; transition:all .12s; border:1px solid var(--line-strong); background:var(--surface2); color:var(--text); }
-  .primary { padding:9px; font-size:12.5px; font-weight:600; background:var(--accent); border-color:var(--accent); color:#fff; }
-  .primary:hover { filter:brightness(1.08); }
-  .primary.danger { background:var(--red); border-color:var(--red); }
-  .row2 button { flex:1; padding:7px; font-size:11.5px; font-weight:500; color:var(--text-dim); }
-  .row2 button:hover { border-color:var(--accent); color:var(--text); }
-  .deny { padding:7px; font-size:11.5px; font-weight:500; color:var(--text-dim); }
-  .deny:hover { border-color:var(--red); color:var(--red); }
+  .countdown { font-size:var(--fs-1); color:var(--text-dim); display:flex; justify-content:space-between; margin-top:var(--sp-3); }
+  .acts { display:flex; flex-direction:column; gap:var(--sp-3); margin-top:var(--sp-1); }
+  .row2 { display:flex; gap:var(--sp-3); }
+  button { font:inherit; border:none; border-radius:var(--r-2); cursor:pointer; transition:var(--dur) var(--ease); background:var(--surface2); color:var(--text); }
+  .primary { padding:var(--sp-4); font-size:var(--fs-3); font-weight:600; background:var(--accent); color:var(--active-fg); }
+  .primary:hover { background:var(--accent-hover); }
+  .primary.danger { background:var(--red); }
+  .primary.danger:hover { filter:brightness(1.08); }
+  .row2 button { flex:1; padding:var(--sp-3); font-size:var(--fs-2); font-weight:500; color:var(--text-dim); }
+  .row2 button:hover { background:var(--menu-hover); color:var(--text); }
+  .deny { padding:var(--sp-3); font-size:var(--fs-2); font-weight:500; color:var(--text-dim); }
+  .deny:hover { color:var(--red); background:var(--red-bg); }
 </style></head>
 <body>
   <div class="bar">BoardClip - AI action</div>
@@ -80,6 +80,16 @@
     create_group:'create_new_folder', delete_group:'folder_delete', read_clip:'lock_open',
     search_all:'search', image_path:'image',
   };
+
+  if (window.approval.onSettings) window.approval.onSettings(s => {
+    const root = document.documentElement;
+    if (s.theme === 'light' || s.theme === 'dark') root.dataset.theme = s.theme;
+    const setv = (attr, val, def) => { if (val && val !== def) root.setAttribute(attr, val); else root.removeAttribute(attr); };
+    setv('data-accent', s.accent, 'blue');
+    setv('data-density', s.density, 'normal');
+    setv('data-corners', s.corners, 'soft');
+    setv('data-borders', s.borders, 'bordered');
+  });
 
   function fit() {
     const h = Math.ceil(document.getElementById('wrap').getBoundingClientRect().bottom) + 4;

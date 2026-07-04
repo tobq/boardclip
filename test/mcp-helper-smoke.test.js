@@ -2,8 +2,8 @@
 
 // End-to-end smoke test of the real stdio MCP helper (mcp/boardclip-mcp.js):
 // spawn it, speak MCP JSON-RPC over stdin/stdout, and assert it boots, lists
-// tools, serves a shared-clip read locally, withholds a secret, and reports
-// app_not_running for a gated action (no app/pipe in this test).
+// tools, serves shared-clip reads locally (including a large hydrated clip),
+// and reports app_not_running for a gated action (no app/pipe in this test).
 
 const assert = require('assert');
 const fs = require('fs');
@@ -14,26 +14,23 @@ const crypto = require('crypto');
 
 function sha256(text) { return crypto.createHash('sha256').update(String(text), 'utf8').digest('hex'); }
 
-// Assembled so no full provider-token literal sits in source (push protection).
-const GHP = 'ghp' + '_AbCdEf0123456789AbCdEf0123456789abcd';
-
 function setup() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'boardclip-mcp-smoke-'));
   const dataDir = path.join(root, 'data');
   fs.mkdirSync(dataDir, { recursive: true });
   const sharedId = `txt:${sha256('shared hello world')}`;
-  const secretId = `txt:${sha256(GHP)}`;
+  const secondId = `txt:${sha256('second shared clip')}`;
   const privateId = `txt:${sha256('private nothing')}`;
   const history = [
     { id: sharedId, type: 'text', text: 'shared hello world', ts: 3, pin: { groups: ['AI'] } },
-    { id: secretId, type: 'text', text: GHP, ts: 2, pin: { groups: ['AI'] } },
+    { id: secondId, type: 'text', text: 'second shared clip', ts: 2, pin: { groups: ['AI'] } },
     { id: privateId, type: 'text', text: 'private nothing', ts: 1 },
   ];
-  // Large externalized clip: preview (first 1024 chars) is benign PROSE (no long
-  // hex/high-entropy token), but the FULL body hides a secret past the preview. On
-  // disk item.text is only the preview, so the secret guard must re-scan the body.
+  // Large externalized clip: on disk item.text is only the first 1024-char
+  // preview; the full body lives in clipboard-text/. get_clip must hydrate and
+  // return the WHOLE body (a marker past the preview proves it read past 1024).
   const benign1024 = 'the quick brown fox jumps over the lazy dog. '.repeat(30).slice(0, 1024);
-  const bigFull = benign1024 + ' ' + GHP;
+  const bigFull = benign1024 + ' TAIL-MARKER-9f3a';
   const bigHash = sha256(bigFull);
   const bigRef = `${bigHash}.txt`;
   const bigId = `txt:${bigHash}`;
@@ -48,7 +45,7 @@ function setup() {
   const discovery = path.join(root, 'discovery.json');
   // No pipePath/secret -> control channel reports app_not_running.
   fs.writeFileSync(discovery, JSON.stringify({ dataDir }));
-  return { root, dataDir, discovery, sharedId, secretId, bigId };
+  return { root, dataDir, discovery, sharedId, secondId, privateId, bigId };
 }
 
 function rpcClient(child) {
@@ -119,31 +116,29 @@ async function main() {
   const ctxRes = await rpc.call('tools/call', { name: 'list_context', arguments: {} });
   const ctxData = JSON.parse(toolText(ctxRes));
   assert.strictEqual(ctxData.totalClips, 4);
-  assert.strictEqual(ctxData.sharedClips, 3); // sharedId + secretId + bigId (all in AI)
-  assert.strictEqual(ctxData.withheldSecrets, 1); // only secretId's preview looks secret
+  assert.strictEqual(ctxData.sharedClips, 3); // sharedId + secondId + bigId (all in AI)
 
-  // get_clip on shared, non-secret -> returns text locally
+  // get_clip on a shared clip -> returns text locally (opt-in group = shared)
   const shared = await rpc.call('tools/call', { name: 'get_clip', arguments: { id: ctx.sharedId } });
   const sharedData = JSON.parse(toolText(shared));
   assert.strictEqual(sharedData.text, 'shared hello world');
 
-  // get_clip on a secret in a shared group -> tries to escalate to the app,
-  // which is not running -> friendly app_not_running error.
-  const secret = await rpc.call('tools/call', { name: 'get_clip', arguments: { id: ctx.secretId } });
-  assert.strictEqual(secret.result.isError, true, 'secret read is gated');
-  assert.ok(/not running/i.test(toolText(secret)), 'app_not_running surfaced');
+  // get_clip on a NON-shared clip -> escalates to the app, which is not running
+  // here -> friendly app_not_running error (group membership is the only gate).
+  const priv = await rpc.call('tools/call', { name: 'get_clip', arguments: { id: ctx.privateId } });
+  assert.strictEqual(priv.result.isError, true, 'non-shared read is gated');
+  assert.ok(/not running/i.test(toolText(priv)), 'app_not_running surfaced');
 
   // delete_clip (gated) with no app -> app_not_running error, nothing deleted.
   const del = await rpc.call('tools/call', { name: 'delete_clip', arguments: { id: ctx.sharedId } });
   assert.strictEqual(del.result.isError, true);
   assert.ok(/not running/i.test(toolText(del)));
 
-  // SECURITY (large-clip secret): get_clip on a shared clip whose secret is past
-  // the 1024-char preview must re-scan the hydrated body and GATE it, not leak it.
+  // Large externalized shared clip: get_clip hydrates from clipboard-text/ and
+  // returns the FULL body, including the marker that sits past the 1024 preview.
   const big = await rpc.call('tools/call', { name: 'get_clip', arguments: { id: ctx.bigId } });
-  assert.strictEqual(big.result.isError, true, 'large-clip secret must be gated, not returned');
-  assert.ok(/not running/i.test(toolText(big)), 'routed to gated read (app not running here)');
-  assert.ok(!/ghp_/.test(toolText(big)), 'secret value never appears in the response');
+  const bigData = JSON.parse(toolText(big));
+  assert.ok(bigData.text && bigData.text.includes('TAIL-MARKER-9f3a'), 'full hydrated body returned past the preview');
 
   child.kill();
   if (stderr.trim()) { console.error('helper stderr:', stderr.trim()); }

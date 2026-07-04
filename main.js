@@ -27,7 +27,8 @@ const hmacAuth = require('./lib/hmac-auth');
 const mcpCore = require('./lib/mcp-core');
 const mcpPaths = require('./lib/mcp-paths');
 const mcpInstallers = require('./lib/mcp-installers');
-const secretGuard = require('./lib/secret-guard');
+const conflictModel = require('./lib/conflict-model');
+const reconciliation = require('./lib/reconciliation');
 const { ControlServer } = require('./lib/control-server');
 
 function guardBrokenPipe(stream) {
@@ -61,6 +62,7 @@ const SCRIPT_DIR = __dirname;
 const DATA_DIR = process.env.BOARDCLIP_DATA_DIR || (app.isPackaged ? app.getPath('userData') : SCRIPT_DIR);
 const DB_PATH = path.join(DATA_DIR, 'clipboard-history.json');
 const SETTINGS_PATH = path.join(DATA_DIR, 'clipboard-settings.json');
+const CONFLICTS_PATH = path.join(DATA_DIR, 'clipboard-conflicts.json');
 const IMG_DIR = path.join(DATA_DIR, 'clipboard-images');
 const TEXT_DIR = path.join(DATA_DIR, textBlobStore.TEXT_BLOB_DIRNAME);
 const HISTORY_BACKUP_DIR = path.join(DATA_DIR, 'clipboard-backups');
@@ -529,6 +531,36 @@ function saveHistory() {
   syncHookState();
 }
 
+function loadConflicts() {
+  try {
+    return conflictModel.normalizeConflictState(JSON.parse(fs.readFileSync(CONFLICTS_PATH, 'utf-8')));
+  } catch {
+    return conflictModel.normalizeConflictState({});
+  }
+}
+
+function saveConflictsFile() {
+  const startedAt = Date.now();
+  conflicts = conflictModel.normalizeConflictState(conflicts);
+  atomicWriteJson(CONFLICTS_PATH, conflicts, 2);
+  diagnostics.slow('conflicts.save.slow', Date.now() - startedAt, {
+    records: conflicts.records.length,
+    tombstones: conflicts.tombstones.length,
+    file_bytes: fileSummary(CONFLICTS_PATH).size || 0,
+  }, 50);
+  dataRevision++;
+  if (!suppressP2PNotify) p2pNotifyLocalChange();
+  notifyDataChanged();
+  scheduleSyncMerge();
+}
+
+function addConflictRecord(record, { save = true } = {}) {
+  const normalized = conflictModel.createConflictRecord(record);
+  conflicts = conflictModel.upsertConflictRecord(conflicts, normalized);
+  if (save) saveConflictsFile();
+  return normalized;
+}
+
 // Reflect current history state into the Windows hook's shared buffer so the
 // hook worker can synchronously decide whether closed-popup plain numpad
 // presses should quick-paste assigned slots.
@@ -545,6 +577,7 @@ function syncHookState() {
 let history = loadHistory();
 for (const h of history) migrateItemPin(h);
 for (const h of history) ensureItemId(h);
+let conflicts = loadConflicts();
 
 // --- Pin model ---
 // Unified state: item.pin is null/undefined for unpinned items, or an object
@@ -561,6 +594,9 @@ function numpadSlotOf(item) {
 }
 function groupsOf(item) {
   return clipboardModel.groupsOf(item);
+}
+function titleOf(item) {
+  return clipboardModel.titleOf(item);
 }
 function hasNumpadSlot(item, n) { return clipboardModel.hasNumpadSlot(item, n); }
 function ensurePin(item) {
@@ -623,11 +659,13 @@ function writeEditedTextToClipboard(text) {
   }
 }
 
-function applyExternalTextEdit({ id, originalText, sourceGroups, newText, writeClipboard = true }) {
+function applyExternalTextEdit({ id, originalText, originalTitle, sourceGroups, newText, newTitle, writeClipboard = true }) {
   const result = clipboardModel.applyTextEdit(history, {
     id,
     originalText,
+    originalTitle,
     newText,
+    newTitle,
     sourceGroups,
     groupTombstones: settings.group_tombstones,
     now: Date.now(),
@@ -635,6 +673,12 @@ function applyExternalTextEdit({ id, originalText, sourceGroups, newText, writeC
   });
   if (!result.changed) return result;
 
+  if (result.conflict) {
+    result.conflictRecord = addConflictRecord({
+      ...result.conflict,
+      source: 'editor',
+    });
+  }
   for (const tombstoneId of result.tombstoneIds || []) addTombstone(tombstoneId);
   if (result.tombstoneIds && result.tombstoneIds.length) saveSettingsFile();
   saveHistory();
@@ -643,6 +687,7 @@ function applyExternalTextEdit({ id, originalText, sourceGroups, newText, writeC
   if (writeClipboard) writeEditedTextToClipboard(newText);
   diagnostics.record('editor.text_applied', {
     reason: result.reason,
+    conflict: !!result.conflictRecord,
     tombstones: (result.tombstoneIds || []).length,
     text_len: String(newText || '').length,
   }, { forceFile: diagnostics.isEnabled() });
@@ -804,6 +849,13 @@ function remoteSettingsPayload() {
   delete remoteSave.p2p_device_id;
   delete remoteSave.popup_size;
   delete remoteSave.editor_bounds;
+  // Appearance variants: per-machine (glass support is hardware-dependent; the
+  // rest are dev-only auditioning knobs), never synced.
+  delete remoteSave.surface_style;
+  delete remoteSave.accent_variant;
+  delete remoteSave.ui_density;
+  delete remoteSave.ui_corners;
+  delete remoteSave.ui_borders;
   // AI Access: per-machine, never synced. (groups_shared_with_ai DOES sync - it
   // is user curation that should travel between machines.)
   delete remoteSave.mcp_secret;
@@ -833,8 +885,38 @@ function mergeSyncedSettings(remoteSettings) {
   return JSON.stringify(remoteSettingsPayload()) !== before;
 }
 
-function foldRemoteState(canonicalHistory, remoteHistory, remoteSettings) {
+function mergeSyncedConflicts(remoteConflicts) {
+  const before = JSON.stringify(conflicts);
+  conflicts = conflictModel.mergeConflictStates(conflicts, remoteConflicts || {});
+  return JSON.stringify(conflicts) !== before;
+}
+
+function captureTitleConflicts(localHistory, remoteHistory, source) {
+  const localById = new Map();
+  for (const item of Array.isArray(localHistory) ? localHistory : []) {
+    migrateItemPin(item);
+    ensureItemId(item);
+    localById.set(itemKey(item), item);
+  }
+  for (const item of Array.isArray(remoteHistory) ? remoteHistory : []) {
+    migrateItemPin(item);
+    ensureItemId(item);
+    const local = localById.get(itemKey(item));
+    if (!local || !clipboardModel.titleConflict(local, item)) continue;
+    addConflictRecord({
+      kind: 'title',
+      source,
+      targetId: itemKey(local),
+      left: clipboardModel.conflictSnapshot(local),
+      right: clipboardModel.conflictSnapshot(item),
+    }, { save: false });
+  }
+}
+
+function foldRemoteState(canonicalHistory, remoteHistory, remoteSettings, remoteConflicts) {
   mergeSyncedSettings(remoteSettings);
+  mergeSyncedConflicts(remoteConflicts);
+  captureTitleConflicts(canonicalHistory, remoteHistory, 'sync');
   const historyGroups = canonicalHistory.flatMap(h => groupsOf(h));
   settings.groups = mergeGroups(settings.groups, [...(remoteSettings && remoteSettings.groups || []), ...historyGroups]);
   return mergeHistories(canonicalHistory, remoteHistory);
@@ -1062,14 +1144,16 @@ async function directorySignature(dirPath) {
 }
 
 async function syncProviderSignature(syncPath) {
-  const [history, settingsFile, images] = await Promise.all([
+  const [history, settingsFile, conflictsFile, images] = await Promise.all([
     fileSignature(path.join(syncPath, 'clipboard-history.json')),
     fileSignature(path.join(syncPath, 'clipboard-settings.json')),
+    fileSignature(path.join(syncPath, 'clipboard-conflicts.json')),
     directorySignature(path.join(syncPath, 'clipboard-images')),
   ]);
   return {
     history,
     settings: settingsFile,
+    conflicts: conflictsFile,
     images,
   };
 }
@@ -1101,6 +1185,7 @@ async function updateSyncProviderCache(syncPath) {
 async function readRemoteState(syncPath) {
   const remoteDbPath = path.join(syncPath, 'clipboard-history.json');
   const remoteSettingsPath = path.join(syncPath, 'clipboard-settings.json');
+  const remoteConflictsPath = path.join(syncPath, 'clipboard-conflicts.json');
   const remoteImgDir = path.join(syncPath, 'clipboard-images');
   const remoteTextDir = path.join(syncPath, textBlobStore.TEXT_BLOB_DIRNAME);
   let remoteHistory = [];
@@ -1113,7 +1198,9 @@ async function readRemoteState(syncPath) {
   } catch {}
   let remoteSettings = {};
   try { remoteSettings = JSON.parse(await fs.promises.readFile(remoteSettingsPath, 'utf-8')); } catch {}
-  return { remoteHistory, remoteSettings };
+  let remoteConflicts = {};
+  try { remoteConflicts = JSON.parse(await fs.promises.readFile(remoteConflictsPath, 'utf-8')); } catch {}
+  return { remoteHistory, remoteSettings, remoteConflicts: conflictModel.normalizeConflictState(remoteConflicts) };
 }
 
 function safeReadJson(filePath, fallback) {
@@ -1141,14 +1228,18 @@ function groupCountsFromHistory(items) {
 function stateSummary(basePath) {
   const settingsPath = path.join(basePath, 'clipboard-settings.json');
   const historyPath = path.join(basePath, 'clipboard-history.json');
+  const conflictsPath = path.join(basePath, 'clipboard-conflicts.json');
   const remoteSettings = safeReadJson(settingsPath, {});
   const remoteHistory = safeReadJson(historyPath, []);
+  const remoteConflicts = conflictModel.normalizeConflictState(safeReadJson(conflictsPath, {}));
   return {
     base_path: basePath,
     settings_file: fileSummary(settingsPath),
     history_file: fileSummary(historyPath),
+    conflicts_file: fileSummary(conflictsPath),
     text_dir: fileSummary(path.join(basePath, textBlobStore.TEXT_BLOB_DIRNAME)),
     item_count: Array.isArray(remoteHistory) ? remoteHistory.length : null,
+    conflict_count: remoteConflicts.records.length,
     settings_groups: Array.isArray(remoteSettings.groups) ? remoteSettings.groups : [],
     history_group_counts: groupCountsFromHistory(remoteHistory),
     group_tombstones: normalizeGroupTombstones(remoteSettings.group_tombstones),
@@ -1235,14 +1326,17 @@ async function writeRemoteState(syncPath, canonicalHistory, canonicalSettings) {
   try { await fs.promises.mkdir(syncPath, { recursive: true }); } catch {}
   const remoteDbPath = path.join(syncPath, 'clipboard-history.json');
   const remoteSettingsPath = path.join(syncPath, 'clipboard-settings.json');
+  const remoteConflictsPath = path.join(syncPath, 'clipboard-conflicts.json');
   const remoteImgDir = path.join(syncPath, 'clipboard-images');
   const remoteTextDir = path.join(syncPath, textBlobStore.TEXT_BLOB_DIRNAME);
   const storedHistory = textBlobStore.prepareHistoryForStorage(canonicalHistory, TEXT_DIR);
   const nextHistoryJson = JSON.stringify(storedHistory);
   const nextSettingsJson = JSON.stringify(canonicalSettings, null, 2);
-  const [currentHistoryJson, currentSettingsJson] = await Promise.all([
+  const nextConflictsJson = JSON.stringify(conflictModel.normalizeConflictState(conflicts), null, 2);
+  const [currentHistoryJson, currentSettingsJson, currentConflictsJson] = await Promise.all([
     readFileUtf8IfExists(remoteDbPath),
     readFileUtf8IfExists(remoteSettingsPath),
+    readFileUtf8IfExists(remoteConflictsPath),
   ]);
   let currentStoredHistory = null;
   try {
@@ -1252,9 +1346,11 @@ async function writeRemoteState(syncPath, canonicalHistory, canonicalSettings) {
   const pushHistory = historyAssetDelta(storedHistory, currentStoredHistory);
   const wroteHistory = currentHistoryJson !== nextHistoryJson;
   const wroteSettings = currentSettingsJson !== nextSettingsJson;
+  const wroteConflicts = currentConflictsJson !== nextConflictsJson;
   await Promise.all([
     wroteHistory ? atomicWriteFileAsync(remoteDbPath, nextHistoryJson) : Promise.resolve(),
     wroteSettings ? atomicWriteFileAsync(remoteSettingsPath, nextSettingsJson) : Promise.resolve(),
+    wroteConflicts ? atomicWriteFileAsync(remoteConflictsPath, nextConflictsJson) : Promise.resolve(),
     syncRemoteAssets(remoteImgDir, remoteTextDir, { pushHistory }),
   ]);
   await updateSyncProviderCache(syncPath);
@@ -1263,9 +1359,11 @@ async function writeRemoteState(syncPath, canonicalHistory, canonicalSettings) {
     items: canonicalHistory.length,
     history_bytes: Buffer.byteLength(nextHistoryJson),
     settings_bytes: Buffer.byteLength(nextSettingsJson),
+    conflicts_bytes: Buffer.byteLength(nextConflictsJson),
     assets_to_push: pushHistory.length,
     wrote_history: wroteHistory,
     wrote_settings: wroteSettings,
+    wrote_conflicts: wroteConflicts,
   }, 150);
 }
 
@@ -1365,6 +1463,7 @@ function p2pStatePayload() {
     revision: p2p.revision,
     history: storedHistory,
     settings: remoteSettingsPayload(),
+    conflicts: conflictModel.normalizeConflictState(conflicts),
     images: historyImageNames(storedHistory),
     texts: historyTextRefs(storedHistory),
   };
@@ -1569,20 +1668,23 @@ async function p2pApplyState(state, { peerName, reason, fetchedAssets = 0, notif
   }
   const remoteHistory = textBlobStore.hydrateHistory(Array.isArray(state.history) ? state.history : [], TEXT_DIR);
   const previousSettingsJson = JSON.stringify(remoteSettingsPayload());
-  const canonicalHistory = foldRemoteState(history.slice(), remoteHistory, state.settings || {});
+  const previousConflictsJson = JSON.stringify(conflictModel.normalizeConflictState(conflicts));
+  const canonicalHistory = foldRemoteState(history.slice(), remoteHistory, state.settings || {}, state.conflicts || {});
   const recoveredImages = await recoverRecentOrphanImages(canonicalHistory);
   const localChanged = JSON.stringify(canonicalHistory) !== JSON.stringify(history);
   const settingsChanged = JSON.stringify(remoteSettingsPayload()) !== previousSettingsJson;
+  const conflictsChanged = JSON.stringify(conflictModel.normalizeConflictState(conflicts)) !== previousConflictsJson;
   if (localChanged) {
     history.length = 0;
     history.push(...canonicalHistory);
   }
-  if (localChanged || settingsChanged) {
+  if (localChanged || settingsChanged || conflictsChanged) {
     applyingSyncState = true;
     suppressP2PNotify = !notifyPeers;
     try {
-      saveHistory();
-      saveSettingsFile();
+      if (localChanged) saveHistory();
+      if (settingsChanged) saveSettingsFile();
+      if (conflictsChanged) saveConflictsFile();
     } finally {
       suppressP2PNotify = false;
       applyingSyncState = false;
@@ -1596,11 +1698,12 @@ async function p2pApplyState(state, { peerName, reason, fetchedAssets = 0, notif
     remote_items: remoteHistory.length,
     local_changed: localChanged,
     settings_changed: settingsChanged,
+    conflicts_changed: conflictsChanged,
     fetched_assets: fetchedAssets,
     recovered_images: recoveredImages,
     items: history.length,
   }, { forceFile: localChanged || fetchedAssets > 0 });
-  return { ok: true, local_changed: localChanged, settings_changed: settingsChanged, fetched_assets: fetchedAssets };
+  return { ok: true, local_changed: localChanged, settings_changed: settingsChanged, conflicts_changed: conflictsChanged, fetched_assets: fetchedAssets };
 }
 
 async function p2pPullPeer(peer, reason = 'discovery') {
@@ -1861,6 +1964,7 @@ async function syncMerge(options = {}) {
   let syncPaths = [];
   let localChanged = false;
   let settingsChanged = false;
+  let conflictsChanged = false;
   let shouldWriteRemotes = false;
   let syncSucceeded = false;
   let recoveredImages = 0;
@@ -1887,6 +1991,7 @@ async function syncMerge(options = {}) {
 
     let canonicalHistory = history.slice();
     const previousSettingsJson = JSON.stringify(remoteSettingsPayload());
+    const previousConflictsJson = JSON.stringify(conflictModel.normalizeConflictState(conflicts));
 
     for (const syncPath of syncPaths) {
       const providerStartedAt = Date.now();
@@ -1918,7 +2023,7 @@ async function syncMerge(options = {}) {
             };
           }
 
-          const { remoteHistory, remoteSettings } = await readRemoteState(syncPath);
+          const { remoteHistory, remoteSettings, remoteConflicts } = await readRemoteState(syncPath);
           await updateSyncProviderCache(syncPath);
           return {
             path: syncPath,
@@ -1926,17 +2031,20 @@ async function syncMerge(options = {}) {
             remote_changed: remoteChanged,
             full_sync: fullSync,
             remote_items: remoteHistory.length,
+            remote_conflicts: remoteConflicts.records.length,
             remote_history: remoteHistory,
             remote_settings: remoteSettings,
+            remote_conflicts_state: remoteConflicts,
             ms: Date.now() - providerStartedAt,
           };
         })(), SYNC_PROVIDER_READ_TIMEOUT_MS, `read ${syncPath}`);
 
         if (!providerResult.skipped) {
-          canonicalHistory = foldRemoteState(canonicalHistory, providerResult.remote_history, providerResult.remote_settings);
+          canonicalHistory = foldRemoteState(canonicalHistory, providerResult.remote_history, providerResult.remote_settings, providerResult.remote_conflicts_state);
           providerResult.canonical_items = canonicalHistory.length;
           delete providerResult.remote_history;
           delete providerResult.remote_settings;
+          delete providerResult.remote_conflicts_state;
         }
         providers.push(providerResult);
       } catch (error) {
@@ -1968,21 +2076,23 @@ async function syncMerge(options = {}) {
     recoveredImages = await recoverRecentOrphanImages(canonicalHistory);
     localChanged = JSON.stringify(canonicalHistory) !== JSON.stringify(history);
     settingsChanged = JSON.stringify(remoteSettingsPayload()) !== previousSettingsJson;
+    conflictsChanged = JSON.stringify(conflictModel.normalizeConflictState(conflicts)) !== previousConflictsJson;
     if (localChanged) {
       history.length = 0;
       history.push(...canonicalHistory);
     }
-    if (localChanged || settingsChanged) {
+    if (localChanged || settingsChanged || conflictsChanged) {
       applyingSyncState = true;
       try {
-        saveHistory();
-        saveSettingsFile();
+        if (localChanged) saveHistory();
+        if (settingsChanged) saveSettingsFile();
+        if (conflictsChanged) saveConflictsFile();
       } finally {
         applyingSyncState = false;
       }
     }
 
-    shouldWriteRemotes = hadLocalDirty || localChanged || settingsChanged;
+    shouldWriteRemotes = hadLocalDirty || localChanged || settingsChanged || conflictsChanged;
     const canonicalSettings = remoteSettingsPayload();
     if (shouldWriteRemotes) {
       await Promise.all(syncPaths.map(syncPath => (
@@ -2006,6 +2116,7 @@ async function syncMerge(options = {}) {
       providers,
       local_changed: localChanged,
       settings_changed: settingsChanged,
+      conflicts_changed: conflictsChanged,
       local_dirty: hadLocalDirty,
       force_read: force,
       full_sync: fullSync,
@@ -2028,6 +2139,7 @@ async function syncMerge(options = {}) {
         providers,
         local_changed: localChanged,
         settings_changed: settingsChanged,
+        conflicts_changed: conflictsChanged,
         local_dirty: hadLocalDirty,
         force_read: force,
         full_sync: fullSync,
@@ -2045,6 +2157,7 @@ async function syncMerge(options = {}) {
         paths: syncPaths,
         local_changed: localChanged,
         settings_changed: settingsChanged,
+        conflicts_changed: conflictsChanged,
         local_dirty: hadLocalDirty,
         force_read: force,
         full_sync: fullSync,
@@ -2515,13 +2628,78 @@ function currentColorScheme() {
 
 function appBackgroundColor() {
   if (process.platform === 'darwin') return '#00000000';
-  return nativeTheme.shouldUseDarkColors ? '#131313' : '#ffffff';
+  return nativeTheme.shouldUseDarkColors ? '#14171b' : '#ffffff';
+}
+
+// --- Native frosted glass for the popup pane -----------------------------
+// macOS gets real vibrancy (already wired); Windows 11 gets an acrylic
+// backdrop that blurs whatever sits behind the window (other apps + desktop).
+// Everything below is centralized so the popup window-creation site, the
+// live toggle, and the colour-scheme refresh all agree on one source of truth.
+function glassSupport() {
+  if (process.platform === 'darwin') return 'vibrancy';
+  if (process.platform === 'win32') {
+    const parts = String(os.release()).split('.');
+    if (Number(parts[0]) >= 10 && Number(parts[2] || 0) >= 22000) return 'acrylic';
+  }
+  return 'none';
+}
+function surfaceStylePref() {
+  return settings.surface_style === 'glass' || settings.surface_style === 'solid'
+    ? settings.surface_style
+    : 'auto';
+}
+function glassOn() {
+  if (surfaceStylePref() === 'solid') return false;
+  return glassSupport() !== 'none'; // 'auto' | 'glass' -> on wherever supported
+}
+function resolvedSurfaceStyle() { return glassOn() ? 'glass' : 'solid'; }
+// BrowserWindow options for the popup, spread into createPopup(). macOS keeps
+// transparent:true ALWAYS (transparent can't change post-creation), and toggles
+// the material at runtime instead, so glass<->solid never needs a window
+// recreate. Windows uses acrylic (transparent stays false).
+function popupSurfaceOptions() {
+  const support = glassSupport();
+  const on = glassOn();
+  if (support === 'vibrancy') {
+    return { transparent: true, vibrancy: on ? 'popover' : undefined, visualEffectState: 'active', backgroundColor: '#00000000' };
+  }
+  if (support === 'acrylic' && on) {
+    return { backgroundMaterial: 'acrylic', backgroundColor: '#00000000' };
+  }
+  return { backgroundColor: appBackgroundColor() };
+}
+// Re-apply the surface material to the live popup window without recreating it,
+// then tell the renderer to flip its data-surface attribute.
+function applySurfaceToPopup() {
+  if (!win || win.isDestroyed()) return;
+  const support = glassSupport();
+  const on = glassOn();
+  try {
+    if (support === 'vibrancy' && win.setVibrancy) win.setVibrancy(on ? 'popover' : null);
+    else if (support === 'acrylic' && win.setBackgroundMaterial) win.setBackgroundMaterial(on ? 'acrylic' : 'none');
+    win.setBackgroundColor(on ? '#00000000' : appBackgroundColor());
+  } catch {}
+  try { win.webContents.send('surface-changed', resolvedSurfaceStyle()); } catch {}
 }
 
 function notifyColorSchemeChanged() {
   if (!win || win.isDestroyed()) return;
-  win.setBackgroundColor(appBackgroundColor());
+  // Don't stamp an opaque background over a live acrylic/transparent window.
+  if (!glassOn()) win.setBackgroundColor(appBackgroundColor());
   win.webContents.send('color-scheme-changed', currentColorScheme());
+}
+
+// Non-surface appearance variants (accent/density/corners/borders), shared by
+// the editor + conflict windows so they match the popup. Surface stays solid on
+// those windows (a text editor / merge view reads better opaque).
+function appearanceVariantPayload() {
+  return {
+    accentVariant: settings.accent_variant,
+    uiDensity: settings.ui_density,
+    uiCorners: settings.ui_corners,
+    uiBorders: settings.ui_borders,
+  };
 }
 
 function configureMacPopupWindow(window) {
@@ -2546,10 +2724,7 @@ function createPopup() {
     show: false,
     skipTaskbar: true,
     resizable: true,
-    transparent: process.platform === 'darwin',
-    vibrancy: process.platform === 'darwin' ? 'popover' : undefined,
-    visualEffectState: process.platform === 'darwin' ? 'active' : undefined,
-    backgroundColor: appBackgroundColor(),
+    ...popupSurfaceOptions(),
     icon: APP_ICON_PATH,
     webPreferences: {
       preload: path.join(SCRIPT_DIR, 'preload.js'),
@@ -2576,6 +2751,7 @@ function createPopup() {
       path.join(SCRIPT_DIR, 'index.html'),
       path.join(SCRIPT_DIR, 'site', 'shared', 'clipboard-ui-core.js'),
       path.join(SCRIPT_DIR, 'site', 'shared', 'clipboard-popup.css'),
+      path.join(SCRIPT_DIR, 'site', 'shared', 'clipboard-tokens.css'),
     ]) {
       try { rendererWatchers.push(fs.watch(file, scheduleRendererReload)); } catch {}
     }
@@ -2906,6 +3082,7 @@ function refreshTray() {
 // each commit so the chain stays contiguous (in-place, not a fork).
 const editSessions = new Map();
 const editWindowsByClip = new Map();
+const conflictWindows = new Map();
 const EDIT_DRAFT_RE = /^boardclip-edit-[0-9a-f]{12}-\d+\.txt$/;   // in-flight drafts only
 let editSessionSeq = 0;
 
@@ -2920,11 +3097,39 @@ function pruneEditArchive() {
   });
 }
 
+function editorPayloadFrom(value, fallback = {}) {
+  if (value && typeof value === 'object') {
+    return {
+      text: String(value.text == null ? (fallback.text || '') : value.text),
+      title: clipboardModel.titleOf({ title: value.title }),
+    };
+  }
+  return {
+    text: String(value == null ? (fallback.text || '') : value),
+    title: clipboardModel.titleOf({ title: fallback.title }),
+  };
+}
+
 function writeDraftFile(session) {
   try {
     fs.mkdirSync(EDIT_ARCHIVE_DIR, { recursive: true });
-    fs.writeFileSync(session.draftPath, session.draftText != null ? session.draftText : '', 'utf-8');
+    fs.writeFileSync(session.draftPath, JSON.stringify({
+      version: 1,
+      text: session.draftText != null ? session.draftText : '',
+      title: session.draftTitle || '',
+    }), 'utf-8');
   } catch {}
+}
+
+function readDraftFile(sessionOrPath, fallback = {}) {
+  const draftPath = typeof sessionOrPath === 'string' ? sessionOrPath : sessionOrPath && sessionOrPath.draftPath;
+  let raw = null;
+  try { raw = fs.readFileSync(draftPath, 'utf-8'); } catch { return null; }
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object' && parsed.version === 1) return editorPayloadFrom(parsed, fallback);
+  } catch {}
+  return editorPayloadFrom(raw, fallback);
 }
 
 function showEditNotification(title, body) {
@@ -2948,20 +3153,29 @@ function notifyEditOutcome(result) {
 // Commit `text` to the clip, re-anchoring the session chain so the next commit
 // descends from this one (in-place, not a fork). For a new-note session the
 // first non-blank commit creates the clip.
-function commitEditSession(session, text, { final = false } = {}) {
-  if (text == null || text === session.lastCommitted) return null;
+function commitEditSession(session, payload, { final = false } = {}) {
+  const next = editorPayloadFrom(payload, { text: session.lastCommitted, title: session.lastCommittedTitle });
+  if (next.text === session.lastCommitted && next.title === session.lastCommittedTitle) return null;
   const result = applyExternalTextEdit({
     id: session.currentId,
     originalText: session.baseText,
+    originalTitle: session.baseTitle,
     sourceGroups: session.sourceGroups,
-    newText: text,
+    newText: next.text,
+    newTitle: next.title,
     writeClipboard: final,   // only a deliberate finish puts the text on the clipboard
   });
   if (result && result.changed) {
-    session.lastCommitted = text;
-    session.baseText = text;
+    session.lastCommitted = next.text;
+    session.lastCommittedTitle = next.title;
+    session.baseText = next.text;
+    session.baseTitle = next.title;
     if (result.item) { session.currentId = itemKey(result.item); session.isNew = false; }
     notifyEditOutcome(result);
+    if (result.conflictRecord && session.win && !session.win.isDestroyed()) {
+      session.inConflict = true;
+      try { session.win.webContents.send('editor-conflict', reconciliation.recordToReconciliation(result.conflictRecord)); } catch {}
+    }
   }
   return result;
 }
@@ -3000,7 +3214,7 @@ function createEditorWindow(session) {
     show: false,
     skipTaskbar: false,
     title: 'BoardClip - editor',
-    backgroundColor: appBackgroundColor(),
+    ...popupSurfaceOptions(),
     icon: APP_ICON_PATH,
     webPreferences: {
       preload: path.join(SCRIPT_DIR, 'editor-preload.js'),
@@ -3016,9 +3230,15 @@ function createEditorWindow(session) {
       editorWin.webContents.send('editor-init', {
         sessionId: session.id,
         text: session.baseText,
+        noteTitle: session.baseTitle,
+        find: session.initialFind || '',
+        findRegex: !!session.initialFindRegex,
+        focusTitle: !!session.initialFocusTitle,
         title: session.isNew ? 'New clip' : 'Edit clip',
         isNew: session.isNew,
         themeMode: settings.theme_mode || 'system',
+        surfaceStyle: resolvedSurfaceStyle(),
+        ...appearanceVariantPayload(),
       });
     } catch {}
   });
@@ -3032,9 +3252,8 @@ function createEditorWindow(session) {
     // Safety net: commit the latest on-disk draft (the IPC commit may have raced
     // the window teardown), then mark the draft finished so it's retained but not
     // re-recovered, and prune.
-    let draftText = null;
-    try { draftText = fs.readFileSync(session.draftPath, 'utf-8'); } catch {}
-    if (draftText != null) commitEditSession(session, draftText, { final: true });
+    const draftPayload = session.inConflict ? null : readDraftFile(session, { text: session.draftText, title: session.draftTitle });
+    if (draftPayload != null) commitEditSession(session, draftPayload, { final: true });
     try {
       const done = path.join(path.dirname(session.draftPath), `done-${path.basename(session.draftPath)}`);
       fs.renameSync(session.draftPath, done);
@@ -3043,16 +3262,31 @@ function createEditorWindow(session) {
   });
 }
 
+function sourceGroupsForNewNote(options) {
+  return [...new Set((Array.isArray(options && options.sourceGroups) ? options.sourceGroups : [])
+    .map(group => String(group || '').split('/').map(part => part.trim()).filter(Boolean).join('/'))
+    .filter(group => group && !group.startsWith('__')))];
+}
+
 // Open the editor for clip `id`, or a blank new-note editor when id is null.
-function openEditor(id) {
+function openEditor(id, options = {}) {
   if (id != null) {
     const openSessionId = editWindowsByClip.get(id);
     if (openSessionId) {
       const s = editSessions.get(openSessionId);
-      if (s && s.win && !s.win.isDestroyed()) { try { s.win.show(); s.win.focus(); } catch {} return; }
+      if (s && s.win && !s.win.isDestroyed()) {
+        try {
+          s.win.show();
+          s.win.focus();
+          if (options && options.find) s.win.webContents.send('editor-find', { query: options.find, regex: !!options.regex });
+          if (options && options.focusTitle) s.win.webContents.send('editor-find', { focusTitle: true });
+        } catch {}
+        return;
+      }
     }
   }
   let baseText = '';
+  let baseTitle = '';
   let sourceGroups = [];
   let isNew = true;
   let originalId = null;
@@ -3061,9 +3295,15 @@ function openEditor(id) {
     if (!item || item.type === 'image') return;
     textBlobStore.hydrateTextItem(item, TEXT_DIR);
     baseText = item.text || '';
+    baseTitle = titleOf(item);
     sourceGroups = [...groupsOf(item)];
     isNew = false;
     originalId = itemKey(item);
+  } else {
+    sourceGroups = sourceGroupsForNewNote(options);
+    for (const group of sourceGroups) {
+      if (!settings.groups || !settings.groups.includes(group)) applyGroupCreate(group);
+    }
   }
   const baseHash = clipboardModel.textHashForText(baseText);
   editSessionSeq += 1;
@@ -3072,10 +3312,17 @@ function openEditor(id) {
     originalId,
     currentId: originalId || '',
     baseText,
+    baseTitle,
     lastCommitted: baseText,
+    lastCommittedTitle: baseTitle,
     sourceGroups,
     isNew,
     draftText: baseText,
+    draftTitle: baseTitle,
+    inConflict: false,
+    initialFind: options && options.find ? String(options.find) : '',
+    initialFindRegex: !!(options && options.regex),
+    initialFocusTitle: !!(options && options.focusTitle),
     // Tag the draft with the base-content hash (the chain anchor) so its lineage
     // is explicit and recoverable straight from the filename.
     draftPath: path.join(EDIT_ARCHIVE_DIR, `boardclip-edit-${baseHash.slice(0, 12)}-${Date.now()}-${editSessionSeq}.txt`),
@@ -3085,6 +3332,109 @@ function openEditor(id) {
   editSessions.set(session.id, session);
   if (originalId != null) editWindowsByClip.set(originalId, session.id);
   createEditorWindow(session);
+}
+
+function applyConflictResolution(resolution) {
+  const payload = resolution && typeof resolution === 'object' ? resolution : {};
+  const conflictId = String(payload.id || '');
+  const record = conflicts.records.find(conflict => conflict.id === conflictId);
+  if (!record) return { ok: false, reason: 'not_found' };
+  const action = payload.action || 'save';
+  let snapshot = null;
+  if (action === 'accept_left') snapshot = record.left;
+  else if (action === 'accept_right') snapshot = record.right;
+
+  if (action === 'save' || snapshot) {
+    const text = snapshot ? String(snapshot.text || '') : String(payload.text || '');
+    const title = snapshot ? titleOf(snapshot) : clipboardModel.titleOf({ title: payload.title });
+    const targetId = record.targetId || snapshot && snapshot.id || record.right && record.right.id || record.left && record.left.id || '';
+    const target = findHistoryItem(targetId);
+    if (target && target.type !== 'image') {
+      textBlobStore.hydrateTextItem(target, TEXT_DIR);
+      applyExternalTextEdit({
+        id: itemKey(target),
+        originalText: target.text || '',
+        originalTitle: titleOf(target),
+        sourceGroups: groupsOf(target),
+        newText: text,
+        newTitle: title,
+        writeClipboard: false,
+      });
+    } else if (text.trim()) {
+      applyExternalTextEdit({
+        id: '',
+        originalText: '',
+        originalTitle: '',
+        sourceGroups: snapshot && snapshot.groups || [],
+        newText: text,
+        newTitle: title,
+        writeClipboard: false,
+      });
+    }
+  }
+
+  conflicts = conflictModel.removeConflictRecord(conflicts, conflictId);
+  saveConflictsFile();
+  return { ok: true };
+}
+
+function conflictListForRenderer() {
+  return conflictModel.normalizeConflictState(conflicts).records.map(record => {
+    const shaped = reconciliation.recordToReconciliation(record);
+    return shaped || record;
+  });
+}
+
+function openConflictWindow(conflictId) {
+  const id = String(conflictId || '');
+  const record = conflictListForRenderer().find(conflict => conflict.id === id);
+  if (!record) return { ok: false, reason: 'not_found' };
+  const existing = conflictWindows.get(id);
+  if (existing && !existing.isDestroyed()) {
+    try { existing.show(); existing.focus(); } catch {}
+    return { ok: true };
+  }
+  const conflictWin = new BrowserWindow({
+    ...editorBoundsFromSettings(),
+    minWidth: 520,
+    minHeight: 340,
+    frame: false,
+    resizable: true,
+    show: false,
+    skipTaskbar: false,
+    title: 'BoardClip - resolve conflict',
+    ...popupSurfaceOptions(),
+    icon: APP_ICON_PATH,
+    webPreferences: {
+      preload: path.join(SCRIPT_DIR, 'editor-preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  });
+  conflictWindows.set(id, conflictWin);
+  const sessionId = `conflict:${id}`;
+  conflictWin.loadFile(path.join(SCRIPT_DIR, 'editor.html'));
+  conflictWin.once('ready-to-show', () => { try { conflictWin.show(); conflictWin.focus(); } catch {} });
+  conflictWin.webContents.on('did-finish-load', () => {
+    try {
+      conflictWin.webContents.send('editor-init', {
+        sessionId,
+        text: '',
+        noteTitle: '',
+        title: 'Resolve conflict',
+        themeMode: settings.theme_mode || 'system',
+        surfaceStyle: resolvedSurfaceStyle(),
+        ...appearanceVariantPayload(),
+      });
+      conflictWin.webContents.send('editor-conflict', record);
+    } catch {}
+  });
+  conflictWin.on('resize', () => scheduleEditorBoundsSave(conflictWin));
+  conflictWin.on('move', () => scheduleEditorBoundsSave(conflictWin));
+  conflictWin.on('closed', () => {
+    if (conflictWindows.get(id) === conflictWin) conflictWindows.delete(id);
+  });
+  return { ok: true };
 }
 
 // ORPHAN RECOVERY: re-apply any in-flight edit draft left behind by a previous
@@ -3099,12 +3449,12 @@ function recoverOrphanedEdits() {
     for (const name of files) {
       if (!EDIT_DRAFT_RE.test(name)) continue;
       const p = path.join(dir, name);
-      let text;
-      try { text = fs.readFileSync(p, 'utf-8'); } catch { continue; }
+      const draft = readDraftFile(p);
+      if (!draft) continue;
       // Recover only if not already a live clip (i.e. never committed). Add as a
       // new clip - fork-safe, never overwrites.
-      if (text.trim() && !history.some(it => (it.text || '') === text)) {
-        const result = applyExternalTextEdit({ id: '', originalText: '', sourceGroups: [], newText: text, writeClipboard: false });
+      if (draft.text.trim() && !history.some(it => (it.text || '') === draft.text)) {
+        const result = applyExternalTextEdit({ id: '', originalText: '', originalTitle: '', sourceGroups: [], newText: draft.text, newTitle: draft.title, writeClipboard: false });
         if (result && result.changed) recovered++;
       }
       // Retire the draft: rename to done- in the archive dir (retained, not re-recovered).
@@ -3208,6 +3558,7 @@ function applyGroupDelete(name) {
 function applyGroupAssign(id, group) {
   const item = findHistoryItem(id);
   if (!item || !group) return false;
+  if (!settings.groups || !settings.groups.includes(group)) applyGroupCreate(group);
   const pin = ensurePin(item);
   if (!pin.groups) pin.groups = [];
   const gIdx = pin.groups.indexOf(group);
@@ -3227,6 +3578,16 @@ function applyDeleteItem(id) {
   if (index < 0) return false;
   deleteHistoryIndex(index);
   saveSettingsFile();
+  saveHistory();
+  return true;
+}
+
+// Name a clip (text OR image). Reuses the model's title helper so the name +
+// sync-merge metadata (titleUpdatedAt) match the editor's title-edit path.
+function applyClipTitle(id, title) {
+  const item = findHistoryItem(id);
+  if (!item) return false;
+  clipboardModel.setTitleMetadata(item, title);
   saveHistory();
   return true;
 }
@@ -3399,17 +3760,6 @@ function notifyAiAccessChanged() {
   }
 }
 
-// Ids of clips the secret guard would withhold - surfaced so the UI can badge
-// risky clips. Computed on a copy; never mutates or persists the history items.
-function aiSecretFlags() {
-  const ids = [];
-  for (const item of history) {
-    if (item.type === 'image' || item.shareAnyway) continue;
-    if (secretGuard.isLikelySecret(item.text != null ? item.text : item.textPreview)) ids.push(itemKey(item));
-  }
-  return ids;
-}
-
 // ---- Approval modal ----
 function requestApproval(request) {
   return new Promise(resolve => {
@@ -3454,6 +3804,12 @@ function requestApproval(request) {
     modal.loadFile(path.join(SCRIPT_DIR, 'mcp-approval.html'));
     modal.once('ready-to-show', () => { try { modal.show(); modal.focus(); } catch {} });
     modal.webContents.on('did-finish-load', () => {
+      try {
+        modal.webContents.send('approval-settings', {
+          theme: settings.theme_mode === 'light' || settings.theme_mode === 'dark' ? settings.theme_mode : currentColorScheme(),
+          accent: settings.accent_variant, density: settings.ui_density, corners: settings.ui_corners, borders: settings.ui_borders,
+        });
+      } catch {}
       try { modal.webContents.send('approval-request', payload); } catch {}
     });
     modal.on('closed', () => finish('deny'));
@@ -3612,6 +3968,9 @@ function setupIPC() {
         update_support: support,
         diagnostics_file: DIAGNOSTICS_PATH,
         p2p: p2pStatus(),
+        surface_style: resolvedSurfaceStyle(),
+        surface_supported: glassSupport() !== 'none',
+        debug_variants: (!app.isPackaged || !!process.env.BOARDCLIP_DEBUG_VARIANTS),
       };
     })(),
     shortcut_info: {
@@ -3639,6 +3998,8 @@ function setupIPC() {
   ipcMain.handle('copy', (_, text) => clipboard.writeText(text || ''));
 
   ipcMain.handle('delete-item', (_, id) => applyDeleteItem(id));
+
+  ipcMain.handle('set-clip-title', (_, id, title) => applyClipTitle(id, title));
 
   ipcMain.handle('delete-all', () => {
     const kept = [];
@@ -3681,7 +4042,20 @@ function setupIPC() {
     if (body.regex_search !== undefined) settings.regex_search = !!body.regex_search;
     if (body.theme_mode !== undefined && ['system', 'light', 'dark'].includes(body.theme_mode)) settings.theme_mode = body.theme_mode;
     if (body.diagnostics_enabled !== undefined) settings.diagnostics_enabled = !!body.diagnostics_enabled;
+    // Appearance variants (per-machine; not synced). surface_style is a real
+    // user setting; the others are dev-only auditioning knobs that persist so a
+    // chosen combo survives a restart.
+    let surfaceChanged = false;
+    if (body.surface_style !== undefined && ['auto', 'glass', 'solid'].includes(body.surface_style)) {
+      surfaceChanged = settings.surface_style !== body.surface_style;
+      settings.surface_style = body.surface_style;
+    }
+    if (body.accent_variant !== undefined && ['blue', 'teal', 'mono'].includes(body.accent_variant)) settings.accent_variant = body.accent_variant;
+    if (body.ui_density !== undefined && ['normal', 'compact'].includes(body.ui_density)) settings.ui_density = body.ui_density;
+    if (body.ui_corners !== undefined && ['soft', 'sharp'].includes(body.ui_corners)) settings.ui_corners = body.ui_corners;
+    if (body.ui_borders !== undefined && ['bordered', 'borderless'].includes(body.ui_borders)) settings.ui_borders = body.ui_borders;
     saveSettingsFile();
+    if (surfaceChanged) applySurfaceToPopup();
     pruneHistory();
   });
 
@@ -3712,32 +4086,45 @@ function setupIPC() {
     return { path: dest };
   });
 
-  ipcMain.handle('open-editor', (_, id) => {
-    openEditor(id);
+  ipcMain.handle('open-editor', (_, id, options) => {
+    openEditor(id, options || {});
   });
-  ipcMain.handle('new-note', () => {
-    openEditor(null);
+  ipcMain.handle('new-note', (_, options) => {
+    openEditor(null, options || {});
   });
 
   // Built-in editor window streams: draft on every keystroke (crash-safe),
   // commit on idle/save/close, close. Keyed by the session id main assigned.
-  ipcMain.on('editor-draft', (_, sessionId, text) => {
+  ipcMain.on('editor-draft', (_, sessionId, payload) => {
     const session = editSessions.get(sessionId);
     if (!session) return;
-    session.draftText = String(text == null ? '' : text);
+    const next = editorPayloadFrom(payload, { text: session.draftText, title: session.draftTitle });
+    session.draftText = next.text;
+    session.draftTitle = next.title;
     writeDraftFile(session);
   });
-  ipcMain.on('editor-commit', (_, sessionId, text) => {
+  ipcMain.on('editor-commit', (_, sessionId, payload) => {
     const session = editSessions.get(sessionId);
     if (!session) return;
-    session.draftText = String(text == null ? '' : text);
+    const next = editorPayloadFrom(payload, { text: session.draftText, title: session.draftTitle });
+    session.draftText = next.text;
+    session.draftTitle = next.title;
     writeDraftFile(session);
-    commitEditSession(session, session.draftText);
+    commitEditSession(session, next);
   });
   ipcMain.on('editor-close', (_, sessionId) => {
+    if (String(sessionId || '').startsWith('conflict:')) {
+      const conflictId = String(sessionId).slice('conflict:'.length);
+      const conflictWin = conflictWindows.get(conflictId);
+      if (conflictWin && !conflictWin.isDestroyed()) { try { conflictWin.close(); } catch {} }
+      return;
+    }
     const session = editSessions.get(sessionId);
     if (session && session.win && !session.win.isDestroyed()) { try { session.win.close(); } catch {} }
   });
+  ipcMain.handle('resolve-conflict', (_, payload) => applyConflictResolution(payload));
+  ipcMain.handle('get-conflicts', () => conflictListForRenderer());
+  ipcMain.handle('open-conflict', (_, id) => openConflictWindow(id));
 
   ipcMain.handle('open-image', (_, id) => {
     const item = findHistoryItem(id);
@@ -3859,16 +4246,6 @@ function setupIPC() {
     saveSettingsFile();
     return aiAccessState();
   });
-  ipcMain.handle('get-ai-secret-ids', () => aiSecretFlags());
-  ipcMain.handle('set-clip-share-anyway', (_, id, value) => {
-    const item = findHistoryItem(id);
-    if (!item) return false;
-    if (value) item.shareAnyway = true;
-    else delete item.shareAnyway;
-    saveHistory();
-    return true;
-  });
-
   // Approval modal -> main bridge.
   ipcMain.on('approval-decide', (_, id, choice) => {
     const pending = pendingApprovals.get(id);

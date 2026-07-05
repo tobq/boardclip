@@ -1,10 +1,23 @@
 name: Build desktop binaries
 
+# Continuous delivery: every push to main that touches app code rebuilds the
+# installers and republishes the rolling "latest" GitHub release the website
+# download button points at (/releases/latest/download/...). Keeps the installer
+# in lockstep with the git-based auto-update. Site-only / docs-only pushes are
+# skipped (Netlify handles those). Manual runs via workflow_dispatch.
 on:
   workflow_dispatch:
   push:
-    tags:
-      - 'v*'
+    branches:
+      - main
+    paths-ignore:
+      # Pure marketing/docs only. site/shared/** is shared UI the APP bundles, so
+      # it is deliberately NOT ignored (those changes must rebuild the installer).
+      - 'site/index.html'
+      - 'site/styles.css'
+      - 'site/assets/**'
+      - '**/*.md'
+      - '.github/workflows/netlify.yml'
 
 permissions:
   contents: write
@@ -87,10 +100,9 @@ jobs:
           if-no-files-found: error
 
   publish:
-    name: Publish GitHub release assets
+    name: Publish latest build
     runs-on: ubuntu-24.04
     needs: build
-    if: startsWith(github.ref, 'refs/tags/')
     steps:
       - name: Download build artifacts
         uses: actions/download-artifact@v7
@@ -98,8 +110,16 @@ jobs:
           path: release
           merge-multiple: true
 
-      - name: Publish GitHub release assets
+      # One rolling release (tag "latest"), refreshed every run + marked as the
+      # repo's latest, so /releases/latest/download/<asset> always serves the
+      # current build. Versioned v* releases (if ever cut) archive alongside it.
+      - name: Publish rolling "latest" release
         uses: softprops/action-gh-release@v3
         with:
+          tag_name: latest
+          name: Latest build
+          prerelease: false
+          make_latest: true
           files: release/*
-          overwrite_files: true
+          body: |
+            Rolling build from `${{ github.sha }}`, auto-published on every push to `main`.

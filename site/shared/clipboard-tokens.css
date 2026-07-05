@@ -143,7 +143,7 @@
   --pin: #d97706;
   --mark-bg: color-mix(in srgb, var(--accent) 16%, transparent);
   --mark-fg: var(--blue-600);
-  --glass-tint: rgba(255, 255, 255, .55);
+  --glass-tint: rgba(255, 255, 255, .5);
   --glass-border: color-mix(in srgb, var(--g-900) 12%, transparent);
 }
 
@@ -161,9 +161,9 @@
   --input: color-mix(in srgb, var(--g-900) 62%, transparent);
 }
 :root[data-theme="light"][data-surface="glass"], .bc-popup[data-theme="light"][data-surface="glass"] {
-  --surface: color-mix(in srgb, #ffffff 62%, transparent);
-  --surface2: color-mix(in srgb, var(--g-050) 62%, transparent);
-  --input: color-mix(in srgb, #ffffff 66%, transparent);
+  --surface: color-mix(in srgb, #ffffff 54%, transparent);   /* whiter + more translucent so the blur shows */
+  --surface2: color-mix(in srgb, #ffffff 72%, transparent);  /* WHITE, not grey — brighter frost for hover/selected */
+  --input: color-mix(in srgb, #ffffff 72%, transparent);
 }
 
 /* Accent: blue is the default (no block). accent-bg / mark-bg re-derive

@@ -208,8 +208,19 @@ npx --yes netlify-cli@latest deploy --prod --dir site
 Verify the edge served new bytes (bypasses browser cache):
 `curl -s "https://boardclip.app/shared/clipboard-ui-core.js?cb=$(date +%s)" | grep -c createClipController`.
 
-The desktop app does NOT deploy from `main` — it ships via the release-binaries
-workflow on a release/tag.
+Desktop app distribution has TWO consistent paths, both driven by `main`:
+- **Git/CLI installs** auto-update via `lib/auto-update.js` — polls the latest
+  `main` commit (GitHub API) every ~4h + 90s after launch, runs `update.bat`
+  (git pull → hot-reload if only `index.html`/`site/shared/*` changed, else
+  relaunch). Disabled on dirty checkouts (protects local edits) and on packaged
+  builds (no `.git`).
+- **Installer downloads** (`.exe`/`.dmg`): `release-binaries.yml` now runs on
+  every push to `main` that touches app code (`paths-ignore: site/**`, docs) and
+  republishes a single rolling **`latest`** GitHub release (`make_latest: true`)
+  that the site's `/releases/latest/download/...` button points at. So the
+  download stays in lockstep with `main` — no version tag needed. (Packaged
+  installs still don't self-update; that'd need electron-updater — not wired.)
+Tagging is optional/archival now, not required to ship.
 
 ## Debugging
 

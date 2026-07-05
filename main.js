@@ -304,6 +304,26 @@ async function atomicWriteFileAsync(filePath, data) {
   await fs.promises.rename(tmpPath, filePath);
 }
 
+// Overwrite an existing file IN PLACE (open-truncate-write), never via a
+// cross-name rename. Google Drive File Stream implements rename-over-existing
+// by orphaning the old Drive object and creating a NEW one, so tmp+rename in a
+// Drive folder silently forks `clipboard-history.json` into two same-named
+// objects that different devices then bind to permanently (the sync split).
+// In place, DriveFS updates the SAME object. A crash mid-write is self-healing:
+// the local authoritative copy re-writes the remote on the next sync, and a
+// concurrent reader that sees a torn file just fails JSON.parse and treats the
+// remote as empty (union-with-local loses nothing). Used for cloud writes only;
+// local (real-FS) writes keep atomic tmp+rename.
+async function writeInPlace(filePath, data) {
+  const fh = await fs.promises.open(filePath, 'w');
+  try {
+    await fh.writeFile(data);
+    try { await fh.sync(); } catch {}
+  } finally {
+    await fh.close();
+  }
+}
+
 function loadSettings() {
   try {
     return { ...DEFAULT_SETTINGS, ...JSON.parse(fs.readFileSync(SETTINGS_PATH, 'utf-8')) };
@@ -1208,7 +1228,69 @@ async function updateSyncProviderCache(syncPath) {
   });
 }
 
+// Google Drive File Stream can leave a sync folder with FORKED same-name objects
+// (`clipboard-history (1).json`, `clipboard-settings (2).json`) and orphaned
+// `<name>.<pid>.<ts>.tmp` files from interrupted renames. Different devices then
+// bind to different forks and never see each other's writes (the sync split this
+// codebase was built to survive). Before every remote read, fold any fork/tmp
+// content back into the canonical file and delete the strays, so a folder that
+// duplicated once self-heals to a single object on the next sync. No-op (one
+// readdir) when the folder is clean, which is the overwhelmingly common case.
+const FORK_HISTORY_RE = /^clipboard-history \(\d+\)\.json$/;
+const FORK_SETTINGS_RE = /^clipboard-settings \(\d+\)\.json$/;
+const LEAKED_HISTORY_TMP_RE = /^clipboard-history\.json\.\d+\.\d+\.tmp$/;
+const LEAKED_SETTINGS_TMP_RE = /^clipboard-settings\.json\.\d+\.\d+\.tmp$/;
+
+async function healForkedSyncFiles(syncPath) {
+  let names;
+  try { names = await fs.promises.readdir(syncPath); } catch { return; }
+  const historyForks = names.filter(n => FORK_HISTORY_RE.test(n) || LEAKED_HISTORY_TMP_RE.test(n));
+  const settingsForks = names.filter(n => FORK_SETTINGS_RE.test(n) || LEAKED_SETTINGS_TMP_RE.test(n));
+  if (!historyForks.length && !settingsForks.length) return;
+
+  const canonHistoryPath = path.join(syncPath, 'clipboard-history.json');
+  const canonSettingsPath = path.join(syncPath, 'clipboard-settings.json');
+  const readJson = async (p) => { try { return JSON.parse(await fs.promises.readFile(p, 'utf-8')); } catch { return null; } };
+  const unlink = async (n) => { try { await fs.promises.unlink(path.join(syncPath, n)); } catch {} };
+  const healed = { path: syncPath, historyForks: historyForks.length, settingsForks: settingsForks.length, itemsRecovered: 0 };
+
+  if (historyForks.length) {
+    let merged = Array.isArray(await readJson(canonHistoryPath)) ? await readJson(canonHistoryPath) : [];
+    const before = merged.length;
+    for (const n of historyForks) {
+      const forkItems = await readJson(path.join(syncPath, n));
+      // Pure structural union (no tombstones): a heal must NEVER drop a clip.
+      // Tombstone-based deletion is applied afterward by the normal conflict-
+      // aware syncMerge, not here.
+      if (Array.isArray(forkItems) && forkItems.length) merged = clipboardModel.mergeHistories(merged, forkItems, {});
+    }
+    healed.itemsRecovered = merged.length - before;
+    await writeInPlace(canonHistoryPath, JSON.stringify(merged));
+    for (const n of historyForks) await unlink(n);
+  }
+
+  if (settingsForks.length) {
+    const canon = (await readJson(canonSettingsPath)) || {};
+    for (const n of settingsForks) {
+      const fork = await readJson(path.join(syncPath, n));
+      if (!fork || typeof fork !== 'object') continue;
+      canon.tombstones = normalizeTombstones([...(canon.tombstones || []), ...(fork.tombstones || [])]);
+      canon.group_tombstones = normalizeGroupTombstones([...(canon.group_tombstones || []), ...(fork.group_tombstones || [])]);
+      // Deterministically converge the shared P2P secret (min wins) so a fork
+      // that carried a different secret can't leave the two devices unable to
+      // pair over LAN — the exact failure that made this split unrecoverable.
+      const secrets = [canon.p2p_secret, fork.p2p_secret].filter(Boolean).sort();
+      if (secrets.length) canon.p2p_secret = secrets[0];
+    }
+    await writeInPlace(canonSettingsPath, JSON.stringify(canon, null, 2));
+    for (const n of settingsForks) await unlink(n);
+  }
+
+  diagnostics.record('sync.heal_forks', healed, { forceFile: true });
+}
+
 async function readRemoteState(syncPath) {
+  await healForkedSyncFiles(syncPath);
   const remoteDbPath = path.join(syncPath, 'clipboard-history.json');
   const remoteSettingsPath = path.join(syncPath, 'clipboard-settings.json');
   const remoteConflictsPath = path.join(syncPath, 'clipboard-conflicts.json');
@@ -1374,9 +1456,9 @@ async function writeRemoteState(syncPath, canonicalHistory, canonicalSettings) {
   const wroteSettings = currentSettingsJson !== nextSettingsJson;
   const wroteConflicts = currentConflictsJson !== nextConflictsJson;
   await Promise.all([
-    wroteHistory ? atomicWriteFileAsync(remoteDbPath, nextHistoryJson) : Promise.resolve(),
-    wroteSettings ? atomicWriteFileAsync(remoteSettingsPath, nextSettingsJson) : Promise.resolve(),
-    wroteConflicts ? atomicWriteFileAsync(remoteConflictsPath, nextConflictsJson) : Promise.resolve(),
+    wroteHistory ? writeInPlace(remoteDbPath, nextHistoryJson) : Promise.resolve(),
+    wroteSettings ? writeInPlace(remoteSettingsPath, nextSettingsJson) : Promise.resolve(),
+    wroteConflicts ? writeInPlace(remoteConflictsPath, nextConflictsJson) : Promise.resolve(),
     syncRemoteAssets(remoteImgDir, remoteTextDir, { pushHistory }),
   ]);
   await updateSyncProviderCache(syncPath);

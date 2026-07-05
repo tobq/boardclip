@@ -108,7 +108,7 @@ async function main() {
 
   const tools = await rpc.call('tools/list', {});
   const names = (tools.result.tools || []).map(t => t.name);
-  for (const expected of ['list_context', 'list_clips', 'get_clip', 'delete_clip', 'copy_to_clipboard']) {
+  for (const expected of ['list_context', 'list_clips', 'get_clip', 'edit_clip', 'delete_clip', 'copy_to_clipboard']) {
     assert.ok(names.includes(expected), `tool ${expected} registered`);
   }
 
@@ -133,6 +133,11 @@ async function main() {
   const del = await rpc.call('tools/call', { name: 'delete_clip', arguments: { id: ctx.sharedId } });
   assert.strictEqual(del.result.isError, true);
   assert.ok(/not running/i.test(toolText(del)));
+
+  // edit_clip (gated) with no app -> app_not_running error, nothing changed.
+  const edit = await rpc.call('tools/call', { name: 'edit_clip', arguments: { id: ctx.sharedId, text: 'edited body' } });
+  assert.strictEqual(edit.result.isError, true, 'edit is gated (forwarded to app)');
+  assert.ok(/not running/i.test(toolText(edit)));
 
   // Large externalized shared clip: get_clip hydrates from clipboard-text/ and
   // returns the FULL body, including the marker that sits past the 1024 preview.

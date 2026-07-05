@@ -694,6 +694,28 @@ function applyExternalTextEdit({ id, originalText, originalTitle, sourceGroups, 
   return result;
 }
 
+// Edit an existing TEXT history item in place, preserving its pin/groups/numpad +
+// title. The single item-based entry to the content-addressed edit: hydrates the
+// blob once, then routes through applyExternalTextEdit (which re-derives the
+// content-key id and tombstones the old one). `newText` may be a string or a
+// (currentText) => string resolver, so callers that transform the existing body
+// (e.g. append) reuse the hydrated text without a second blob read. Shared by
+// conflict/unify resolution + the MCP edit_clip tool.
+function applyTextEditToItem(item, { newText, newTitle } = {}) {
+  textBlobStore.hydrateTextItem(item, TEXT_DIR);
+  const current = String(item.text || '');
+  const resolved = typeof newText === 'function' ? newText(current) : String(newText != null ? newText : current);
+  return applyExternalTextEdit({
+    id: itemKey(item),
+    originalText: current,
+    originalTitle: titleOf(item),
+    sourceGroups: groupsOf(item),
+    newText: resolved,
+    newTitle: newTitle !== undefined ? newTitle : titleOf(item),
+    writeClipboard: false, // an edit-by-id never hijacks the user's clipboard
+  });
+}
+
 function getStorageBytes() {
   let total = 0;
   try { total = fs.statSync(DB_PATH).size; } catch {}
@@ -3350,16 +3372,7 @@ function applyConflictResolution(resolution) {
     const targetId = record.targetId || snapshot && snapshot.id || record.right && record.right.id || record.left && record.left.id || '';
     const target = findHistoryItem(targetId);
     if (target && target.type !== 'image') {
-      textBlobStore.hydrateTextItem(target, TEXT_DIR);
-      applyExternalTextEdit({
-        id: itemKey(target),
-        originalText: target.text || '',
-        originalTitle: titleOf(target),
-        sourceGroups: groupsOf(target),
-        newText: text,
-        newTitle: title,
-        writeClipboard: false,
-      });
+      applyTextEditToItem(target, { newText: text, newTitle: title });
     } else if (text.trim()) {
       applyExternalTextEdit({
         id: '',
@@ -3817,12 +3830,13 @@ function requestApproval(request) {
 }
 
 function buildApprovalRequest(tool, args, targetItem, client) {
-  const dangerTools = new Set(['delete_clip', 'copy_to_clipboard', 'paste_clip']);
+  const dangerTools = new Set(['delete_clip', 'edit_clip', 'copy_to_clipboard', 'paste_clip']);
   // Read tools (list_context/list_clips/get_clip-shared/search-shared) are served
   // locally in the helper and never reach this function - so only forwarded/gated
   // tools need entries here.
   const meta = {
     add_clip: 'Add a new clip to your history',
+    edit_clip: 'Edit the text of a clip',
     pin_clip: 'Pin / unpin a clip',
     set_numpad: 'Assign a clip to a numpad slot',
     assign_group: 'Change a clip\'s group',
@@ -3837,6 +3851,7 @@ function buildApprovalRequest(tool, args, targetItem, client) {
   };
   let detail = '';
   if (tool === 'add_clip') detail = String(args.text || '');
+  else if (tool === 'edit_clip') detail = `${args.append ? 'Append' : 'New text'}:\n${String(args.text || '')}`;
   else if (tool === 'copy_to_clipboard') detail = args.text != null ? String(args.text) : previewForItem(targetItem);
   else if (tool === 'search_all') detail = `Query: ${args.query || ''}`;
   else if (tool === 'create_group' || tool === 'delete_group') detail = `Group: ${args.name || ''}`;
@@ -3860,7 +3875,10 @@ function previewForItem(item) {
 }
 
 // ---- Action gating + dispatch ----
-const MCP_ALWAYS_GATED = new Set(['delete_clip', 'copy_to_clipboard', 'paste_clip', 'read_clip', 'search_all', 'image_path']);
+// edit_clip overwrites existing clip content (lossy), so it prompts every time
+// like delete_clip rather than being free-on-shared. Users can still grant a
+// per-tool "always allow" from the modal to make repeated edits frictionless.
+const MCP_ALWAYS_GATED = new Set(['delete_clip', 'edit_clip', 'copy_to_clipboard', 'paste_clip', 'read_clip', 'search_all', 'image_path']);
 const MCP_MANAGE_FREE_ON_SHARED = new Set(['pin_clip', 'set_numpad', 'assign_group', 'create_group', 'delete_group', 'add_clip']);
 
 function mcpNeedsApproval(tool, targetItem) {
@@ -3921,6 +3939,19 @@ function mcpExecute(tool, args) {
     }
     case 'add_clip':
       return { ok: applyAddText(args.text, args.group || null) };
+    case 'edit_clip': {
+      const item = findHistoryItem(args.id);
+      if (!item) throw new Error('not_found');
+      if (item.type === 'image') throw new Error('not_a_text_clip');
+      // append newline-joins onto the hydrated body; otherwise replace. Metadata
+      // (pin/groups/numpad/title) is preserved by applyTextEditToItem.
+      const result = applyTextEditToItem(item, {
+        newText: cur => (args.append && cur ? `${cur}\n${args.text}` : String(args.text)),
+        newTitle: args.title != null ? String(args.title) : undefined,
+      });
+      const saved = result && result.item ? result.item : item;
+      return { ok: !!(result && result.changed), reason: result && result.reason, id: itemKey(saved) };
+    }
     case 'pin_clip':
       return { ok: applyPinToggle(args.id) };
     case 'set_numpad':

@@ -166,6 +166,16 @@ server.registerTool('add_clip', {
   inputSchema: { text: z.string().min(1), group: z.string().optional() },
 }, async ({ text, group }) => runForward('add_clip', { text, group: group || null }));
 
+server.registerTool('edit_clip', {
+  description: 'Replace (or append to) the text of an existing TEXT clip in place, keeping its pin, groups, and numpad slot. Text clips are content-addressed, so editing changes the clip id - the new id is returned in the result. Images cannot be edited. Pops an approval prompt.',
+  inputSchema: {
+    id: z.string(),
+    text: z.string().min(1),
+    title: z.string().optional().describe('Optional new title/name for the clip.'),
+    append: z.boolean().optional().describe('Append text to the existing content (newline-joined) instead of replacing it.'),
+  },
+}, async ({ id, text, title, append }) => runForward('edit_clip', { id, text, title: title != null ? title : null, append: !!append }));
+
 server.registerTool('pin_clip', {
   description: 'Toggle the pin (star) on a clip by id.',
   inputSchema: { id: z.string() },

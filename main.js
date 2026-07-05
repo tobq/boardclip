@@ -2878,7 +2878,15 @@ function createPopup() {
     win.on('blur', () => {
       setTimeout(() => {
         if (Date.now() < ignoreBlurUntil) return;
-        if (win && !win.isDestroyed() && !win.isFocused()) win.hide();
+        if (win && !win.isDestroyed() && !win.isFocused()) {
+          // Focus moved to one of BoardClip's OWN windows (e.g. an editor opened
+          // from the popup)? Keep the popup open so the user can open several
+          // items in a row. It still dismisses when focus leaves to another app
+          // (getFocusedWindow() is null then) or via Escape / the close button.
+          const focused = BrowserWindow.getFocusedWindow();
+          if (focused && focused !== win) return;
+          win.hide();
+        }
       }, 150);
     });
   }
@@ -2911,6 +2919,30 @@ let ignoreBlurUntil = 0;
 function pointInWindowBounds(point, bounds) {
   return point.x >= bounds.x && point.x < bounds.x + bounds.width &&
          point.y >= bounds.y && point.y < bounds.y + bounds.height;
+}
+
+// True if the point falls inside ANY visible BoardClip window (the popup or an
+// open editor/conflict/unify window). Used by the click-away watcher so working
+// across BoardClip's own windows doesn't dismiss the popup - only a click on
+// another app / the desktop does.
+function pointInAnyOwnWindow(point) {
+  for (const w of BrowserWindow.getAllWindows()) {
+    if (!w || w.isDestroyed() || !w.isVisible()) continue;
+    if (pointInWindowBounds(point, w.getBounds())) return true;
+  }
+  return false;
+}
+
+// Keep the popup open across a deliberate "open" action (launching the external
+// image viewer, or our own editor window) instead of blur-hiding it, so the user
+// can open several items in a row. Reuses the ignoreBlurUntil guard showPopup
+// already uses. The window is generous so a COLD-STARTING external image viewer
+// (which can take a couple of seconds to foreground and only then blur us) is
+// still covered. This only defers the passive blur-hide - the popup still
+// dismisses instantly via Escape, the close button, or clicking away to another
+// app (the click-away watcher is not gated by ignoreBlurUntil).
+function keepPopupOpenBriefly(ms = 3000) {
+  ignoreBlurUntil = Math.max(ignoreBlurUntil, Date.now() + ms);
 }
 
 function stopClickAwayWatcher() {
@@ -2974,7 +3006,7 @@ function startClickAwayWatcher() {
     clickAwayMouseWasDown = mouseDown;
     if (!mousePressed) return;
 
-    if (!pointInWindowBounds(screen.getCursorScreenPoint(), win.getBounds())) {
+    if (!pointInAnyOwnWindow(screen.getCursorScreenPoint())) {
       hidePopup();
     }
   }, 50);
@@ -3409,6 +3441,10 @@ function sourceGroupsForNewNote(options) {
 
 // Open the editor for clip `id`, or a blank new-note editor when id is null.
 function openEditor(id, options = {}) {
+  // Opening (or re-focusing) our editor is a deliberate action - don't let the
+  // popup blur-hide as focus moves to the editor window. The own-window guard in
+  // the blur handler is the durable backstop; this covers a slow ready-to-show.
+  keepPopupOpenBriefly();
   if (id != null) {
     const openSessionId = editWindowsByClip.get(id);
     if (openSessionId) {
@@ -4519,7 +4555,12 @@ function setupIPC() {
     const item = findHistoryItem(id);
     if (!item || item.type !== 'image') return;
     const imgPath = path.join(IMG_DIR, item.image);
-    if (fs.existsSync(imgPath)) shell.openPath(imgPath);
+    if (fs.existsSync(imgPath)) {
+      // The external viewer stealing focus must not blur-hide the popup, so the
+      // user can open several images without the tray closing under them.
+      keepPopupOpenBriefly();
+      shell.openPath(imgPath);
+    }
   });
 
   ipcMain.handle('set-sync-path', async (_, syncPath) => {

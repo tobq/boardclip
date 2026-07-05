@@ -740,14 +740,20 @@ function deleteHistoryIndex(index, { tombstone = true } = {}) {
 }
 
 function pruneHistory() {
-  const now = Date.now() / 1000;
-  const maxAge = settings.max_age_days * 86400;
   const maxBytes = settings.max_size_gb * 1024 ** 3;
   let changed = false;
 
-  for (let i = history.length - 1; i >= 0; i--) {
-    if (!isPinned(history[i]) && (now - (history[i].ts || 0)) > maxAge) {
-      deleteHistoryIndex(i);
+  const agePlan = clipboardModel.planHistoryPrune(history, settings);
+  if (clipboardModel.isDestructivePrune(history, agePlan)) {
+    diagnostics.record('history.prune_refused', {
+      reason: 'destructive_age_prune',
+      planned: agePlan.length,
+      items: history.length,
+      max_age_days: settings.max_age_days,
+    }, { forceFile: true });
+  } else {
+    for (const { index } of agePlan) {
+      deleteHistoryIndex(index, { tombstone: false });
       changed = true;
     }
   }
@@ -758,12 +764,11 @@ function pruneHistory() {
       if (!isPinned(history[i])) { idx = i; break; }
     }
     if (idx < 0) break;
-    deleteHistoryIndex(idx);
+    deleteHistoryIndex(idx, { tombstone: false });
     changed = true;
   }
 
   if (changed) {
-    saveSettingsFile();
     saveHistory();
   }
 }

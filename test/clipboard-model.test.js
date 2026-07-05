@@ -38,6 +38,17 @@ function text(text, extra = {}) {
 }
 
 {
+  const oldUnpinned = Array.from({ length: 60 }, (_, i) => text(`old-${i}`, { ts: 1, pin: null }));
+  const pinned = text('pinned', { ts: 1, pin: { updatedAt: 10 } });
+  const fresh = text('fresh', { ts: 1_000_000, pin: null });
+  const history = [fresh, pinned, ...oldUnpinned];
+  const plan = model.planHistoryPrune(history, { max_age_days: 7 }, { now: 1_000_000 });
+  assert.strictEqual(plan.length, oldUnpinned.length);
+  assert.strictEqual(plan.some(({ index }) => history[index].id === pinned.id), false);
+  assert.strictEqual(model.isDestructivePrune(history, plan), true);
+}
+
+{
   const local = text('clip', { pin: { groups: ['local'], updatedAt: 10 }, ts: 10 });
   const remote = text('clip', { pin: { groups: ['remote'], number: 4, updatedAt: 20 }, ts: 20 });
   const merged = model.mergeHistories([local], [remote], {});

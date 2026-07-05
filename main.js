@@ -28,7 +28,6 @@ const mcpCore = require('./lib/mcp-core');
 const mcpPaths = require('./lib/mcp-paths');
 const mcpInstallers = require('./lib/mcp-installers');
 const conflictModel = require('./lib/conflict-model');
-const reconciliation = require('./lib/reconciliation');
 const { ControlServer } = require('./lib/control-server');
 
 function guardBrokenPipe(stream) {
@@ -2955,6 +2954,33 @@ function setClipboardToItem(item) {
   }
 }
 
+// Hide the popup and paste whatever is on the clipboard into the app that was
+// frontmost before we showed. Shared by single paste + multi "Paste all".
+async function hideAndPasteForeground() {
+  hidePopup();
+  if (process.platform === 'darwin') {
+    // macOS: dock-hidden apps don't return focus automatically.
+    // Use osascript to activate the frontmost app, then paste.
+    await new Promise(r => setTimeout(r, 50));
+    await new Promise((resolve) => {
+      exec(`osascript -e '
+        tell application "System Events"
+          set frontApp to name of first application process whose frontmost is true
+          tell application process frontApp to set frontmost to true
+          delay 0.05
+          keystroke "v" using command down
+        end tell'`, () => resolve());
+    });
+  } else {
+    // Windows: explicitly restore focus to the app that was frontmost
+    // before we showed the popup. Without this, hidePopup() may leave
+    // focus on the desktop/shell and Ctrl+V goes nowhere.
+    if (savedForegroundWindow) winPaste.setForegroundWindow(savedForegroundWindow);
+    await new Promise(r => setTimeout(r, 15));
+    await simulatePaste();
+  }
+}
+
 async function pasteAndHide(id) {
   const item = findHistoryItem(id);
   if (!item) return;
@@ -2962,28 +2988,30 @@ async function pasteAndHide(id) {
   pollGate = false;
   try {
     setClipboardToItem(item);
-    hidePopup();
-    if (process.platform === 'darwin') {
-      // macOS: dock-hidden apps don't return focus automatically.
-      // Use osascript to activate the frontmost app, then paste.
-      await new Promise(r => setTimeout(r, 50));
-      await new Promise((resolve) => {
-        exec(`osascript -e '
-          tell application "System Events"
-            set frontApp to name of first application process whose frontmost is true
-            tell application process frontApp to set frontmost to true
-            delay 0.05
-            keystroke "v" using command down
-          end tell'`, () => resolve());
-      });
-    } else {
-      // Windows: explicitly restore focus to the app that was frontmost
-      // before we showed the popup. Without this, hidePopup() may leave
-      // focus on the desktop/shell and Ctrl+V goes nowhere.
-      if (savedForegroundWindow) winPaste.setForegroundWindow(savedForegroundWindow);
-      await new Promise(r => setTimeout(r, 15));
-      await simulatePaste();
-    }
+    await hideAndPasteForeground();
+  } finally {
+    pollGate = true;
+  }
+}
+
+// "Paste all": join the selected TEXT clips (newline-separated) and paste them in
+// one go. Images can't concatenate into text, so they're skipped.
+async function pasteMany(ids) {
+  const parts = [];
+  for (const id of (Array.isArray(ids) ? ids : [])) {
+    const item = findHistoryItem(id);
+    if (!item || item.type === 'image') continue;
+    textBlobStore.hydrateTextItem(item, TEXT_DIR);
+    parts.push(item.text || '');
+  }
+  const text = parts.join('\n');
+  if (!text) { hidePopup(); return; }
+  pollGate = false;
+  try {
+    clipboard.writeText(text);
+    lastText = text;   // don't re-capture our own joined paste as a new clip
+    lastImgHash = '';
+    await hideAndPasteForeground();
   } finally {
     pollGate = true;
   }
@@ -3196,7 +3224,7 @@ function commitEditSession(session, payload, { final = false } = {}) {
     notifyEditOutcome(result);
     if (result.conflictRecord && session.win && !session.win.isDestroyed()) {
       session.inConflict = true;
-      try { session.win.webContents.send('editor-conflict', reconciliation.recordToReconciliation(result.conflictRecord)); } catch {}
+      try { session.win.webContents.send('editor-conflict', conflictModel.normalizeConflictRecord(result.conflictRecord)); } catch {}
     }
   }
   return result;
@@ -3391,11 +3419,10 @@ function applyConflictResolution(resolution) {
   return { ok: true };
 }
 
+// Records go to the renderer as-is (normalized): the reconciliation view
+// computes its own diff (vendored CM merge addon), so no server-side hunks.
 function conflictListForRenderer() {
-  return conflictModel.normalizeConflictState(conflicts).records.map(record => {
-    const shaped = reconciliation.recordToReconciliation(record);
-    return shaped || record;
-  });
+  return conflictModel.normalizeConflictState(conflicts).records;
 }
 
 function openConflictWindow(conflictId) {
@@ -3448,6 +3475,151 @@ function openConflictWindow(conflictId) {
     if (conflictWindows.get(id) === conflictWin) conflictWindows.delete(id);
   });
   return { ok: true };
+}
+
+// ===========================================================================
+// Unify: fold N selected TEXT clips into one, pairwise, through the SAME
+// reconciliation window + view the sync-conflict flow uses. Oldest -> newest,
+// atomic: the sources aren't touched until the final step is confirmed, so
+// closing/canceling any step leaves the history unchanged.
+// ===========================================================================
+const unifySessions = new Map();
+let unifySeq = 0;
+
+function unifyRecord(session) {
+  const right = session.remaining[session.step];
+  return {
+    id: `${session.id}:${session.step}`,
+    unify: true,
+    title: `Unify - step ${session.step + 1} of ${session.total}`,
+    saveLabel: session.step + 1 >= session.total ? 'Merge all' : 'Merge & continue',
+    left: { id: 'acc', type: 'text', title: session.acc.title, text: session.acc.text, groups: session.acc.groups },
+    right: { id: right.id, type: 'text', title: right.title, text: right.text, groups: right.groups },
+    // No hunks here: createReconciliationView computes its own line diff
+    // (shared Core.diffLineHunks) for the staging panes.
+    result: { title: session.acc.title || right.title },
+  };
+}
+
+function startUnify(ids) {
+  const items = (Array.isArray(ids) ? ids : []).map(findHistoryItem).filter(it => it && it.type !== 'image');
+  for (const it of items) textBlobStore.hydrateTextItem(it, TEXT_DIR);
+  const sorted = items.slice().sort((a, b) => (a.ts || 0) - (b.ts || 0)); // oldest -> newest
+  if (sorted.length < 2) return { ok: false, reason: 'need_two_text' };
+  const numbered = sorted.find(it => numpadSlotOf(it) != null);
+  const session = {
+    id: `unify:${++unifySeq}`,
+    sourceIds: sorted.map(itemKey),
+    unionGroups: [...new Set(sorted.flatMap(groupsOf))],
+    numberSlot: numbered ? numpadSlotOf(numbered) : null,
+    pinned: sorted.some(isPinned),
+    acc: { title: titleOf(sorted[0]), text: sorted[0].text || '', groups: groupsOf(sorted[0]) },
+    remaining: sorted.slice(1).map(it => ({ id: itemKey(it), title: titleOf(it), text: it.text || '', groups: groupsOf(it) })),
+    total: sorted.length - 1,
+    step: 0,
+    win: null,
+  };
+  unifySessions.set(session.id, session);
+  openUnifyWindow(session);
+  return { ok: true };
+}
+
+function openUnifyWindow(session) {
+  const unifyWin = new BrowserWindow({
+    ...editorBoundsFromSettings(),
+    minWidth: 520,
+    minHeight: 340,
+    frame: false,
+    resizable: true,
+    show: false,
+    skipTaskbar: false,
+    title: 'BoardClip - unify clips',
+    ...popupSurfaceOptions(),
+    icon: APP_ICON_PATH,
+    webPreferences: {
+      preload: path.join(SCRIPT_DIR, 'editor-preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  });
+  session.win = unifyWin;
+  unifyWin.loadFile(path.join(SCRIPT_DIR, 'editor.html'));
+  unifyWin.once('ready-to-show', () => { try { unifyWin.show(); unifyWin.focus(); } catch {} });
+  unifyWin.webContents.on('did-finish-load', () => {
+    try {
+      unifyWin.webContents.send('editor-init', {
+        sessionId: session.id,
+        text: '',
+        noteTitle: '',
+        title: 'Unify clips',
+        themeMode: settings.theme_mode || 'system',
+        surfaceStyle: resolvedSurfaceStyle(),
+        ...appearanceVariantPayload(),
+      });
+      unifyWin.webContents.send('editor-conflict', unifyRecord(session));
+    } catch {}
+  });
+  unifyWin.on('resize', () => scheduleEditorBoundsSave(unifyWin));
+  unifyWin.on('move', () => scheduleEditorBoundsSave(unifyWin));
+  unifyWin.on('closed', () => { unifySessions.delete(session.id); });
+}
+
+// One resolved step: fold the merged result into the accumulator and advance, or
+// commit the whole unify on the last step. Returns the next record (or done).
+function unifyStep(sessionId, resolution) {
+  const session = unifySessions.get(String(sessionId || ''));
+  if (!session) return { done: true };
+  const payload = resolution && typeof resolution === 'object' ? resolution : {};
+  session.acc = {
+    title: clipboardModel.titleOf({ title: payload.title }),
+    text: String(payload.text || ''),
+    groups: session.acc.groups,
+  };
+  session.step += 1;
+  if (session.step >= session.total) {
+    applyUnify(session);
+    unifySessions.delete(session.id);
+    // Close the window from HERE: the renderer's editorApi.close() arrives
+    // after the session is gone, where the editor-close branch would no-op —
+    // leaving a frameless window with no working close path.
+    const win = session.win;
+    if (win && !win.isDestroyed()) { try { win.close(); } catch {} }
+    return { done: true };
+  }
+  return { done: false, nextRecord: unifyRecord(session) };
+}
+
+function applyUnify(session) {
+  const mergedText = String(session.acc.text || '');
+  const mergedTitle = clipboardModel.titleOf({ title: session.acc.title });
+  for (const id of session.sourceIds) {
+    const index = findHistoryIndex(id);
+    if (index >= 0) deleteHistoryIndex(index); // deliberate merge: sources replaced by the union
+  }
+  // Persist the source tombstones deleteHistoryIndex just added — without this
+  // a crash before the next unrelated settings save lets sync resurrect the
+  // merged-away sources (mirrors applyDeleteItems).
+  saveSettingsFile();
+  if (mergedText.trim()) {
+    const now = Date.now();
+    addToHistory({ type: 'text', text: mergedText, ts: now / 1000, updatedAt: now }, it => it.type !== 'image' && it.text === mergedText);
+    const item = history.find(it => it.type !== 'image' && it.text === mergedText);
+    if (item) {
+      if (mergedTitle) clipboardModel.setTitleMetadata(item, mergedTitle);
+      for (const group of session.unionGroups) {
+        if (!settings.groups || !settings.groups.includes(group)) applyGroupCreate(group);
+        const pin = ensurePin(item);
+        if (!pin.groups) pin.groups = [];
+        if (!pin.groups.includes(group)) pin.groups.push(group);
+      }
+      if (session.unionGroups.length) touchPinGroups(item);
+      if (session.pinned && !item.pin) item.pin = {};
+      saveHistory();
+      if (session.numberSlot != null) applyNumpadAssign(itemKey(item), session.numberSlot);
+    }
+  } else {
+    saveHistory();
+  }
 }
 
 // ORPHAN RECOVERY: re-apply any in-flight edit draft left behind by a previous
@@ -3593,6 +3765,84 @@ function applyDeleteItem(id) {
   saveSettingsFile();
   saveHistory();
   return true;
+}
+
+function cloneHistoryItem(item) {
+  return { ...item, pin: clonePin(item.pin) };
+}
+
+// Batch delete used by the multi-select UI (single + bulk both route here for the
+// Undo toast). Returns snapshots so the Undo can restore them. Deliberately
+// RETAINS the underlying text/image blobs (no removeItemImage / blob prune) so a
+// restore always has its content; content-addressed files dedupe on re-add.
+function applyDeleteItems(ids) {
+  const snapshots = [];
+  let changed = false;
+  for (const id of (Array.isArray(ids) ? ids : [])) {
+    const index = findHistoryIndex(id);
+    if (index < 0) continue;
+    const item = history[index];
+    if (item.type !== 'image') textBlobStore.hydrateTextItem(item, TEXT_DIR); // capture full text for restore
+    snapshots.push(cloneHistoryItem(item));
+    addTombstone(itemKey(item));
+    history.splice(index, 1);
+    changed = true;
+  }
+  if (changed) { saveSettingsFile(); saveHistory(); }
+  return snapshots;
+}
+
+// Restore clips removed by applyDeleteItems (the Undo path). Clears each item's
+// tombstone so a later sync can't resurrect the deletion.
+function applyRestoreItems(snapshots) {
+  let changed = false;
+  for (const snap of (Array.isArray(snapshots) ? snapshots : [])) {
+    if (!snap) continue;
+    const restored = cloneHistoryItem(snap);
+    ensureItemId(restored);
+    const id = itemKey(restored);
+    if (findHistoryIndex(id) >= 0) continue;
+    settings.tombstones = normalizeTombstones(settings.tombstones).filter(t => t.id !== id);
+    history.push(restored);
+    changed = true;
+  }
+  if (changed) {
+    history.sort((a, b) => (b.ts || 0) - (a.ts || 0));
+    // A restored clip may carry a numpad slot that was reassigned during the
+    // undo window — the shared dedupe keeps one owner per slot.
+    dedupeNumpadSlots(history);
+    saveSettingsFile();
+    saveHistory();
+  }
+  return changed;
+}
+
+// Explicit (non-toggle) group membership, mirroring applyGroupAssign's pin
+// bookkeeping. Returns true if it changed the item.
+function setItemGroupMembership(item, group, shouldHave) {
+  const pin = ensurePin(item);
+  if (!pin.groups) pin.groups = [];
+  const idx = pin.groups.indexOf(group);
+  const has = idx >= 0;
+  if (!!shouldHave === has) return false;
+  if (shouldHave) pin.groups.push(group);
+  else { pin.groups.splice(idx, 1); if (pin.groups.length === 0) delete pin.groups; }
+  touchPinGroups(item);
+  return true;
+}
+
+// Bulk add/remove a group across many clips in one save (smart tri-state toggle
+// decided in the shared controller). Reuses the single-item group bookkeeping.
+function applyGroupAssignMany(ids, group, shouldHave) {
+  if (!group) return false;
+  if (!settings.groups || !settings.groups.includes(group)) applyGroupCreate(group);
+  let changed = false;
+  for (const id of (Array.isArray(ids) ? ids : [])) {
+    const item = findHistoryItem(id);
+    if (item && setItemGroupMembership(item, group, !!shouldHave)) changed = true;
+  }
+  if (changed) saveHistory();
+  return changed;
 }
 
 // Name a clip (text OR image). Reuses the model's title helper so the name +
@@ -4143,19 +4393,38 @@ function setupIPC() {
     writeDraftFile(session);
     commitEditSession(session, next);
   });
-  ipcMain.on('editor-close', (_, sessionId) => {
+  ipcMain.on('editor-close', (event, sessionId) => {
     if (String(sessionId || '').startsWith('conflict:')) {
       const conflictId = String(sessionId).slice('conflict:'.length);
       const conflictWin = conflictWindows.get(conflictId);
       if (conflictWin && !conflictWin.isDestroyed()) { try { conflictWin.close(); } catch {} }
       return;
     }
+    if (String(sessionId || '').startsWith('unify:')) {
+      // Closing a unify window before the final step aborts it (no changes).
+      const session = unifySessions.get(String(sessionId));
+      unifySessions.delete(String(sessionId));
+      if (session && session.win && !session.win.isDestroyed()) { try { session.win.close(); } catch {} return; }
+      // Session already finished/aborted server-side: fall through to close the
+      // sender's window so the frameless X always works.
+    }
     const session = editSessions.get(sessionId);
-    if (session && session.win && !session.win.isDestroyed()) { try { session.win.close(); } catch {} }
+    if (session && session.win && !session.win.isDestroyed()) { try { session.win.close(); } catch {} return; }
+    // Fallback for any frameless editor-family window whose session is gone.
+    const senderWin = BrowserWindow.fromWebContents(event.sender);
+    if (senderWin && !senderWin.isDestroyed()) { try { senderWin.close(); } catch {} }
   });
   ipcMain.handle('resolve-conflict', (_, payload) => applyConflictResolution(payload));
   ipcMain.handle('get-conflicts', () => conflictListForRenderer());
   ipcMain.handle('open-conflict', (_, id) => openConflictWindow(id));
+
+  // Multi-select bulk operations.
+  ipcMain.handle('delete-items', (_, ids) => applyDeleteItems(ids));
+  ipcMain.handle('restore-items', (_, snaps) => applyRestoreItems(snaps));
+  ipcMain.handle('group-assign-many', (_, ids, group, shouldHave) => applyGroupAssignMany(ids, group, shouldHave));
+  ipcMain.handle('paste-many', (_, ids) => pasteMany(ids));
+  ipcMain.handle('start-unify', (_, ids) => startUnify(ids));
+  ipcMain.handle('unify-step', (_, sessionId, payload) => unifyStep(sessionId, payload));
 
   ipcMain.handle('open-image', (_, id) => {
     const item = findHistoryItem(id);

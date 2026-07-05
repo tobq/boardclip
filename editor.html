@@ -4,6 +4,13 @@
   document.documentElement.dataset.theme = matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
 </script>
 <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&display=swap" rel="stylesheet">
+<!-- Vendored CodeMirror 5 merge view (offline, shared with the website demo);
+     powers the shared reconciliation/unify UI. Load before clipboard-ui-core. -->
+<link rel="stylesheet" href="site/shared/vendor/cm5/codemirror.css">
+<link rel="stylesheet" href="site/shared/vendor/cm5/merge.css">
+<script src="site/shared/vendor/cm5/codemirror.js"></script>
+<script src="site/shared/vendor/cm5/diff-match-patch.js"></script>
+<script src="site/shared/vendor/cm5/merge.js"></script>
 <link rel="stylesheet" href="site/shared/clipboard-popup.css">
 <style>
   /* Editor window shell only; the editor itself + theme vars come from the
@@ -75,19 +82,31 @@ if (window.editorApi.onFind) {
 }
 
 if (window.editorApi.onConflict) {
-  window.editorApi.onConflict((record) => {
-    if (!record || !record.id) return;
+  // Mounts the SHARED reconciliation view for both a sync conflict (resolve +
+  // close) and a Unify session (record.unify: fold each step, only close on the
+  // final merge). One view, two drivers.
+  function mountReconcile(record) {
     host.innerHTML = '';
     editor = null;
     reconcileView = Core.createReconciliationView({
       record,
       onResolve: async (resolution) => {
+        if (record.unify && window.editorApi.unifyStep) {
+          const next = await window.editorApi.unifyStep(resolution);
+          if (next && next.done === false && next.nextRecord) { mountReconcile(next.nextRecord); return; }
+          window.editorApi.close();
+          return;
+        }
         await window.editorApi.resolveConflict(resolution);
         window.editorApi.close();
       },
       onClose: () => window.editorApi.close(),
     });
     host.appendChild(reconcileView.el);
+  }
+  window.editorApi.onConflict((record) => {
+    if (!record || !record.id) return;
+    mountReconcile(record);
   });
 }
 

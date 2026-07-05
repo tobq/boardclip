@@ -140,6 +140,102 @@ clear-all). All popup CSS + theme variables live in `site/shared/clipboard-popup
   `Core.applyTheme`. The Theme control lives in the shared settings body, so it
   shows in BOTH the app and the demo.
 
+## Multi-select + bulk actions (Ctrl/Shift-click, bulk Paste/Group/Unify/Delete)
+
+- **Selection is LIFTED into `createClipController`** (`selectedIds` set + `anchorId`
+  + `focusId`, replacing the old per-consumer `selectedIdx`). Consumers supply only
+  `visibleIds()`, `renderSelection(state)`, `allItems()`, `groupNames()`, and bulk
+  backends (`deleteClips`/`restoreClips`/`groupAssignMany`/`pasteMany`/`startUnify`)
+  + `offerUndo`. `Core.applySelectionUI` paints `.selected` (focus cursor) +
+  `.multi-selected` (checked set) and drives `#selectionBar` (added to
+  `renderPopupShell`). Do NOT reintroduce a per-side selection index —
+  `test/ui-parity.test.js` #9 + `test/multiselect.test.js` guard it.
+- **Row demotion + shared menu**: `renderClipActions` is now the SLIM row (primary
+  action + a `clip-menu` "..." button). `rename` (Set title) + `del` are DEMOTED
+  into `renderClipMenu` (the complete per-clip surface); `renderBulkMenu` is the
+  2+-selection variant. Menu items reuse the SAME `data-action` attrs the controller
+  already dispatches — no new dispatch. The menu root carries `data-id`, so the
+  `gp-btn`/`np-btn` handlers resolve their target via `closest('[data-id]')` (works
+  in the in-row picker AND the detached popover — that's why the resolution changed
+  from `closest('.item')`). `createMenu(host)` = the shared click popover; app host =
+  `document.body` (tokens on `:root`), demo host = `demoWindowEl` (tokens on
+  `.bc-popup`). Bulk Group is tri-state (`renderBulkGroupTree` via `groupMembership`:
+  all→remove, some/none→add).
+- **Delete = instant + Undo toast**, no confirm dialog. `Core.showActionToast`
+  reuses the `.toast` element; Ctrl/Cmd+Z re-invokes the undo. `applyDeleteItems`
+  RETAINS the text/image blobs (no `removeItemImage`/blob prune) so restore always
+  has content; `applyRestoreItems` clears the item tombstone so sync can't resurrect
+  the deletion. Single delete (from the menu) routes through the SAME `deleteIds`
+  path as bulk, so it too gets Undo.
+- **Unify** (fold N text clips → 1) REUSES the conflict `BrowserWindow` +
+  `createReconciliationView` verbatim. `startUnify`→`openUnifyWindow`→`unify-step`
+  IPC folds an accumulator oldest→newest; `editor.html`'s `mountReconcile` branches
+  on `record.unify` (advance vs `resolveConflict`+close). ATOMIC: sources aren't
+  touched until the final step confirms, so closing any step aborts with zero
+  changes (`editor-close` handles the `unify:` sessionId prefix like `conflict:`).
+  The view takes `record.title`/`saveLabel`/`unify` (hides "Remove conflict").
+  Merged clip carries the UNION of sources' groups + pin + numpad slot. Text-only:
+  Unify is hidden when any image is selected.
+- **Reconciliation view = vendored CodeMirror 5 MergeView** (user asked for
+  IntelliJ-style EXPLICITLY in Codex session 019f0e67 2026-06-28; two hand-rolled
+  attempts fell short — don't hand-roll a third): Current (read-only) | **Result
+  (fully editable)** | Incoming (read-only), gutter arrows pull chunks into the
+  middle, `connect:'align'` aligns + syncs panes, `collapseIdentical` folds
+  unchanged stretches, `ignoreWhitespace` on by default (bar toggle rebuilds the
+  view, preserving Result text). Vendored in `site/shared/vendor/cm5/`
+  (codemirror@5.65 lib + merge addon + diff-match-patch browser shim; see its
+  README) and loaded by BOTH `editor.html` and the demo — guarded by ui-parity #8.
+  Skinned entirely with tokens in clipboard-popup.css (`.bc-merge-host` block).
+- **The wrapper (`createReconciliationView`) adds**: change count + prev/next nav,
+  red-tinted **conflict** regions (Current & Incoming disagreeing with EACH OTHER,
+  computed seed-independently: touching left/right chunk pairs, or a two-sided
+  replace when one view is clean — plain chunk-overlap NEVER fires when Result is
+  seeded from one side), a clickable conflict chip, merge-all-non-conflicting
+  (applies chunks bottom-up outside conflict regions), Alt+Up/Down/Left/Right/B
+  keys, title pick-chips when the two titles differ, a save-warning while
+  sync-conflict regions remain (SKIPPED for unify — the union seed already holds
+  both sides; warning there blocked saves invisibly, caught only by the real-app
+  pen-test), and a plain-textarea fallback if the vendor scripts fail to load.
+- **Merge seeds**: `base.text` when the record has one (true 3-way) → unify:
+  `Core.unionMergeText` (shared regions once + both sides of every change; built
+  on `diffLineHunks`/`lcsSegments`, which remain the in-house pure diff for
+  seeding + tests) → else Current. **CRLF is normalized to LF at the view
+  boundary** (`toLF`) — stray `\r` defeats BOTH the addon's chunking and
+  `collapseIdentical` (its ignoreWhitespace covers spaces/tabs only) and caused
+  the original "all-green wall, zero matched lines" bug.
+- **Real-app pen-test harness**: `node scripts/qa-app-pentest.js` boots a sandbox
+  instance (temp `BOARDCLIP_DATA_DIR` + own `--user-data-dir` + CDP port, driven
+  over raw WebSocket CDP — Node ≥21). SAFETY: it pre-disables every detected
+  cloud provider in the sandbox settings (else the sandbox would default-enable
+  sync and merge QA data into the user's REAL synced folders), p2p + AI off, and
+  never triggers `pasteMany` (would Ctrl+V into the focused window). Kills only
+  electron processes whose cmdline contains its temp dir.
+- **Chord routing when search is always-focused**: Ctrl/Cmd+A and Ctrl/Cmd+Z route
+  by whether the focused field HAS TEXT (text → native field behavior; empty →
+  clip select-all / delete-undo). Don't gate purely on `isTypingTarget` — the app's
+  search box is focused nearly always, which would make the chords unreachable.
+- **`installSubmenuAutoflip`** (installed once by the controller on
+  `menuHost||document`) flips/clamps hover submenus: bounds = viewport for the app
+  window but the `.bc-popup` box for the embedded demo; uses setTimeout not rAF
+  (rAF halts in background tabs); `.flip-x` class opens side-submenus leftward.
+  `.list .item` is `user-select:none` (shift-click was smearing text selection).
+- **Selection bar**: Group is its OWN button (`bulk-group-open` → group-only
+  tri-state popover via `bulkGroupTreeHtml`, shared with the bulk menu submenu).
+  Never fuse it with a "more" menu; the full bulk menu lives on right-click.
+- **ONE floating-surface rule** (`.numpad-picker, .tag-submenu, .bc-menu { ... }`
+  in clipboard-popup.css, same shadow as `.dialog`) defines every popup panel's
+  bg/radius/shadow/padding — do not re-fork per-surface variants (ui-parity #10
+  counts the `--menu-edge` shadows). **Numpad renders in keypad formation**
+  (`NUMPAD_LAYOUT` = 7 8 9 / 4 5 6 / 1 2 3 + `.np-row` 3-col grid) via the ONE
+  `renderNumpadButtons` shared by the in-row picker AND the "..." menu submenu
+  (renderItemPicker's old inline loop was a duplication — don't reintroduce it).
+- **Gotcha — verifying `.item` background**: `.item` has a `background` CSS
+  transition, so `getComputedStyle` read immediately after toggling
+  `.selected`/`.multi-selected` returns the PRE-transition (transparent) value;
+  `.selection-bar` has no transition so it reads instantly. Verify row backgrounds
+  after >150ms or inject `transition:none` — else you chase a phantom "tint not
+  applying" bug (I did; it applies fine).
+
 ## Design tokens, appearance variants, native glass
 
 - **ONE token layer** in `site/shared/clipboard-tokens.css`, `@import`ed as the

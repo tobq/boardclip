@@ -12,6 +12,13 @@
     document.documentElement.dataset.systemTheme = matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
   </script>
   <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&display=swap" rel="stylesheet">
+  <!-- Vendored CodeMirror 5 merge view (shared with the desktop app's editor
+       window); powers the demo's unify/reconcile overlay. -->
+  <link rel="stylesheet" href="/shared/vendor/cm5/codemirror.css">
+  <link rel="stylesheet" href="/shared/vendor/cm5/merge.css">
+  <script src="/shared/vendor/cm5/codemirror.js" defer></script>
+  <script src="/shared/vendor/cm5/diff-match-patch.js" defer></script>
+  <script src="/shared/vendor/cm5/merge.js" defer></script>
   <link rel="stylesheet" href="/shared/clipboard-popup.css">
   <link rel="stylesheet" href="/styles.css">
 </head>
@@ -378,14 +385,15 @@
 
     function renderClips() {
       const visible = Core.filterItems(clips, state);
-      if (demoSelectedIdx >= visible.length) demoSelectedIdx = visible.length ? visible.length - 1 : -1;
       clipCount.textContent = Core.itemCountLabel(clips.length, visible.length, state);
       updateClearControls();
       renderFilterChips();
       renderDemoSettings();
       const nmap = Core.numpadMap(clips);
-      clipList.innerHTML = visible.map((clip, index) => Core.renderClipItem(clip, {
-        selected: index === demoSelectedIdx,
+      const sel = controller ? controller.selection() : null;
+      clipList.innerHTML = visible.map((clip) => Core.renderClipItem(clip, {
+        selected: !!(sel && sel.focusId === Core.itemId(clip)),
+        multiSelected: !!(sel && sel.selectedIds.has(Core.itemId(clip))),
         imageSrc: item => item.imageSrc,
         previewText: item => Core.collapsedPreviewText(item.text || "", state.query, state.regex),
         highlight: text => Core.highlight(text, state.query, state.regex),
@@ -393,6 +401,7 @@
         pickerHtml: Core.renderItemPicker(clip, { items: clips, groups: labels, numpadMap: nmap }),
         actionsHtml: Core.renderClipActions(clip),
       })).join("") || `<div class="empty">No clips found. Try a different search.</div>`;
+      if (controller) controller.repaintSelection();
       scheduleRelativeTimeRefresh();
     }
 
@@ -707,7 +716,6 @@
     // uses, via an adapter backed by the in-memory clips + browser APIs. Click
     // routing, confirm/prompt dialogs, numpad-replace, add-group and keyboard nav
     // therefore behave identically to the app and cannot drift.
-    let demoSelectedIdx = 0;
     function visibleClips() { return Core.filterItems(clips, state); }
     function stripGroupFromClips(group) {
       clips = clips.map((clip) => {
@@ -725,14 +733,11 @@
       settingsButton.setAttribute("aria-expanded", "false");
       search.focus();
     }
-    function applyDemoSelection() {
-      const items = clipList.querySelectorAll(".item");
-      items.forEach((el, i) => el.classList.toggle("selected", i === demoSelectedIdx));
-      const sel = items[demoSelectedIdx];
-      if (sel) sel.scrollIntoView({ block: "nearest" });
-    }
+    // In-memory restore buffer for the demo's delete Undo (mirrors the app's
+    // tombstone-clearing restore, but purely local).
     const demoAdapter = {
       dialogs,
+      menuHost: demoWindowEl,
       deletedToast: "Deleted",
       itemById: (id) => clips.find((item) => Core.itemId(item) === id),
       numpadMap: () => Core.numpadMap(clips),
@@ -784,27 +789,58 @@
       isSettingsOpen: () => settingsPanel.classList.contains("show"),
       closeSettings: () => closeDemoSettings(),
       hidePopup: () => {},
-      moveSelection: (dir) => {
-        const count = visibleClips().length;
-        if (!count) return;
-        demoSelectedIdx = Math.max(0, Math.min((demoSelectedIdx < 0 ? 0 : demoSelectedIdx) + dir, count - 1));
-        applyDemoSelection();
+      // --- Multi-select contract (selection state lives in the controller) ---
+      visibleIds: () => visibleClips().map((clip) => Core.itemId(clip)),
+      allItems: () => clips,
+      groupNames: () => labels,
+      renderSelection: (selState) => Core.applySelectionUI({ listEl: clipList, barEl: document.getElementById("selectionBar"), state: selState }),
+      deleteClips: (ids) => {
+        const set = new Set(ids);
+        const snaps = clips.filter((clip) => set.has(Core.itemId(clip))).map((clip) => ({ ...clip }));
+        clips = clips.filter((clip) => !set.has(Core.itemId(clip)));
+        return snaps;
       },
-      activateSelected: () => {
-        const clip = visibleClips()[demoSelectedIdx];
-        if (clip) demoAdapter.activateClip(Core.itemId(clip));
+      restoreClips: (snaps) => {
+        const present = new Set(clips.map((clip) => Core.itemId(clip)));
+        clips = Core.sortItems([...clips, ...snaps.filter((snap) => !present.has(Core.itemId(snap)))]);
       },
+      groupAssignMany: (ids, group, shouldHave) => {
+        if (!labels.includes(group)) labels.push(group);
+        for (const id of ids) {
+          const clip = clips.find((item) => Core.itemId(item) === id);
+          if (clip && Core.isInGroup(clip, group) !== shouldHave) clips = Core.toggleGroup(clips, id, group);
+        }
+      },
+      pasteMany: async (ids) => {
+        // Text-only join, matching the app's pasteMany (images can't concatenate).
+        const texts = ids
+          .map((id) => clips.find((item) => Core.itemId(item) === id))
+          .filter((clip) => clip && clip.type !== "image")
+          .map((clip) => clip.text || "");
+        try { await writeBrowserClipboard(texts.join("\n")); } catch {}
+        showToast(`Pasted ${texts.length}`);
+      },
+      startUnify: (ids) => runDemoUnify(ids),
+      offerUndo: ({ count, undo }) => Core.showActionToast(demoToast, {
+        message: `Deleted ${count} clip${count === 1 ? "" : "s"}`,
+        actionLabel: "Undo",
+        onAction: undo,
+      }),
       toast: (msg) => showToast(msg),
       render: () => renderClips(),
     };
     const controller = Core.createClipController(demoAdapter);
 
-    filterChips.addEventListener("click", (event) => controller.onClick(event));
-    filterChips.addEventListener("contextmenu", (event) => controller.onContextmenu(event));
+    // One delegated click + contextmenu binding for the WHOLE popup window (list,
+    // filters, settings, AND the popover menu which mounts inside the window),
+    // mirroring the app's document-level binding so the shared dispatch handles
+    // everything once.
+    demoWindowEl.addEventListener("click", (event) => controller.onClick(event));
+    demoWindowEl.addEventListener("contextmenu", (event) => controller.onContextmenu(event));
 
     search.addEventListener("input", () => {
       state.query = search.value;
-      demoSelectedIdx = 0;
+      controller.clearSelection({ paint: false });
       renderClips();
     });
     clearSearch.addEventListener("click", () => {
@@ -826,9 +862,8 @@
     });
     settingsBack.addEventListener("click", closeDemoSettings);
 
-    clipList.addEventListener("click", (event) => controller.onClick(event));
-    // Keyboard nav (arrows/Enter/Escape) when focus is inside the demo window,
-    // so the demo honors its own "type, press Enter, and paste" pitch.
+    // Keyboard nav (arrows/Enter/Escape + multi-select) when focus is inside the
+    // demo window, so the demo honors its own "type, press Enter, and paste" pitch.
     demoWindowEl.addEventListener("keydown", (event) => {
       const lightbox = document.getElementById("demo-lightbox");
       if (lightbox.classList.contains("show")) {
@@ -895,6 +930,64 @@
     }
     document.getElementById("demo-new-note").addEventListener("click", () => openDemoEditor(null));
 
+    // Unify (demo): fold the selected text clips oldest->newest through the SAME
+    // shared reconciliation view the app uses, in the editor overlay. Atomic -
+    // closing any step aborts with zero changes; the final step replaces all
+    // sources with one merged clip carrying the union of their groups.
+    function clipSnapshot(clip) {
+      return { id: Core.itemId(clip), type: "text", title: Core.titleOf(clip), text: clip.text || "", groups: Core.groupsOf(clip) };
+    }
+    function runDemoUnify(ids) {
+      const sources = ids.map((id) => clips.find((c) => Core.itemId(c) === id)).filter(Boolean)
+        .filter((c) => c.type !== "image")
+        .sort((a, b) => (a.ts || 0) - (b.ts || 0));
+      if (sources.length < 2) return;
+      const total = sources.length - 1;
+      const unionGroups = new Set(sources.flatMap(Core.groupsOf));
+      let acc = clipSnapshot(sources[0]);
+      let step = 0;
+      const overlay = demoEditorOverlay;
+      const abort = () => { overlay.classList.remove("show"); overlay.innerHTML = ""; search.focus(); };
+      function commit() {
+        const srcIds = new Set(sources.map((c) => Core.itemId(c)));
+        clips = clips.filter((c) => !srcIds.has(Core.itemId(c)));
+        clips = Core.addClipboardText(clips, acc.text);
+        const created = clips.find((c) => c.text === acc.text);
+        if (created) {
+          created.title = acc.title || undefined;
+          created.titleUpdatedAt = Date.now();
+          for (const g of unionGroups) { if (!labels.includes(g)) labels.push(g); if (!Core.groupsOf(created).includes(g)) clips = Core.toggleGroup(clips, Core.itemId(created), g); }
+        }
+        abort();
+        renderClips();
+        showToast(`Unified ${sources.length} clips`);
+      }
+      function mountStep() {
+        const right = clipSnapshot(sources[step + 1]);
+        overlay.innerHTML = "";
+        const view = Core.createReconciliationView({
+          record: {
+            id: `demo-unify-${step}`,
+            unify: true,
+            title: `Unify - step ${step + 1} of ${total}`,
+            saveLabel: step + 1 >= total ? "Merge all" : "Merge & continue",
+            left: acc,
+            right,
+            result: { title: acc.title || right.title, text: acc.text },
+          },
+          onResolve: (resolution) => {
+            acc = { ...acc, text: resolution.text, title: resolution.title };
+            step += 1;
+            if (step >= total) commit(); else mountStep();
+          },
+          onClose: abort,
+        });
+        overlay.appendChild(view.el);
+        overlay.classList.add("show");
+      }
+      mountStep();
+    }
+
     function openLightbox(src) {
       document.getElementById("demo-lightbox-img").src = src;
       document.getElementById("demo-lightbox").classList.add("show");
@@ -904,9 +997,6 @@
     }
     document.getElementById("demo-lightbox").addEventListener("click", closeLightbox);
 
-    // Settings panel: numpad-remove / slot-copy / group-share / group-delete all
-    // route through the SAME shared controller dispatch as the desktop app.
-    settingsPanel.addEventListener("click", (event) => controller.onClick(event));
 
     document.getElementById("random-query").addEventListener("click", () => {
       const queries = ["invoice", "api", "meeting", "image", "thanks", "dns", "launch", "sync", "windows"];

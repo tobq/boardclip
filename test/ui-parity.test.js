@@ -116,22 +116,68 @@ const siteCss = read('site/styles.css');
     'renderPopupShell produced different structure for different ids — the shell must be id-agnostic');
 }
 
-// 7) renderClipActions emits the same data-action contract both popups depend on.
+// 7) renderClipActions emits the SLIM hover row (primary action + "..." menu);
+//    Set title + Delete are demoted into renderClipMenu (the advanced surface).
 {
   const textActions = ui.renderClipActions({ id: 'x', type: 'text', text: 'a'.repeat(200) + '\nb' }, { expanded: false });
   assert.ok(!textActions.includes('data-action="expand"'), 'text item should use editor open, not inline expand');
-  for (const a of ['rename', 'edit', 'del']) {
-    assert.ok(textActions.includes(`data-action="${a}"`), `renderClipActions text item missing data-action="${a}"`);
+  for (const a of ['edit', 'clip-menu']) {
+    assert.ok(textActions.includes(`data-action="${a}"`), `renderClipActions text row missing data-action="${a}"`);
   }
-  // Images are nameable too (rename), so they can be searched by title.
+  for (const a of ['rename', 'del']) {
+    assert.ok(!textActions.includes(`data-action="${a}"`), `renderClipActions row should NOT keep demoted action "${a}" (moved to the menu)`);
+  }
   const imageActions = ui.renderClipActions({ id: 'y', type: 'image' }, {});
-  for (const a of ['rename', 'open-img', 'save-img', 'del']) {
-    assert.ok(imageActions.includes(`data-action="${a}"`), `renderClipActions image item missing data-action="${a}"`);
+  for (const a of ['open-img', 'save-img', 'clip-menu']) {
+    assert.ok(imageActions.includes(`data-action="${a}"`), `renderClipActions image row missing data-action="${a}"`);
   }
   assert.ok(!imageActions.includes('data-action="edit"'), 'image item should not offer the text editor');
+  assert.ok(!imageActions.includes('data-action="del"'), 'delete is demoted to the menu, not the image row');
+  // The "..." menu is the complete surface: it carries the demoted + all quick
+  // actions, keyed by the SAME data-action attributes the controller dispatches.
+  const textMenu = ui.renderClipMenu({ id: 'x', type: 'text', text: 'hi' }, { items: [], groups: ['Work'], numpadMap: {} });
+  for (const a of ['pin', 'edit', 'rename', 'add-group', 'del']) {
+    assert.ok(textMenu.includes(`data-action="${a}"`), `renderClipMenu text missing data-action="${a}"`);
+  }
+  assert.ok(textMenu.includes('class="np-btn'), 'renderClipMenu should embed the numpad grid');
+  const imageMenu = ui.renderClipMenu({ id: 'y', type: 'image', image: 'a.png' }, { items: [], groups: [], numpadMap: {} });
+  for (const a of ['pin', 'open-img', 'save-img', 'rename', 'del']) {
+    assert.ok(imageMenu.includes(`data-action="${a}"`), `renderClipMenu image missing data-action="${a}"`);
+  }
+  assert.ok(!imageMenu.includes('data-action="edit"'), 'image menu should not offer the text editor');
   // A named image is searchable by its title (shared title field feeds search).
   const named = ui.itemSearchText({ type: 'image', title: 'Q3 revenue chart', image: 'abc.png' });
   assert.ok(/q3 revenue chart/i.test(named), 'image title must be part of its search text');
+}
+
+// 9) Multi-select is single-sourced: both consumers drive the shared selection
+//    contract (visibleIds/renderSelection) + shared bulk renderers, and neither
+//    re-inlines a bespoke selection index or bar.
+{
+  assert.ok(typeof ui.renderClipMenu === 'function', 'core must export renderClipMenu');
+  assert.ok(typeof ui.renderBulkMenu === 'function', 'core must export renderBulkMenu');
+  assert.ok(typeof ui.renderSelectionBar === 'function', 'core must export renderSelectionBar');
+  assert.ok(typeof ui.applySelectionUI === 'function', 'core must export applySelectionUI');
+  assert.ok(typeof ui.createMenu === 'function', 'core must export the shared popover menu');
+  // Bulk menu content: paste-all + group + delete always; unify only for all-text.
+  const bulkText = ui.renderBulkMenu({ count: 3, hasImage: false }, { groups: ['Work'], selectedItems: [] });
+  for (const a of ['bulk-paste', 'bulk-group', 'bulk-add-group', 'bulk-unify', 'bulk-delete']) {
+    assert.ok(bulkText.includes(`data-action="${a}"`), `renderBulkMenu missing data-action="${a}"`);
+  }
+  const bulkMixed = ui.renderBulkMenu({ count: 2, hasImage: true }, { groups: [], selectedItems: [] });
+  assert.ok(!bulkMixed.includes('data-action="bulk-unify"'), 'Unify must be hidden when the selection contains an image');
+  const bar = ui.renderSelectionBar({ count: 4, hasImage: false });
+  // Group is its OWN bar button (opens the tri-state group popover) — not fused
+  // with an ambiguous "more" menu.
+  for (const a of ['bulk-paste', 'bulk-group-open', 'bulk-unify', 'bulk-delete', 'bulk-clear']) {
+    assert.ok(bar.includes(`data-action="${a}"`), `renderSelectionBar missing data-action="${a}"`);
+  }
+  for (const [name, html] of [['index.html', appHtml], ['site/index.html', siteHtml]]) {
+    assert.ok(html.includes('Core.applySelectionUI('), `${name} must paint selection via the shared Core.applySelectionUI`);
+    assert.ok(/visibleIds\s*:/.test(html), `${name} must supply the visibleIds() selection hook`);
+    assert.ok(/renderSelection\s*:/.test(html), `${name} must supply the renderSelection() selection hook`);
+    assert.ok(!/selectedIdx/.test(html), `${name} still uses a bespoke selectedIdx; selection lives in the shared controller now`);
+  }
 }
 
 // 8) The built-in editor is single-sourced too: both the app editor window
@@ -145,6 +191,29 @@ const siteCss = read('site/styles.css');
   assert.ok(!siteHtml.includes('contenteditable'), 'site/index.html still uses a bespoke contenteditable edit; use Core.createEditor');
   assert.ok(typeof ui.createEditor === 'function', 'core must export createEditor');
   assert.ok(typeof ui.createReconciliationView === 'function', 'core must export shared reconciliation UI');
+  // The reconciliation view is the vendored CodeMirror 5 MergeView (IntelliJ-style:
+  // 2-pane Result|Incoming by default, 3-pane only with a true base; editable
+  // Result, SVG chunk connectors carrying apply + decline) — both consumers must
+  // load the vendor bundle, and the view must actually build a MergeView.
+  assert.ok(coreSrc.includes('CM.MergeView(host'), 'createReconciliationView must build a CodeMirror MergeView');
+  assert.ok(!/connect:\s*['"]align['"]/.test(coreSrc),
+    "the merge view must NOT use connect:'align' (it disables SVG connectors and breaks scrolling with lineWrapping+collapse)");
+  for (const opt of ['chunkState', 'declineChunk']) {
+    assert.ok(coreSrc.includes(opt), `merge view must wire the vendored ${opt} hook`);
+  }
+  const vendoredMerge = read('site/shared/vendor/cm5/merge.js');
+  assert.ok(vendoredMerge.includes('BOARDCLIP PATCH'), 'vendored merge.js must carry the BOARDCLIP patches (chunkState/decline/bcRedraw)');
+  for (const patched of ['chunkState', 'bcDecline', 'bcRedraw']) {
+    assert.ok(vendoredMerge.includes(patched), `vendored merge.js missing the ${patched} patch`);
+  }
+  for (const [name, html] of [['editor.html', editorHtml], ['site/index.html', siteHtml]]) {
+    for (const asset of ['vendor/cm5/codemirror.js', 'vendor/cm5/diff-match-patch.js', 'vendor/cm5/merge.js', 'vendor/cm5/codemirror.css', 'vendor/cm5/merge.css']) {
+      assert.ok(html.includes(asset), `${name} must load ${asset} for the shared merge view`);
+    }
+  }
+  for (const vendored of ['codemirror.js', 'codemirror.css', 'merge.js', 'merge.css', 'diff-match-patch.js']) {
+    assert.ok(fs.existsSync(path.join(root, 'site/shared/vendor/cm5', vendored)), `vendored cm5/${vendored} missing`);
+  }
   assert.ok(ui.renderSettingsBody().includes('id="conflictSlots"'), 'settings should expose unresolved conflict entries');
   assert.ok(coreSrc.includes('<div class="bc-title-row" hidden>'), 'clip title input row should be hidden unless edit-title opens it');
   assert.ok(coreSrc.includes('focusTitle: () => { showTitleInput();'), 'edit-title focus path should reveal the hidden title input row');
@@ -156,6 +225,24 @@ const siteCss = read('site/styles.css');
     'tag submenus must touch their parent so hover does not drop while moving into the menu');
   assert.ok(popupCss.includes('.gp-row > .tag-menu-node > .tag-submenu { top: -4px; left: calc(100% - 1px); }'),
     'picker submenus must overlap horizontally with their parent so hover does not drop');
+}
+
+// 10) Menu-system consistency: ONE shared floating-surface rule covers the
+//     in-row picker, hover submenus, and the popover menus (no per-surface
+//     shadow/padding forks), and the numpad renders in real keypad formation
+//     (7 8 9 / 4 5 6 / 1 2 3) from the ONE shared renderer.
+{
+  assert.ok(/\.numpad-picker,\s*\.tag-submenu,\s*\.bc-menu\s*\{/.test(popupCss),
+    'clipboard-popup.css must define the single shared floating-surface rule (.numpad-picker, .tag-submenu, .bc-menu)');
+  const surfaceForks = (popupCss.match(/box-shadow:[^;]*var\(--menu-edge\)/g) || []).length;
+  assert.ok(surfaceForks <= 2, `menu surfaces re-forked their shadows (${surfaceForks} menu-edge shadows; expected the shared floating-surface rule + .dialog only)`);
+  const order = (html) => [...html.matchAll(/data-n="(\d)"/g)].map((m) => Number(m[1]));
+  const expected = [7, 8, 9, 4, 5, 6, 1, 2, 3];
+  assert.deepStrictEqual(order(ui.renderItemPicker({ id: 'x', type: 'text', text: 'a' }, { items: [], groups: [] })), expected,
+    'renderItemPicker numpad must be in keypad formation (7 8 9 / 4 5 6 / 1 2 3)');
+  assert.deepStrictEqual(order(ui.renderClipMenu({ id: 'x', type: 'text', text: 'a' }, { items: [], groups: [], numpadMap: {} })), expected,
+    'renderClipMenu numpad submenu must be in keypad formation');
+  assert.ok(/\.np-row\s*\{[^}]*grid-template-columns:\s*repeat\(3/.test(popupCss), '.np-row must be a 3-column grid (keypad formation)');
 }
 
 console.log('ui-parity.test.js: all parity guards passed');

@@ -26,6 +26,7 @@ contextBridge.exposeInMainWorld('editorApi', {
   draft: (payload) => ipcRenderer.send('editor-draft', sessionId, payload),
   commit: (payload) => ipcRenderer.send('editor-commit', sessionId, payload),
   resolveConflict: (payload) => ipcRenderer.invoke('resolve-conflict', payload),
+  unifyStep: (payload) => ipcRenderer.invoke('unify-step', sessionId, payload),
   close: () => ipcRenderer.send('editor-close', sessionId),
   getColorScheme: () => ipcRenderer.invoke('get-color-scheme'),
   onColorSchemeChanged: (callback) => {

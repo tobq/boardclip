@@ -414,19 +414,8 @@
     const items = opts.items || [];
     const groups = opts.groups || [];
     const nmap = opts.numpadMap || numpadMap(items);
-    const np = numpadOf(item);
-    let npBtns = '';
-    for (let n = 1; n <= 9; n += 1) {
-      const cls = np === n ? 'current' : nmap[n] ? 'taken' : 'free';
-      let title = String(n);
-      if (nmap[n]) {
-        const slotItem = items.find((candidate) => itemId(candidate) === nmap[n]);
-        title = slotItem && slotItem.type === 'image'
-          ? `${n}: [image]`
-          : `${n}: ${String(slotItem && slotItem.text || '').replace(/\s+/g, ' ').slice(0, 80)}`;
-      }
-      npBtns += `<span class="np-btn ${cls}" data-n="${n}" title="${escapeHtml(title)}">${n}</span>`;
-    }
+    // Same shared numpad-formation grid the "..." menu uses (one renderer).
+    const npBtns = renderNumpadButtons(item, items, nmap);
     const itemGroups = new Set(groupsOf(item));
     let gpBtns = renderTagTreeMenu(buildTagTree([...groups, ...itemGroups]), {
       mode: 'picker',
@@ -464,7 +453,12 @@
       ? `<div class="clip-title">${opts.highlightTitle ? opts.highlightTitle(title) : escapeHtml(title)}</div>`
       : '';
     const selected = opts.selected ? ' selected' : '';
-    return `<div class="item${pinned ? ' has-pin' : ''}${selected}" data-id="${escapeHtml(id)}">
+    // `selected` = keyboard focus cursor (single). `multi-selected` = membership
+    // in the multi-select set (Ctrl/Shift-click). Both are painted by the shared
+    // controller's renderSelection; kept as separate classes so a focused row and
+    // a checked row read differently.
+    const multi = opts.multiSelected ? ' multi-selected' : '';
+    return `<div class="item${pinned ? ' has-pin' : ''}${selected}${multi}" data-id="${escapeHtml(id)}">
       <div class="item-row">
         <div class="pin-area">
           <button class="star${pinned ? ' active' : ''}" type="button" data-action="pin" data-id="${escapeHtml(id)}" title="${pinned ? 'Unpin' : 'Pin'}"><span class="mi${pinned ? ' filled' : ''}">star</span></button>
@@ -491,6 +485,7 @@
       searchClear: 'searchClear',
       regexBtn: 'regexBtn',
       groupFilters: 'groupFilters',
+      selectionBar: 'selectionBar',
       list: 'list',
       settingsView: 'settingsView',
       settingsBack: 'settingsBack',
@@ -522,6 +517,7 @@
           </div>
         </div>
         <div class="group-filters" id="${esc(ids.groupFilters)}" aria-label="Filters"></div>
+        <div class="selection-bar hidden" id="${esc(ids.selectionBar)}" role="toolbar" aria-label="Selection actions"></div>
       </div>
       <div class="list" id="${esc(ids.list)}" aria-live="polite"></div>
       ${afterListHtml}
@@ -582,21 +578,301 @@
   }
   // Shared per-clip action row. App wires window.api; demo wires in-browser
   // equivalents. Markup MUST stay identical so the two popups never drift.
+  //
+  // The always-visible hover row is deliberately MINIMAL (the one primary
+  // action + a "..." button). "Set title" and "Delete" are demoted into the
+  // right-click / "..." menu (renderClipMenu) as advanced actions, so the row
+  // stays clean and accidental deletes are less likely. The menu is the
+  // complete surface; the row is the fast path.
   function renderClipActions(item, options) {
     const opts = options || {};
     const id = itemId(item) || '';
     const isImage = item && item.type === 'image';
     let html = '';
-    // 'rename' names the clip (a shared title prompt) for BOTH types so images
-    // become searchable by name; 'edit' opens the text editor (text only).
-    html += `<button class="icon-btn accent" data-action="rename" data-id="${escapeHtml(id)}" title="${isImage ? 'Name image' : 'Edit title'}"><span class="mi">drive_file_rename_outline</span></button>`;
     if (isImage) {
       html += `<button class="icon-btn accent" data-action="open-img" data-id="${escapeHtml(id)}" title="Open image"><span class="mi">open_in_new</span></button><button class="icon-btn accent" data-action="save-img" data-id="${escapeHtml(id)}" title="Copy to Downloads"><span class="mi">save</span></button>`;
     } else {
       html += `<button class="icon-btn accent" data-action="edit" data-id="${escapeHtml(id)}" title="Open in editor"><span class="mi">open_in_new</span></button>`;
     }
-    html += `<button class="icon-btn danger" data-action="del" data-id="${escapeHtml(id)}" title="Delete"><span class="mi">close</span></button>`;
+    html += `<button class="icon-btn" data-action="clip-menu" data-id="${escapeHtml(id)}" title="More actions" aria-label="More actions"><span class="mi">more_horiz</span></button>`;
     return html;
+  }
+  // Numpad 1-9 buttons, shared by the per-clip picker and the "..." menu's
+  // Numpad submenu. Rendered in real NUMPAD FORMATION (7 8 9 / 4 5 6 / 1 2 3 —
+  // .np-row is a 3-column grid), which reads like the physical keypad instead
+  // of a flat strip. `np` is the item's current slot; `nmap` is slot->id.
+  const NUMPAD_LAYOUT = [7, 8, 9, 4, 5, 6, 1, 2, 3];
+  function renderNumpadButtons(item, items, nmap) {
+    const np = numpadOf(item);
+    let html = '';
+    for (const n of NUMPAD_LAYOUT) {
+      const cls = np === n ? 'current' : nmap[n] ? 'taken' : 'free';
+      let title = String(n);
+      if (nmap[n]) {
+        const slotItem = (items || []).find((candidate) => itemId(candidate) === nmap[n]);
+        title = slotItem && slotItem.type === 'image'
+          ? `${n}: [image]`
+          : `${n}: ${String(slotItem && slotItem.text || '').replace(/\s+/g, ' ').slice(0, 80)}`;
+      }
+      html += `<span class="np-btn ${cls}" data-n="${n}" title="${escapeHtml(title)}">${n}</span>`;
+    }
+    return html;
+  }
+  // Per-group membership across a set of selected items: 'all' | 'some' | 'none'.
+  // Drives the bulk-group tri-state toggle (all -> remove from all, else -> add
+  // to all).
+  function groupMembership(items, group) {
+    const list = items || [];
+    if (!list.length) return 'none';
+    let has = 0;
+    for (const item of list) if (isInGroup(item, group)) has += 1;
+    return has === 0 ? 'none' : has === list.length ? 'all' : 'some';
+  }
+  // ONE menu-content builder for the per-clip "..." menu. Reuses the exact
+  // data-action attributes the controller already dispatches (pin/edit/rename/
+  // del/open-img/save-img) plus the shared group-tree + numpad grid, so the menu
+  // needs no new dispatch. The menu root carries data-id, so the gp-btn/np-btn
+  // handlers resolve their target via closest('[data-id]') the same way the
+  // in-row picker does.
+  function renderClipMenu(item, options) {
+    const opts = options || {};
+    const id = itemId(item) || '';
+    const isImage = item && item.type === 'image';
+    const pinned = isPinned(item);
+    const items = opts.items || [];
+    const groups = opts.groups || [];
+    const nmap = opts.numpadMap || numpadMap(items);
+    const row = (action, icon, label, cls) =>
+      `<button class="bc-menu-item${cls ? ` ${cls}` : ''}" type="button" data-action="${action}" data-id="${escapeHtml(id)}"><span class="mi">${icon}</span><span class="bc-menu-label">${escapeHtml(label)}</span></button>`;
+    let html = '<div class="bc-menu-list">';
+    html += row('pin', 'star', pinned ? 'Unpin' : 'Pin');
+    if (isImage) {
+      html += row('open-img', 'open_in_new', 'Open image');
+      html += row('save-img', 'save', 'Copy to Downloads');
+    } else {
+      html += row('edit', 'open_in_new', 'Open in editor');
+    }
+    html += row('rename', 'drive_file_rename_outline', isImage ? 'Name image' : 'Set title');
+    const itemGroups = new Set(groupsOf(item));
+    const groupTree = renderTagTreeMenu(buildTagTree([...groups, ...itemGroups]), { mode: 'picker', itemGroups })
+      + '<span class="tag-menu-node"><span class="gp-btn add-group" data-action="add-group" title="New group"><span class="mi sm">add</span> New group</span></span>';
+    html += `<div class="bc-menu-item tag-menu-node has-children"><span class="mi">sell</span><span class="bc-menu-label">Add to group</span><span class="tag-caret mi">chevron_right</span><span class="tag-submenu">${groupTree}</span></div>`;
+    html += `<div class="bc-menu-item tag-menu-node has-children"><span class="mi">dialpad</span><span class="bc-menu-label">Numpad</span><span class="tag-caret mi">chevron_right</span><span class="tag-submenu"><div class="numpad-picker static"><div class="np-row">${renderNumpadButtons(item, items, nmap)}</div></div></span></div>`;
+    html += row('del', 'delete', 'Delete', 'danger');
+    html += '</div>';
+    return html;
+  }
+  // ONE menu-content builder for the multi-select bulk menu (shared by the
+  // action bar's overflow and the right-click menu on a multi-selection). Bulk
+  // actions carry their own data-action; the controller runs them against the
+  // current selection, so no ids are needed on the items.
+  function renderBulkMenu(state, options) {
+    const opts = options || {};
+    const info = state || {};
+    const count = info.count || 0;
+    const groups = opts.groups || [];
+    const selItems = opts.selectedItems || [];
+    const allText = !info.hasImage;
+    const row = (action, icon, label, cls) =>
+      `<button class="bc-menu-item${cls ? ` ${cls}` : ''}" type="button" data-action="${action}"><span class="mi">${icon}</span><span class="bc-menu-label">${escapeHtml(label)}</span></button>`;
+    let html = '<div class="bc-menu-list">';
+    html += row('bulk-paste', 'content_paste', `Paste all (${count})`);
+    html += `<div class="bc-menu-item tag-menu-node has-children"><span class="mi">sell</span><span class="bc-menu-label">Add to group</span><span class="tag-caret mi">chevron_right</span><span class="tag-submenu">${bulkGroupTreeHtml(groups, selItems)}</span></div>`;
+    if (allText) html += row('bulk-unify', 'merge', `Unify (${count})`);
+    html += row('bulk-delete', 'delete', `Delete (${count})`, 'danger');
+    html += '</div>';
+    return html;
+  }
+  // Tri-state group tree + "New group" for a selection — ONE builder shared by
+  // the bulk menu's submenu and the selection bar's Group popover.
+  function bulkGroupTreeHtml(groups, selItems) {
+    const treeGroups = [...new Set([...(groups || []), ...(selItems || []).flatMap(groupsOf)])];
+    return renderBulkGroupTree(buildTagTree(treeGroups), selItems || [])
+      + '<span class="tag-menu-node"><span class="gp-btn add-group" data-action="bulk-add-group" title="New group"><span class="mi sm">add</span> New group</span></span>';
+  }
+  // Bulk group tree: like the picker tree but each node shows aggregate
+  // membership across the selection (all/some/none) and carries data-action so
+  // the controller's bulk-group branch toggles it for every selected clip.
+  function renderBulkGroupTree(nodes, selItems, depth) {
+    const level = Number(depth) || 0;
+    return (nodes || []).map((node) => {
+      const group = normalizeTagName(node && node.name);
+      if (!group) return '';
+      const state = groupMembership(selItems, group);
+      const stateClass = state === 'all' ? ' assigned' : state === 'some' ? ' partial' : ' available';
+      const hasChildren = !!(node.children && node.children.length);
+      const treeClass = `${hasChildren ? ' has-children' : ''}${node.stored ? '' : ' virtual'}`;
+      const caret = hasChildren ? '<span class="tag-caret mi" aria-hidden="true">chevron_right</span>' : '';
+      const control = `<span class="gp-btn${stateClass}${treeClass}" data-action="bulk-group" data-group="${escapeHtml(group)}" title="${escapeHtml(group)}"><span class="tag-label">${escapeHtml(node.label || group)}</span>${caret}</span>`;
+      const children = hasChildren ? `<span class="tag-submenu" role="menu">${renderBulkGroupTree(node.children, selItems, level + 1)}</span>` : '';
+      return `<span class="tag-menu-node${hasChildren ? ' has-children' : ''}">${control}${children}</span>`;
+    }).join('');
+  }
+  // The slim contextual toolbar shown when 2+ clips are selected. Mirrors the
+  // bulk menu's actions as a always-visible bar. Reuses icon-btn + tokens.
+  function renderSelectionBar(state) {
+    const info = state || {};
+    const count = info.count || 0;
+    const allText = !info.hasImage;
+    return `<span class="selection-count">${count} selected</span>
+      <div class="selection-actions">
+        <button class="icon-btn accent" type="button" data-action="bulk-paste" title="Paste all"><span class="mi">content_paste</span></button>
+        <button class="icon-btn accent" type="button" data-action="bulk-group-open" title="Group" aria-haspopup="true"><span class="mi">sell</span></button>
+        ${allText ? '<button class="icon-btn accent" type="button" data-action="bulk-unify" title="Unify into one clip"><span class="mi">merge</span></button>' : ''}
+        <button class="icon-btn danger" type="button" data-action="bulk-delete" title="Delete selected"><span class="mi">delete</span></button>
+        <button class="icon-btn" type="button" data-action="bulk-clear" title="Clear selection (Esc)"><span class="mi">close</span></button>
+      </div>`;
+  }
+  // A lightweight click-open popover, mounted into `host` (document.body for the
+  // app so it inherits :root tokens; the demo window for the demo so it inherits
+  // .bc-popup tokens). Positioned at a point, clamped to the host box, dismissed
+  // on outside-click / Esc / scroll / resize. Menu item clicks bubble to the
+  // document controller (same data-action dispatch); this just closes after.
+  function createMenu(host) {
+    if (typeof document === 'undefined') return { open() {}, close() {}, isOpen: () => false };
+    const mount = host || document.body;
+    let el = null;
+    function close() {
+      if (!el) return;
+      el.remove();
+      el = null;
+      document.removeEventListener('pointerdown', onOutside, true);
+      document.removeEventListener('keydown', onKey, true);
+      document.removeEventListener('scroll', onScroll, true);
+      window.removeEventListener('resize', close, true);
+    }
+    function onOutside(e) { if (el && !el.contains(e.target)) close(); }
+    // Scrolling the list under an open menu would leave it floating over rows
+    // that moved away — close instead (scrolls inside the menu are fine).
+    function onScroll(e) { if (el && !el.contains(e.target)) close(); }
+    function onKey(e) { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(); } }
+    function open(opts) {
+      close();
+      const o = opts || {};
+      el = document.createElement('div');
+      el.className = 'bc-menu';
+      if (o.id != null) el.dataset.id = o.id;
+      el.innerHTML = o.html || '';
+      // Close after an actionable click (let the document dispatch run first).
+      el.addEventListener('click', (e) => {
+        if (e.target.closest('[data-action],.gp-btn,.np-btn')) setTimeout(close, 0);
+      });
+      mount.appendChild(el);
+      const isBody = mount === document.body || mount === document.documentElement;
+      const hostRect = mount.getBoundingClientRect();
+      const mw = el.offsetWidth;
+      const mh = el.offsetHeight;
+      const vw = isBody ? window.innerWidth : hostRect.width;
+      const vh = isBody ? window.innerHeight : hostRect.height;
+      let localX = isBody ? o.x : o.x - hostRect.left;
+      let localY = isBody ? o.y : o.y - hostRect.top;
+      localX = Math.max(4, Math.min(localX, vw - mw - 4));
+      localY = Math.max(4, Math.min(localY, vh - mh - 4));
+      el.style.left = `${Math.round(localX + (isBody ? window.scrollX : mount.scrollLeft))}px`;
+      el.style.top = `${Math.round(localY + (isBody ? window.scrollY : mount.scrollTop))}px`;
+      setTimeout(() => {
+        document.addEventListener('pointerdown', onOutside, true);
+        document.addEventListener('keydown', onKey, true);
+        document.addEventListener('scroll', onScroll, true);
+        window.addEventListener('resize', close, true);
+      }, 0);
+    }
+    return { open, close, isOpen: () => !!el };
+  }
+  // Auto-flip/clamp hover submenus so they never overflow the window. The popup
+  // window is narrow, so a right-opening submenu near the edge must open leftward
+  // (flip-x) and a tall group tree near the bottom must shift up. One delegated
+  // listener per consumer root covers the filter bar, the in-row pickers, AND the
+  // popover menus (the controller installs it automatically).
+  function installSubmenuAutoflip(rootEl) {
+    if (typeof document === 'undefined' || !rootEl || rootEl._bcAutoflip) return;
+    rootEl._bcAutoflip = true;
+    rootEl.addEventListener('mouseover', (event) => {
+      const target = event.target;
+      if (!target || !target.closest) return;
+      const node = target.closest('.tag-menu-node.has-children');
+      if (!node) return;
+      const sub = node.querySelector(':scope > .tag-submenu');
+      if (!sub) return;
+      // setTimeout (not rAF): rAF is throttled to a halt in background tabs.
+      setTimeout(() => {
+        if (!sub.isConnected) return;
+        sub.classList.remove('flip-x');
+        sub.style.top = '';
+        const r = sub.getBoundingClientRect();
+        if (!r.width) return; // not shown (hover already left)
+        // Bounds: the app popup IS the OS window (viewport); the demo popup is a
+        // box embedded in the marketing page, so clamp to that box instead.
+        const bound = (rootEl === document || rootEl === document.documentElement)
+          ? { left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight }
+          : rootEl.getBoundingClientRect();
+        if (bound.right - bound.left < 40) return; // hidden/unmeasurable host
+        if (r.right > bound.right - 4) {
+          const nr = node.getBoundingClientRect();
+          if (nr.left - bound.left > bound.right - nr.right) sub.classList.add('flip-x'); // open toward the roomier side
+        }
+        const r2 = sub.getBoundingClientRect();
+        if (r2.bottom > bound.bottom - 4) {
+          const shift = Math.min(r2.bottom - (bound.bottom - 4), Math.max(0, r2.top - (bound.top + 4)));
+          if (shift > 0) {
+            const curTop = parseFloat((typeof getComputedStyle === 'function' ? getComputedStyle(sub).top : '') || '0') || 0;
+            sub.style.top = `${curTop - shift}px`;
+          }
+        }
+      }, 0);
+    });
+  }
+  // Shared "action toast": the transient toast with an Undo button, reused by the
+  // app and demo for delete-with-undo. Manipulates the consumer's existing
+  // .toast element (theme-scoped) so there's no second toast implementation.
+  function showActionToast(toastEl, opts) {
+    if (!toastEl) return;
+    const o = opts || {};
+    toastEl.innerHTML = '';
+    const msg = document.createElement('span');
+    msg.textContent = o.message || '';
+    toastEl.appendChild(msg);
+    if (o.actionLabel && typeof o.onAction === 'function') {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'toast-action';
+      btn.textContent = o.actionLabel;
+      btn.addEventListener('click', () => {
+        toastEl.classList.remove('show');
+        if (toastEl._actionTimer) clearTimeout(toastEl._actionTimer);
+        o.onAction();
+      });
+      toastEl.appendChild(btn);
+    }
+    toastEl.classList.add('show');
+    if (toastEl._actionTimer) clearTimeout(toastEl._actionTimer);
+    toastEl._actionTimer = setTimeout(() => { toastEl.classList.remove('show'); toastEl.textContent = o.resetText || 'Copied'; }, o.timeout || 5000);
+  }
+  // Paint the current selection state onto an already-rendered list + drive the
+  // slim selection bar. Shared by both consumers so the class names + bar markup
+  // can't drift. The consumer still owns list virtualization (it loads enough
+  // rows before calling this when the focus moved past the rendered batch).
+  function applySelectionUI(opts) {
+    const o = opts || {};
+    const state = o.state || {};
+    const selected = state.selectedIds instanceof Set ? state.selectedIds : new Set(state.ids || []);
+    if (o.listEl) {
+      o.listEl.querySelectorAll('.item').forEach((el) => {
+        const id = el.dataset.id;
+        el.classList.toggle('selected', id === state.focusId);
+        el.classList.toggle('multi-selected', selected.has(id));
+      });
+      if (state.focusId && o.scroll !== false) {
+        const sel = '.item[data-id="' + String(state.focusId).replace(/["\\]/g, '\\$&') + '"]';
+        const focusEl = o.listEl.querySelector(sel);
+        if (focusEl) focusEl.scrollIntoView({ block: 'nearest' });
+      }
+    }
+    if (o.barEl) {
+      const active = (state.count || 0) >= 2;
+      o.barEl.classList.toggle('hidden', !active);
+      o.barEl.innerHTML = active ? renderSelectionBar(state) : '';
+    }
   }
   // The full settings panel body, shared verbatim by the app and the demo. The
   // app fills the dynamic containers (numpadSlots/groupSlots/syncAccounts/
@@ -973,8 +1249,189 @@
       refresh();
     }
 
+    // --- Multi-select (lifted from the consumers so app + demo share ONE
+    // implementation). selectedIds = the checked set (bulk target); focusId =
+    // the keyboard cursor (single, paints `.selected`). visibleIds() +
+    // renderSelection() are the only new adapter hooks the consumers must give.
+    const menu = createMenu(a.menuHost || a.dialogHost);
+    // Keep hover submenus (filter bar, pickers, popover menus) inside the window.
+    installSubmenuAutoflip(a.menuHost || (typeof document !== 'undefined' ? document : null));
+    const selectedIds = new Set();
+    let anchorId = null;
+    let focusId = null;
+    let lastUndo = null;
+
+    function visibleIds() { return (a.visibleIds && a.visibleIds()) || []; }
+    function allItems() { return (a.allItems && a.allItems()) || []; }
+    function groupNames() { return (a.groupNames && a.groupNames()) || []; }
+    function itemIsImage(id) { const it = a.itemById && a.itemById(id); return !!(it && it.type === 'image'); }
+    function selectionInfo() {
+      let hasImage = false;
+      for (const id of selectedIds) { if (itemIsImage(id)) { hasImage = true; break; } }
+      return { count: selectedIds.size, ids: [...selectedIds], selectedIds, focusId, anchorId, hasImage };
+    }
+    function paintSelection() { if (a.renderSelection) a.renderSelection(selectionInfo()); }
+    function clearSelection({ paint = true } = {}) {
+      const had = selectedIds.size || focusId != null;
+      selectedIds.clear();
+      anchorId = null;
+      focusId = null;
+      if (paint) paintSelection();
+      return had;
+    }
+    function toggleSelect(id) {
+      if (!id) return;
+      if (selectedIds.has(id)) selectedIds.delete(id); else selectedIds.add(id);
+      anchorId = id; focusId = id;
+      paintSelection();
+    }
+    function selectRange(id) {
+      const ids = visibleIds();
+      const to = ids.indexOf(id);
+      if (to < 0) return;
+      let from = anchorId != null ? ids.indexOf(anchorId) : (focusId != null ? ids.indexOf(focusId) : to);
+      if (from < 0) from = to;
+      const lo = Math.min(from, to);
+      const hi = Math.max(from, to);
+      selectedIds.clear();
+      for (let i = lo; i <= hi; i += 1) selectedIds.add(ids[i]);
+      if (anchorId == null) anchorId = ids[from];
+      focusId = id;
+      paintSelection();
+    }
+    function selectAll() {
+      const ids = visibleIds();
+      if (!ids.length) return;
+      selectedIds.clear();
+      for (const id of ids) selectedIds.add(id);
+      anchorId = ids[0];
+      focusId = ids[ids.length - 1];
+      paintSelection();
+    }
+    function moveFocus(dir, opts) {
+      const extend = opts && opts.extend;
+      const ids = visibleIds();
+      if (!ids.length) return;
+      const idx = focusId != null ? ids.indexOf(focusId) : -1;
+      const next = idx < 0 ? (dir > 0 ? 0 : ids.length - 1) : Math.max(0, Math.min(idx + dir, ids.length - 1));
+      const nextId = ids[next];
+      if (extend) {
+        if (anchorId == null) anchorId = focusId != null ? focusId : nextId;
+        selectRange(nextId);
+      } else {
+        selectedIds.clear();
+        anchorId = nextId;
+        focusId = nextId;
+        paintSelection();
+      }
+    }
+    function isTypingTarget(el) {
+      if (!el) return false;
+      const tag = el.tagName;
+      return tag === 'INPUT' || tag === 'TEXTAREA' || el.isContentEditable;
+    }
+
+    // --- Bulk flows (all reuse the same single-item backend primitives, batched
+    // by the adapter into one save). Delete is instant + Undo toast; no dialog.
+    async function pasteSelection() {
+      const ids = selectionInfo().ids;
+      if (!ids.length) return;
+      try { if (a.pasteMany) await a.pasteMany(ids); }
+      finally { clearSelection(); } // always drop the selection (app hides the popup; demo hides the bar)
+    }
+    async function deleteIds(ids) {
+      if (!ids || !ids.length) return;
+      ids.forEach((id) => selectedIds.delete(id));
+      if (focusId != null && ids.includes(focusId)) focusId = null;
+      let snapshots = null;
+      if (a.deleteClips) snapshots = await a.deleteClips(ids);
+      else if (a.deleteClip) { for (const id of ids) await a.deleteClip(id); }
+      refresh();
+      if (snapshots && snapshots.length && a.restoreClips && a.offerUndo) {
+        const snaps = snapshots;
+        lastUndo = async () => { lastUndo = null; await a.restoreClips(snaps); refresh(); };
+        a.offerUndo({ count: snaps.length, undo: () => { if (lastUndo) lastUndo(); } });
+      } else {
+        toast(a.deletedToast);
+      }
+    }
+    function deleteSelection() {
+      const ids = selectionInfo().ids;
+      return deleteIds(ids.length ? ids : (focusId ? [focusId] : []));
+    }
+    async function bulkGroup(group) {
+      const ids = selectionInfo().ids;
+      if (!ids.length || !group) return;
+      const items = ids.map((id) => a.itemById(id)).filter(Boolean);
+      const shouldHave = groupMembership(items, group) !== 'all'; // all -> remove from all; else add to all
+      if (a.groupAssignMany) await a.groupAssignMany(ids, group, shouldHave);
+      else if (a.toggleGroup) { for (const id of ids) { const it = a.itemById(id); if (!!it && isInGroup(it, group) !== shouldHave) await a.toggleGroup(id, group); } }
+      refresh();
+    }
+    async function bulkAddGroup() {
+      const name = await dialogs.prompt({ title: 'New group name' });
+      if (!name) return;
+      if (a.createGroup) await a.createGroup(name);
+      await bulkGroup(name);
+    }
+    async function unifySelection() {
+      const ids = selectionInfo().ids;
+      if (ids.length < 2) return;
+      if (a.startUnify) await a.startUnify(ids);
+      // Paint the cleared state: on macOS the popup stays visible while the
+      // unify window opens (no blur-to-hide), so a stale bar would linger.
+      clearSelection();
+    }
+    function openBulkMenu(x, y) {
+      const info = selectionInfo();
+      const selItems = info.ids.map((id) => a.itemById(id)).filter(Boolean);
+      menu.open({ x, y, html: renderBulkMenu(info, { groups: groupNames(), selectedItems: selItems }) });
+    }
+    // The bar's dedicated Group button: a popover with JUST the tri-state group
+    // tree (no submenu hop). The full bulk menu stays on right-click.
+    function openBulkGroupMenu(x, y) {
+      const selItems = selectionInfo().ids.map((id) => a.itemById(id)).filter(Boolean);
+      menu.open({ x, y, html: `<div class="bc-menu-list bc-group-list">${bulkGroupTreeHtml(groupNames(), selItems)}</div>` });
+    }
+    function openClipMenu(rowEl, x, y) {
+      const id = rowEl && rowEl.dataset ? rowEl.dataset.id : null;
+      if (!id) return;
+      if (selectedIds.size >= 2 && selectedIds.has(id)) { openBulkMenu(x, y); return; }
+      const item = a.itemById(id);
+      if (!item) return;
+      menu.open({ id, x, y, html: renderClipMenu(item, { items: allItems(), groups: groupNames(), numpadMap: a.numpadMap ? a.numpadMap() : {} }) });
+    }
+
     async function onClick(event) {
       const t = event.target;
+      // Multi-select: Ctrl/Cmd-click toggles a row, Shift-click ranges from the
+      // anchor. Only when the click lands on the row body (not an inner control),
+      // so modifier-clicking the star/menu still does its own thing.
+      if ((event.metaKey || event.ctrlKey || event.shiftKey) && !t.closest('button, .np-btn, .gp-btn, .star, [data-action], a')) {
+        const row = t.closest('.item');
+        if (row && row.dataset.id) {
+          event.preventDefault(); event.stopPropagation();
+          // Shift-click extends the browser's native TEXT selection before the
+          // click lands (disorienting highlight across rows) — clear it.
+          const nativeSel = typeof window !== 'undefined' && window.getSelection && window.getSelection();
+          if (nativeSel && !nativeSel.isCollapsed) nativeSel.removeAllRanges();
+          if (event.shiftKey) selectRange(row.dataset.id); else toggleSelect(row.dataset.id);
+          return true;
+        }
+      }
+      // Per-clip "..." menu + multi-select bulk actions (bar + menu share these).
+      const menuBtn = t.closest('[data-action="clip-menu"]');
+      if (menuBtn) { event.stopPropagation(); const r = menuBtn.getBoundingClientRect(); openClipMenu(menuBtn.closest('.item'), r.right, r.bottom + 2); return true; }
+      const bulkGroupOpen = t.closest('[data-action="bulk-group-open"]');
+      if (bulkGroupOpen) { event.stopPropagation(); const r = bulkGroupOpen.getBoundingClientRect(); openBulkGroupMenu(r.left, r.bottom + 2); return true; }
+      if (t.closest('[data-action="bulk-paste"]')) { event.stopPropagation(); pasteSelection(); return true; }
+      if (t.closest('[data-action="bulk-unify"]')) { event.stopPropagation(); unifySelection(); return true; }
+      if (t.closest('[data-action="bulk-delete"]')) { event.stopPropagation(); deleteSelection(); return true; }
+      if (t.closest('[data-action="bulk-clear"]')) { event.stopPropagation(); clearSelection(); return true; }
+      const bulkAdd = t.closest('[data-action="bulk-add-group"]');
+      if (bulkAdd) { event.stopPropagation(); bulkAddGroup(); return true; }
+      const bulkGroupBtn = t.closest('[data-action="bulk-group"]');
+      if (bulkGroupBtn) { event.stopPropagation(); bulkGroup(bulkGroupBtn.dataset.group); return true; }
       if (t.closest('[data-action="clear-search-filters"]')) { event.stopPropagation(); if (a.clearFilters) a.clearFilters(); if (a.focusSearch) a.focusSearch(); return true; }
       const gx = t.closest('[data-action="delete-group"]');
       if (gx) { event.stopPropagation(); deleteGroup(gx.dataset.group); return true; }
@@ -991,14 +1448,14 @@
       const gpBtn = t.closest('.gp-btn');
       if (gpBtn) {
         event.stopPropagation();
-        const item = gpBtn.closest('.item');
+        const item = gpBtn.closest('[data-id]'); // the row's .item OR the "..." menu root (both carry data-id)
         if (!item) return true;
         if (gpBtn.dataset.action === 'add-group') addGroup(item.dataset.id);
         else if (gpBtn.dataset.group) { await a.toggleGroup(item.dataset.id, gpBtn.dataset.group); refresh(); }
         return true;
       }
       const npBtn = t.closest('.np-btn');
-      if (npBtn) { event.stopPropagation(); const item = npBtn.closest('.item'); if (item) tryAssignNumpad(item.dataset.id, Number(npBtn.dataset.n)); return true; }
+      if (npBtn) { event.stopPropagation(); const item = npBtn.closest('[data-id]'); if (item) tryAssignNumpad(item.dataset.id, Number(npBtn.dataset.n)); return true; }
       const pin = t.closest('[data-action="pin"]');
       if (pin) { event.stopPropagation(); await a.pin(pin.dataset.id); refresh(); return true; }
       const openImg = t.closest('[data-action="open-img"]');
@@ -1010,31 +1467,73 @@
       const rename = t.closest('[data-action="rename"]');
       if (rename) { event.stopPropagation(); await renameClip(rename.dataset.id); return true; }
       const del = t.closest('[data-action="del"]');
-      if (del) { event.stopPropagation(); await a.deleteClip(del.dataset.id); refresh(); toast(a.deletedToast); return true; }
+      if (del) { event.stopPropagation(); await deleteIds([del.dataset.id]); return true; } // same instant-delete + Undo toast as bulk
       const item = t.closest('.item');
       if (item) { await a.activateClip(item.dataset.id); return true; }
       return false;
     }
     function onContextmenu(event) {
       const ftag = event.target.closest('.filter-tag[data-filter], .filter-tag[data-group]');
-      if (!ftag || event.target.closest('[data-action="delete-group"]')) return false;
-      event.preventDefault();
-      event.stopPropagation();
-      if (a.setFilterIntent) a.setFilterIntent(ftag.dataset.filter || ftag.dataset.group, 'exclude');
-      render();
-      return true;
+      if (ftag && !event.target.closest('[data-action="delete-group"]')) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (a.setFilterIntent) a.setFilterIntent(ftag.dataset.filter || ftag.dataset.group, 'exclude');
+        render();
+        return true;
+      }
+      // Right-click a clip row -> the shared menu. Explorer-style: right-clicking
+      // outside the current multi-selection collapses to just that row (single
+      // menu); right-clicking within a 2+ selection keeps it (bulk menu).
+      const row = event.target.closest('.item');
+      if (row && row.dataset.id) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (!(selectedIds.size >= 2 && selectedIds.has(row.dataset.id))) {
+          selectedIds.clear();
+          anchorId = row.dataset.id;
+          focusId = row.dataset.id;
+          paintSelection();
+        }
+        openClipMenu(row, event.clientX, event.clientY);
+        return true;
+      }
+      return false;
     }
     function onKeydown(event) {
-      if (dialogs.isOpen()) return; // dialogs own their keys via capture phase
+      if (dialogs.isOpen() || menu.isOpen()) return; // dialogs/menu own their keys
+      const mod = event.metaKey || event.ctrlKey;
       if (event.key === 'Escape') {
+        if (clearSelection()) return; // one Esc clears an active selection first
         if (a.isSettingsOpen && a.isSettingsOpen()) { if (a.closeSettings) a.closeSettings(); }
         else if (a.hidePopup) a.hidePopup();
         return;
       }
       if (a.isSettingsOpen && a.isSettingsOpen()) return;
-      if (event.key === 'ArrowDown') { event.preventDefault(); if (a.moveSelection) a.moveSelection(1); }
-      else if (event.key === 'ArrowUp') { event.preventDefault(); if (a.moveSelection) a.moveSelection(-1); }
-      else if (event.key === 'Enter') { if (a.activateSelected) { event.preventDefault(); a.activateSelected(); } }
+      // Ctrl/Cmd+A & +Z: the search box is focused nearly always in the app, so
+      // route by whether the field actually has text — with text the chord means
+      // the FIELD (native select-all / typing undo); empty, it means the LIST.
+      const fieldHasText = isTypingTarget(event.target) && typeof event.target.value === 'string' && event.target.value.length > 0;
+      if (mod && (event.key === 'z' || event.key === 'Z')) { if (!fieldHasText && lastUndo) { event.preventDefault(); lastUndo(); } return; }
+      if (mod && (event.key === 'a' || event.key === 'A')) { if (!fieldHasText) { event.preventDefault(); selectAll(); } return; }
+      if (event.key === 'ArrowDown') { event.preventDefault(); moveFocus(1, { extend: event.shiftKey }); }
+      else if (event.key === 'ArrowUp') { event.preventDefault(); moveFocus(-1, { extend: event.shiftKey }); }
+      // Delete while EDITING query text must stay a text edit (same fieldHasText
+      // routing as the chords above); with an empty field it means the clips.
+      else if (event.key === 'Delete') { if (selectedIds.size && !fieldHasText) { event.preventDefault(); deleteSelection(); } }
+      else if (event.key === 'Backspace') { if (!isTypingTarget(event.target) && (selectedIds.size || focusId)) { event.preventDefault(); deleteSelection(); } }
+      else if ((event.key === ' ' || event.key === 'Spacebar') && !isTypingTarget(event.target)) { if (focusId) { event.preventDefault(); toggleSelect(focusId); } }
+      else if (event.key === 'Enter') {
+        event.preventDefault();
+        if (selectedIds.size >= 2) pasteSelection();
+        else if (focusId) a.activateClip(focusId);
+        else {
+          // No focus yet: activate the FIRST visible clip — the "type, press
+          // Enter, and paste" flow both popups are built around.
+          const ids = visibleIds();
+          if (ids.length) a.activateClip(ids[0]);
+          else if (a.activateSelected) a.activateSelected();
+        }
+      }
     }
     return {
       dialogs,
@@ -1046,6 +1545,17 @@
       addGroup,
       clearAll,
       render,
+      // Selection surface used by the consumers (numpad hotkey, popup reset, and
+      // re-painting selection classes after a full list rebuild) + exposed for tests.
+      selection: selectionInfo,
+      focusedId: () => focusId,
+      clearSelection,
+      selectAll,
+      moveFocus,
+      toggle: toggleSelect,
+      selectRange,
+      repaintSelection: paintSelection,
+      closeMenu: () => menu.close(), // popup hide/reset must not leave a stale popover
     };
   }
   // Pure find helpers (shared by the editor's find bar). findAllMatches returns
@@ -1336,88 +1846,435 @@
       openFind,
     };
   }
-  function simpleTextHunks(leftText, rightText) {
-    const left = String(leftText || '');
-    const right = String(rightText || '');
-    if (left === right) return [{ type: 'same', text: left }];
-    return [
-      ...(left ? [{ type: 'remove', text: left }] : []),
-      ...(right ? [{ type: 'add', text: right }] : []),
-    ];
+  // Generic LCS diff over token arrays (lines OR words) — the ONE diff engine
+  // behind the reconciliation view in the app editor window AND the website demo
+  // (no `diff` npm dependency in the browser). `keyOf` normalizes tokens for
+  // MATCHING only (display always uses the originals — that's how whitespace-
+  // insensitive matching still shows each side verbatim). Common prefix/suffix
+  // trimmed; past the DP budget the middle degrades to one opaque change block.
+  function lcsSegments(aArr, bArr, keyOf) {
+    const key = keyOf || ((x) => x);
+    const ka = aArr.map(key);
+    const kb = bArr.map(key);
+    let start = 0;
+    while (start < ka.length && start < kb.length && ka[start] === kb[start]) start += 1;
+    let endA = ka.length;
+    let endB = kb.length;
+    while (endA > start && endB > start && ka[endA - 1] === kb[endB - 1]) { endA -= 1; endB -= 1; }
+    const segs = [];
+    const pushSame = (aL, bL) => { if (aL.length) segs.push({ same: true, a: aL, b: bL }); };
+    const pushChange = (aL, bL) => { if (aL.length || bL.length) segs.push({ same: false, a: aL, b: bL }); };
+    pushSame(aArr.slice(0, start), bArr.slice(0, start));
+    const midA = aArr.slice(start, endA);
+    const midB = bArr.slice(start, endB);
+    const mka = ka.slice(start, endA);
+    const mkb = kb.slice(start, endB);
+    const n = midA.length;
+    const m = midB.length;
+    if (n || m) {
+      if (!n || !m || n * m > 2000000) {
+        pushChange(midA, midB);
+      } else {
+        const W = m + 1;
+        const dp = new Uint32Array((n + 1) * W);
+        for (let i = n - 1; i >= 0; i -= 1) {
+          for (let j = m - 1; j >= 0; j -= 1) {
+            dp[i * W + j] = mka[i] === mkb[j]
+              ? dp[(i + 1) * W + j + 1] + 1
+              : Math.max(dp[(i + 1) * W + j], dp[i * W + j + 1]);
+          }
+        }
+        let i = 0;
+        let j = 0;
+        let sameA = [];
+        let sameB = [];
+        let delRun = [];
+        let addRun = [];
+        const flushChange = () => { if (delRun.length || addRun.length) { pushChange(delRun, addRun); delRun = []; addRun = []; } };
+        const flushSame = () => { if (sameA.length) { pushSame(sameA, sameB); sameA = []; sameB = []; } };
+        while (i < n && j < m) {
+          if (mka[i] === mkb[j]) { flushChange(); sameA.push(midA[i++]); sameB.push(midB[j++]); }
+          else { flushSame(); if (dp[(i + 1) * W + j] >= dp[i * W + j + 1]) delRun.push(midA[i++]); else addRun.push(midB[j++]); }
+        }
+        flushSame();
+        while (i < n) delRun.push(midA[i++]);
+        while (j < m) addRun.push(midB[j++]);
+        flushChange();
+      }
+    }
+    pushSame(aArr.slice(endA), bArr.slice(endB));
+    return segs;
   }
-  function snapshotLabel(snapshot, fallback) {
-    const title = titleOf(snapshot);
-    return title || fallback || 'Untitled';
+  // Whitespace-insensitive line key: clips of the same text routinely differ in
+  // CRLF vs LF, trailing spaces, and indentation depending on where they were
+  // copied from — those must not defeat the diff.
+  const WS_LINE_KEY = (line) => line.replace(/\s+/g, ' ').trim();
+  function diffLineHunks(leftText, rightText, opts) {
+    const ignoreWs = !opts || opts.ignoreWhitespace !== false; // default ON
+    const a = String(leftText || '').split(/\r?\n/);
+    const b = String(rightText || '').split(/\r?\n/);
+    return lcsSegments(a, b, ignoreWs ? WS_LINE_KEY : null).map((seg) => seg.same
+      ? { type: 'same', lines: seg.a, leftLines: seg.a, rightLines: seg.b }
+      : { type: 'change', leftLines: seg.a, rightLines: seg.b });
   }
+  // Union-merge two texts: identical regions once, differing regions as
+  // current-then-incoming. Seeds a Unify step's Result (nothing silently
+  // dropped) and backs the "Keep both" action.
+  function unionMergeText(leftText, rightText) {
+    return diffLineHunks(leftText, rightText)
+      .flatMap((seg) => seg.type === 'same' ? seg.lines : [...seg.leftLines, ...seg.rightLines])
+      .join('\n');
+  }
+  // IntelliJ-style merge built on the vendored CodeMirror 5 merge addon
+  // (site/shared/vendor/cm5, loaded by BOTH editor.html and the demo).
+  //
+  // TWO layouts from ONE builder, chosen by the record:
+  //  - 2-pane (default; unify + baseless conflicts): Result (EDITABLE, seeded
+  //    with Current) LEFT | Incoming (read-only) RIGHT — the IntelliJ 1<>1
+  //    apply-changes view. Curved SVG connectors join each chunk across the
+  //    gap, carrying an apply arrow AND a decline (x) per chunk.
+  //  - 3-pane (only when the record has a true base): Current | Result (base-
+  //    seeded, editable) | Incoming — the IntelliJ 1<>target<>1 merge.
+  // connect stays DEFAULT (svg connectors); 'align' is deliberately avoided —
+  // it disables connectors and breaks scrolling with lineWrapping+collapse.
+  //
+  // Whitespace handling: the addon's ignoreWhitespace only covers spaces/tabs
+  // (extending its diff splice to newlines corrupts line bookkeeping), so
+  // blank-line-only chunks are QUIETED at chunk level via the vendored
+  // chunkState hook: not drawn, not counted, excluded from nav/merge-all/save.
+  // Declined chunks keep a dimmed dashed connector and are excluded the same
+  // way (tracked by orig-side coordinates, which never change).
   function createReconciliationView(opts) {
     if (typeof document === 'undefined') return null;
     const o = opts || {};
     const record = o.record || {};
     const left = record.left || {};
     const right = record.right || {};
-    const initial = record.result || right || left || {};
-    const hunks = Array.isArray(record.hunks) && record.hunks.length
-      ? record.hunks
-      : simpleTextHunks(left.text, right.text);
+    // Keep the RAW texts for verbatim accept actions; feed LF-normalized copies
+    // to the merge view (stray \r defeats chunking and identical-collapse).
+    const rawLeft = String(left.text || '');
+    const rawRight = String(right.text || '');
+    const toLF = (t) => String(t == null ? '' : t).replace(/\r\n?/g, '\n');
+    const leftText = toLF(rawLeft);
+    const rightText = toLF(rawRight);
+    const threeWay = !!(record.base && record.base.text != null);
+    const CM = typeof window !== 'undefined' && window.CodeMirror && window.CodeMirror.MergeView ? window.CodeMirror : null;
+    // Result seed: the true base for a 3-way merge, else Current (pull Incoming
+    // hunks in via the connectors; the save guard catches unhandled ones).
+    const seed = threeWay ? toLF(record.base.text) : leftText;
+    let ignoreWs = true;
+
     const root = document.createElement('div');
     root.className = 'bc-reconcile';
+    const barTitle = escapeHtml(record.title || o.title || 'Resolve conflict');
+    const lTitle = titleOf(left);
+    const rTitle = titleOf(right);
+    const headCell = (label, title) => `<span>${label}${title ? ` · ${escapeHtml(title)}` : ''}</span>`;
+    const headsHtml = threeWay
+      ? `${headCell('Current', lTitle)}<span class="bc-merge-heads-gap"></span>${headCell('Result', '')}<span class="bc-merge-heads-gap"></span>${headCell('Incoming', rTitle)}`
+      : `${headCell('Result', lTitle)}<span class="bc-merge-heads-gap"></span>${headCell('Incoming', rTitle)}`;
     root.innerHTML = `
       <div class="bc-editor-bar">
-        <span class="bc-editor-title">Resolve conflict</span>
+        <span class="bc-editor-title">${barTitle}</span>
         <div class="bc-editor-bar-actions">
+          <span class="bc-chg-count" data-x="chgcount"></span>
+          <button class="icon-btn" type="button" data-x="prevchg" title="Previous change (Alt+Up)"><span class="mi">keyboard_arrow_up</span></button>
+          <button class="icon-btn" type="button" data-x="nextchg" title="Next change (Alt+Down)"><span class="mi">keyboard_arrow_down</span></button>
+          <button class="icon-btn" type="button" data-x="mergeall" title="Merge all non-conflicting"><span class="mi">call_merge</span></button>
+          <button class="icon-btn" type="button" data-x="ws" title="Ignore whitespace differences"><span class="mi">space_bar</span></button>
           <button class="icon-btn close-btn" type="button" data-x="close" title="Close (Esc)">&times;</button>
         </div>
       </div>
-      <div class="bc-reconcile-body">
-        <section class="bc-reconcile-side">
-          <div class="bc-reconcile-head">Current</div>
-          <div class="bc-reconcile-title">${escapeHtml(snapshotLabel(left, 'Current'))}</div>
-          <pre>${escapeHtml(left.text || '')}</pre>
-        </section>
-        <section class="bc-reconcile-side">
-          <div class="bc-reconcile-head">Incoming</div>
-          <div class="bc-reconcile-title">${escapeHtml(snapshotLabel(right, 'Incoming'))}</div>
-          <pre>${escapeHtml(right.text || '')}</pre>
-        </section>
-        <section class="bc-reconcile-merge">
-          <div class="bc-reconcile-head">Merged result</div>
-          <input class="bc-note-title" data-x="title" maxlength="240" placeholder="Title" autocomplete="off" spellcheck="false">
-          <textarea class="bc-editor-area" data-x="text" spellcheck="false" wrap="soft"></textarea>
-        </section>
+      <div class="bc-merge-title">
+        <input class="bc-note-title" data-x="title" maxlength="240" placeholder="Title" autocomplete="off" spellcheck="false">
+        <span class="bc-title-opts" data-x="titleopts"></span>
       </div>
-      <div class="bc-hunks">
-        ${hunks.map((hunk) => `<pre class="bc-hunk ${escapeHtml(hunk.type || 'same')}">${escapeHtml(hunk.text || '')}</pre>`).join('')}
-      </div>
+      <div class="bc-merge-heads ${threeWay ? 'bc-heads-3' : 'bc-heads-2'}">${headsHtml}</div>
+      <div class="bc-merge-host" data-x="host"></div>
       <div class="bc-reconcile-actions">
         <button type="button" data-x="left">Accept current</button>
         <button type="button" data-x="right">Accept incoming</button>
         <button type="button" data-x="both">Keep both</button>
-        <button type="button" data-x="remove">Remove conflict</button>
-        <button type="button" class="primary" data-x="save">Save merged</button>
+        ${record.unify ? '' : '<button type="button" data-x="remove">Remove conflict</button>'}
+        <button type="button" class="primary" data-x="save">${escapeHtml(record.saveLabel || 'Save merged')}</button>
       </div>`;
     const q = (name) => root.querySelector(`[data-x="${name}"]`);
+    const dialogs = createDialogs(root);
     const titleInput = q('title');
-    const textArea = q('text');
-    titleInput.value = cleanTitle(initial.title);
-    textArea.value = String(initial.text || '');
-    const value = () => ({ title: cleanTitle(titleInput.value), text: textArea.value });
-    const setSnapshot = (snapshot) => {
-      titleInput.value = titleOf(snapshot);
-      textArea.value = String(snapshot && snapshot.text || '');
-    };
+    const host = q('host');
+    const initial = record.result || {};
+    titleInput.value = cleanTitle(initial.title != null ? initial.title : (rTitle || lTitle));
+    // Title conflict chips: when the two titles differ, offer both as one-click
+    // picks (the input stays free-text either way).
+    if ((lTitle || rTitle) && lTitle !== rTitle) {
+      const chip = (label, val) => `<button type="button" class="bc-chip" data-title-pick="${escapeHtml(val)}">${escapeHtml(label)}: ${escapeHtml(val || '—')}</button>`;
+      q('titleopts').innerHTML = `<span class="bc-title-use">use</span>${chip('Current', lTitle)}${chip('Incoming', rTitle)}`;
+      q('titleopts').addEventListener('click', (event) => {
+        const pick = event.target.closest('[data-title-pick]');
+        if (pick) titleInput.value = pick.dataset.titlePick;
+      });
+    }
+
+    // ---- CodeMirror MergeView (plain-textarea fallback if vendor missing) ----
+    let mv = null;
+    let fallbackArea = null;
+    let navIdx = -1;
+    let statusTimer = null;
+    let lineClassHandles = [];
+    const declinedKeys = new Set(); // `${side}:${origFrom}-${origTo}` — orig coords are immutable
+    const currentText = () => mv ? mv.editor().getValue() : (fallbackArea ? fallbackArea.value : seed);
+    const keyOf = (side, chunk) => `${side}:${chunk.origFrom}-${chunk.origTo}`;
+    function chunkRanges(dv, chunk) {
+      const Pos = CM.Pos;
+      return {
+        origStart: chunk.origTo > dv.orig.lastLine() ? Pos(chunk.origFrom - 1) : Pos(chunk.origFrom, 0),
+        origEnd: Pos(chunk.origTo, 0),
+        editStart: chunk.editTo > dv.edit.lastLine() ? Pos(chunk.editFrom - 1) : Pos(chunk.editFrom, 0),
+        editEnd: Pos(chunk.editTo, 0),
+      };
+    }
+    // A chunk is "quiet" (whitespace-only) when its two sides are IDENTICAL once
+    // whitespace is normalized — this covers both blank-vs-blank AND a shared
+    // content line that differs only by surrounding blank lines (the addon's own
+    // ignoreWhitespace handles spaces/tabs but NOT blank lines, so those survive
+    // as chunks the diff would otherwise count).
+    const wsNorm = (s) => String(s).replace(/\s+/g, ' ').trim();
+    function wsEqualChunk(dv, chunk) {
+      const r = chunkRanges(dv, chunk);
+      return wsNorm(dv.orig.getRange(r.origStart, r.origEnd)) === wsNorm(dv.edit.getRange(r.editStart, r.editEnd));
+    }
+    // Vendored chunkState hook: how a chunk is drawn (see cm5/README patches).
+    function chunkState(dv, chunk) {
+      if (ignoreWs && wsEqualChunk(dv, chunk)) return 'quiet';
+      if (declinedKeys.has(keyOf(dv.type, chunk))) return 'declined';
+      return null;
+    }
+    // One classified pass over both sides' chunks: quiet skipped, declined
+    // separated, 3-pane conflicts = active left/right chunks touching the same
+    // Result lines (merged into regions).
+    function survey() {
+      const out = { changes: 0, pending: [], declined: 0, quiet: [], conflicts: [], activeBySide: { left: [], right: [] } };
+      if (!mv) return out;
+      for (const dv of [mv.left, mv.right]) {
+        if (!dv) continue;
+        const chunks = (dv.type === 'left' ? mv.leftChunks() : mv.rightChunks()) || [];
+        for (const chunk of chunks) {
+          if (ignoreWs && wsEqualChunk(dv, chunk)) { out.quiet.push({ dv, chunk }); continue; }
+          out.changes += 1;
+          out.activeBySide[dv.type].push(chunk);
+          if (declinedKeys.has(keyOf(dv.type, chunk))) out.declined += 1;
+          else out.pending.push({ side: dv.type, dv, chunk });
+        }
+      }
+      if (threeWay) {
+        const touches = (a, b) => a.editFrom <= b.editTo && b.editFrom <= a.editTo;
+        const regions = [];
+        for (const lc of out.activeBySide.left) for (const rc of out.activeBySide.right) {
+          if (touches(lc, rc)) regions.push({ from: Math.min(lc.editFrom, rc.editFrom), to: Math.max(lc.editTo, rc.editTo, Math.min(lc.editFrom, rc.editFrom) + 1) });
+        }
+        regions.sort((a, b) => a.from - b.from);
+        for (const reg of regions) {
+          const last = out.conflicts[out.conflicts.length - 1];
+          if (last && reg.from <= last.to) last.to = Math.max(last.to, reg.to);
+          else out.conflicts.push({ ...reg });
+        }
+      }
+      return out;
+    }
+    function clearLineClasses() {
+      for (const entry of lineClassHandles) { try { entry.cm.removeLineClass(entry.h, entry.where, entry.cls); } catch {} }
+      lineClassHandles = [];
+    }
+    function addLineClasses(cm, from, to, where, cls) {
+      for (let line = from; line < Math.max(to, from + 1) && line <= cm.lastLine(); line += 1) {
+        lineClassHandles.push({ cm, h: cm.addLineClass(line, where, cls), where, cls });
+      }
+    }
+    function updateStatus() {
+      if (!mv) return;
+      const info = survey();
+      // Counter: total real changes, a pending chip (click -> first pending),
+      // and a red conflict chip in 3-pane mode.
+      let html = info.changes ? `${info.changes} change${info.changes === 1 ? '' : 's'}` : 'no differences';
+      if (info.pending.length) html += ` <button type="button" class="bc-pending-chip" data-x="pendjump">${info.pending.length} pending</button>`;
+      if (info.conflicts.length) html += ` <button type="button" class="bc-conflict-chip" data-x="confjump">${info.conflicts.length} conflict${info.conflicts.length === 1 ? '' : 's'}</button>`;
+      q('chgcount').innerHTML = html;
+      const pj = q('pendjump');
+      if (pj) pj.onclick = () => { const p = survey().pending[0]; if (p) scrollToLine(p.chunk.editFrom); };
+      const cj = q('confjump');
+      if (cj) cj.onclick = () => { const c = survey().conflicts[0]; if (c) scrollToLine(c.from); };
+      // Line paint: quiet chunks lose the green chunk background on both panes;
+      // declined chunks dim their text; conflict regions tint red.
+      clearLineClasses();
+      for (const { dv, chunk } of info.quiet) {
+        addLineClasses(dv.edit, chunk.editFrom, chunk.editTo, 'background', 'bc-quiet');
+        addLineClasses(dv.orig, chunk.origFrom, chunk.origTo, 'background', 'bc-quiet');
+      }
+      for (const dv of [mv.left, mv.right]) {
+        if (!dv) continue;
+        const chunks = (dv.type === 'left' ? mv.leftChunks() : mv.rightChunks()) || [];
+        for (const chunk of chunks) {
+          if (chunkState(dv, chunk) !== 'declined') continue;
+          addLineClasses(dv.orig, chunk.origFrom, chunk.origTo, 'wrap', 'bc-dim-line');
+        }
+      }
+      for (const reg of info.conflicts) addLineClasses(mv.editor(), reg.from, reg.to, 'background', 'bc-conflict');
+    }
+    function scheduleStatus() { clearTimeout(statusTimer); statusTimer = setTimeout(updateStatus, 120); }
+    // Force the addon to recompute the diff NOW (it otherwise debounces ~250ms),
+    // so the counter/nav reflect a programmatic bulk change immediately instead
+    // of racing the debounce.
+    function forceRecompute() { for (const dv of [mv && mv.left, mv && mv.right]) if (dv && dv.forceUpdate) dv.forceUpdate('full'); }
+    function scrollToLine(line) {
+      if (!mv) return;
+      const ed = mv.editor();
+      ed.setCursor({ line: Math.min(line, ed.lastLine()), ch: 0 });
+      ed.scrollIntoView({ line: Math.min(line, ed.lastLine()), ch: 0 }, ed.getScrollInfo().clientHeight * 0.35);
+      ed.focus();
+    }
+    function jumpChange(dir) {
+      const pos = [...new Set(survey().pending.map((p) => p.chunk.editFrom))].sort((a, b) => a - b);
+      if (!pos.length) return;
+      navIdx = ((navIdx + dir) % pos.length + pos.length) % pos.length;
+      scrollToLine(pos[navIdx]);
+    }
+    // Pull one chunk from an original pane into the Result (same replace the
+    // addon's own arrows perform), reused by keyboard + merge-all.
+    function applyChunk(side, chunk) {
+      const orig = side === 'left' ? mv.leftOriginal() : mv.rightOriginal();
+      if (!orig) return;
+      const dv = side === 'left' ? mv.left : mv.right;
+      const r = chunkRanges(dv, chunk);
+      mv.editor().replaceRange(orig.getRange(r.origStart, r.origEnd), r.editStart, r.editEnd);
+    }
+    function appendChunk(side, chunk) { // "keep both": insert the side's block after the Result block
+      const orig = side === 'left' ? mv.leftOriginal() : mv.rightOriginal();
+      if (!orig) return;
+      const dv = side === 'left' ? mv.left : mv.right;
+      const r = chunkRanges(dv, chunk);
+      const ed = mv.editor();
+      const at = chunk.editTo > ed.lastLine() ? CM.Pos(ed.lastLine()) : CM.Pos(chunk.editTo, 0);
+      ed.replaceRange(orig.getRange(r.origStart, r.origEnd), at, at);
+    }
+    function pendingAtCursor(side) {
+      if (!mv) return null;
+      const line = mv.editor().getCursor().line;
+      let best = null;
+      let bestDist = Infinity;
+      for (const p of survey().pending) {
+        if (side && p.side !== side) continue;
+        const c = p.chunk;
+        if (line >= c.editFrom && line < Math.max(c.editTo, c.editFrom + 1)) return p;
+        const d = Math.min(Math.abs(line - c.editFrom), Math.abs(line - c.editTo));
+        if (d < bestDist) { bestDist = d; best = p; }
+      }
+      return bestDist <= 6 ? best : null; // only act when reasonably close
+    }
+    function declineChunk(dv, chunk) {
+      declinedKeys.add(keyOf(dv.type, chunk));
+      if (dv.bcRedraw) dv.bcRedraw();
+      updateStatus();
+    }
+    function mergeAllNonConflicting() {
+      if (!mv) return;
+      const info = survey();
+      const inConflict = (c) => info.conflicts.some((reg) => c.editFrom <= reg.to && reg.from <= c.editTo);
+      const safe = info.pending.filter((p) => !inConflict(p.chunk))
+        .sort((a, b) => b.chunk.editFrom - a.chunk.editFrom); // bottom-up keeps earlier coords valid
+      for (const p of safe) applyChunk(p.side, p.chunk);
+      forceRecompute();
+      updateStatus(); // deterministic: recompute done, so the count reflects reality now
+    }
+    function buildMergeView(centerText) {
+      host.innerHTML = '';
+      navIdx = -1;
+      lineClassHandles = [];
+      const cmOpts = {
+        value: centerText,
+        origRight: rightText,
+        lineNumbers: false,
+        mode: null,
+        lineWrapping: true,
+        collapseIdentical: 2,
+        revertButtons: true,
+        ignoreWhitespace: ignoreWs,
+        allowEditingOriginals: false,
+        theme: 'bc',
+        chunkState,      // vendored BOARDCLIP hooks (see cm5/README)
+        declineChunk,
+        phrases: { 'Revert chunk': 'Merge this change into Result' },
+      };
+      if (threeWay) cmOpts.origLeft = leftText;
+      mv = new CM.MergeView(host, cmOpts);
+      const editors = [mv.editor(), mv.leftOriginal(), mv.rightOriginal()].filter(Boolean);
+      const keymap = {
+        'Alt-Down': () => jumpChange(1),
+        'Alt-Up': () => jumpChange(-1),
+        'Alt-Right': () => { const p = pendingAtCursor('right'); if (p) { applyChunk('right', p.chunk); forceRecompute(); updateStatus(); } },
+        'Alt-Left': () => {
+          if (threeWay) { const p = pendingAtCursor('left'); if (p) { applyChunk('left', p.chunk); forceRecompute(); updateStatus(); } }
+          else { const p = pendingAtCursor('right'); if (p) declineChunk(p.dv, p.chunk); } // 2-pane: dismiss
+        },
+        'Alt-B': () => { const p = pendingAtCursor(null); if (p) { appendChunk(p.side, p.chunk); forceRecompute(); updateStatus(); } },
+      };
+      for (const cm of editors) cm.setOption('extraKeys', keymap);
+      mv.editor().on('changes', scheduleStatus);
+      CodeMirror.on(mv.editor(), 'updateDiff', scheduleStatus);
+      setTimeout(() => {
+        for (const cm of editors) cm.refresh();
+        updateStatus();
+        mv.editor().focus();
+      }, 0);
+    }
+    if (CM) buildMergeView(seed);
+    else {
+      // Vendored CodeMirror missing: degrade to an editable textarea seeded with
+      // the merge seed so resolution is still possible.
+      fallbackArea = document.createElement('textarea');
+      fallbackArea.className = 'bc-editor-area';
+      fallbackArea.value = seed;
+      host.appendChild(fallbackArea);
+      q('chgcount').textContent = '';
+    }
+
+    const value = () => ({ title: cleanTitle(titleInput.value), text: currentText() });
     const resolve = (action, extra) => {
       if (o.onResolve) o.onResolve({ id: record.id, action, ...value(), ...(extra || {}) });
     };
-    q('left').onclick = () => { setSnapshot(left); resolve('accept_left'); };
-    q('right').onclick = () => { setSnapshot(right); resolve('accept_right'); };
-    q('both').onclick = () => resolve('keep_both');
-    q('remove').onclick = () => resolve('remove');
-    q('save').onclick = () => resolve('save');
+    // Accept actions resolve with the RAW side text (verbatim — no LF rewrite).
+    q('left').onclick = () => { titleInput.value = lTitle; resolve('accept_left', { text: rawLeft }); };
+    q('right').onclick = () => { titleInput.value = rTitle; resolve('accept_right', { text: rawRight }); };
+    q('both').onclick = () => resolve('keep_both', { text: unionMergeText(leftText, rightText) });
+    const removeBtn = q('remove');
+    if (removeBtn) removeBtn.onclick = () => resolve('remove');
+    q('save').onclick = async () => {
+      // Unhandled = real changes neither merged nor dismissed. Applies to unify
+      // too (Result starts as Current, so unpulled incoming = potential loss).
+      const pending = mv ? survey().pending.length : 0;
+      if (pending > 0) {
+        const ok = await dialogs.confirm({
+          title: `${pending} change${pending === 1 ? '' : 's'} not merged or dismissed`,
+          message: 'Save anyway with the current Result?',
+          okLabel: 'Save',
+        });
+        if (!ok) return;
+      }
+      resolve('save');
+    };
+    q('prevchg').onclick = () => jumpChange(-1);
+    q('nextchg').onclick = () => jumpChange(1);
+    q('mergeall').onclick = () => mergeAllNonConflicting();
+    q('ws').classList.toggle('active', ignoreWs);
+    q('ws').onclick = () => {
+      if (!mv) return;
+      ignoreWs = !ignoreWs;
+      q('ws').classList.toggle('active', ignoreWs);
+      buildMergeView(currentText()); // rebuild with the same Result text
+    };
     q('close').onclick = () => { if (o.onClose) o.onClose(); };
     root.addEventListener('keydown', (event) => {
-      if (event.key === 'Escape') { event.preventDefault(); if (o.onClose) o.onClose(); }
+      if (event.key === 'Escape' && !dialogs.isOpen()) { event.preventDefault(); if (o.onClose) o.onClose(); }
     });
-    setTimeout(() => textArea.focus(), 0);
     return { el: root, getValue: value };
   }
   function sortItems(items) {
@@ -1530,8 +2387,18 @@
     builtinFilterIconHtml,
     renderFilterBar,
     renderItemPicker,
+    renderNumpadButtons,
+    groupMembership,
     renderClipItem,
     renderClipActions,
+    renderClipMenu,
+    renderBulkMenu,
+    bulkGroupTreeHtml,
+    renderSelectionBar,
+    createMenu,
+    installSubmenuAutoflip,
+    showActionToast,
+    applySelectionUI,
     renderPopupShell,
     renderSettingsBody,
     queryMatchIndex,
@@ -1550,7 +2417,9 @@
     lineNumberAtIndex,
     editorScrollTopForIndex,
     createEditor,
-    simpleTextHunks,
+    lcsSegments,
+    diffLineHunks,
+    unionMergeText,
     createReconciliationView,
     sortItems,
     touchItem,

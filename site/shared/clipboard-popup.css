@@ -91,10 +91,16 @@
 .star { background: none; border: none; color: var(--text-dim); cursor: pointer; font-size: var(--icon-sm); padding: var(--sp-1); transition: color var(--dur) var(--ease); line-height: 1; }
 .star .mi { font-size: var(--icon-lg); }
 .star.active, .star:hover { color: var(--pin); }
-.numpad-picker { display: none; position: absolute; top: 100%; left: -4px; z-index: 40; background: var(--menu); border-radius: var(--r-2);
-                  padding: var(--sp-1); flex-direction: column; gap: var(--sp-1); box-shadow: 0 4px 14px var(--shadow), 0 0 0 1px var(--menu-edge); overflow: visible; }
+/* ONE floating-surface definition for every popup panel — the in-row picker,
+   hover submenus, and the "..."/bulk menus (dialogs already match) — so all
+   menus read as a single system instead of three near-alike variants. */
+.numpad-picker, .tag-submenu, .bc-menu { background: var(--menu); border-radius: var(--r-2); padding: var(--sp-2);
+                                         box-shadow: 0 8px 24px var(--shadow), 0 0 0 1px var(--menu-edge); }
+.numpad-picker { display: none; position: absolute; top: 100%; left: -4px; z-index: 40; flex-direction: column; gap: var(--sp-1); overflow: visible; }
 .pin-area:hover .numpad-picker { display: flex; }
-.np-row { display: flex; gap: var(--sp-1); white-space: nowrap; }
+/* Real numpad formation: 7 8 9 / 4 5 6 / 1 2 3 (renderNumpadButtons emits that
+   order; the 3-column grid lays it out like the physical keypad). */
+.np-row { display: grid; grid-template-columns: repeat(3, 22px); gap: var(--sp-1); justify-content: start; }
 .np-btn { width: 22px; height: 22px; display: flex; align-items: center; justify-content: center; border-radius: var(--r-1); font-size: var(--fs-2);
           font-family: var(--font-mono); cursor: pointer; transition: all var(--dur) var(--ease); }
 .np-btn.free { color: var(--accent); background: transparent; }
@@ -110,8 +116,7 @@
 .tag-label { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; line-height: 1.4; }
 .tag-menu-node { position: relative; display: block; }
 .group-filters > .tag-menu-node { display: inline-flex; }
-.tag-submenu { display: none; position: absolute; top: 100%; left: 0; min-width: 150px; max-width: 240px; z-index: 70; padding: var(--sp-2); background: var(--menu);
-               border-radius: var(--r-2); box-shadow: 0 8px 20px var(--shadow), 0 0 0 1px var(--menu-edge); }
+.tag-submenu { display: none; position: absolute; top: 100%; left: 0; min-width: 150px; max-width: 240px; z-index: 70; }
 .tag-menu-node:hover > .tag-submenu, .tag-menu-node:focus-within > .tag-submenu { display: block; }
 .tag-submenu .tag-submenu { top: -5px; left: calc(100% - 1px); }
 .tag-submenu .tag-menu-node + .tag-menu-node, .gp-row > .tag-menu-node + .tag-menu-node { margin-top: var(--sp-1); }
@@ -313,26 +318,129 @@ mark { background: var(--mark-bg); color: var(--mark-fg); border-radius: 2px; pa
 .bc-editor-overlay { position: absolute; inset: 0; z-index: 40; display: none; background: var(--bg); }
 .bc-editor-overlay.show { display: block; }
 .bc-editor-overlay .bc-editor { box-shadow: 0 8px 30px var(--shadow); }
+/* IntelliJ-style merge (CodeMirror 5 merge addon, skinned with our tokens):
+   Current (read-only) | Result (editable) | Incoming (read-only). */
 .bc-reconcile { display: flex; flex-direction: column; height: 100%; width: 100%; background: var(--bg); color: var(--text); min-height: 0; }
-.bc-reconcile-body { flex: 1; min-height: 0; display: grid; grid-template-columns: 1fr 1fr 1fr; border-bottom: 1px solid var(--line); }
-.bc-reconcile-side, .bc-reconcile-merge { min-width: 0; min-height: 0; display: flex; flex-direction: column; border-right: 1px solid var(--line); }
-.bc-reconcile-merge { border-right: 0; padding: var(--sp-4); gap: var(--sp-4); }
-.bc-reconcile-head { flex-shrink: 0; padding: var(--sp-3) var(--sp-4); color: var(--text-dim); font-size: var(--fs-1); text-transform: uppercase; letter-spacing: .04em; background: var(--surface); border-bottom: 1px solid var(--line); }
-.bc-reconcile-title { flex-shrink: 0; padding: var(--sp-3) var(--sp-4); font-size: var(--fs-3); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; border-bottom: 1px solid var(--line); }
-.bc-reconcile pre, .bc-hunk { margin: 0; white-space: pre-wrap; word-break: break-word; font-family: var(--font-mono); font-size: var(--fs-3); line-height: 1.45; }
-.bc-reconcile-side pre { flex: 1; min-height: 0; overflow: auto; padding: var(--sp-4); }
-.bc-reconcile-merge .bc-editor-area { border: 1px solid var(--line-strong); border-radius: var(--r-2); }
-.bc-hunks { flex-shrink: 0; max-height: 140px; overflow: auto; background: var(--surface); border-bottom: 1px solid var(--line); }
-.bc-hunk { padding: var(--sp-3) var(--sp-5); border-bottom: 1px solid var(--line-soft); }
-.bc-hunk.add { background: color-mix(in srgb, var(--green) 14%, transparent); color: var(--green); }
-.bc-hunk.remove { background: color-mix(in srgb, var(--red) 13%, transparent); color: var(--red); }
+.bc-merge-title { flex-shrink: 0; display: flex; align-items: center; gap: var(--sp-4); padding: var(--sp-3) var(--sp-5); border-bottom: 1px solid var(--line); }
+.bc-merge-title .bc-note-title { flex: 0 1 320px; }
+.bc-title-opts { display: inline-flex; align-items: center; gap: var(--sp-2); min-width: 0; overflow: hidden; }
+.bc-title-use { font-size: var(--fs-1); color: var(--text-dim); text-transform: uppercase; letter-spacing: .04em; }
+.bc-chip { border: none; background: var(--surface2); color: var(--text-dim); font-size: var(--fs-2); font-family: inherit; padding: 2px var(--sp-4); border-radius: var(--r-pill); cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 220px; }
+.bc-chip:hover { background: var(--menu-hover); color: var(--text); }
+/* Pane headers aligned to the addon's pane widths (2-pane 47%/6%, 3-pane 31%/3.5%). */
+.bc-merge-heads { flex-shrink: 0; display: flex; background: var(--surface); border-bottom: 1px solid var(--line); }
+.bc-merge-heads > span { padding: var(--sp-2) var(--sp-4); color: var(--text-dim); font-size: var(--fs-1); text-transform: uppercase; letter-spacing: .04em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bc-merge-heads.bc-heads-2 > span { width: 47%; }
+.bc-merge-heads.bc-heads-2 > .bc-merge-heads-gap { width: 6%; padding: 0; }
+.bc-merge-heads.bc-heads-3 > span { width: 31%; }
+.bc-merge-heads.bc-heads-3 > .bc-merge-heads-gap { width: 3.5%; padding: 0; }
+.bc-chg-count { align-self: center; display: inline-flex; align-items: center; gap: var(--sp-2); font-size: var(--fs-2); color: var(--text-dim); margin-right: var(--sp-2); white-space: nowrap; }
+.bc-conflict-chip { border: none; background: var(--red-bg); color: var(--red); font-size: var(--fs-1); font-family: inherit; font-weight: 600; padding: 1px var(--sp-3); border-radius: var(--r-pill); cursor: pointer; }
+.bc-pending-chip { border: none; background: var(--accent-bg); color: var(--accent); font-size: var(--fs-1); font-family: inherit; font-weight: 600; padding: 1px var(--sp-3); border-radius: var(--r-pill); cursor: pointer; }
+.bc-editor-bar-actions .icon-btn.active { color: var(--accent); background: var(--accent-bg); }
+/* --- CodeMirror skin: tokens only, no stock palette. --- */
+.bc-merge-host { flex: 1; min-height: 0; position: relative; }
+/* Full-height chain: the addon's default is a fixed 350px and its panes have
+   AUTO height (so CodeMirror height:100% would resolve against auto and grow to
+   content — no internal scroll, the user's "can't scroll" bug). Pin every level
+   to 100% so each pane scrolls internally. */
+.bc-merge-host .CodeMirror-merge,
+.bc-merge-host .CodeMirror-merge-pane,
+.bc-merge-host .CodeMirror-merge .CodeMirror { height: 100%; }
+.bc-merge-host .CodeMirror-merge { border: 0; }
+.bc-merge-host .CodeMirror { background: var(--bg); color: var(--text); font-family: var(--font-mono); font-size: var(--fs-3); line-height: 1.5; }
+/* Only the READ-ONLY panes are slightly muted; the editable Result never is
+   (in 2-pane mode the first pane IS the Result). */
+.bc-merge-host .CodeMirror-merge-pane-rightmost,
+.bc-merge-host .CodeMirror-merge-3pane .CodeMirror-merge-pane:first-child { opacity: .92; }
+.bc-merge-host .CodeMirror-cursor { border-left: 1.5px solid var(--text); }
+.bc-merge-host .CodeMirror-selected { background: var(--accent-bg); }
+.bc-merge-host .CodeMirror-merge-gap { background: var(--surface); border-color: var(--line); }
+/* Chunks: green like every other "incoming content" affordance; intra-line word
+   changes a touch stronger; conflicting Result lines red. */
+.bc-merge-host .CodeMirror-merge-l-chunk, .bc-merge-host .CodeMirror-merge-r-chunk { background: var(--green-bg); }
+.bc-merge-host .CodeMirror-merge-l-chunk-start, .bc-merge-host .CodeMirror-merge-r-chunk-start { border-top: 1px solid color-mix(in srgb, var(--green) 45%, transparent); }
+.bc-merge-host .CodeMirror-merge-l-chunk-end, .bc-merge-host .CodeMirror-merge-r-chunk-end { border-bottom: 1px solid color-mix(in srgb, var(--green) 45%, transparent); }
+.bc-merge-host .CodeMirror-merge-l-inserted, .bc-merge-host .CodeMirror-merge-r-inserted,
+.bc-merge-host .CodeMirror-merge-l-deleted, .bc-merge-host .CodeMirror-merge-r-deleted { background: color-mix(in srgb, var(--green) 30%, transparent); text-decoration: none; }
+.bc-merge-host .CodeMirror-merge-l-connect { fill: var(--green-bg); stroke: color-mix(in srgb, var(--green) 40%, transparent); stroke-width: 1px; }
+.bc-merge-host .CodeMirror-merge-r-connect { fill: var(--green-bg); stroke: color-mix(in srgb, var(--green) 40%, transparent); stroke-width: 1px; }
+.bc-merge-host .bc-conflict { background: var(--red-bg); }
+/* Chunk-state paint from the wrapper: 'quiet' (whitespace-only) chunks lose the
+   green wash + edges entirely; declined chunks dim their read-only text and get
+   a dashed hollow connector. */
+.bc-merge-host .bc-quiet.CodeMirror-merge-l-chunk, .bc-merge-host .bc-quiet.CodeMirror-merge-r-chunk { background: transparent; }
+.bc-merge-host .bc-quiet.CodeMirror-merge-l-chunk-start, .bc-merge-host .bc-quiet.CodeMirror-merge-r-chunk-start { border-top: 0; }
+.bc-merge-host .bc-quiet.CodeMirror-merge-l-chunk-end, .bc-merge-host .bc-quiet.CodeMirror-merge-r-chunk-end { border-bottom: 0; }
+.bc-merge-host .bc-dim-line { opacity: .45; }
+.bc-merge-host .CodeMirror-merge-l-connect.bc-declined,
+.bc-merge-host .CodeMirror-merge-r-connect.bc-declined { fill: transparent; stroke: var(--line-strong); stroke-dasharray: 3 3; }
+/* The addon's gutter arrows (pull a chunk into the Result) + our decline (x):
+   apply hugs the Result side of the gap, decline the source side. */
+.bc-merge-host .CodeMirror-merge-copy, .bc-merge-host .CodeMirror-merge-copy-reverse { color: var(--accent); font-size: var(--fs-4); }
+.bc-merge-host .CodeMirror-merge-copy:hover { color: var(--accent-hover); }
+.bc-merge-host .bc-decline { color: var(--text-dim); font-size: var(--fs-4); }
+.bc-merge-host .bc-decline:hover { color: var(--red); }
+.bc-merge-host .CodeMirror-merge-copybuttons-right .bc-decline { right: auto; left: 2px; }
+.bc-merge-host .CodeMirror-merge-copybuttons-left .bc-decline { left: auto; right: 2px; }
+.bc-merge-host .CodeMirror-merge-collapsed-widget { background: var(--surface); border: 1px dashed var(--line); border-radius: var(--r-1); color: var(--text-dim); font-size: var(--fs-2); padding: 0 var(--sp-3); cursor: pointer; }
+.bc-merge-host .CodeMirror-merge-collapsed-widget:before { content: "\22EF "; }
+.bc-merge-host .CodeMirror-merge-scrolllock { color: var(--text-dim); }
+/* Glass: CM canvases go transparent like the editor's, scrim provides the tint. */
+:root[data-surface="glass"] .bc-merge-host .CodeMirror,
+.bc-popup[data-surface="glass"] .bc-merge-host .CodeMirror { background: transparent; }
 .bc-reconcile-actions { flex-shrink: 0; display: flex; justify-content: flex-end; gap: var(--sp-3); padding: var(--sp-4); background: var(--surface); }
 .bc-reconcile-actions button { border: none; border-radius: var(--r-2); background: var(--surface2); color: var(--text); font-size: var(--fs-2); padding: var(--sp-3) var(--sp-4); cursor: pointer; transition: var(--dur) var(--ease); }
 .bc-reconcile-actions button:hover { background: var(--menu-hover); }
 .bc-reconcile-actions button.primary { background: var(--accent); color: var(--active-fg); }
 .bc-reconcile-actions button.primary:hover { background: var(--accent-hover); }
 @media (max-width: 760px) {
-  .bc-reconcile-body { grid-template-columns: 1fr; overflow: auto; }
-  .bc-reconcile-side, .bc-reconcile-merge { min-height: 220px; border-right: 0; border-bottom: 1px solid var(--line); }
   .bc-reconcile-actions { flex-wrap: wrap; }
 }
+
+/* --- Multi-select: checked-row tint + slim contextual toolbar --- */
+/* `.selected` is the keyboard cursor (var(--surface2), defined above); a checked
+   row (Ctrl/Shift-click) gets an accent tint + a left accent bar so it reads as
+   part of the bulk set even when it isn't the cursor. */
+.item.multi-selected { background: var(--accent-bg); }
+.item.multi-selected::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 2px; background: var(--accent); }
+.item.multi-selected:hover { background: var(--accent-bg-strong); }
+.selection-bar { display: flex; align-items: center; gap: var(--sp-3); padding: var(--sp-2) var(--sp-5); background: var(--accent-bg); border-top: 1px solid var(--line-soft); }
+.selection-bar.hidden { display: none; }
+.selection-count { flex: 1; font-size: var(--fs-2); font-weight: 600; color: var(--text); }
+.selection-actions { display: flex; align-items: center; gap: 1px; }
+
+/* Rows are click-to-act (click pastes, shift/ctrl-click selects) — native text
+   selection inside them is never meaningful and shift-click was smearing a text
+   highlight across rows. The editor is the copy-a-fragment surface. */
+.list .item { user-select: none; -webkit-user-select: none; }
+
+/* Submenu auto-flip (set by installSubmenuAutoflip when a submenu would leave
+   the window): side-opening submenus open leftward; the filter bar's drop-down
+   right-aligns to its node. */
+.tag-menu-node > .tag-submenu.flip-x { left: auto; right: calc(100% - 1px); }
+.group-filters > .tag-menu-node > .tag-submenu.flip-x { left: auto; right: 0; }
+
+/* --- Shared popover menu (per-clip "..." + multi-select bulk menu) --- */
+.bc-menu { position: absolute; z-index: 200; min-width: 176px; max-width: 260px; } /* surface look comes from the shared floating-surface rule */
+.bc-menu-list { display: flex; flex-direction: column; }
+.bc-menu-item { display: flex; align-items: center; gap: var(--sp-3); width: 100%; box-sizing: border-box; padding: var(--sp-2) var(--sp-3);
+                background: none; border: none; border-radius: var(--r-1); color: var(--text); font-family: inherit; font-size: var(--fs-3);
+                text-align: left; cursor: pointer; position: relative; }
+.bc-menu-item:hover { background: var(--menu-hover); }
+.bc-menu-item > .mi { font-size: var(--icon-md); color: var(--text-dim); flex-shrink: 0; }
+.bc-menu-item.danger:hover, .bc-menu-item.danger:hover > .mi { color: var(--red); }
+.bc-menu-label { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bc-menu-item > .tag-caret { margin-left: auto; font-size: var(--icon-sm); color: var(--text-dim); }
+/* Group/numpad submenus inside the menu open beside their row (reusing the shared
+   hover-submenu mechanics); they carry .tag-submenu so hover reveals them. */
+.bc-menu .tag-submenu { top: -4px; left: calc(100% - 1px); min-width: 150px; }
+.bc-menu-item.tag-menu-node:hover > .tag-submenu, .bc-menu-item.tag-menu-node:focus-within > .tag-submenu { display: block; }
+.numpad-picker.static { display: flex; position: static; box-shadow: none; padding: var(--sp-1); background: none; }
+/* Bulk-group tri-state: 'some' selected reads as a partial (accent) state,
+   distinct from 'all' (green, .assigned) and 'none' (.available). */
+.gp-btn.partial { color: var(--accent); background: var(--accent-bg); }
+
+/* --- Undo toast action button --- */
+.toast-action { margin-left: var(--sp-5); background: none; border: none; color: var(--active-fg); font: inherit; font-weight: 700;
+                text-decoration: underline; cursor: pointer; padding: 0; }

@@ -45,7 +45,7 @@ const toast = document.getElementById('toast');
 const searchEl = document.getElementById('search');
 const countEl = document.getElementById('count');
 const regexBtn = document.getElementById('regexBtn');
-let toastTimer, items = [], query = '', regexOn = false, selectedIdx = -1;
+let toastTimer, items = [], query = '', regexOn = false;
 const BATCH = 30;
 let rendered = 0, filtered = [];
 let groups = [], activeFilters = new Set(), excludedFilters = new Set();
@@ -177,7 +177,6 @@ function applyFilter() {
   filtered = Core.filterItemIndexes(items, { query, regex: regexOn, filters: activeFilters, excludedFilters, searchTexts, searchTextLower });
   rendered = 0;
   listEl.innerHTML = '';
-  selectedIdx = -1;
   loadBatch();
   if (!filtered.length) listEl.innerHTML = `<div class="empty">${query || Core.hasActiveFilters({ filters: activeFilters, excludedFilters }) ? 'No matches' : 'Copy something to get started'}</div>`;
   recordRendererPerf('list.apply_filter', startedAt, { rendered, regex: regexOn }, 60);
@@ -193,6 +192,7 @@ function rerenderList() {
   renderGroupFilters();
   applyFilter();
   updateCount();
+  if (controller) controller.repaintSelection(); // refresh the selection bar after a rebuild
   scheduleRelativeTimeRefresh();
   recordRendererPerf('list.rerender', startedAt, { rendered }, 90);
 }
@@ -236,11 +236,16 @@ function buildItem(it, ri, nmap) {
   const el = document.createElement('div');
   const pickerHtml = Core.renderItemPicker(it, { items, groups, numpadMap: nmap });
   const actionsHtml = Core.renderClipActions(it);
+  // Read the multi-select state so a full rebuild keeps the focus cursor +
+  // checked rows painted (selection lives in the shared controller).
+  const sel = controller ? controller.selection() : null;
   el.innerHTML = Core.renderClipItem(it, {
     imageSrc: item => `clip-img:///${esc(item.image)}`,
     previewText: item => Core.collapsedPreviewText(item.text || '', query, regexOn),
     highlight: text => Core.highlight(text, query, regexOn),
     highlightTitle: text => Core.highlight(text, query, regexOn),
+    selected: !!(sel && sel.focusId === id),
+    multiSelected: !!(sel && sel.selectedIds.has(id)),
     pickerHtml,
     actionsHtml,
   });
@@ -262,6 +267,7 @@ function clearSearchAndFilters() {
   searchEl.value = '';
   query = '';
   Core.clearFilterState({ filters: activeFilters, excludedFilters });
+  if (controller) controller.clearSelection({ paint: false });
   updateClearControls();
   rerenderList();
 }
@@ -283,11 +289,10 @@ listEl.addEventListener('scroll', () => {
 // adapter maps each action to the exact window.api call the app already made, so
 // behavior is preserved and the dispatch can no longer drift from the demo.
 const appAdapter = {
-  deletedToast: null, // the app pastes/hides; no per-action toast
   itemById: (id) => itemById(id),
   numpadMap: () => numpadMap(),
   protectedGroups: () => new Set([aiGroupName]),
-  setFilterIntent: (filter, intent) => { Core.applyFilterIntent({ filters: activeFilters, excludedFilters }, filter, intent); updateClearControls(); },
+  setFilterIntent: (filter, intent) => { Core.applyFilterIntent({ filters: activeFilters, excludedFilters }, filter, intent); updateClearControls(); if (controller) controller.clearSelection({ paint: false }); },
   clearFilters: () => clearSearchAndFilters(),
   focusSearch: () => searchEl.focus(),
   pin: (id) => window.api.pin(id),
@@ -308,8 +313,30 @@ const appAdapter = {
   isSettingsOpen: () => document.getElementById('settingsView').classList.contains('show'),
   closeSettings: () => closeSettings(),
   hidePopup: () => window.api.hidePopup(),
-  moveSelection: (dir) => moveSelection(dir),
-  activateSelected: () => { if (selectedIdx >= 0 && selectedIdx < filtered.length) { const item = items[filtered[selectedIdx]]; if (item) window.api.pasteAndHide(itemId(item)); } },
+  // --- Multi-select contract (selection state lives in the controller) ---
+  visibleIds: () => filtered.map(ri => itemId(items[ri])),
+  allItems: () => items,
+  groupNames: () => groups,
+  renderSelection: (state) => {
+    // The list is lazy-loaded; make sure the focused row is in the DOM so the
+    // shared painter can highlight + scroll to it.
+    if (state.focusId) {
+      const idx = filtered.findIndex(ri => itemId(items[ri]) === state.focusId);
+      let guard = 0;
+      while (idx >= 0 && idx >= rendered && rendered < filtered.length && guard++ < 1000) loadBatch();
+    }
+    Core.applySelectionUI({ listEl, barEl: document.getElementById('selectionBar'), state });
+  },
+  deleteClips: (ids) => window.api.deleteItems(ids),        // returns restorable snapshots
+  restoreClips: (snaps) => window.api.restoreItems(snaps),  // re-adds + clears tombstones
+  groupAssignMany: (ids, group, shouldHave) => window.api.groupAssignMany(ids, group, shouldHave),
+  pasteMany: (ids) => window.api.pasteMany(ids),
+  startUnify: (ids) => window.api.startUnify(ids),
+  offerUndo: ({ count, undo }) => Core.showActionToast(toast, {
+    message: `Deleted ${count} clip${count === 1 ? '' : 's'}`,
+    actionLabel: 'Undo',
+    onAction: undo,
+  }),
   toast: (msg) => showToast(msg),
   render: () => rerenderList(), // view-only re-render (expand/filter): no IPC
   refresh: async () => { await refresh({ force: true }); if (document.getElementById('settingsView').classList.contains('show')) openSettings(); }, // after a mutation: re-fetch history THEN re-render settings if open (await so the settings panel reads rebuilt indexes, not stale ones)
@@ -323,19 +350,19 @@ document.addEventListener('contextmenu', (e) => controller.onContextmenu(e));
 // Popup reset (called by the main process when the window is shown).
 window.resetPopupState = function() {
   appDialogs.dismiss();
+  controller.closeMenu(); // a popover left open at blur-hide would eat keys on re-show
+  controller.clearSelection({ paint: false });
   document.getElementById('settingsView')?.classList.remove('show');
   document.getElementById('mainView')?.classList.remove('hidden');
   document.body.style.pointerEvents = '';
   window.focusSearch();
 };
 
-// Global numpad hotkey from the main process: assign the selected row's clip
+// Global numpad hotkey from the main process: assign the focused row's clip
 // (inherits the shared replace-confirm via the controller).
 window.assignNumpad = function(slot) {
-  if (selectedIdx >= 0 && selectedIdx < filtered.length) {
-    const item = items[filtered[selectedIdx]];
-    if (item) controller.tryAssignNumpad(itemId(item), slot);
-  }
+  const id = controller.focusedId();
+  if (id) controller.tryAssignNumpad(id, slot);
 };
 
 // Clear all (Settings)
@@ -359,7 +386,7 @@ searchEl.addEventListener('keydown', e => {
   }
 });
 const searchClear = document.getElementById('searchClear');
-searchEl.addEventListener('input', e => { query = e.target.value; updateClearControls(); scheduleRerenderList(); });
+searchEl.addEventListener('input', e => { query = e.target.value; if (controller) controller.clearSelection({ paint: false }); updateClearControls(); scheduleRerenderList(); });
 searchClear.addEventListener('click', () => { clearSearchAndFilters(); searchEl.focus(); });
 
 // --- Regex toggle ---
@@ -370,19 +397,9 @@ regexBtn.addEventListener('click', () => {
   rerenderList();
 });
 
-// --- Keyboard nav (Escape cascade + arrows + Enter, via the shared controller) ---
+// --- Keyboard nav (Escape cascade + arrows + Enter + multi-select, via the
+// shared controller which now owns the selection/focus state) ---
 document.addEventListener('keydown', (e) => controller.onKeydown(e));
-
-function moveSelection(dir) {
-  const items_els = listEl.querySelectorAll('.item');
-  if (!items_els.length) return;
-  const newIdx = Math.max(0, Math.min(selectedIdx + dir, filtered.length - 1));
-  if (newIdx >= rendered) loadBatch();
-  selectedIdx = newIdx;
-  items_els.forEach((el, i) => el.classList.toggle('selected', i === selectedIdx));
-  const sel = items_els[selectedIdx];
-  if (sel) sel.scrollIntoView({block:'nearest'});
-}
 
 // --- Settings ---
 // macOS only: show close buttons (no reliable click-away on macOS)

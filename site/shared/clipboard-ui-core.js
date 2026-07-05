@@ -2124,7 +2124,10 @@
     // Force the addon to recompute the diff NOW (it otherwise debounces ~250ms),
     // so the counter/nav reflect a programmatic bulk change immediately instead
     // of racing the debounce.
-    function forceRecompute() { for (const dv of [mv && mv.left, mv && mv.right]) if (dv && dv.forceUpdate) dv.forceUpdate('full'); }
+    function forceRecompute() {
+      for (const dv of [mv && mv.left, mv && mv.right]) if (dv && dv.forceUpdate) dv.forceUpdate('full');
+      if (mv && mv.bcRecollapse) mv.bcRecollapse(); // re-fold identical stretches after a merge/decline
+    }
     function scrollToLine(line) {
       if (!mv) return;
       const ed = mv.editor();
@@ -2185,13 +2188,23 @@
       forceRecompute();
       updateStatus(); // deterministic: recompute done, so the count reflects reality now
     }
+    // Ignore-whitespace, the diff-viewer way: normalize blank-line RUNS (and
+    // trailing whitespace) so regions that differ only in blank spacing become
+    // truly identical and therefore FOLD (the addon's own ignoreWhitespace only
+    // covers intra-line spaces/tabs, not blank lines). Single line breaks are
+    // preserved. Only applied while the WS toggle is on — off shows every byte.
+    function wsNormText(t) {
+      return ignoreWs
+        ? String(t == null ? '' : t).replace(/[ \t]+$/gm, '').replace(/\n[ \t]*(\n[ \t]*)+/g, '\n\n')
+        : String(t == null ? '' : t);
+    }
     function buildMergeView(centerText) {
       host.innerHTML = '';
       navIdx = -1;
       lineClassHandles = [];
       const cmOpts = {
-        value: centerText,
-        origRight: rightText,
+        value: wsNormText(centerText),
+        origRight: wsNormText(rightText),
         lineNumbers: false,
         mode: null,
         lineWrapping: true,
@@ -2204,7 +2217,7 @@
         declineChunk,
         phrases: { 'Revert chunk': 'Merge this change into Result' },
       };
-      if (threeWay) cmOpts.origLeft = leftText;
+      if (threeWay) cmOpts.origLeft = wsNormText(leftText);
       mv = new CM.MergeView(host, cmOpts);
       const editors = [mv.editor(), mv.leftOriginal(), mv.rightOriginal()].filter(Boolean);
       const keymap = {

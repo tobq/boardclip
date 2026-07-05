@@ -19,3 +19,7 @@ node_modules and re-running the shim snippet in the repo history.
    a chunk-state change without an editor edit.
 
 Re-apply these when re-vendoring a newer codemirror.
+4. `unclearNearChunks`: skips `chunkState==='quiet'` chunks so identical-
+   ignoring-whitespace regions collapse straight through them.
+5. `MergeView.prototype.bcRecollapse()` + `_bcCollapseMarks` tracking: re-fold
+   identical stretches after the diff changes (merge/decline/WS toggle).

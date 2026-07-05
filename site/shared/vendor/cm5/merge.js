@@ -599,6 +599,7 @@
 
     if (left) left.init(leftPane, origLeft, options);
     if (right) right.init(rightPane, origRight, options);
+    this._bcCollapseMarks = []; // BOARDCLIP PATCH: track collapse widgets for bcRecollapse
     if (options.collapseIdentical)
       this.editor().operation(function() {
         collapseIdenticalStretches(self, options.collapseIdentical);
@@ -678,6 +679,15 @@
     },
     leftChunks: function() {
       if (this.left) { ensureDiff(this.left); return this.left.chunks; }
+    },
+    // BOARDCLIP PATCH: re-run identical-stretch collapse after the diff changes
+    // (a merged/declined chunk, a whitespace-mode toggle). Clears prior collapse
+    // widgets first so they don't stack.
+    bcRecollapse: function(margin) {
+      if (this._bcCollapseMarks) for (var i = 0; i < this._bcCollapseMarks.length; i++) { try { this._bcCollapseMarks[i].clear(); } catch (e) {} }
+      this._bcCollapseMarks = [];
+      var m = margin != null ? margin : (this.options.collapseIdentical === true ? 2 : this.options.collapseIdentical);
+      if (m) collapseIdenticalStretches(this, m);
     }
   };
 
@@ -806,6 +816,10 @@
   function unclearNearChunks(dv, margin, off, clear) {
     for (var i = 0; i < dv.chunks.length; i++) {
       var chunk = dv.chunks[i];
+      // BOARDCLIP PATCH: "quiet" chunks (whitespace/blank-line-only, per the
+      // wrapper's chunkState hook) shouldn't keep their surrounding identical
+      // lines expanded — collapse straight through them like every diff viewer.
+      if (dv.mv.options.chunkState && dv.mv.options.chunkState(dv, chunk) === "quiet") continue;
       for (var l = chunk.editFrom - margin; l < chunk.editTo + margin; l++) {
         var pos = l + off;
         if (pos >= 0 && pos < clear.length) clear[pos] = false;
@@ -819,6 +833,12 @@
     for (var l = off, e = edit.lastLine(); l <= e; l++) clear.push(true);
     if (mv.left) unclearNearChunks(mv.left, margin, off, clear);
     if (mv.right) unclearNearChunks(mv.right, margin, off, clear);
+    // BOARDCLIP PATCH: always keep `margin` context lines at the very top and
+    // bottom of the document. Otherwise a fully-identical doc collapses line 0
+    // too, and the Result editor's cursor (at 0,0) instantly clears it via the
+    // collapse mark's clearOnEnter — so it would never fold. This also matches
+    // GitHub/IntelliJ (a little context always shows at the edges).
+    for (var bc = 0; bc < margin && bc < clear.length; bc++) { clear[bc] = false; clear[clear.length - 1 - bc] = false; }
 
     for (var i = 0; i < clear.length; i++) {
       if (clear[i]) {
@@ -829,6 +849,7 @@
           if (mv.left) editors.push({line: getMatchingOrigLine(line, mv.left.chunks), cm: mv.left.orig});
           if (mv.right) editors.push({line: getMatchingOrigLine(line, mv.right.chunks), cm: mv.right.orig});
           var mark = collapseStretch(size, editors);
+          if (mv._bcCollapseMarks) mv._bcCollapseMarks.push(mark); // BOARDCLIP PATCH: track for bcRecollapse
           if (mv.options.onCollapse) mv.options.onCollapse(mv, line, size, mark);
         }
       }

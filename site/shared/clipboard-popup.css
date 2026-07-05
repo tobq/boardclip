@@ -305,8 +305,12 @@ mark { background: var(--mark-bg); color: var(--mark-fg); border-radius: 2px; pa
 .bc-popup[data-surface="glass"] .bc-editor,
 .bc-popup[data-surface="glass"] .bc-editor-area-wrap,
 .bc-popup[data-surface="glass"] .bc-reconcile { background: transparent; }
-/* Demo overlay host: the editor floats over the demo popup window */
-.bc-editor-overlay { position: absolute; inset: 0; z-index: 40; display: none; }
+/* Demo overlay host: the editor floats over the demo popup window. It needs an
+   opaque background: in glass mode .bc-editor is transparent (so the app's OS
+   acrylic shows through in the editor *window*), but the demo mounts the editor
+   as an overlay on top of the clip list — without a solid host, the list bleeds
+   through. --bg stays fully opaque in every surface mode. */
+.bc-editor-overlay { position: absolute; inset: 0; z-index: 40; display: none; background: var(--bg); }
 .bc-editor-overlay.show { display: block; }
 .bc-editor-overlay .bc-editor { box-shadow: 0 8px 30px var(--shadow); }
 .bc-reconcile { display: flex; flex-direction: column; height: 100%; width: 100%; background: var(--bg); color: var(--text); min-height: 0; }

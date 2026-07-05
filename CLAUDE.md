@@ -203,6 +203,19 @@ clear-all). All popup CSS + theme variables live in `site/shared/clipboard-popup
   boundary** (`toLF`) — stray `\r` defeats BOTH the addon's chunking and
   `collapseIdentical` (its ignoreWhitespace covers spaces/tabs only) and caused
   the original "all-green wall, zero matched lines" bug.
+- **Collapse of identical sections (ignore-whitespace)**: the wrapper's `wsNormText`
+  normalizes blank-line RUNS + trailing whitespace for the merge view when the WS
+  toggle is on, so regions that differ only in blank spacing become truly identical
+  and FOLD (the addon's ignoreWhitespace won't collapse blank-line diffs; extending
+  its splice to newlines corrupts line bookkeeping). This DOES mean an ignore-ws
+  merge saves normalized blank runs — toggle WS off to preserve every byte. Vendored
+  merge.js BOARDCLIP patches make it fold like a real diff viewer: `unclearNearChunks`
+  collapses THROUGH quiet chunks, `collapseIdenticalStretches` always keeps `margin`
+  edge context (else a fully-identical doc folds line 0 and the Result cursor's
+  clearOnEnter instantly unfolds it — the "no differences but not collapsed" bug),
+  and `MergeView.bcRecollapse()` re-folds after a merge/decline (wired into the
+  wrapper's forceRecompute). Verify collapse with a doc that's identical except
+  blank-line spacing — it must fold to a widget, not scroll.
 - **Real-app pen-test harness**: `node scripts/qa-app-pentest.js` boots a sandbox
   instance (temp `BOARDCLIP_DATA_DIR` + own `--user-data-dir` + CDP port, driven
   over raw WebSocket CDP — Node ≥21). SAFETY: it pre-disables every detected

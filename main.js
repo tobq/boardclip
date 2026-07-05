@@ -1236,10 +1236,12 @@ async function updateSyncProviderCache(syncPath) {
 // content back into the canonical file and delete the strays, so a folder that
 // duplicated once self-heals to a single object on the next sync. No-op (one
 // readdir) when the folder is clean, which is the overwhelmingly common case.
-const FORK_HISTORY_RE = /^clipboard-history \(\d+\)\.json$/;
-const FORK_SETTINGS_RE = /^clipboard-settings \(\d+\)\.json$/;
-const LEAKED_HISTORY_TMP_RE = /^clipboard-history\.json\.\d+\.\d+\.tmp$/;
-const LEAKED_SETTINGS_TMP_RE = /^clipboard-settings\.json\.\d+\.\d+\.tmp$/;
+// Fork-name matching (paren + Windows space-number variants + leaked tmps) is
+// single-sourced in lib/fork-names.js so main.js and the tests share ONE matcher
+// and it can never silently drift narrow again.
+const {
+  FORK_HISTORY_RE, FORK_SETTINGS_RE, LEAKED_HISTORY_TMP_RE, LEAKED_SETTINGS_TMP_RE,
+} = require('./lib/fork-names');
 
 async function healForkedSyncFiles(syncPath) {
   let names;

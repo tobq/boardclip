@@ -49,21 +49,20 @@ the target reads AFTER the restore → pastes the old clip. Proven + measured in
   never clobber a copy the user made mid-sequence); and applies a **lag-adaptive**
   restore delay (floor `quick_paste_restore_delay_ms` default 400ms, + `3× measured
   scheduler-lag`, capped 1200ms) for the clipboard path.
-- **Default is keystroke INJECTION, not clipboard** (`quick_paste_mode: 'type'`).
-  For text macros ≤2000 chars we TYPE the text via `lib/keystroke-inject.js`
-  (Windows `SendInput`+`KEYEVENTF_UNICODE` batched; macOS
-  `CGEventKeyboardSetUnicodeString`) — the clipboard is **never touched**, so the
-  restore race is *structurally impossible* and the user's clipboard is preserved.
-  Wired as an orchestrator **strategy with `skipClipboard:true`** (the orchestrator
-  skips snapshot/restore entirely). Newlines → real `VK_RETURN`; everything else
-  (incl. tab) → Unicode injection so exact chars insert without Tab/Enter *action*
-  semantics. Verified end-to-end (unicode/CJK/emoji-surrogate/newline, clipboard
-  untouched) by `scripts/qa-keystroke-inject.js`.
-- **Fallbacks**: images, text >2000 chars, `quick_paste_mode:'clipboard'`, or
-  unsupported platforms use the robust clipboard path. If injection *fails at
-  runtime* (UIPI-blocked/elevated target, FFI error) the strategy returns
-  `{fallback:true}` and the orchestrator snapshots + runs the clipboard path, so the
-  user still gets their macro rather than nothing.
+- **Default is the REAL clipboard paste** (`quick_paste_mode: 'clipboard'`) — the
+  robust orchestrator path above. This is what users expect: exact content pasted
+  atomically, immune to the target app's autocomplete/IME. (An earlier build shipped
+  keystroke injection as the default; the owner rejected it hard — "super slow +
+  buggy, newlines fire Enter, I didn't want manual-type shit." Real paste made
+  robust is the answer, not typing. Do NOT default to 'type' again.)
+- **Keystroke injection is OPT-IN** (`quick_paste_mode: 'type'`). For text macros
+  ≤2000 chars it TYPES via `lib/keystroke-inject.js` (Windows `SendInput`+
+  `KEYEVENTF_UNICODE` batched; macOS `CGEventKeyboardSetUnicodeString`) — clipboard
+  never touched, wired as an orchestrator **strategy with `skipClipboard:true`**.
+  Downsides that make it opt-in: slower, and newlines become real `VK_RETURN`
+  presses (submit chat boxes / accept autocompletes). Kept for the rare app where a
+  user prefers it. Images / text >2000 chars / unsupported platforms / runtime
+  injection failure (`{fallback:true}`) always use the clipboard path.
 - **Why NOT delayed-render clipboard ownership** (an earlier plan): its only extra
   signal (`WM_RENDERFORMAT`) is spoofable by passive clipboard readers (Windows
   Clipboard History et al. render right after we take ownership) → false "consumed"

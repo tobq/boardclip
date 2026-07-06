@@ -2655,7 +2655,7 @@ const QUICK_PASTE_TYPE_MAX_CHARS = 2000;
 const injectStrategy = {
   skipClipboard: true,
   accepts(item) {
-    if ((settings.quick_paste_mode || 'type') !== 'type') return false;
+    if ((settings.quick_paste_mode || 'clipboard') !== 'type') return false;
     if (!item || item.type === 'image') return false;
     if (!keystrokeInject.isSupported()) return false;
     textBlobStore.hydrateTextItem(item, TEXT_DIR);

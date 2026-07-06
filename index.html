@@ -812,7 +812,7 @@ async function openSettings() {
     document.querySelectorAll('#quickPasteMode .seg-btn').forEach(b =>
       b.classList.toggle('active', b.dataset.quickPasteMode === m));
   };
-  setQuickPasteMode(s.quick_paste_mode || 'type');
+  setQuickPasteMode(s.quick_paste_mode || 'clipboard');
   document.getElementById('quickPasteMode').onclick = (e) => {
     const btn = e.target.closest('[data-quick-paste-mode]');
     if (!btn) return;

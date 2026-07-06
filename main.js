@@ -76,7 +76,14 @@ const EDIT_ARCHIVE_MAX_BYTES = 100 * 1024 * 1024; // 100 MB
 const EDIT_ARCHIVE_MAX_AGE_MS = 365 * 86400 * 1000; // 1 year
 const APP_ICON_PATH = path.join(SCRIPT_DIR, 'icon.png');
 const DIAGNOSTICS_PATH = path.join(DATA_DIR, 'boardclip-diagnostics.jsonl');
-const HISTORY_BACKUP_MAX_FILES = 100;
+// History backups are the full clipboard-history.json (a few MB each), snapshotted
+// before meaningful writes. Retention = 48h OR 2GB, whichever bites first: long
+// enough that a loss event survives a multi-hour investigation (the old 100-file /
+// ~7h cap pruned the evidence mid-incident on 2026-07-06), yet size-capped so heavy
+// editing can't run disk away. planRetention drops >48h first, then evicts the
+// oldest survivors until the total is under 2GB.
+const HISTORY_BACKUP_MAX_AGE_MS = 48 * 60 * 60 * 1000;
+const HISTORY_BACKUP_MAX_BYTES = 2 * 1024 * 1024 * 1024;
 const HISTORY_BACKUP_MIN_INTERVAL_MS = 60 * 1000;
 const IMAGE_ORPHAN_RECOVERY_WINDOW_MS = 30 * 60 * 1000;
 const IMAGE_ORPHAN_RECOVERY_MAX_FILES = 20;
@@ -247,7 +254,11 @@ function pruneDirectory(dir, policy, { ext } = {}) {
 }
 
 function pruneHistoryBackups() {
-  pruneDirectory(HISTORY_BACKUP_DIR, { maxFiles: HISTORY_BACKUP_MAX_FILES }, { ext: '.json' });
+  pruneDirectory(
+    HISTORY_BACKUP_DIR,
+    { maxAgeMs: HISTORY_BACKUP_MAX_AGE_MS, maxBytes: HISTORY_BACKUP_MAX_BYTES, now: Date.now() },
+    { ext: '.json' },
+  );
 }
 
 function maybeBackupHistoryBeforeWrite(nextStoredHistory) {
@@ -361,6 +372,10 @@ let settings = loadSettings();
 const diagnostics = new Diagnostics({
   filePath: DIAGNOSTICS_PATH,
   enabled: process.env.BOARDCLIP_DIAGNOSTICS === '1' || !!settings.diagnostics_enabled,
+  // Default 2MB rotated a live loss event (17:03 delete) out of the log mid-incident.
+  // 64MB keeps a full multi-hour session; each line is a small JSON event.
+  maxFileBytes: 64 * 1024 * 1024,
+  maxEvents: 5000,
 });
 let dataRevision = 0;
 let cloudAccountsCache = [];

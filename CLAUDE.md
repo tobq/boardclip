@@ -27,8 +27,62 @@
 
 ## Paste Simulation
 
-- **macOS**: `osascript` — activates frontmost app then sends `keystroke "v" using command down`. Required because `app.dock.hide()` means our app doesn't return focus on hide.
-- **Windows**: VBScript `SendKeys "^v"` via temp file + `cscript`. Faster than PowerShell.
+- **macOS**: native `CGEvent` Cmd+V (`lib/macos-paste.js` `sendCommandV`), falling back to `osascript` (activate frontmost app + `keystroke "v"`) when a target app must be re-activated after hide.
+- **Windows**: native `SendInput` Ctrl+V (`lib/windows-paste.js` `sendCtrlV`). The old `cscript`/VBScript `SendKeys` path is gone (200-500ms cold start + NumLock quirks).
+
+## Quick-Paste (numpad macros) — robust, race-free by default
+
+The numpad quick-paste used to paste STALE previously-copied content (worse under
+lag; users had to retry). Root cause = the **clipboard backup/restore race**:
+set macro on clipboard → Ctrl+V (async: the target reads the clipboard whenever it
+drains its input queue) → restore old clipboard on a FIXED 150ms timer. Under lag
+the target reads AFTER the restore → pastes the old clip. Proven + measured in
+`scripts/qa-numpad-race.js` (real Electron clipboard; naive path goes stale at a
+~160ms target read).
+
+- **`lib/quick-paste.js` (`createQuickPaster`)** is the pure, dependency-injected
+  orchestrator (unit-tested in `test/numpad-paste.test.js` with a fake clipboard +
+  fake late-reading target). It: **serializes** requests through a promise chain
+  (rapid presses queue, never dropped — kills "press it 3 times"); **coalesces**
+  same-`coalesceKey` repeats within 90ms; **verifies** the clipboard write landed
+  before pasting; **safe-restores** (only if the clipboard still holds our macro —
+  never clobber a copy the user made mid-sequence); and applies a **lag-adaptive**
+  restore delay (floor `quick_paste_restore_delay_ms` default 400ms, + `3× measured
+  scheduler-lag`, capped 1200ms) for the clipboard path.
+- **Default is keystroke INJECTION, not clipboard** (`quick_paste_mode: 'type'`).
+  For text macros ≤2000 chars we TYPE the text via `lib/keystroke-inject.js`
+  (Windows `SendInput`+`KEYEVENTF_UNICODE` batched; macOS
+  `CGEventKeyboardSetUnicodeString`) — the clipboard is **never touched**, so the
+  restore race is *structurally impossible* and the user's clipboard is preserved.
+  Wired as an orchestrator **strategy with `skipClipboard:true`** (the orchestrator
+  skips snapshot/restore entirely). Newlines → real `VK_RETURN`; everything else
+  (incl. tab) → Unicode injection so exact chars insert without Tab/Enter *action*
+  semantics. Verified end-to-end (unicode/CJK/emoji-surrogate/newline, clipboard
+  untouched) by `scripts/qa-keystroke-inject.js`.
+- **Fallbacks**: images, text >2000 chars, `quick_paste_mode:'clipboard'`, or
+  unsupported platforms use the robust clipboard path. If injection *fails at
+  runtime* (UIPI-blocked/elevated target, FFI error) the strategy returns
+  `{fallback:true}` and the orchestrator snapshots + runs the clipboard path, so the
+  user still gets their macro rather than nothing.
+- **Why NOT delayed-render clipboard ownership** (an earlier plan): its only extra
+  signal (`WM_RENDERFORMAT`) is spoofable by passive clipboard readers (Windows
+  Clipboard History et al. render right after we take ownership) → false "consumed"
+  → early restore → the real late read still stale. It doesn't beat a longer/adaptive
+  delay and adds ~500 lines of risky FFI. Rejected on evidence.
+- **Settings** (per-machine, not synced; excluded in `remoteSettingsPayload`):
+  `quick_paste_mode` ('type'|'clipboard'), `quick_paste_restore`,
+  `quick_paste_restore_delay_ms`. UI = a "Paste as" segmented control in the shared
+  `renderSettingsBody` (Numpad Shortcuts section), wired in `index.html` like the
+  Theme control (escape hatch to clipboard mode if an IDE's autocomplete fights the
+  typed text).
+- **Dispatch is unified**: hardware numpad (Windows LL hook `handleNumpad`), panel
+  number keys (`numpadPasteAndHide`), and the global quick-paste shortcut
+  (`handleQuickPaste`) ALL route through `runNumpadSlotAction` → `numpadPaste` →
+  `getQuickPaster().request()`. `handleNumpad` no longer has a bespoke path.
+- **Hook auto-repeat suppression** (`lib/windows-hook-worker.js`): a held/lag-
+  stretched Numpad key emits repeated `WM_KEYDOWN` with no `WM_KEYUP`; the worker
+  tracks `numpadHeld`/`numpadIntercepted` so the paste fires exactly ONCE and the
+  paired keyup is swallowed too. Kills double/triple pastes.
 
 ## Windows Specifics — Low-Level Keyboard Hook
 

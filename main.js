@@ -12,6 +12,9 @@ const { exec, execFile } = require('child_process');
 // Module is a no-op on non-Windows platforms so it's safe to require unconditionally.
 const winPaste = require('./lib/windows-paste');
 const macPaste = require('./lib/macos-paste');
+const winClipboard = require('./lib/windows-clipboard');
+const keystrokeInject = require('./lib/keystroke-inject');
+const { createQuickPaster } = require('./lib/quick-paste');
 const getBuildInfo = require('./lib/build-info');
 const getCloudAccounts = require('./lib/cloud-accounts');
 const blobStore = require('./lib/blob-store');
@@ -892,6 +895,9 @@ function remoteSettingsPayload() {
   delete remoteSave.sync_disabled_paths;
   delete remoteSave.show_shortcut;
   delete remoteSave.quick_paste_shortcut;
+  delete remoteSave.quick_paste_mode;
+  delete remoteSave.quick_paste_restore;
+  delete remoteSave.quick_paste_restore_delay_ms;
   delete remoteSave.p2p_device_id;
   delete remoteSave.popup_size;
   delete remoteSave.editor_bounds;
@@ -2609,88 +2615,125 @@ function simulatePaste(targetAppName = '') {
 }
 
 // --- Numpad quick-paste ---
+// Does the clipboard currently hold this item's content? Used to (a) confirm a
+// macro landed before we paste, and (b) confirm it's still ours before we
+// overwrite it with the restored previous clipboard.
+function clipboardMatchesItem(item) {
+  try {
+    if (!item) return false;
+    if (item.type === 'image') return !clipboard.readImage().isEmpty();
+    textBlobStore.hydrateTextItem(item, TEXT_DIR);
+    return clipboard.readText() === String(item.text || '');
+  } catch { return false; }
+}
+
+function clampRestoreDelay(value) {
+  const n = parseInt(value, 10);
+  if (!Number.isFinite(n)) return 400;
+  return Math.min(2000, Math.max(0, n));
+}
+
+// Pause clipboard polling for the duration of a quick-paste so our own macro
+// write + restore aren't re-captured as new history entries. Ref-counted
+// because the orchestrator serializes but callers may overlap around it.
+let quickPasteActive = 0;
+function beginQuickPaste() { quickPasteActive += 1; pollGate = false; }
+function endQuickPaste() {
+  quickPasteActive = Math.max(0, quickPasteActive - 1);
+  if (quickPasteActive === 0) pollGate = true;
+}
+
+// Longest text we'll inject as keystrokes. Beyond this, a huge key-event burst
+// is neither efficient nor reliable, so we fall back to the clipboard path.
+const QUICK_PASTE_TYPE_MAX_CHARS = 2000;
+
+// Keystroke-injection strategy: type the macro's text directly, never touching
+// the clipboard — so the restore race is structurally impossible and the user's
+// clipboard is preserved. Only accepts plain-text items within the length cap
+// when quick_paste_mode is 'type' and the platform supports injection; images /
+// long text / 'clipboard' mode fall through to the timed clipboard path.
+const injectStrategy = {
+  skipClipboard: true,
+  accepts(item) {
+    if ((settings.quick_paste_mode || 'type') !== 'type') return false;
+    if (!item || item.type === 'image') return false;
+    if (!keystrokeInject.isSupported()) return false;
+    textBlobStore.hydrateTextItem(item, TEXT_DIR);
+    const text = String(item.text || '');
+    return text.length > 0 && text.length <= QUICK_PASTE_TYPE_MAX_CHARS;
+  },
+  async deliver({ item, trace }) {
+    textBlobStore.hydrateTextItem(item, TEXT_DIR);
+    const text = String(item.text || '');
+    const result = keystrokeInject.typeText(text);
+    const ok = !!(result && result.ok);
+    diagnostics.record('shortcut.quick_paste_injected', {
+      ...(trace || {}),
+      chars: text.length,
+      ok,
+      error: result && result.error,
+    }, { forceFile: true });
+    // If injection failed (e.g. UIPI-blocked target, or an FFI error), decline
+    // so the orchestrator falls back to the clipboard paste path — the user
+    // still gets their macro rather than nothing.
+    if (!ok) return { fallback: true };
+    // consumed:true — the text is delivered directly to the app; there is no
+    // clipboard hand-off to wait on.
+    return { consumed: true, injected: true };
+  },
+};
+
+let quickPaster = null;
+function getQuickPasteStrategy() {
+  return injectStrategy;
+}
+function getQuickPaster() {
+  if (quickPaster) return quickPaster;
+  quickPaster = createQuickPaster({
+    snapshot: () => backupClipboard(),
+    restore: (backup) => restoreClipboard(backup),
+    writeItem: (item) => setClipboardToItem(item),
+    clipboardMatchesItem,
+    paste: () => simulatePaste(''),
+    sleep: (ms) => new Promise(r => { const t = setTimeout(r, ms); if (t.unref) t.unref(); }),
+    now: () => Date.now(),
+    log: (event, data) => {
+      const name = event.startsWith('quick_paste') ? `shortcut.${event}` : event;
+      diagnostics.record(name, data || {}, { forceFile: true });
+    },
+    getConfig: () => ({
+      restore: settings.quick_paste_restore !== false,
+      minRestoreDelayMs: clampRestoreDelay(settings.quick_paste_restore_delay_ms),
+    }),
+    strategy: getQuickPasteStrategy(),
+  });
+  return quickPaster;
+}
+
 async function numpadPaste(slotNum, options = {}) {
   const trace = options.trace || {};
-  const startedAt = Date.now();
-  // Drop the call if a previous paste is still in its restore window —
-  // otherwise rapid Num-key presses race and the second call's "backup"
-  // captures the first call's pasted content.
-  if (!pollGate) {
-    diagnostics.record('shortcut.quick_paste_blocked', { ...trace, slot: slotNum, reason: 'poll_gate' }, { forceFile: true });
-    return;
-  }
   const item = history.find(h => hasNumpadSlot(h, slotNum));
   if (!item) {
     diagnostics.record('shortcut.quick_paste_missing_slot', { ...trace, slot: slotNum }, { forceFile: true });
     return;
   }
-
-  pollGate = false;
-  let backup = null;
-  let pasteResult = null;
+  const targetAppName = options.targetAppName || '';
+  beginQuickPaste();
   try {
-    const backupStartedAt = Date.now();
-    backup = backupClipboard();
-    const setStartedAt = Date.now();
-    setClipboardToItem(item);
-    const clipboardSetMs = Date.now() - setStartedAt;
-    diagnostics.record('shortcut.quick_paste_clipboard_set', {
-      ...trace,
-      slot: slotNum,
-      item_id: itemKey(item),
-      item_type: item.type || 'text',
-      text_len: item.type === 'image' ? undefined : String(item.text || '').length,
-      backup_text_len: backup && backup.text ? backup.text.length : 0,
-      backup_ms: setStartedAt - backupStartedAt,
-      clipboard_set_ms: clipboardSetMs,
-      since_received_ms: trace.received_at ? Date.now() - trace.received_at : undefined,
-      window: macWindowSnapshot(),
-    }, { forceFile: true });
-  // Minimum delay for Windows clipboard propagation before paste. 15ms is
-  // tight but reliable — clipboard.writeText is synchronous and Windows
-  // WM_CLIPBOARDUPDATE propagates within a few ms on any modern system.
-    await new Promise(r => setTimeout(r, 15));
-    const pasteStartedAt = Date.now();
-    pasteResult = await simulatePaste(options.targetAppName || '');
-    const pasteMs = Date.now() - pasteStartedAt;
-    const shouldCheckFrontmost = process.platform === 'darwin' && (options.targetAppName || (pasteResult && pasteResult.ok === false));
-    const frontmostStartedAt = Date.now();
-    const frontmostAfterPaste = shouldCheckFrontmost ? await getFrontmostMacAppName() : '';
-    const frontmostMs = shouldCheckFrontmost ? Date.now() - frontmostStartedAt : 0;
-    diagnostics.record('shortcut.quick_paste_pasted', {
-      ...trace,
-      slot: slotNum,
-      target_app: options.targetAppName || '',
-      frontmost_after_paste: frontmostAfterPaste,
-      paste_ok: !pasteResult || pasteResult.ok !== false,
-      paste_error: pasteResult && pasteResult.error,
-      paste_ms: pasteMs,
-      frontmost_ms: frontmostMs,
-      since_received_ms: trace.received_at ? Date.now() - trace.received_at : undefined,
-      window: macWindowSnapshot(),
-    }, { forceFile: true });
-    await new Promise(r => setTimeout(r, 150));
-  // Fire-and-forget restore: the target app needs ~100-150ms to read from
-  // the clipboard after receiving Ctrl+V. We don't block the caller on that.
+    return await getQuickPaster().request(item, {
+      coalesceKey: `slot:${slotNum}`,
+      trace: {
+        ...trace,
+        slot: slotNum,
+        item_id: itemKey(item),
+        item_type: item.type || 'text',
+        text_len: item.type === 'image' ? undefined : String(item.text || '').length,
+      },
+      // macOS needs the frontmost app name captured at request time.
+      paste: () => simulatePaste(targetAppName),
+    });
   } finally {
-    const restoreStartedAt = Date.now();
-    try { restoreClipboard(backup); } catch {}
-    const restoreMs = Date.now() - restoreStartedAt;
-    const shouldCheckFrontmost = process.platform === 'darwin' && (options.targetAppName || (pasteResult && pasteResult.ok === false));
-    const frontmostStartedAt = Date.now();
-    const frontmostAfterRestore = shouldCheckFrontmost ? await getFrontmostMacAppName() : '';
-    const frontmostMs = shouldCheckFrontmost ? Date.now() - frontmostStartedAt : 0;
-    diagnostics.record('shortcut.quick_paste_restored', {
-      ...trace,
-      slot: slotNum,
-      frontmost_after_restore: frontmostAfterRestore,
-      restore_ms: restoreMs,
-      frontmost_ms: frontmostMs,
-      total_ms: Date.now() - startedAt,
-      since_received_ms: trace.received_at ? Date.now() - trace.received_at : undefined,
-      window: macWindowSnapshot(),
-    }, { forceFile: true });
-    pollGate = true;
+    endQuickPaste();
   }
 }
 
@@ -4448,6 +4491,13 @@ function setupIPC() {
     if (body.regex_search !== undefined) settings.regex_search = !!body.regex_search;
     if (body.theme_mode !== undefined && ['system', 'light', 'dark'].includes(body.theme_mode)) settings.theme_mode = body.theme_mode;
     if (body.diagnostics_enabled !== undefined) settings.diagnostics_enabled = !!body.diagnostics_enabled;
+    if (body.quick_paste_mode !== undefined && ['type', 'clipboard'].includes(body.quick_paste_mode)) {
+      settings.quick_paste_mode = body.quick_paste_mode;
+    }
+    if (body.quick_paste_restore !== undefined) settings.quick_paste_restore = !!body.quick_paste_restore;
+    if (body.quick_paste_restore_delay_ms !== undefined) {
+      settings.quick_paste_restore_delay_ms = Math.min(2000, Math.max(0, parseInt(body.quick_paste_restore_delay_ms) || 0));
+    }
     // Appearance variants (per-machine; not synced). surface_style is a real
     // user setting; the others are dev-only auditioning knobs that persist so a
     // chosen combo survives a restart.
@@ -4706,13 +4756,13 @@ function getMacosHotkey() {
 }
 
 function handleNumpad(slot) {
-  if (win && win.isVisible()) {
-    // Popup open: assign numpad to selected item
-    win.webContents.executeJavaScript(`window.assignNumpad(${slot})`).catch(() => {});
-  } else {
-    // Popup closed: quick-paste from slot
-    numpadPaste(slot);
-  }
+  // Hardware numpad key from the Windows LL hook. Route through the shared
+  // dispatcher (same as the panel number keys / global shortcut) so it gets
+  // full tracing, popup-focus assignment, and the serialized robust paste —
+  // rather than a bespoke second path that bypassed all of it.
+  runNumpadSlotAction(slot, { source: 'hook' }).catch(err => {
+    diagnostics.record('shortcut.quick_paste_error', { slot, source: 'hook', error: err && err.message }, { forceFile: true });
+  });
 }
 
 async function handleQuickPaste(slot) {

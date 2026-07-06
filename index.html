@@ -807,6 +807,18 @@ async function openSettings() {
     setThemeMode(btn.dataset.themeMode);
     window.api.saveSettings({ theme_mode: btn.dataset.themeMode });
   };
+  const setQuickPasteMode = (mode) => {
+    const m = mode === 'clipboard' ? 'clipboard' : 'type';
+    document.querySelectorAll('#quickPasteMode .seg-btn').forEach(b =>
+      b.classList.toggle('active', b.dataset.quickPasteMode === m));
+  };
+  setQuickPasteMode(s.quick_paste_mode || 'type');
+  document.getElementById('quickPasteMode').onclick = (e) => {
+    const btn = e.target.closest('[data-quick-paste-mode]');
+    if (!btn) return;
+    setQuickPasteMode(btn.dataset.quickPasteMode);
+    window.api.saveSettings({ quick_paste_mode: btn.dataset.quickPasteMode });
+  };
   renderAppearanceVariants(s);
   renderShortcutSettings(s);
   const maxAgeEl = document.getElementById('maxAge');

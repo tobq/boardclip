@@ -3438,7 +3438,9 @@ function createEditorWindow(session) {
   });
   session.win = editorWin;
   editorWin.loadFile(path.join(SCRIPT_DIR, 'editor.html'));
-  editorWin.once('ready-to-show', () => { try { editorWin.show(); editorWin.focus(); } catch {} });
+  // Show + focus the editor, then dismiss the popup so it doesn't linger behind
+  // the editor window (focus is already on the editor, so hiding ours is safe).
+  editorWin.once('ready-to-show', () => { try { editorWin.show(); editorWin.focus(); hidePopup(); } catch {} });
   editorWin.webContents.on('did-finish-load', () => {
     try {
       editorWin.webContents.send('editor-init', {
@@ -3484,10 +3486,9 @@ function sourceGroupsForNewNote(options) {
 
 // Open the editor for clip `id`, or a blank new-note editor when id is null.
 function openEditor(id, options = {}) {
-  // Opening (or re-focusing) our editor is a deliberate action - don't let the
-  // popup blur-hide as focus moves to the editor window. The own-window guard in
-  // the blur handler is the durable backstop; this covers a slow ready-to-show.
-  keepPopupOpenBriefly();
+  // Opening the editor is a deliberate hand-off: the editor becomes the focus,
+  // so dismiss the popup rather than leaving it lingering behind the editor
+  // window (that felt "sticky" - you had to click back to the popup + Escape).
   if (id != null) {
     const openSessionId = editWindowsByClip.get(id);
     if (openSessionId) {
@@ -3498,6 +3499,7 @@ function openEditor(id, options = {}) {
           s.win.focus();
           if (options && options.find) s.win.webContents.send('editor-find', { query: options.find, regex: !!options.regex });
           if (options && options.focusTitle) s.win.webContents.send('editor-find', { focusTitle: true });
+          hidePopup();
         } catch {}
         return;
       }

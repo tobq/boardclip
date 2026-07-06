@@ -123,6 +123,36 @@ Otherwise the key passes through so normal numpad typing works. Main thread call
 - **macOS**: detects Google Drive and OneDrive from `~/Library/CloudStorage/`, plus iCloud Drive from `~/Library/Mobile Documents/com~apple~CloudDocs`.
 - **Windows**: scans Google DriveFS mount letters and labels from PSDrive descriptions, DriveFS preference cache/WAL strings, and recent DriveFS logs; also detects OneDrive environment folders and common iCloud Drive folders.
 
+### KNOWN DATA-LOSS BUG (2026-07-06 incident) — sync merge vs content-hash edits — UNFIXED
+
+Sync is currently PAUSED on the user's machine (`sync_disabled_paths` = all 3 providers,
+`p2p_enabled: false`) until this is fixed. Do NOT re-enable sync before fixing.
+
+- **Mechanism**: text ids are content hashes, so every editor save = new id + a
+  TOMBSTONE for the old id (`applyTextEdit`). Cloud providers lag; a merge pass can
+  read a stale provider that still holds the note under a now-tombstoned id and either
+  (a) resurrect an OLD version (the new id lost a race), or (b) drop the live note
+  entirely and — because `syncMerge()` writes canonical state back to EVERY provider —
+  propagate the deletion everywhere, making it permanent.
+- **Born 2026-05-17** (`7e7fa7c` content-hash ids + `686805f` tombstones + `e391b52`
+  default multi-provider sync); **practically triggerable since 2026-06-26** (`4e45c7d`
+  built-in editor made rapid in-app re-hash-per-save common). Verified against a real
+  incident: a heavily-edited pinned note regressed at 13:08 and was dropped at 17:05
+  (diagnostics: `sync.merge local_changed=true full_sync=true wrote_remotes=true`),
+  deletion propagated to all 3 providers.
+- **Fix direction**: an edit must atomically LINK old id -> new id in the merge (e.g.
+  a supersedes/rename record with a recency clock), so a stale provider's copy of the
+  old id merges INTO the new item instead of racing the tombstone. Requires a
+  reproduction harness (multi-provider lag simulation) before touching live data.
+- **Forensics kit**: `clipboard-backups/` (full history snapshots, 48h/2GB retention),
+  `clipboard-edit-archive/` (raw editor buffers, 1yr/100MB — this is what recovered the
+  lost paragraph), `boardclip-diagnostics.jsonl` (64MB cap), plus cloud providers'
+  own version history. During any incident, copy relevant backups OUT of the retention
+  dirs immediately — pruning runs on every save and destroyed evidence mid-investigation.
+- **Follow-up also approved**: unify/simplify the backup subsystem (local backups vs
+  edit-archive vs cloud overlap; local ones are same-drive so they guard logic bugs,
+  not hardware loss).
+
 ## Scripts & Process Management
 
 - **`start.sh`/`start.bat`** — call kill script, verify no leftover processes, abort if kill failed, then launch Electron in background

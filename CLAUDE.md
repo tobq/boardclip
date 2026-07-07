@@ -435,7 +435,14 @@ Desktop app distribution has TWO consistent paths, both driven by `main`:
   `main` commit (GitHub API) every ~4h + 90s after launch, runs `update.bat`
   (git pull → hot-reload if only `index.html`/`site/shared/*` changed, else
   relaunch). Disabled on dirty checkouts (protects local edits) and on packaged
-  builds (no `.git`).
+  builds (no `.git`). **GOTCHA (fixed 2026-07-07, commit 5b4fb07):** "dirty" is
+  computed from tracked changes only (`build-info.js` passes `--untracked-files=no`,
+  matching `update.bat`). Before the fix it counted UNTRACKED files too, so recovery
+  artifacts left in the install dir (`clipboard-RECOVERED/`, `*.PRE-RECOVERY-*.json`,
+  `clipboard-edit-archive/`) silently blocked auto-update for hours (heartbeat build
+  shows `<sha>-dirty`). Also: `update.bat`'s own `npm install` can rewrite the tracked
+  `package-lock.json` and re-block the NEXT update — restore it (`git checkout -- package-lock.json`;
+  node_modules is unaffected) so the checkout stays clean.
 - **Installer downloads** (`.exe`/`.dmg`): `release-binaries.yml` now runs on
   every push to `main` that touches app code (`paths-ignore: site/**`, docs) and
   republishes a single rolling **`latest`** GitHub release (`make_latest: true`)

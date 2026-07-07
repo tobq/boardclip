@@ -258,126 +258,40 @@ async function safeRestoreSkipsWhenChanged() {
 }
 
 // ---------------------------------------------------------------------------
-// 7. consumed-signal strategy: a clipboard-touching strategy that reports real
-//    consumption gets restored even though the on-clipboard bytes were handed
-//    off (guards the branch where delivered.consumed authorizes the restore).
+// 7. REGRESSION (the numpad newline footgun): a multi-line snippet is delivered
+//    as ONE clipboard write + ONE Ctrl/Cmd+V, with newlines preserved as
+//    clipboard CONTENT — never as synthetic Enter key presses. There is a single
+//    delivery mechanism (the keystroke-injection "type" strategy was removed
+//    after it turned \n into Enter and spawned unintended sends), so numpad
+//    behaves exactly like the panel-click paste.
 // ---------------------------------------------------------------------------
-async function strategyConsumptionPath() {
+async function multilineNeverTypesNewlines() {
   const clock = createClock();
   const clip = createFakeClipboard(clock);
   clip.setText('OLD');
-  let consumedAt = null;
-
-  const strategy = {
-    accepts: (item) => !!item.text,
-    async deliver({ item, paste, sleep }) {
-      // "own" the clipboard offering the macro; the target reads it on demand.
-      clip.setText(item.text);
-      await paste();
-      await sleep(30);
-      consumedAt = clock.now();
-      // hand-off complete; the owner relinquished, so the macro bytes are no
-      // longer on the clipboard — only the confirmed consumption signal should
-      // authorize the restore now.
-      clip.setText('HANDED-OFF');
-      return { consumed: true };
-    },
-  };
+  const MULTILINE = 'line one\n\nline two\nline three';
+  let writes = 0, pastes = 0;
 
   const qp = createQuickPaster(baseDeps(clip, clock, {
-    getConfig: () => ({ minRestoreDelayMs: 50 }),
-    strategy,
+    writeItem: (item) => { writes++; clip.writeItem(item); },
+    // The ONLY delivery is a single Ctrl/Cmd+V; the fake target then reads
+    // whatever sits on the clipboard. A per-character/keystroke path would show
+    // up as >1 paste (or a mangled read) — impossible with one clipboard hand-off.
+    paste: () => { pastes++; return clip.pasteWithTargetDelay(30)(); },
+    getConfig: () => ({ minRestoreDelayMs: 120 }),
   }));
 
-  const run = qp.request({ text: 'MACRO' }, {});
-  await clock.advance(2000);
-  const outcome = await run;
-  assert.ok(consumedAt != null, 'strategy delivered');
-  assert.ok(outcome.consumed, 'consumption reported');
-  assert.strictEqual(clip.text(), 'OLD', 'previous clipboard restored after confirmed consumption');
-  ok('consumed-signal strategy restores after a confirmed consumption signal');
-}
-
-// ---------------------------------------------------------------------------
-// 8. keystroke-injection strategy (skipClipboard): the clipboard is NEVER read
-//    or written — no snapshot, no restore — so there is no race and the user's
-//    clipboard is untouched.
-// ---------------------------------------------------------------------------
-async function skipClipboardInjection() {
-  const clock = createClock();
-  const clip = createFakeClipboard(clock);
-  clip.setText('USER-CLIPBOARD');
-  let snapshots = 0, restores = 0, typed = null;
-
-  const strategy = {
-    skipClipboard: true,
-    accepts: (item) => !!item.text,
-    async deliver({ item }) { typed = item.text; return { consumed: true, injected: true }; },
-  };
-
-  const qp = createQuickPaster({
-    snapshot: () => { snapshots++; return { text: clip.text() }; },
-    restore: () => { restores++; },
-    writeItem: () => { throw new Error('writeItem must not be called for injection'); },
-    clipboardMatchesItem: () => { throw new Error('clipboardMatchesItem must not be called for injection'); },
-    paste: () => Promise.resolve({ ok: true }),
-    sleep: clock.sleep,
-    now: clock.now,
-    getConfig: () => ({ restore: true }),
-    strategy,
-  });
-
-  const run = qp.request({ text: 'MACRO' }, {});
-  await clock.advance(1000);
-  const outcome = await run;
-
-  assert.strictEqual(typed, 'MACRO', 'text was injected');
-  assert.strictEqual(snapshots, 0, 'clipboard never snapshotted');
-  assert.strictEqual(restores, 0, 'clipboard never restored');
-  assert.strictEqual(clip.text(), 'USER-CLIPBOARD', 'user clipboard left untouched');
-  assert.ok(outcome.injected, 'outcome marked injected');
-  ok('keystroke-injection strategy bypasses the clipboard entirely (no race)');
-}
-
-// ---------------------------------------------------------------------------
-// 9. injection failure falls back to the clipboard path: if a skipClipboard
-//    strategy returns {fallback:true}, the orchestrator snapshots + runs the
-//    normal set/paste/restore so the user still gets their macro (not nothing).
-// ---------------------------------------------------------------------------
-async function injectionFallsBackToClipboard() {
-  const clock = createClock();
-  const clip = createFakeClipboard(clock);
-  clip.setText('OLD');
-  let snapshots = 0;
-
-  const strategy = {
-    skipClipboard: true,
-    accepts: (item) => !!item.text,
-    async deliver() { return { fallback: true }; }, // injection "failed"
-  };
-
-  const qp = createQuickPaster({
-    snapshot: () => { snapshots++; return { text: clip.text() }; },
-    restore: (b) => clip.restore(b),
-    writeItem: (item) => clip.writeItem(item),
-    clipboardMatchesItem: (item) => clip.matches(item),
-    paste: clip.pasteWithTargetDelay(50),
-    sleep: clock.sleep,
-    now: clock.now,
-    getConfig: () => ({ restore: true, minRestoreDelayMs: 200 }),
-    strategy,
-  });
-
-  const run = qp.request({ text: 'MACRO' }, {});
+  const run = qp.request({ text: MULTILINE }, { coalesceKey: 'slot1' });
   await clock.advance(3000);
   await clip._pendingTarget;
   const outcome = await run;
 
-  assert.strictEqual(clip._lastPasted, 'MACRO', 'fallback clipboard path delivered the macro');
-  assert.strictEqual(clip.text(), 'OLD', 'previous clipboard restored after fallback');
-  assert.ok(snapshots >= 1, 'fallback snapshotted the clipboard');
-  assert.ok(!outcome.injected, 'outcome not marked injected after fallback');
-  ok('injection failure falls back to the clipboard paste path');
+  assert.strictEqual(writes, 1, 'exactly one clipboard write (no per-line typing)');
+  assert.strictEqual(pastes, 1, 'exactly one paste for the whole snippet (no Enter-per-newline)');
+  assert.strictEqual(clip._lastPasted, MULTILINE, 'target reads the full multi-line text verbatim, newlines intact');
+  assert.strictEqual(clip.text(), 'OLD', 'previous clipboard restored afterwards');
+  assert.ok(outcome.restored, 'restore happened');
+  ok('multi-line snippet pastes once via clipboard — never types newlines as Enter');
 }
 
 (async () => {
@@ -388,8 +302,6 @@ async function injectionFallsBackToClipboard() {
   await coalescesRepeats();
   await verifiesSetBeforePaste();
   await safeRestoreSkipsWhenChanged();
-  await strategyConsumptionPath();
-  await skipClipboardInjection();
-  await injectionFallsBackToClipboard();
+  await multilineNeverTypesNewlines();
   console.log(`\n${passed} assertions passed`);
 })().catch(e => { console.error('\nFAILED:', e && e.stack || e); process.exit(1); });

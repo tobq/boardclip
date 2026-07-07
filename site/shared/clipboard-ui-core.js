@@ -915,13 +915,6 @@
     <div class="settings-usage" id="usage"></div>
     <div class="settings-section">
       <h3>Numpad Shortcuts</h3>
-      <div class="setting-row">
-        <label>Paste as</label>
-        <div class="seg" id="quickPasteMode" role="group" aria-label="Quick paste mode">
-          <button type="button" class="seg-btn active" data-quick-paste-mode="clipboard" title="Copy then Ctrl/Cmd+V, restoring your clipboard afterwards (exact paste)">Clipboard</button>
-          <button type="button" class="seg-btn" data-quick-paste-mode="type" title="Type the text as keystrokes — never touches your clipboard, but slower and newlines become Enter presses">Type</button>
-        </div>
-      </div>
       <div id="numpadSlots"></div>
     </div>
     <div class="settings-section">

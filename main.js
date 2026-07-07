@@ -13,7 +13,6 @@ const { exec, execFile } = require('child_process');
 const winPaste = require('./lib/windows-paste');
 const macPaste = require('./lib/macos-paste');
 const winClipboard = require('./lib/windows-clipboard');
-const keystrokeInject = require('./lib/keystroke-inject');
 const { createQuickPaster } = require('./lib/quick-paste');
 const getBuildInfo = require('./lib/build-info');
 const getCloudAccounts = require('./lib/cloud-accounts');
@@ -910,7 +909,6 @@ function remoteSettingsPayload() {
   delete remoteSave.sync_disabled_paths;
   delete remoteSave.show_shortcut;
   delete remoteSave.quick_paste_shortcut;
-  delete remoteSave.quick_paste_mode;
   delete remoteSave.quick_paste_restore;
   delete remoteSave.quick_paste_restore_delay_ms;
   delete remoteSave.p2p_device_id;
@@ -2658,50 +2656,7 @@ function endQuickPaste() {
   if (quickPasteActive === 0) pollGate = true;
 }
 
-// Longest text we'll inject as keystrokes. Beyond this, a huge key-event burst
-// is neither efficient nor reliable, so we fall back to the clipboard path.
-const QUICK_PASTE_TYPE_MAX_CHARS = 2000;
-
-// Keystroke-injection strategy: type the macro's text directly, never touching
-// the clipboard — so the restore race is structurally impossible and the user's
-// clipboard is preserved. Only accepts plain-text items within the length cap
-// when quick_paste_mode is 'type' and the platform supports injection; images /
-// long text / 'clipboard' mode fall through to the timed clipboard path.
-const injectStrategy = {
-  skipClipboard: true,
-  accepts(item) {
-    if ((settings.quick_paste_mode || 'clipboard') !== 'type') return false;
-    if (!item || item.type === 'image') return false;
-    if (!keystrokeInject.isSupported()) return false;
-    textBlobStore.hydrateTextItem(item, TEXT_DIR);
-    const text = String(item.text || '');
-    return text.length > 0 && text.length <= QUICK_PASTE_TYPE_MAX_CHARS;
-  },
-  async deliver({ item, trace }) {
-    textBlobStore.hydrateTextItem(item, TEXT_DIR);
-    const text = String(item.text || '');
-    const result = keystrokeInject.typeText(text);
-    const ok = !!(result && result.ok);
-    diagnostics.record('shortcut.quick_paste_injected', {
-      ...(trace || {}),
-      chars: text.length,
-      ok,
-      error: result && result.error,
-    }, { forceFile: true });
-    // If injection failed (e.g. UIPI-blocked target, or an FFI error), decline
-    // so the orchestrator falls back to the clipboard paste path — the user
-    // still gets their macro rather than nothing.
-    if (!ok) return { fallback: true };
-    // consumed:true — the text is delivered directly to the app; there is no
-    // clipboard hand-off to wait on.
-    return { consumed: true, injected: true };
-  },
-};
-
 let quickPaster = null;
-function getQuickPasteStrategy() {
-  return injectStrategy;
-}
 function getQuickPaster() {
   if (quickPaster) return quickPaster;
   quickPaster = createQuickPaster({
@@ -2720,7 +2675,6 @@ function getQuickPaster() {
       restore: settings.quick_paste_restore !== false,
       minRestoreDelayMs: clampRestoreDelay(settings.quick_paste_restore_delay_ms),
     }),
-    strategy: getQuickPasteStrategy(),
   });
   return quickPaster;
 }
@@ -4508,9 +4462,6 @@ function setupIPC() {
     if (body.regex_search !== undefined) settings.regex_search = !!body.regex_search;
     if (body.theme_mode !== undefined && ['system', 'light', 'dark'].includes(body.theme_mode)) settings.theme_mode = body.theme_mode;
     if (body.diagnostics_enabled !== undefined) settings.diagnostics_enabled = !!body.diagnostics_enabled;
-    if (body.quick_paste_mode !== undefined && ['type', 'clipboard'].includes(body.quick_paste_mode)) {
-      settings.quick_paste_mode = body.quick_paste_mode;
-    }
     if (body.quick_paste_restore !== undefined) settings.quick_paste_restore = !!body.quick_paste_restore;
     if (body.quick_paste_restore_delay_ms !== undefined) {
       settings.quick_paste_restore_delay_ms = Math.min(2000, Math.max(0, parseInt(body.quick_paste_restore_delay_ms) || 0));

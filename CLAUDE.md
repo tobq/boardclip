@@ -49,31 +49,29 @@ the target reads AFTER the restore → pastes the old clip. Proven + measured in
   never clobber a copy the user made mid-sequence); and applies a **lag-adaptive**
   restore delay (floor `quick_paste_restore_delay_ms` default 400ms, + `3× measured
   scheduler-lag`, capped 1200ms) for the clipboard path.
-- **Default is the REAL clipboard paste** (`quick_paste_mode: 'clipboard'`) — the
-  robust orchestrator path above. This is what users expect: exact content pasted
-  atomically, immune to the target app's autocomplete/IME. (An earlier build shipped
-  keystroke injection as the default; the owner rejected it hard — "super slow +
-  buggy, newlines fire Enter, I didn't want manual-type shit." Real paste made
-  robust is the answer, not typing. Do NOT default to 'type' again.)
-- **Keystroke injection is OPT-IN** (`quick_paste_mode: 'type'`). For text macros
-  ≤2000 chars it TYPES via `lib/keystroke-inject.js` (Windows `SendInput`+
-  `KEYEVENTF_UNICODE` batched; macOS `CGEventKeyboardSetUnicodeString`) — clipboard
-  never touched, wired as an orchestrator **strategy with `skipClipboard:true`**.
-  Downsides that make it opt-in: slower, and newlines become real `VK_RETURN`
-  presses (submit chat boxes / accept autocompletes). Kept for the rare app where a
-  user prefers it. Images / text >2000 chars / unsupported platforms / runtime
-  injection failure (`{fallback:true}`) always use the clipboard path.
+- **ONE delivery mechanism: the REAL clipboard paste.** Quick-paste puts the item
+  on the clipboard, synthesizes Ctrl/Cmd+V, and safe-restores — the SAME primitive
+  (`setClipboardToItem` + `simulatePaste`) the panel-click paste (`pasteAndHide`)
+  uses. Exact content pasted atomically, immune to the target app's autocomplete/IME.
+- **Keystroke-injection "type" mode was REMOVED (2026-07-07) — do NOT reintroduce it.**
+  It typed the macro as raw key events, so `\n` became a real Enter; a numpad slot
+  holding multi-paragraph boilerplate fired ~22 unintended sends into a chat composer.
+  The owner had already rejected typing as the default ("super slow + buggy, newlines
+  fire Enter, I didn't want manual-type shit"), and it was the ONLY reason numpad
+  diverged from the working panel-click path — so it, `lib/keystroke-inject.js`, the
+  orchestrator `strategy`/`skipClipboard`/`fallback` seam, the `quick_paste_mode`
+  setting, and the "Paste as" UI control were all deleted. `test/numpad-paste.test.js`
+  #7 guards it: a multi-line snippet must paste in ONE clipboard write + ONE Ctrl/Cmd+V
+  with newlines intact, never as Enter presses.
 - **Why NOT delayed-render clipboard ownership** (an earlier plan): its only extra
   signal (`WM_RENDERFORMAT`) is spoofable by passive clipboard readers (Windows
   Clipboard History et al. render right after we take ownership) → false "consumed"
   → early restore → the real late read still stale. It doesn't beat a longer/adaptive
   delay and adds ~500 lines of risky FFI. Rejected on evidence.
 - **Settings** (per-machine, not synced; excluded in `remoteSettingsPayload`):
-  `quick_paste_mode` ('type'|'clipboard'), `quick_paste_restore`,
-  `quick_paste_restore_delay_ms`. UI = a "Paste as" segmented control in the shared
-  `renderSettingsBody` (Numpad Shortcuts section), wired in `index.html` like the
-  Theme control (escape hatch to clipboard mode if an IDE's autocomplete fights the
-  typed text).
+  `quick_paste_restore` (restore the previous clipboard afterwards) and
+  `quick_paste_restore_delay_ms` (floor restore delay, adapts up under lag). There is
+  no paste-mode setting anymore.
 - **Dispatch is unified**: hardware numpad (Windows LL hook `handleNumpad`), panel
   number keys (`numpadPasteAndHide`), and the global quick-paste shortcut
   (`handleQuickPaste`) ALL route through `runNumpadSlotAction` → `numpadPaste` →

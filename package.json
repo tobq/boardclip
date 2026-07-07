@@ -7,7 +7,7 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "test": "node test/clipboard-model.test.js && node test/ensure-directory.test.js && node test/control-auth.test.js && node test/control-channel.test.js && node test/mcp-core.test.js && node test/mcp-installers.test.js && node test/mcp-helper-smoke.test.js && node test/retention.test.js && node test/editor-find.test.js && node test/multiselect.test.js && node test/numpad-paste.test.js && node test/ui-parity.test.js && node test/ui-tokens.test.js",
+    "test": "node test/clipboard-model.test.js && node test/ensure-directory.test.js && node test/control-auth.test.js && node test/control-channel.test.js && node test/mcp-core.test.js && node test/mcp-installers.test.js && node test/mcp-helper-smoke.test.js && node test/retention.test.js && node test/backup.test.js && node test/editor-find.test.js && node test/multiselect.test.js && node test/numpad-paste.test.js && node test/ui-parity.test.js && node test/ui-tokens.test.js",
     "sync:icons": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/sync-icons.ps1",
     "dist": "electron-builder --publish never",
     "dist:win": "electron-builder --win nsis portable --publish never",

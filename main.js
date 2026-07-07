@@ -17,6 +17,7 @@ const { createQuickPaster } = require('./lib/quick-paste');
 const getBuildInfo = require('./lib/build-info');
 const getCloudAccounts = require('./lib/cloud-accounts');
 const blobStore = require('./lib/blob-store');
+const backupStore = require('./lib/backup');
 const clipboardModel = require('./lib/clipboard-model');
 const clipboardCapture = require('./lib/clipboard-capture');
 const textBlobStore = require('./lib/text-blob-store');
@@ -76,13 +77,15 @@ const EDIT_ARCHIVE_MAX_AGE_MS = 365 * 86400 * 1000; // 1 year
 const APP_ICON_PATH = path.join(SCRIPT_DIR, 'icon.png');
 const DIAGNOSTICS_PATH = path.join(DATA_DIR, 'boardclip-diagnostics.jsonl');
 // History backups are the full clipboard-history.json (a few MB each), snapshotted
-// before meaningful writes. Retention = 48h OR 2GB, whichever bites first: long
-// enough that a loss event survives a multi-hour investigation (the old 100-file /
-// ~7h cap pruned the evidence mid-incident on 2026-07-06), yet size-capped so heavy
-// editing can't run disk away. planRetention drops >48h first, then evicts the
-// oldest survivors until the total is under 2GB.
+// before meaningful writes. Content-addressed (lib/backup): each snapshot is a small
+// manifest of item hashes into a shared object pool, so an edit to one note costs one
+// object + a manifest, not a full ~4-5MB copy. Retention = 48h OR ~512MB OR 2000
+// snapshots, whichever bites first — a loss event survives a multi-hour investigation
+// (the old 100-file / ~7h cap pruned the evidence mid-incident on 2026-07-06) without
+// disk runaway. Dedup makes 512MB hold far more history than the old 2GB of full copies.
 const HISTORY_BACKUP_MAX_AGE_MS = 48 * 60 * 60 * 1000;
-const HISTORY_BACKUP_MAX_BYTES = 2 * 1024 * 1024 * 1024;
+const HISTORY_BACKUP_MAX_BYTES = 512 * 1024 * 1024;
+const HISTORY_BACKUP_MAX_MANIFESTS = 2000;
 const HISTORY_BACKUP_MIN_INTERVAL_MS = 60 * 1000;
 const IMAGE_ORPHAN_RECOVERY_WINDOW_MS = 30 * 60 * 1000;
 const IMAGE_ORPHAN_RECOVERY_MAX_FILES = 20;
@@ -253,11 +256,12 @@ function pruneDirectory(dir, policy, { ext } = {}) {
 }
 
 function pruneHistoryBackups() {
-  pruneDirectory(
-    HISTORY_BACKUP_DIR,
-    { maxAgeMs: HISTORY_BACKUP_MAX_AGE_MS, maxBytes: HISTORY_BACKUP_MAX_BYTES, now: Date.now() },
-    { ext: '.json' },
-  );
+  backupStore.pruneBackups(HISTORY_BACKUP_DIR, {
+    maxAgeMs: HISTORY_BACKUP_MAX_AGE_MS,
+    maxBytes: HISTORY_BACKUP_MAX_BYTES,
+    maxManifests: HISTORY_BACKUP_MAX_MANIFESTS,
+    now: Date.now(),
+  });
 }
 
 function maybeBackupHistoryBeforeWrite(nextStoredHistory) {
@@ -287,24 +291,25 @@ function maybeBackupHistoryBeforeWrite(nextStoredHistory) {
   try { currentSettings = currentSettingsJson ? JSON.parse(currentSettingsJson) : null; } catch {}
 
   const reason = slotChanged ? 'slots' : 'periodic';
-  const stamp = new Date(now).toISOString().replace(/[:.]/g, '-');
-  const backupPath = path.join(HISTORY_BACKUP_DIR, `${stamp}-${reason}-${contentHash.slice(0, 12)}.json`);
+  const source = { historyPath: DB_PATH, settingsPath: SETTINGS_PATH, historyHash: contentHash, slotChanged };
   try {
-    fs.mkdirSync(HISTORY_BACKUP_DIR, { recursive: true });
-    atomicWriteJson(backupPath, {
-      createdAt: new Date(now).toISOString(),
-      reason,
-      source: {
-        historyPath: DB_PATH,
-        settingsPath: SETTINGS_PATH,
-        historyHash: contentHash,
-        slotChanged,
-        currentSlots,
-        nextSlots,
-      },
-      history: currentHistory,
-      settings: currentSettings,
-    });
+    // Content-addressed snapshot (dedup pool + manifest). Falls back to a full-JSON
+    // copy if anything in the new path throws, so a backup is never silently skipped.
+    try {
+      backupStore.writeSnapshot(HISTORY_BACKUP_DIR, {
+        history: currentHistory,
+        settings: currentSettings,
+        reason,
+        createdAt: new Date(now),
+        source,
+      });
+    } catch (err) {
+      diagnostics.record('history.backup.fallback', { error: err && err.message }, { forceFile: true });
+      const stamp = new Date(now).toISOString().replace(/[:.]/g, '-');
+      const backupPath = path.join(HISTORY_BACKUP_DIR, `${stamp}-${reason}-${contentHash.slice(0, 12)}.json`);
+      fs.mkdirSync(HISTORY_BACKUP_DIR, { recursive: true });
+      atomicWriteJson(backupPath, { createdAt: new Date(now).toISOString(), reason, source, history: currentHistory, settings: currentSettings });
+    }
     lastHistoryBackupAt = now;
     lastHistoryBackupHash = contentHash;
     pruneHistoryBackups();

@@ -142,14 +142,45 @@ Sync is currently PAUSED on the user's machine (`sync_disabled_paths` = all 3 pr
   a supersedes/rename record with a recency clock), so a stale provider's copy of the
   old id merges INTO the new item instead of racing the tombstone. Requires a
   reproduction harness (multi-provider lag simulation) before touching live data.
-- **Forensics kit**: `clipboard-backups/` (full history snapshots, 48h/2GB retention),
+- **Forensics kit**: `clipboard-backups/` (content-addressed history snapshots, see
+  Backup subsystem below; 48h/512MB/2000-manifest retention),
   `clipboard-edit-archive/` (raw editor buffers, 1yr/100MB — this is what recovered the
   lost paragraph), `boardclip-diagnostics.jsonl` (64MB cap), plus cloud providers'
   own version history. During any incident, copy relevant backups OUT of the retention
   dirs immediately — pruning runs on every save and destroyed evidence mid-investigation.
-- **Follow-up also approved**: unify/simplify the backup subsystem (local backups vs
-  edit-archive vs cloud overlap; local ones are same-drive so they guard logic bugs,
-  not hardware loss).
+  To read a content-addressed snapshot: `backupStore.readSnapshot(dir, manifestPath)`
+  (`lib/backup.js`) resolves item hashes back into a full history array.
+
+## Backup subsystem (`lib/backup.js`) — content-addressed local time-machine
+
+- **Roles (the failure-mode matrix)**: LOCAL backups (same drive) guard against
+  logic/software bugs (a copy the buggy code didn't touch — this recovered the note);
+  they are NOT hardware redundancy (drive dies → all local copies die). HARDWARE
+  redundancy = the CLOUD providers (different machines), but cloud PROPAGATES logic-bug
+  deletions — so it's only trustworthy once the sync-merge bug (above) is fixed. Decision
+  (owner-approved 2026-07-07): keep local lean as the logic-bug time-machine; cloud is the
+  hardware-redundancy layer AFTER the sync fix. No separate off-drive target.
+- **Content-addressed store**: `clipboard-backups/objects/{sha256}.json` is a shared pool
+  of stored items (+ the settings object); a snapshot is a small manifest
+  `clipboard-backups/snapshots/{stamp}-{reason}.json` listing the ordered item hashes.
+  Unchanged items across snapshots share ONE blob, so an edit to one note costs ~one
+  object + a manifest, not a full ~4.5MB history copy (verified on the real 5670-item
+  history: 1 edit = 1 new object). Everything stays plain-text JSON (greppable in an
+  incident). Reuses `lib/blob-store` (atomic write/dirs) + `lib/retention` (planRetention).
+- **Retention** = `backupStore.pruneBackups(dir, {maxAgeMs:48h, maxBytes:512MB,
+  maxManifests:2000, now})`: evict manifests by age+count, then mark-sweep GC any pool
+  object no surviving manifest references, then drop oldest manifests until under the byte
+  cap. Legacy full `{stamp}-{reason}-{hash12}.json` snapshots are still read (`readSnapshot`
+  handles both shapes) and age out — no risky bulk migration.
+- **`main.js` wiring**: `maybeBackupHistoryBeforeWrite` keeps the change-detection +
+  60s throttle (app state), then calls `backupStore.writeSnapshot`; on ANY error it FALLS
+  BACK to a full-JSON write (`history.backup.fallback` diagnostic) so a backup is never
+  silently skipped. Tests: `test/backup.test.js` (dedup, exact round-trip, one-edit=one-
+  object, age-GC, size cap, legacy compat).
+- **Phase 2 (not done)**: fold the edit-archive's `done-` finished buffers into the same
+  object pool (they overlap it) and move its prune under `lib/backup.js` for one retention
+  home. Kept separate for now because its live per-keystroke drafts are a distinct
+  crash-recovery role. Working spec: `BACKUP-UNIFY-PLAN.md` (untracked).
 
 ## Scripts & Process Management
 

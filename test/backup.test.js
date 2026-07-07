@@ -156,6 +156,37 @@ function legacyCompat() {
   ok('legacy full snapshots read back and age out under retention');
 }
 
+// ---------------------------------------------------------------------------
+// 7. GC throttle: object GC (which scans manifests) stays off the hot path. With a
+//    large gcMinIntervalMs, an eviction's orphan lingers; a later eviction past the
+//    interval catches up and collects it. Correctness is preserved, cost is deferred.
+// ---------------------------------------------------------------------------
+function throttleDefersGc() {
+  const base = tmpBase();
+  const shared = item('s', 'shared');
+  const A = item('a', 'uniq-A'), B = item('b', 'uniq-B'), C = item('c', 'uniq-C');
+  const mA = backup.writeSnapshot(base, { history: [shared, A], reason: 'periodic' }).manifestPath;
+  const mB = backup.writeSnapshot(base, { history: [shared, B], reason: 'periodic' }).manifestPath;
+  const mC = backup.writeSnapshot(base, { history: [shared, C], reason: 'periodic' }).manifestPath;
+  const setM = (p, t) => fs.utimesSync(p, new Date(t), new Date(t));
+  setM(mA, 1000); setM(mB, 2000); setM(mC, 3000);
+  const objPath = it => path.join(base, 'objects', `${backup.sha256Hex(backup.stableStringify(it))}.json`);
+
+  // Prune #1 evicts A, but the throttle (huge interval, small now) DEFERS GC.
+  backup.pruneBackups(base, { maxManifests: 2, gcMinIntervalMs: 100000, now: 5000 });
+  assert.ok(!fs.existsSync(mA), 'oldest manifest evicted');
+  assert.ok(fs.existsSync(objPath(A)), 'orphan object lingers while GC is throttled');
+
+  // Prune #2 evicts B, throttle elapsed → GC runs and catches up (A + B collected).
+  backup.pruneBackups(base, { maxManifests: 1, gcMinIntervalMs: 100000, now: 200000 });
+  assert.ok(!fs.existsSync(objPath(A)), 'deferred orphan A collected once GC runs');
+  assert.ok(!fs.existsSync(objPath(B)), 'orphan B collected');
+  assert.ok(fs.existsSync(objPath(C)), 'referenced object C kept');
+  assert.ok(fs.existsSync(objPath(shared)), 'shared object kept');
+  fs.rmSync(base, { recursive: true, force: true });
+  ok('object GC is throttled off the hot path but stays correct');
+}
+
 (async () => {
   console.log('backup.test.js');
   roundTrip();
@@ -164,5 +195,6 @@ function legacyCompat() {
   ageEvictionGCs();
   sizeCeiling();
   legacyCompat();
+  throttleDefersGc();
   console.log(`\n${passed} assertions passed`);
 })().catch(e => { console.error('\nFAILED:', e && e.stack || e); process.exit(1); });

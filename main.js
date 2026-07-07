@@ -260,6 +260,9 @@ function pruneHistoryBackups() {
     maxAgeMs: HISTORY_BACKUP_MAX_AGE_MS,
     maxBytes: HISTORY_BACKUP_MAX_BYTES,
     maxManifests: HISTORY_BACKUP_MAX_MANIFESTS,
+    // Object GC scans surviving manifests — keep it off the save hot path; at most
+    // every 5 min (orphans between GCs are a changed item each, negligible).
+    gcMinIntervalMs: 5 * 60 * 1000,
     now: Date.now(),
   });
 }

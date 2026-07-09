@@ -121,10 +121,12 @@ Otherwise the key passes through so normal numpad typing works. Main thread call
 - **macOS**: detects Google Drive and OneDrive from `~/Library/CloudStorage/`, plus iCloud Drive from `~/Library/Mobile Documents/com~apple~CloudDocs`.
 - **Windows**: scans Google DriveFS mount letters and labels from PSDrive descriptions, DriveFS preference cache/WAL strings, and recent DriveFS logs; also detects OneDrive environment folders and common iCloud Drive folders.
 
-### KNOWN DATA-LOSS BUG (2026-07-06 incident) — sync merge vs content-hash edits — UNFIXED
+### DATA-LOSS BUG (2026-07-06 incident) — sync merge vs content-hash edits — FIXED 2026-07-09 (`61f5cff`)
 
-Sync is currently PAUSED on the user's machine (`sync_disabled_paths` = all 3 providers,
-`p2p_enabled: false`) until this is fixed. Do NOT re-enable sync before fixing.
+Sync was PAUSED (`sync_disabled_paths` = all 3 providers, `p2p_enabled: false`) from the
+incident until the fix. RE-ENABLE ONLY once BOTH devices run `61f5cff`+ (Windows + Mac) —
+old code doesn't understand the supersedes ledger, so a stale device still on the old
+build could re-trigger the race.
 
 - **Mechanism**: text ids are content hashes, so every editor save = new id + a
   TOMBSTONE for the old id (`applyTextEdit`). Cloud providers lag; a merge pass can
@@ -138,10 +140,20 @@ Sync is currently PAUSED on the user's machine (`sync_disabled_paths` = all 3 pr
   incident: a heavily-edited pinned note regressed at 13:08 and was dropped at 17:05
   (diagnostics: `sync.merge local_changed=true full_sync=true wrote_remotes=true`),
   deletion propagated to all 3 providers.
-- **Fix direction**: an edit must atomically LINK old id -> new id in the merge (e.g.
-  a supersedes/rename record with a recency clock), so a stale provider's copy of the
-  old id merges INTO the new item instead of racing the tombstone. Requires a
-  reproduction harness (multi-provider lag simulation) before touching live data.
+- **THE FIX (`61f5cff`)** — an **edit-lineage ledger** in synced settings. `applyTextEdit`
+  now returns `supersedes: [{from: oldId, to: newId, updatedAt}]` alongside the old-id
+  tombstone; `main.js addSupersede` persists it into `settings.supersedes` (normalized,
+  30-day retention like tombstones; in `remoteSettingsPayload` so it rides cloud writes +
+  P2P state + fork-heal; merged in `mergeSyncedSettings`). `mergeHistories` builds a
+  `supersedeMap` (transitive old→…→new) and routes a stale old-id copy THROUGH the lineage:
+  `mergeSupersededStaleIntoTarget` folds its pin/title metadata into the newer target but
+  the stale TEXT can NEVER overwrite the target text (the exact regression). Ordering-safe
+  (stale seen before its target is stashed in `pendingStaleByTarget`, folded when the
+  target lands). If EVERY provider lost the target, the newest stale old-id copy is kept
+  rather than converting an edit into data loss. Additive + fully backwards-compatible
+  (absent/empty `supersedes` = pre-fix behaviour). Tests: `test/clipboard-model.test.js`
+  (stale-provider race repro + `applyTextEdit` supersedes emission); `foldRemoteState`
+  merges settings BEFORE history so the lineage is available to `mergeHistories`.
 - **Forensics kit**: `clipboard-backups/` (content-addressed history snapshots, see
   Backup subsystem below; 48h/512MB/2000-manifest retention),
   `clipboard-edit-archive/` (raw editor buffers, 1yr/100MB — this is what recovered the

@@ -360,8 +360,10 @@ function saveSettingsFile() {
   const s = { ...settings };
   s.tombstones = normalizeTombstones(s.tombstones);
   s.group_tombstones = normalizeGroupTombstones(s.group_tombstones);
+  s.supersedes = normalizeSupersedes(s.supersedes);
   settings.tombstones = s.tombstones;
   settings.group_tombstones = s.group_tombstones;
+  settings.supersedes = s.supersedes;
   delete s.numpad_slots;
   atomicWriteJson(SETTINGS_PATH, s, 2);
   diagnostics.setEnabled(process.env.BOARDCLIP_DIAGNOSTICS === '1' || !!settings.diagnostics_enabled);
@@ -535,6 +537,9 @@ function normalizeSyncPath(syncPath) {
 
 function migrateSyncSettings() {
   syncPaths.migrateSyncSettings(settings);
+  settings.tombstones = normalizeTombstones(settings.tombstones);
+  settings.group_tombstones = normalizeGroupTombstones(settings.group_tombstones);
+  settings.supersedes = normalizeSupersedes(settings.supersedes);
 }
 
 migrateSyncSettings();
@@ -724,7 +729,8 @@ function applyExternalTextEdit({ id, originalText, originalTitle, sourceGroups, 
     });
   }
   for (const tombstoneId of result.tombstoneIds || []) addTombstone(tombstoneId);
-  if (result.tombstoneIds && result.tombstoneIds.length) saveSettingsFile();
+  for (const supersede of result.supersedes || []) addSupersede(supersede);
+  if ((result.tombstoneIds && result.tombstoneIds.length) || (result.supersedes && result.supersedes.length)) saveSettingsFile();
   saveHistory();
   // Only put the edited text on the clipboard for a deliberate finish (editor
   // close / final save), not every intermediate auto-captured Ctrl+S.
@@ -848,6 +854,10 @@ function normalizeGroupTombstones(list) {
   return clipboardModel.normalizeGroupTombstones(list);
 }
 
+function normalizeSupersedes(list) {
+  return clipboardModel.normalizeSupersedes(list);
+}
+
 function groupTombstoneNames(list) {
   return clipboardModel.groupTombstoneNames(list);
 }
@@ -861,6 +871,14 @@ function addTombstone(id) {
   settings.tombstones = normalizeTombstones([
     ...(settings.tombstones || []),
     { id, deletedAt: Date.now() },
+  ]);
+}
+
+function addSupersede(record) {
+  if (!record || !record.from || !record.to || record.from === record.to) return;
+  settings.supersedes = normalizeSupersedes([
+    ...(settings.supersedes || []),
+    { from: record.from, to: record.to, updatedAt: record.updatedAt || Date.now() },
   ]);
 }
 
@@ -910,6 +928,7 @@ function remoteSettingsPayload() {
     ...settings,
     tombstones: normalizeTombstones(settings.tombstones),
     group_tombstones: normalizeGroupTombstones(settings.group_tombstones),
+    supersedes: normalizeSupersedes(settings.supersedes),
   };
   delete remoteSave.numpad_slots;
   delete remoteSave.sync_path;
@@ -948,6 +967,10 @@ function mergeSyncedSettings(remoteSettings) {
   settings.group_tombstones = normalizeGroupTombstones([
     ...(settings.group_tombstones || []),
     ...(remoteSettings.group_tombstones || []),
+  ]);
+  settings.supersedes = normalizeSupersedes([
+    ...(settings.supersedes || []),
+    ...(remoteSettings.supersedes || []),
   ]);
   const secrets = [settings.p2p_secret, remoteSettings.p2p_secret].filter(Boolean).sort();
   if (secrets.length) settings.p2p_secret = secrets[0];
@@ -1305,6 +1328,7 @@ async function healForkedSyncFiles(syncPath) {
       if (!fork || typeof fork !== 'object') continue;
       canon.tombstones = normalizeTombstones([...(canon.tombstones || []), ...(fork.tombstones || [])]);
       canon.group_tombstones = normalizeGroupTombstones([...(canon.group_tombstones || []), ...(fork.group_tombstones || [])]);
+      canon.supersedes = normalizeSupersedes([...(canon.supersedes || []), ...(fork.supersedes || [])]);
       // Deterministically converge the shared P2P secret (min wins) so a fork
       // that carried a different secret can't leave the two devices unable to
       // pair over LAN — the exact failure that made this split unrecoverable.
@@ -1380,6 +1404,7 @@ function stateSummary(basePath) {
     settings_groups: Array.isArray(remoteSettings.groups) ? remoteSettings.groups : [],
     history_group_counts: groupCountsFromHistory(remoteHistory),
     group_tombstones: normalizeGroupTombstones(remoteSettings.group_tombstones),
+    supersedes: normalizeSupersedes(remoteSettings.supersedes),
   };
 }
 

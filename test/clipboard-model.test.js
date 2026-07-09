@@ -700,4 +700,40 @@ function text(text, extra = {}) {
   assert.strictEqual(autoUpdate.updateModeForChangedFiles([]), 'none');
 }
 
+
+{
+  // Regression for the 2026-07 sync loss: content-hash edits used to look like
+  // delete(old-id) + create(new-id). A stale provider carrying the old item could
+  // then lose the live edited item through the tombstone race. Supersedes must
+  // tell mergeHistories that old-id is an EDIT lineage, not a hard delete.
+  const now = Date.now();
+  const oldItem = text('launch note verbose stale old body', { ts: Math.floor(now / 1000) - 100, updatedAt: now - 100000, pin: { groups: ['todo'], updatedAt: now - 100000 }, pinUpdatedAt: now - 100000 });
+  const editedItem = text('v2', { ts: Math.floor(now / 1000), updatedAt: now, pin: { groups: ['todo'], updatedAt: now }, pinUpdatedAt: now });
+  const tombstone = { id: oldItem.id, deletedAt: now };
+  const supersede = { from: oldItem.id, to: editedItem.id, updatedAt: now };
+
+  const withoutSupersedes = model.mergeHistories([editedItem], [oldItem], { tombstones: [tombstone] });
+  assert.deepStrictEqual(withoutSupersedes.map(i => i.text), ['v2'], 'baseline: hard tombstone still deletes the stale old copy');
+
+  const merged = model.mergeHistories([editedItem], [oldItem], { tombstones: [tombstone], supersedes: [supersede] });
+  assert.strictEqual(merged.length, 1, 'stale old copy should merge into the edited item, not duplicate or delete it');
+  assert.strictEqual(merged[0].id, editedItem.id);
+  assert.strictEqual(merged[0].text, 'v2');
+  assert.deepStrictEqual(model.groupsOf(merged[0]), ['todo']);
+}
+
+{
+  const item = text('rename me', { ts: 10, updatedAt: 10000 });
+  const history = [item];
+  const result = model.applyTextEdit(history, {
+    id: item.id,
+    originalText: 'rename me',
+    newText: 'renamed',
+    now: 50000,
+  });
+  assert.strictEqual(result.changed, true);
+  assert.strictEqual(result.tombstoneIds.length, 1);
+  assert.deepStrictEqual(result.supersedes, [{ from: result.tombstoneIds[0], to: result.item.id, updatedAt: 50000 }]);
+}
+
 console.log('clipboard model tests passed');

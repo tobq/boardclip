@@ -49,6 +49,11 @@ contextBridge.exposeInMainWorld('api', {
   getSyncDiagnostics: () => ipcRenderer.invoke('get-sync-diagnostics'),
   recordDiagnostics: (event, details) => ipcRenderer.invoke('record-diagnostics', event, details),
   syncNow: () => ipcRenderer.invoke('sync-now'),
+  onSyncProgress: (callback) => {
+    const listener = (_, payload) => callback(payload);
+    ipcRenderer.on('sync-progress', listener);
+    return () => ipcRenderer.removeListener('sync-progress', listener);
+  },
   checkForUpdates: () => ipcRenderer.invoke('check-for-updates'),
   getAutoLaunch: () => ipcRenderer.invoke('get-auto-launch'),
   setAutoLaunch: (enabled) => ipcRenderer.invoke('set-auto-launch', enabled),

@@ -736,4 +736,35 @@ function text(text, extra = {}) {
   assert.deepStrictEqual(result.supersedes, [{ from: result.tombstoneIds[0], to: result.item.id, updatedAt: 50000 }]);
 }
 
+{
+  // CAS guarantee ('delete clobbering guarded by hash'): ids ARE content hashes,
+  // so an edit with a stale originalText must NEVER overwrite the live body —
+  // it records a conflict instead (compare-and-swap semantics).
+  const item = text('live body v2', { ts: 10, updatedAt: 10000 });
+  const history = [item];
+  const result = model.applyTextEdit(history, {
+    id: item.id,
+    originalText: 'stale body v1', // caller's outdated view
+    newText: 'attacker overwrite',
+    now: 50000,
+  });
+  assert.strictEqual(result.changed, true);
+  assert.notStrictEqual(result.reason, 'updated', 'stale-view edit must not update in place');
+  assert.ok(result.conflict, 'stale-view edit surfaces a conflict');
+  assert.strictEqual(history.some(i => i.text === 'live body v2'), true, 'live body survives');
+}
+
+{
+  // Deleting the OLD id of an edited clip must not kill the edited version:
+  // tombstone(oldId) + supersede(oldId -> newId) = edit lineage, new survives.
+  const now = Date.now();
+  const edited = text('kept new version', { ts: Math.floor(now / 1000), updatedAt: now });
+  const oldId = 'txt:' + '0'.repeat(64);
+  const merged = model.mergeHistories([edited], [], {
+    tombstones: [{ id: oldId, deletedAt: now }],
+    supersedes: [{ from: oldId, to: edited.id, updatedAt: now }],
+  });
+  assert.deepStrictEqual(merged.map(i => i.text), ['kept new version']);
+}
+
 console.log('clipboard model tests passed');

@@ -448,6 +448,33 @@ function renderP2PStatus(status) {
   statusEl.className = 'sync-status' + (status && status.enabled && status.running ? ' active' : '');
 }
 
+// Live coarse progress for long syncs (first sync after a pause can hydrate
+// thousands of cloud files). Provider-level only — calm, no per-file spam.
+function syncProviderLabel(p) {
+  const s = String(p || '');
+  if (/OneDrive/i.test(s)) return 'OneDrive';
+  if (/CloudDocs|iCloud/i.test(s)) return 'iCloud';
+  if (/GoogleDrive|My Drive|\\My Drive|Drive/i.test(s)) return 'Google Drive';
+  return 'cloud folder';
+}
+
+window.api.onSyncProgress && window.api.onSyncProgress((p) => {
+  const buttons = [document.getElementById('syncHeaderBtn'), document.getElementById('syncNow')].filter(Boolean);
+  const syncStatus = document.getElementById('syncStatus');
+  const setText = (text, spinning) => {
+    for (const button of buttons) {
+      button.title = text;
+      button.setAttribute('aria-label', text);
+      button.classList.toggle('syncing', !!spinning);
+    }
+    if (syncStatus && syncStatus.classList.contains('active')) syncStatus.textContent = text;
+  };
+  if (p.phase === 'start') setText('Syncing\u2026', true);
+  else if (p.phase === 'read') setText(`Syncing ${p.index}/${p.total} \u2014 ${syncProviderLabel(p.path)}\u2026`, true);
+  else if (p.phase === 'write') setText('Syncing \u2014 writing cloud\u2026', true);
+  else if (p.phase === 'done') setText(p.ok ? 'Sync now' : 'Sync failed \u2014 retry', false);
+});
+
 async function runManualSync({ showSettingsStatus = false } = {}) {
   if (manualSyncInFlight) return;
   manualSyncInFlight = true;

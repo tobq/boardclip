@@ -954,6 +954,11 @@ function remoteSettingsPayload() {
   delete remoteSave.ai_access_enabled;
   delete remoteSave.ai_always_allow;
   delete remoteSave.ai_approval_timeout_sec;
+  // In-app AI Search config is per-machine (BYO endpoint/key) — never synced.
+  delete remoteSave.ai_search_endpoint;
+  delete remoteSave.ai_search_key;
+  delete remoteSave.ai_search_model;
+  delete remoteSave.ai_search_scope;
   return remoteSave;
 }
 
@@ -1350,18 +1355,31 @@ async function readRemoteState(syncPath) {
   const remoteImgDir = path.join(syncPath, 'clipboard-images');
   const remoteTextDir = path.join(syncPath, textBlobStore.TEXT_BLOB_DIRNAME);
   let remoteHistory = [];
+  // A torn/mid-write remote read is DANGEROUS to treat as truth: an in-place
+  // cloud write caught halfway parses as garbage (or []), the merge then thinks
+  // those items don't exist, and downstream "recovery" (orphan images) can
+  // resurrect them with wrong timestamps (the 2026-07-10 image-ts clobber).
+  // Flag it so syncMerge can skip inference passes for this cycle.
+  let suspectRead = false;
   try {
     const loaded = JSON.parse(await fs.promises.readFile(remoteDbPath, 'utf-8'));
     if (Array.isArray(loaded)) {
+      if (!loaded.length) {
+        try { suspectRead = (await fs.promises.stat(remoteDbPath)).size > 2; } catch {}
+      }
       await syncRemoteAssets(remoteImgDir, remoteTextDir, { pullHistory: loaded });
       remoteHistory = textBlobStore.hydrateHistory(loaded, TEXT_DIR);
+    } else {
+      suspectRead = true;
     }
-  } catch {}
+  } catch {
+    try { suspectRead = (await fs.promises.stat(remoteDbPath)).size > 0; } catch {}
+  }
   let remoteSettings = {};
   try { remoteSettings = JSON.parse(await fs.promises.readFile(remoteSettingsPath, 'utf-8')); } catch {}
   let remoteConflicts = {};
   try { remoteConflicts = JSON.parse(await fs.promises.readFile(remoteConflictsPath, 'utf-8')); } catch {}
-  return { remoteHistory, remoteSettings, remoteConflicts: conflictModel.normalizeConflictState(remoteConflicts) };
+  return { remoteHistory, remoteSettings, remoteConflicts: conflictModel.normalizeConflictState(remoteConflicts), suspectRead };
 }
 
 function safeReadJson(filePath, fallback) {
@@ -2107,6 +2125,17 @@ function p2pStatus() {
   };
 }
 
+// Stream coarse sync progress to the popup so a long first sync (cold DriveFS
+// hydration can take minutes) is visible instead of a dead "Syncing..." button.
+// Coarse on purpose: provider-level phases, no per-file spam.
+function emitSyncProgress(payload) {
+  try {
+    if (win && !win.isDestroyed() && win.webContents && !win.webContents.isDestroyed()) {
+      win.webContents.send('sync-progress', payload);
+    }
+  } catch {}
+}
+
 async function syncMerge(options = {}) {
   if (insideSync) {
     if (options && options.force) {
@@ -2155,8 +2184,12 @@ async function syncMerge(options = {}) {
     const previousSettingsJson = JSON.stringify(remoteSettingsPayload());
     const previousConflictsJson = JSON.stringify(conflictModel.normalizeConflictState(conflicts));
 
+    emitSyncProgress({ phase: 'start', total: syncPaths.length });
+    let providerIndex = 0;
     for (const syncPath of syncPaths) {
       const providerStartedAt = Date.now();
+      providerIndex++;
+      emitSyncProgress({ phase: 'read', index: providerIndex, total: syncPaths.length, path: syncPath });
       try {
         const providerResult = await withTimeout((async () => {
           const signature = await syncProviderSignature(syncPath);
@@ -2185,13 +2218,14 @@ async function syncMerge(options = {}) {
             };
           }
 
-          const { remoteHistory, remoteSettings, remoteConflicts } = await readRemoteState(syncPath);
+          const { remoteHistory, remoteSettings, remoteConflicts, suspectRead } = await readRemoteState(syncPath);
           await updateSyncProviderCache(syncPath);
           return {
             path: syncPath,
             skipped: false,
             remote_changed: remoteChanged,
             full_sync: fullSync,
+            suspect_read: !!suspectRead,
             remote_items: remoteHistory.length,
             remote_conflicts: remoteConflicts.records.length,
             remote_history: remoteHistory,
@@ -2235,7 +2269,21 @@ async function syncMerge(options = {}) {
       }, { forceFile: true });
     }
 
-    recoveredImages = await recoverRecentOrphanImages(canonicalHistory);
+    // Orphan-image recovery infers items from FILES on disk (ts = file mtime).
+    // If any provider read was torn/suspect (or errored outright), the canonical
+    // view may be missing items that DO exist remotely — recovery would then
+    // resurrect them with a bogus "now" timestamp that the merge propagates
+    // everywhere (the 2026-07-10 image-ts clobber). Skip recovery this cycle;
+    // the next clean sync will pick up any genuine orphans (24h window).
+    const anySuspectRead = providers.some(p => p.suspect_read || p.error);
+    if (anySuspectRead) {
+      diagnostics.record('sync.recover_orphans_skipped', {
+        reason: 'suspect_provider_read',
+        providers: providers.filter(p => p.suspect_read || p.error).map(p => p.path),
+      }, { forceFile: true });
+    } else {
+      recoveredImages = await recoverRecentOrphanImages(canonicalHistory);
+    }
     localChanged = JSON.stringify(canonicalHistory) !== JSON.stringify(history);
     settingsChanged = JSON.stringify(remoteSettingsPayload()) !== previousSettingsJson;
     conflictsChanged = JSON.stringify(conflictModel.normalizeConflictState(conflicts)) !== previousConflictsJson;
@@ -2257,6 +2305,7 @@ async function syncMerge(options = {}) {
     shouldWriteRemotes = hadLocalDirty || localChanged || settingsChanged || conflictsChanged;
     const canonicalSettings = remoteSettingsPayload();
     if (shouldWriteRemotes) {
+      emitSyncProgress({ phase: 'write', total: syncPaths.length });
       await Promise.all(syncPaths.map(syncPath => (
         withTimeout(
             writeRemoteState(syncPath, history, canonicalSettings),
@@ -2331,6 +2380,7 @@ async function syncMerge(options = {}) {
       }, { forceFile: elapsed > 250 });
     }
     insideSync = false;
+    emitSyncProgress({ phase: 'done', ok: syncSucceeded, items: history.length, ms: elapsed, changed: localChanged });
     if (syncSucceeded && (hadLocalDirty || force) && syncDirtyVersion === startedDirtyVersion) {
       syncedDirtyVersion = syncDirtyVersion;
     }
@@ -4511,6 +4561,11 @@ function setupIPC() {
     if (body.ui_density !== undefined && ['normal', 'compact'].includes(body.ui_density)) settings.ui_density = body.ui_density;
     if (body.ui_corners !== undefined && ['soft', 'sharp'].includes(body.ui_corners)) settings.ui_corners = body.ui_corners;
     if (body.ui_borders !== undefined && ['bordered', 'borderless'].includes(body.ui_borders)) settings.ui_borders = body.ui_borders;
+    // In-app AI Search (BYO endpoint) — per-machine, not synced.
+    if (body.ai_search_endpoint !== undefined) settings.ai_search_endpoint = String(body.ai_search_endpoint || '').trim();
+    if (body.ai_search_key !== undefined) settings.ai_search_key = String(body.ai_search_key || '').trim();
+    if (body.ai_search_model !== undefined) settings.ai_search_model = String(body.ai_search_model || '').trim();
+    if (body.ai_search_scope !== undefined && ['all', 'shared'].includes(body.ai_search_scope)) settings.ai_search_scope = body.ai_search_scope;
     saveSettingsFile();
     if (surfaceChanged) applySurfaceToPopup();
     pruneHistory();

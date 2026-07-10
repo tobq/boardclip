@@ -4,6 +4,14 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   'use strict';
 
+  // The shared search engine (site/shared/clip-search.js). Browser: it's loaded as a
+  // <script> BEFORE this file (globalThis.BoardClipSearch). Node/tests: require it. ONE
+  // authority for query syntax + filtering + ranking, reused by the app popup, the demo,
+  // and the MCP search_clips tool.
+  var Search = (typeof require === 'function')
+    ? require('./clip-search')
+    : (typeof globalThis !== 'undefined' ? globalThis.BoardClipSearch : undefined);
+
   function isPinned(item) { return item && item.pin != null; }
   function numpadOf(item) { return item && item.pin && typeof item.pin.number === 'number' ? item.pin.number : null; }
   function groupsOf(item) {
@@ -182,7 +190,7 @@
     const label = escapeHtml(group);
     const text = escapeHtml(node.label || group);
     const hasChildren = !!(node.children && node.children.length);
-    const baseClass = isFilter ? 'filter-tag' : 'gp-btn';
+    const baseClass = isFilter ? 'filter-tag group-tag' : 'gp-btn';
     const stateClass = isFilter
       ? (activeFilters.has(group) ? ' active' : excludedFilters.has(group) ? ' excluded' : '')
       : (itemGroups.has(group) ? ' assigned' : ' available');
@@ -246,7 +254,9 @@
   }
   function hasActiveFilters(stateOrFilters) {
     const state = filterStateFrom(stateOrFilters);
-    return Boolean(state.filters.size || state.excludedFilters.size);
+    if (state.filters.size || state.excludedFilters.size) return true;
+    const q = stateOrFilters && stateOrFilters.query;
+    return !!(q && Search && Search.anyFilterActive(Search.parseQuery(q)));
   }
   function filterTokenMatches(item, filter) {
     const key = String(filter || '');
@@ -295,30 +305,38 @@
     next.filters.clear();
     next.excludedFilters.clear();
   }
-  function filterItems(items, state) {
-    const filterState = filterStateFrom(state);
-    const prepared = prepareQuery(state && state.query, state && state.regex);
-    const searchTexts = state && state.searchTexts;
-    const searchTextLower = state && state.searchTextLower;
-    return (items || []).filter((item, index) => {
-      if (!matchesFilter(item, filterState)) return false;
-      if (prepared.kind === 'none') return true;
-      return matchesPreparedQuery(searchTexts ? searchTexts[index] : itemSearchText(item), prepared, searchTextLower && searchTextLower[index]);
+  // Build the engine's parsed query from a UI state object. The search-bar TEXT is the
+  // source of truth (facets live as `group:`/`is:`/… tokens in it); legacy `filters`/
+  // `excludedFilters` Sets are still accepted (tests + any old caller) and folded into the
+  // same parsed model so there is ONE matcher.
+  function parsedFromState(state) {
+    const s = state || {};
+    const parsed = Search.parseQuery(s.query || '');
+    const fold = (set, exclude) => {
+      for (const f of asFilterSet(set)) {
+        const key = String(f);
+        if (key.startsWith('__')) { const isv = Search.BUILTIN_TO_IS[key]; if (isv) (exclude ? parsed.negIs : parsed.is).push(isv); }
+        else if (key) (exclude ? parsed.negGroups : parsed.groups).push(Search.normalizeTagName(key));
+      }
+    };
+    fold(s.filters, false);
+    fold(s.excludedFilters, true);
+    return parsed;
+  }
+  // Ranked, filtered ORIGINAL indexes (relevance when searching, history order when idle).
+  function filterItemIndexes(items, state) {
+    const s = state || {};
+    return Search.filterRankIndexes(items, parsedFromState(s), {
+      regex: !!s.regex,
+      now: s.now,
+      sortMode: s.sortMode,
+      docs: s.docs,
+      searchTextLower: s.searchTextLower,
     });
   }
-  function filterItemIndexes(items, state) {
-    const filterState = filterStateFrom(state);
-    const prepared = prepareQuery(state && state.query, state && state.regex);
-    const searchTexts = state && state.searchTexts;
-    const searchTextLower = state && state.searchTextLower;
-    const result = [];
-    (items || []).forEach((item, index) => {
-      if (!matchesFilter(item, filterState)) return;
-      if (prepared.kind === 'none' || matchesPreparedQuery(searchTexts ? searchTexts[index] : itemSearchText(item), prepared, searchTextLower && searchTextLower[index])) {
-        result.push(index);
-      }
-    });
-    return result;
+  function filterItems(items, state) {
+    const list = items || [];
+    return filterItemIndexes(list, state).map((i) => list[i]);
   }
   function itemCountLabel(total, visible, state) {
     const count = Number(total) || 0;
@@ -445,7 +463,9 @@
       metaHtml = `<span data-relative-ts="${item.ts || 0}">${ago(item.ts)}</span><span>${text.length.toLocaleString()} chars</span>`;
     }
     if (np) metaHtml += `<span class="numpad-tag">#${np}</span>`;
-    for (const group of groupsOf(item)) metaHtml += `<span class="group-tag">${escapeHtml(group)}</span>`;
+    // A clip's group tag IS a filter control: left-click includes, right-click excludes
+    // (routed through the SAME .filter-tag[data-group] handler the header chips use).
+    for (const group of groupsOf(item)) metaHtml += `<span class="filter-tag group-tag" data-group="${escapeHtml(group)}" title="Filter by ${escapeHtml(group)}">${escapeHtml(group)}</span>`;
     const previewClass = opts.expanded ? 'expanded' : 'collapsed';
     // Both text and images can carry a title (images are named so they're searchable).
     const title = titleOf(item);
@@ -484,6 +504,7 @@
       search: 'search',
       searchClear: 'searchClear',
       regexBtn: 'regexBtn',
+      aiBtn: 'aiBtn',
       groupFilters: 'groupFilters',
       selectionBar: 'selectionBar',
       list: 'list',
@@ -723,6 +744,106 @@
         <button class="icon-btn" type="button" data-action="bulk-clear" title="Clear selection (Esc)"><span class="mi">close</span></button>
       </div>`;
   }
+  // ── Search box enhancer: live query-syntax highlighting + autocomplete ──
+  // Wraps an existing search <input> with a transparent-input-over-colored-backdrop
+  // mirror (Forge's PatternInput idiom) so prefixes/regex/quotes/unknowns are colored as
+  // you type, plus a token autocomplete dropdown (prefixes, group names, is:/sort: values,
+  // since: presets, num:). ONE implementation shared by the app popup + demo.
+  //   opts: { getRegex(): bool, getGroups(): string[], onChange(value), onEnter?() }
+  // Returns { refresh(), destroy() }. The input keeps its id/handlers; we only decorate.
+  function attachSearchBox(inputEl, opts) {
+    if (typeof document === 'undefined' || !inputEl) return { refresh() {}, destroy() {} };
+    const o = opts || {};
+    const getRegex = o.getRegex || (() => false);
+    const getGroups = o.getGroups || (() => []);
+    const row = inputEl.closest('.search-row') || inputEl.parentElement;
+    // Backdrop mirror: a div positioned under the input, carrying the SAME text metrics.
+    const backdrop = document.createElement('div');
+    backdrop.className = 'search-hl';
+    backdrop.setAttribute('aria-hidden', 'true');
+    inputEl.classList.add('search-live');
+    if (row && getComputedStyle(row).position === 'static') row.style.position = 'relative';
+    (row || inputEl.parentElement).insertBefore(backdrop, inputEl);
+    // Dropdown for autocomplete.
+    const dropdown = document.createElement('div');
+    dropdown.className = 'search-suggest hidden';
+    (row || inputEl.parentElement).appendChild(dropdown);
+    let suggestions = [];
+    let active = -1;
+    let suggestOpen = false;
+
+    function paintHighlight() {
+      const segs = Search && Search.lexQuery ? Search.lexQuery(inputEl.value, { regex: !!getRegex() }) : [];
+      backdrop.innerHTML = segs.map((s) => `<span class="qh-${s.kind}">${escapeHtml(s.text)}</span>`).join('') || '';
+      backdrop.scrollLeft = inputEl.scrollLeft;
+    }
+    function closeSuggest() { suggestOpen = false; active = -1; suggestions = []; dropdown.classList.add('hidden'); dropdown.innerHTML = ''; }
+    function renderSuggest() {
+      if (!suggestions.length) { closeSuggest(); return; }
+      dropdown.innerHTML = suggestions.map((s, i) =>
+        `<div class="search-suggest-item${i === active ? ' active' : ''}" data-i="${i}"><span class="ss-text">${escapeHtml(s.label)}</span>${s.hint ? `<span class="ss-hint">${escapeHtml(s.hint)}</span>` : ''}</div>`
+      ).join('');
+      dropdown.classList.remove('hidden');
+      suggestOpen = true;
+    }
+    function updateSuggest() {
+      const res = Search && Search.suggestQuery ? Search.suggestQuery(inputEl.value, inputEl.selectionStart, { groups: getGroups() }) : null;
+      if (!res) { closeSuggest(); return; }
+      suggestions = res.suggestions.map((s) => ({ ...s, replaceStart: res.replaceStart, replaceEnd: res.replaceEnd }));
+      active = -1;
+      renderSuggest();
+    }
+    function applySuggestion(i) {
+      const s = suggestions[i];
+      if (!s) return;
+      const v = inputEl.value;
+      const next = v.slice(0, s.replaceStart) + s.text + ' ' + v.slice(s.replaceEnd);
+      inputEl.value = next;
+      const caret = s.replaceStart + s.text.length + 1;
+      inputEl.setSelectionRange(caret, caret);
+      closeSuggest();
+      paintHighlight();
+      if (o.onChange) o.onChange(inputEl.value);
+    }
+    function refresh() { paintHighlight(); }
+
+    const onInput = () => { paintHighlight(); updateSuggest(); };
+    const onScroll = () => { backdrop.scrollLeft = inputEl.scrollLeft; };
+    const onBlur = () => setTimeout(closeSuggest, 120); // allow a click on a suggestion
+    const onKeyDown = (e) => {
+      if (suggestOpen && suggestions.length) {
+        // While the dropdown is open, capture nav keys BEFORE the document controller sees
+        // them (stopPropagation) so arrows move the suggestion, not the result cursor.
+        if (e.key === 'ArrowDown') { e.preventDefault(); e.stopPropagation(); active = (active + 1) % suggestions.length; renderSuggest(); return; }
+        if (e.key === 'ArrowUp') { e.preventDefault(); e.stopPropagation(); active = (active - 1 + suggestions.length) % suggestions.length; renderSuggest(); return; }
+        if (e.key === 'Tab' || (e.key === 'Enter' && active >= 0)) { e.preventDefault(); e.stopPropagation(); applySuggestion(active >= 0 ? active : 0); return; }
+        if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeSuggest(); return; }
+      }
+      if (e.key === 'Enter' && o.onEnter) { o.onEnter(); }
+    };
+    dropdown.addEventListener('mousedown', (e) => {
+      const item = e.target.closest('.search-suggest-item');
+      if (item) { e.preventDefault(); applySuggestion(Number(item.dataset.i)); }
+    });
+    inputEl.addEventListener('input', onInput);
+    inputEl.addEventListener('scroll', onScroll);
+    inputEl.addEventListener('blur', onBlur);
+    inputEl.addEventListener('keydown', onKeyDown, true);
+    paintHighlight();
+    return {
+      refresh,
+      isSuggestOpen: () => suggestOpen,
+      destroy() {
+        inputEl.removeEventListener('input', onInput);
+        inputEl.removeEventListener('scroll', onScroll);
+        inputEl.removeEventListener('blur', onBlur);
+        inputEl.removeEventListener('keydown', onKeyDown, true);
+        backdrop.remove(); dropdown.remove();
+        inputEl.classList.remove('search-live');
+      },
+    };
+  }
+
   // A lightweight click-open popover, mounted into `host` (document.body for the
   // app so it inherits :root tokens; the demo window for the demo so it inherits
   // .bc-popup tokens). Positioned at a point, clamped to the host box, dismissed
@@ -974,6 +1095,21 @@
         <div id="aiAlwaysAllow"></div>
         <div class="setting-row"><label>Approval timeout (seconds)</label><input id="aiTimeout" type="number" min="5" max="600" step="5"></div>
       </div>
+    </div>
+    <div class="settings-section">
+      <h3>AI Search</h3>
+      <div class="ai-hint">Search with natural language. Works offline with smart ranking; add an Anthropic-compatible endpoint below to enable the AI agent (it searches with your key, on your machine).</div>
+      <div class="setting-row"><label>Endpoint</label><input id="aiSearchEndpoint" type="text" placeholder="https://cp.twoshot.app" autocomplete="off" spellcheck="false"></div>
+      <div class="setting-row"><label>API key</label><input id="aiSearchKey" type="password" placeholder="sk-…" autocomplete="off" spellcheck="false"></div>
+      <div class="setting-row"><label>Model</label><input id="aiSearchModel" type="text" placeholder="claude-3-5-sonnet-latest" autocomplete="off" spellcheck="false"></div>
+      <div class="setting-row">
+        <label>Reads</label>
+        <div class="seg" id="aiSearchScope" role="group" aria-label="AI search scope">
+          <button type="button" class="seg-btn" data-ai-scope="all" title="Search your whole clipboard history">All clips</button>
+          <button type="button" class="seg-btn" data-ai-scope="shared" title="Only clips in groups you've shared with AI">Shared only</button>
+        </div>
+      </div>
+      <div class="settings-status" id="aiSearchStatus"></div>
     </div>
     <div class="settings-section hidden" id="conflictsSection">
       <h3>Conflicts</h3>
@@ -1402,8 +1538,35 @@
       menu.open({ id, x, y, html: renderClipMenu(item, { items: allItems(), groups: groupNames(), numpadMap: a.numpadMap ? a.numpadMap() : {} }) });
     }
 
+    // Opens the editor (or image viewer for images) for the clip row under event.
+    // Shared inner helper used by alt+click and middle-click (auxclick) paths.
+    async function openClipInEditor(event, row) {
+      event.preventDefault(); event.stopPropagation();
+      const item = a.itemById(row.dataset.id);
+      if (!item) return true;
+      if (item.type === 'image') { if (a.openImage) await a.openImage(item); }
+      else { await a.editClip(row.dataset.id, row); }
+      return true;
+    }
+    // Middle-click (button 1) on a clip row → open in editor/viewer.
+    // auxclick fires for non-left buttons; preventDefault stops the scroll widget.
+    async function onAuxclick(event) {
+      if (event.button !== 1) return false;
+      const t = event.target;
+      if (t.closest('button, .np-btn, .gp-btn, .star, [data-action], a')) return false;
+      const row = t.closest('.item');
+      if (!row || !row.dataset.id) return false;
+      return openClipInEditor(event, row);
+    }
     async function onClick(event) {
       const t = event.target;
+      // Alt+click on a clip row body → open in editor/viewer (not on inner controls).
+      if (event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey) {
+        if (!t.closest('button, .np-btn, .gp-btn, .star, [data-action], a')) {
+          const row = t.closest('.item');
+          if (row && row.dataset.id) return openClipInEditor(event, row);
+        }
+      }
       // Multi-select: Ctrl/Cmd-click toggles a row, Shift-click ranges from the
       // anchor. Only when the click lands on the row body (not an inner control),
       // so modifier-clicking the star/menu still does its own thing.
@@ -1499,7 +1662,7 @@
       }
       return false;
     }
-    function onKeydown(event) {
+    async function onKeydown(event) {
       if (dialogs.isOpen() || menu.isOpen()) return; // dialogs/menu own their keys
       const mod = event.metaKey || event.ctrlKey;
       if (event.key === 'Escape') {
@@ -1522,6 +1685,16 @@
       else if (event.key === 'Delete') { if (selectedIds.size && !fieldHasText) { event.preventDefault(); deleteSelection(); } }
       else if (event.key === 'Backspace') { if (!isTypingTarget(event.target) && (selectedIds.size || focusId)) { event.preventDefault(); deleteSelection(); } }
       else if ((event.key === ' ' || event.key === 'Spacebar') && !isTypingTarget(event.target)) { if (focusId) { event.preventDefault(); toggleSelect(focusId); } }
+      else if (event.key === 'Enter' && (mod || event.altKey)) {
+        // Ctrl/Cmd+Enter or Alt+Enter → open focused clip in editor (or image viewer).
+        event.preventDefault();
+        const target = focusId || (visibleIds()[0] || null);
+        if (target) {
+          const item = a.itemById(target);
+          if (item && item.type === 'image') { if (a.openImage) await a.openImage(item); }
+          else if (item) { await a.editClip(target); }
+        }
+      }
       else if (event.key === 'Enter') {
         event.preventDefault();
         if (selectedIds.size >= 2) pasteSelection();
@@ -1538,6 +1711,7 @@
     return {
       dialogs,
       onClick,
+      onAuxclick,
       onContextmenu,
       onKeydown,
       deleteGroup,
@@ -2394,6 +2568,8 @@
     clearFilterState,
     filterItems,
     filterItemIndexes,
+    parsedFromState,
+    search: Search, // the shared engine (parseQuery/applyFacet/facetState/rankFuzzyIndexes/…)
     itemCountLabel,
     escapeHtml,
     builtinFilterTitle,
@@ -2408,6 +2584,7 @@
     renderBulkMenu,
     bulkGroupTreeHtml,
     renderSelectionBar,
+    attachSearchBox,
     createMenu,
     installSubmenuAutoflip,
     showActionToast,

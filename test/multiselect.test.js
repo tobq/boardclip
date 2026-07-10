@@ -110,4 +110,111 @@ const ui = require('../site/shared/clipboard-ui-core');
   assert.strictEqual(ui.unionMergeText('same\ntext', 'same\ntext'), 'same\ntext', 'identical inputs union to themselves');
 }
 
-console.log('multiselect.test.js: all multi-select guards passed');
+// 6) + 7) Open-in-editor gestures (async): wrapped in an async IIFE so the CJS
+//    file can use await without becoming a top-level ES module.
+(async () => {
+  // 6) alt+click and middle-click (onAuxclick) on a clip row call editClip;
+  //    image rows call openImage; inner controls are not intercepted.
+  {
+    const textItem = { id: 'txt1', type: 'text', text: 'hello' };
+    const imgItem  = { id: 'img1', type: 'image' };
+    const byId = { txt1: textItem, img1: imgItem };
+    let lastEdit = null;
+    let lastOpen = null;
+    const c = ui.createClipController({
+      itemById: (id) => byId[id],
+      visibleIds: () => ['txt1', 'img1'],
+      renderSelection: () => {},
+      render() {},
+      refresh() {},
+      editClip: async (id) => { lastEdit = id; },
+      openImage: async (item) => { lastOpen = item; },
+    });
+
+    // Helper: minimal fake event + DOM surface the controller needs.
+    function makeEvent(opts) {
+      const { button = 0, altKey = false, ctrlKey = false, metaKey = false, shiftKey = false, targetId, targetIsButton = false } = opts;
+      const row = targetId ? { dataset: { id: targetId }, closest(sel) { return sel === '.item' ? this : null; } } : null;
+      // inner control — returns itself on the "button|..." guard selector
+      const inner = targetIsButton ? { closest(sel) { return /button/.test(sel) ? this : null; } } : null;
+      const t = inner || {
+        closest(sel) {
+          if (sel === '.item') return row;
+          return null; // not an inner control
+        },
+      };
+      return { button, altKey, ctrlKey, metaKey, shiftKey, target: t, preventDefault() {}, stopPropagation() {} };
+    }
+
+    // (a) Alt+click on text row -> editClip
+    lastEdit = null;
+    await c.onClick(makeEvent({ altKey: true, targetId: 'txt1' }));
+    assert.strictEqual(lastEdit, 'txt1', 'alt+click on text row calls editClip');
+
+    // (b) Alt+click on image row -> openImage
+    lastOpen = null;
+    await c.onClick(makeEvent({ altKey: true, targetId: 'img1' }));
+    assert.deepStrictEqual(lastOpen, imgItem, 'alt+click on image row calls openImage');
+
+    // (c) Middle-click (button=1) on text row -> editClip
+    lastEdit = null;
+    await c.onAuxclick(makeEvent({ button: 1, targetId: 'txt1' }));
+    assert.strictEqual(lastEdit, 'txt1', 'middle-click on text row calls editClip');
+
+    // (d) Middle-click on image row -> openImage
+    lastOpen = null;
+    await c.onAuxclick(makeEvent({ button: 1, targetId: 'img1' }));
+    assert.deepStrictEqual(lastOpen, imgItem, 'middle-click on image row calls openImage');
+
+    // (e) Non-middle auxclick (button=2 = right) is ignored
+    lastEdit = null;
+    await c.onAuxclick(makeEvent({ button: 2, targetId: 'txt1' }));
+    assert.strictEqual(lastEdit, null, 'right-auxclick is ignored');
+
+    // (f) Alt+click on an inner control (button) is NOT intercepted
+    lastEdit = null;
+    await c.onClick(makeEvent({ altKey: true, targetId: 'txt1', targetIsButton: true }));
+    assert.strictEqual(lastEdit, null, 'alt+click on an inner button is not intercepted');
+  }
+
+  // 7) Ctrl+Enter / Alt+Enter on focused clip -> editClip; on image -> openImage.
+  {
+    const textItem = { id: 'ta', type: 'text', text: 'test' };
+    const imgItem  = { id: 'ia', type: 'image' };
+    const byId2 = { ta: textItem, ia: imgItem };
+    let lastEdit2 = null;
+    let lastOpen2 = null;
+    const c2 = ui.createClipController({
+      itemById: (id) => byId2[id],
+      visibleIds: () => ['ta', 'ia'],
+      renderSelection: () => {},
+      render() {},
+      refresh() {},
+      editClip: async (id) => { lastEdit2 = id; },
+      openImage: async (item) => { lastOpen2 = item; },
+    });
+    function makeKey(opts) {
+      const { key, ctrlKey = false, metaKey = false, altKey = false, shiftKey = false } = opts;
+      return {
+        key, ctrlKey, metaKey, altKey, shiftKey,
+        target: { tagName: 'DIV', value: '', closest: () => null },
+        preventDefault() {}, stopPropagation() {},
+      };
+    }
+
+    // toggle() sets focusId (and selectedIds). The Ctrl+Enter branch uses focusId
+    // directly - no need to clear selection first.
+    c2.toggle('ta');
+    lastEdit2 = null;
+    await c2.onKeydown(makeKey({ key: 'Enter', ctrlKey: true }));
+    assert.strictEqual(lastEdit2, 'ta', 'Ctrl+Enter on focused text clip calls editClip');
+
+    // Move focus to image clip
+    c2.toggle('ia');
+    lastOpen2 = null;
+    await c2.onKeydown(makeKey({ key: 'Enter', altKey: true }));
+    assert.deepStrictEqual(lastOpen2, imgItem, 'Alt+Enter on focused image clip calls openImage');
+  }
+
+  console.log('multiselect.test.js: all multi-select guards passed');
+})().catch((err) => { console.error(err); process.exitCode = 1; });

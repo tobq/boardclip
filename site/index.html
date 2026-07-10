@@ -148,6 +148,7 @@
     <a href="https://github.com/tobq/boardclip">github.com/tobq/boardclip</a>
   </footer>
 
+  <script src="/shared/clip-search.js"></script>
   <script src="/shared/clipboard-ui-core.js"></script>
   <script>
     const Core = window.BoardClipCore;
@@ -295,7 +296,10 @@
     });
     let clips = Core.sortItems(seedClips);
 
-    const state = { filters: new Set(), excludedFilters: new Set(), query: "", regex: false };
+    // The search box TEXT is the single source of truth (same model as the app): facets live
+    // as group:/is:/num:/since: tokens inside `query`; chip state is DERIVED from it.
+    const state = { query: "", regex: false, sortMode: null };
+    const facetState = () => Core.search.facetState(Core.search.parseQuery(state.query));
     const installState = { mode: "installer", downloadOS: "win" };
     const clipList = document.getElementById("clip-list");
     const clipCount = document.getElementById("clip-count");
@@ -495,11 +499,12 @@
     }
 
     function renderFilterChips() {
+      const fs = facetState();
       filterChips.innerHTML = Core.renderFilterBar({
         items: clips,
         groups: labels,
-        activeFilters: state.filters,
-        excludedFilters: state.excludedFilters,
+        activeFilters: fs.active,
+        excludedFilters: fs.excluded,
         query: state.query,
       });
     }
@@ -624,13 +629,14 @@
 
     function updateClearControls() {
       clearSearch.classList.toggle("show", Boolean(state.query));
-      clearSearch.title = Core.hasActiveFilters(state) ? "Clear search and filters" : "Clear search";
+      clearSearch.title = Core.hasActiveFilters({ query: state.query }) ? "Clear search and filters" : "Clear search";
     }
 
     function clearSearchAndFilters() {
       search.value = "";
-      state.query = "";
-      Core.clearFilterState(state);
+      state.query = "";        // clears content AND facet tokens (both live in the query)
+      state.sortMode = null;
+      if (typeof demoSearchBox !== "undefined" && demoSearchBox) demoSearchBox.refresh();
       updateClearControls();
       renderClips();
     }
@@ -742,7 +748,13 @@
       itemById: (id) => clips.find((item) => Core.itemId(item) === id),
       numpadMap: () => Core.numpadMap(clips),
       protectedGroups: () => new Set(),
-      setFilterIntent: (filter, intent) => Core.applyFilterIntent(state, filter, intent),
+      setFilterIntent: (filter, intent) => {
+        const token = String(filter).startsWith("__") ? { kind: "builtin", value: filter } : { kind: "group", value: filter };
+        state.query = Core.search.applyFacet(state.query, token, intent);
+        search.value = state.query;
+        if (typeof demoSearchBox !== "undefined" && demoSearchBox) demoSearchBox.refresh();
+        updateClearControls();
+      },
       clearFilters: () => clearSearchAndFilters(),
       focusSearch: () => search.focus(),
       pin: (id) => { clips = Core.togglePin(clips, id); },
@@ -756,7 +768,17 @@
       },
       toggleGroup: (id, group) => { if (!labels.includes(group)) labels.push(group); clips = Core.toggleGroup(clips, id, group); }, // matches the app's applyGroupAssign (toggles)
       createGroup: (name) => { if (!labels.includes(name)) labels.push(name); },
-      deleteGroup: (group) => { labels = labels.filter((l) => l !== group); state.filters.delete(group); state.excludedFilters.delete(group); stripGroupFromClips(group); },
+      deleteGroup: (group) => {
+        labels = labels.filter((l) => l !== group);
+        const p = Core.search.parseQuery(state.query);
+        const norm = Core.search.normalizeTagName(group);
+        p.groups = p.groups.filter((g) => g !== norm);
+        p.negGroups = p.negGroups.filter((g) => g !== norm);
+        state.query = Core.search.serializeQuery(p);
+        search.value = state.query;
+        if (typeof demoSearchBox !== "undefined" && demoSearchBox) demoSearchBox.refresh();
+        stripGroupFromClips(group);
+      },
       deleteClip: (id) => { clips = Core.deleteItem(clips, id); },
       clearUnpinned: () => { clips = clips.filter((clip) => Core.isPinned(clip)); },
       setGroupSharedAi: (group) => { if (demoSharedGroups.has(group)) demoSharedGroups.delete(group); else demoSharedGroups.add(group); },
@@ -836,8 +858,15 @@
     // mirroring the app's document-level binding so the shared dispatch handles
     // everything once.
     demoWindowEl.addEventListener("click", (event) => controller.onClick(event));
+    demoWindowEl.addEventListener("auxclick", (event) => controller.onAuxclick(event));
     demoWindowEl.addEventListener("contextmenu", (event) => controller.onContextmenu(event));
 
+    // Live syntax highlighting + autocomplete (shared helper) — same as the app popup.
+    const demoSearchBox = Core.attachSearchBox(search, {
+      getRegex: () => state.regex,
+      getGroups: () => labels,
+      onChange: (v) => { state.query = v; controller.clearSelection({ paint: false }); renderClips(); },
+    });
     search.addEventListener("input", () => {
       state.query = search.value;
       controller.clearSelection({ paint: false });
@@ -850,6 +879,7 @@
     regexButton.addEventListener("click", () => {
       state.regex = !state.regex;
       regexButton.classList.toggle("active", state.regex);
+      if (demoSearchBox) demoSearchBox.refresh();
       renderClips();
       search.focus();
     });
@@ -891,7 +921,7 @@
       let currentId = id;
       let currentText = clip ? (clip.text || "") : "";
       let currentTitle = clip ? Core.titleOf(clip) : "";
-      const sourceGroups = id == null ? Core.sourceGroupsFromFilters(state.filters) : [];
+      const sourceGroups = id == null ? Core.sourceGroupsFromFilters(facetState().active) : [];
       sourceGroups.forEach((group) => { if (!labels.includes(group)) labels.push(group); });
       demoEditorOverlay.innerHTML = "";
       demoEditor = Core.createEditor({
@@ -1002,6 +1032,7 @@
       const queries = ["invoice", "api", "meeting", "image", "thanks", "dns", "launch", "sync", "windows"];
       search.value = queries[Math.floor(Math.random() * queries.length)];
       state.query = search.value;
+      if (typeof demoSearchBox !== "undefined" && demoSearchBox) demoSearchBox.refresh();
       renderClips();
       search.focus();
     });

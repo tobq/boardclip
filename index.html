@@ -33,6 +33,7 @@
 <!-- Confirm + prompt dialogs are created by the shared Core.createDialogs. -->
 <div class="toast" id="toast">Copied</div>
 
+<script src="site/shared/clip-search.js"></script>
 <script src="site/shared/clipboard-ui-core.js"></script>
 <script>
 const Core = window.BoardClipCore;
@@ -48,7 +49,20 @@ const regexBtn = document.getElementById('regexBtn');
 let toastTimer, items = [], query = '', regexOn = false;
 const BATCH = 30;
 let rendered = 0, filtered = [];
-let groups = [], activeFilters = new Set(), excludedFilters = new Set();
+let groups = [];
+// The search box TEXT is the single source of truth. Facets (group:/is:/num:/since:…) live
+// as tokens inside `query`; the chip bar's active/excluded state is DERIVED from it. No
+// separate filter Sets (that dual-model was the drift Forge killed).
+function parsedQuery() { return Core.search.parseQuery(query); }
+function facetState() { return Core.search.facetState(parsedQuery()); }
+function activeFilterSet() { return facetState().active; }
+// Ranking override for the Best/Recent toggle: null = default (relevance while searching,
+// history order when idle), 'best' | 'new' when the user has flipped it for this query.
+let sortMode = null;
+// AI search mode state (step 8 wires the UI; declared here so settings can reflect readiness).
+let aiMode = false;
+let aiSearchConfigured = false;
+let aiToggleBtn = null;
 let controller = null;
 let dataRevision = -1;
 let diagnosticsEnabled = false;
@@ -56,7 +70,7 @@ let searchTexts = [], searchTextLower = [];
 let itemLookup = new Map(), groupCounts = new Map(), builtinCounts = {}, numpadIdMap = {};
 
 document.getElementById('newNoteBtn').addEventListener('click', () => {
-  window.api.newNote({ sourceGroups: Core.sourceGroupsFromFilters(activeFilters) });
+  window.api.newNote({ sourceGroups: Core.sourceGroupsFromFilters(activeFilterSet()) });
 });
 
 function recordRendererPerf(event, startedAt, details = {}, thresholdMs = 50) {
@@ -68,7 +82,7 @@ function recordRendererPerf(event, startedAt, details = {}, thresholdMs = 50) {
     items: items.length,
     filtered: filtered.length,
     query_length: query.length,
-    filters: activeFilters.size + excludedFilters.size,
+    filters: (() => { const fs = facetState(); return fs.active.size + fs.excluded.size; })(),
     slow: ms >= thresholdMs,
   });
   if (promise && promise.catch) promise.catch(() => {});
@@ -168,17 +182,18 @@ function numpadMap() {
 function renderGroupFilters() {
   const startedAt = performance.now();
   const el = document.getElementById('groupFilters');
-  el.innerHTML = Core.renderFilterBar({ items, groups, activeFilters, excludedFilters, query, builtinCounts, groupCounts });
+  const fs = facetState();
+  el.innerHTML = Core.renderFilterBar({ items, groups, activeFilters: fs.active, excludedFilters: fs.excluded, query, builtinCounts, groupCounts });
   recordRendererPerf('filters.render_bar', startedAt, { groups: groups.length }, 40);
 }
 
 function applyFilter() {
   const startedAt = performance.now();
-  filtered = Core.filterItemIndexes(items, { query, regex: regexOn, filters: activeFilters, excludedFilters, searchTexts, searchTextLower });
+  filtered = Core.filterItemIndexes(items, { query, regex: regexOn, searchTexts, searchTextLower, sortMode });
   rendered = 0;
   listEl.innerHTML = '';
   loadBatch();
-  if (!filtered.length) listEl.innerHTML = `<div class="empty">${query || Core.hasActiveFilters({ filters: activeFilters, excludedFilters }) ? 'No matches' : 'Copy something to get started'}</div>`;
+  if (!filtered.length) listEl.innerHTML = `<div class="empty">${query ? 'No matches' : 'Copy something to get started'}</div>`;
   recordRendererPerf('list.apply_filter', startedAt, { rendered, regex: regexOn }, 60);
 }
 
@@ -255,18 +270,19 @@ function buildItem(it, ri, nmap) {
 function updateCount() {
   const total = items.length;
   const visible = filtered.length;
-  countEl.textContent = Core.itemCountLabel(total, visible, { query, filters: activeFilters, excludedFilters });
+  countEl.textContent = Core.itemCountLabel(total, visible, { query });
 }
 
 function updateClearControls() {
   searchClear.classList.toggle('show', !!query);
-  searchClear.title = Core.hasActiveFilters({ filters: activeFilters, excludedFilters }) ? 'Clear search and filters' : 'Clear search';
+  searchClear.title = Core.hasActiveFilters({ query }) ? 'Clear search and filters' : 'Clear search';
 }
 
 function clearSearchAndFilters() {
   searchEl.value = '';
-  query = '';
-  Core.clearFilterState({ filters: activeFilters, excludedFilters });
+  query = '';        // clears content AND facet tokens (both live in the query)
+  sortMode = null;
+  if (typeof searchBox !== 'undefined' && searchBox) searchBox.refresh();
   if (controller) controller.clearSelection({ paint: false });
   updateClearControls();
   rerenderList();
@@ -292,7 +308,16 @@ const appAdapter = {
   itemById: (id) => itemById(id),
   numpadMap: () => numpadMap(),
   protectedGroups: () => new Set([aiGroupName]),
-  setFilterIntent: (filter, intent) => { Core.applyFilterIntent({ filters: activeFilters, excludedFilters }, filter, intent); updateClearControls(); if (controller) controller.clearSelection({ paint: false }); },
+  // A chip/tag click rewrites the query TEXT (bar is source of truth). filter is a builtin
+  // id (__pinned__/__images__/__numbered__) or a group name; intent is include|exclude.
+  setFilterIntent: (filter, intent) => {
+    const token = String(filter).startsWith('__') ? { kind: 'builtin', value: filter } : { kind: 'group', value: filter };
+    query = Core.search.applyFacet(query, token, intent);
+    searchEl.value = query;
+    if (typeof searchBox !== 'undefined' && searchBox) searchBox.refresh();
+    updateClearControls();
+    if (controller) controller.clearSelection({ paint: false });
+  },
   clearFilters: () => clearSearchAndFilters(),
   focusSearch: () => searchEl.focus(),
   pin: (id) => window.api.pin(id),
@@ -300,7 +325,18 @@ const appAdapter = {
   numpadUnassign: (slot) => window.api.numpadUnassign(slot),
   toggleGroup: (id, group) => window.api.groupAssign(id, group), // applyGroupAssign toggles
   createGroup: async (name) => { await window.api.groupCreate(name); await refreshGroups({ render: false }); },
-  deleteGroup: async (group) => { activeFilters.delete(group); excludedFilters.delete(group); await window.api.groupDelete(group); await refreshGroups({ render: false }); },
+  deleteGroup: async (group) => {
+    // Drop any group:/-group: token for the deleted group from the query.
+    const p = Core.search.parseQuery(query);
+    const norm = Core.search.normalizeTagName(group);
+    p.groups = p.groups.filter((g) => g !== norm);
+    p.negGroups = p.negGroups.filter((g) => g !== norm);
+    query = Core.search.serializeQuery(p);
+    searchEl.value = query;
+    if (typeof searchBox !== 'undefined' && searchBox) searchBox.refresh();
+    await window.api.groupDelete(group);
+    await refreshGroups({ render: false });
+  },
   deleteClip: (id) => window.api.deleteItem(id),
   clearUnpinned: () => window.api.deleteAll(),
   setGroupSharedAi: (group) => window.api.setGroupSharedAi(group, !aiSharedGroups.has(group)),
@@ -345,6 +381,7 @@ controller = Core.createClipController(appAdapter);
 const appDialogs = controller.dialogs;
 
 document.addEventListener('click', (e) => controller.onClick(e));
+document.addEventListener('auxclick', (e) => controller.onAuxclick(e));
 document.addEventListener('contextmenu', (e) => controller.onContextmenu(e));
 
 // Popup reset (called by the main process when the window is shown).
@@ -386,14 +423,22 @@ searchEl.addEventListener('keydown', e => {
   }
 });
 const searchClear = document.getElementById('searchClear');
+// Live syntax highlighting + autocomplete (shared helper). It decorates the input; the
+// input's own listeners below still own query state + rerender.
+const searchBox = Core.attachSearchBox(searchEl, {
+  getRegex: () => regexOn,
+  getGroups: () => groups,
+  onChange: (v) => { query = v; if (controller) controller.clearSelection({ paint: false }); updateClearControls(); scheduleRerenderList(); },
+});
 searchEl.addEventListener('input', e => { query = e.target.value; if (controller) controller.clearSelection({ paint: false }); updateClearControls(); scheduleRerenderList(); });
-searchClear.addEventListener('click', () => { clearSearchAndFilters(); searchEl.focus(); });
+searchClear.addEventListener('click', () => { clearSearchAndFilters(); searchEl.focus(); if (searchBox) searchBox.refresh(); });
 
 // --- Regex toggle ---
 regexBtn.addEventListener('click', () => {
   regexOn = !regexOn;
   regexBtn.classList.toggle('active', regexOn);
   window.api.saveSettings({regex_search: regexOn});
+  if (searchBox) searchBox.refresh();
   rerenderList();
 });
 
@@ -936,6 +981,7 @@ async function openSettings() {
 
   // AI Access (renders before groups so the shared-group set is ready)
   await renderAiAccess();
+  renderAiSearchSettings(s);
   await renderConflicts();
 
   // Group slots
@@ -1011,6 +1057,39 @@ async function renderAiAccess() {
   document.getElementById('aiMoreClients').onclick = () => {
     document.getElementById('aiClientsMore').classList.toggle('hidden');
   };
+}
+
+function renderAiSearchSettings(s) {
+  const endpoint = document.getElementById('aiSearchEndpoint');
+  const key = document.getElementById('aiSearchKey');
+  const model = document.getElementById('aiSearchModel');
+  const scopeEl = document.getElementById('aiSearchScope');
+  const status = document.getElementById('aiSearchStatus');
+  if (!endpoint) return;
+  endpoint.value = s.ai_search_endpoint || '';
+  key.value = s.ai_search_key || '';
+  model.value = s.ai_search_model || '';
+  const applyScope = (scope) => {
+    for (const b of scopeEl.querySelectorAll('[data-ai-scope]')) b.classList.toggle('active', b.dataset.aiScope === scope);
+  };
+  applyScope(s.ai_search_scope || 'all');
+  const refreshStatus = () => {
+    const configured = !!(endpoint.value.trim() && key.value.trim() && model.value.trim());
+    status.textContent = configured ? 'AI agent ready' : 'Offline smart ranking (add endpoint + key + model for the AI agent)';
+    status.className = 'settings-status' + (configured ? ' active' : '');
+    aiSearchConfigured = configured;
+    if (aiToggleBtn) aiToggleBtn.classList.toggle('has-agent', configured);
+  };
+  endpoint.onchange = () => { window.api.saveSettings({ ai_search_endpoint: endpoint.value.trim() }); refreshStatus(); };
+  key.onchange = () => { window.api.saveSettings({ ai_search_key: key.value.trim() }); refreshStatus(); };
+  model.onchange = () => { window.api.saveSettings({ ai_search_model: model.value.trim() }); refreshStatus(); };
+  scopeEl.onclick = (e) => {
+    const btn = e.target.closest('[data-ai-scope]');
+    if (!btn) return;
+    applyScope(btn.dataset.aiScope);
+    window.api.saveSettings({ ai_search_scope: btn.dataset.aiScope });
+  };
+  refreshStatus();
 }
 
 function applyAiAccess(st) {

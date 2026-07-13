@@ -502,7 +502,7 @@ function text(text, extra = {}) {
   const clipItem = ui.renderClipItem(base[1], { imageSrc: () => '' });
   assert(clipItem.includes('class="item has-pin"'));
   assert(clipItem.includes('class="numpad-tag">#2</span>'));
-  assert(clipItem.includes('class="group-tag">code</span>'));
+  assert(clipItem.includes('class="filter-tag group-tag" data-group="code"'));
   const picker = ui.renderItemPicker(base[1], { items: base, groups: ['code', 'work/api'] });
   assert(picker.includes('class="np-btn current" data-n="2"'));
   assert(/class="gp-btn assigned[^"]*" data-group="code"/.test(picker));

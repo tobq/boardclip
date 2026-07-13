@@ -136,6 +136,29 @@ const history = [
   assert.strictEqual(r.type, 'text');
 }
 
+// --- searchClips understands the shared query grammar (unified with the app) ---
+{
+  // title: scope — matches the shared clip's title, and the boundary still hides
+  // non-shared titles unless scope:'all'.
+  const byTitle = core.searchClips(history, settings, { query: 'title:Shared' });
+  assert.strictEqual(byTitle.matches.length, 1);
+  assert.strictEqual(byTitle.matches[0].title, 'Shared title');
+  // is:pinned facet — only the numbered/pinned AI-bucket clip is shared + pinned
+  const pinned = core.searchClips(history, settings, { query: 'is:numpad' });
+  assert.ok(pinned.matches.every(m => m.numpad != null));
+  assert.ok(pinned.matches.length >= 1);
+  // negation: shared clips containing "clip" but not "second"
+  const neg = core.searchClips(history, settings, { query: 'clip -second' });
+  assert.ok(neg.matches.every(m => !/second/i.test(m.preview || '')));
+  // since: bound (all our items have tiny ts, so since a huge past ms keeps them)
+  const since = core.searchClips(history, settings, { query: 'clip since:1970-01-01' });
+  assert.ok(since.matches.length >= 1);
+  // a title: scope must NOT leak a non-shared title pre-approval
+  const privateTitle = textItem('body no match', { groups: ['private'], title: 'Secret Plan' });
+  assert.strictEqual(core.searchClips([privateTitle], settings, { query: 'title:Secret' }).matches.length, 0);
+  assert.strictEqual(core.searchClips([privateTitle], settings, { query: 'title:Secret', scope: 'all' }).matches.length, 1);
+}
+
 // --- resolveForRead ---
 {
   assert.strictEqual(core.resolveForRead(history, settings, model.itemKey(history[0])).reason, 'ok');

@@ -44,15 +44,62 @@
 .rx-btn { font-family: var(--font-mono); font-size: var(--fs-3); }
 .rx-btn.active { color: var(--accent); background: var(--accent-bg); }
 .rx-btn.active:hover { color: var(--accent); background: var(--accent-bg-strong); }
+.ai-btn.active { color: var(--accent); background: var(--accent-bg); }
+.ai-btn.active:hover { color: var(--accent); background: var(--accent-bg-strong); }
+/* Best⇄Recent override: only shown while a query is present (default = Best). */
+.sort-btn { display: none; }
+.sort-btn.show { display: flex; }
+.sort-btn.active { color: var(--accent); background: var(--accent-bg); }
+/* AI mode: syntax buttons make no sense for a natural-language question. */
+.search-row.ai .rx-btn, .search-row.ai .sort-btn { display: none; }
+/* AI status line under the search row: offline-ranking hint / agent progress /
+   result summary. Shimmers while the agent is running. */
+.ai-status { margin: 0 var(--sp-7); padding: var(--sp-1) var(--sp-5) 0; font-size: var(--fs-2); color: var(--text-dim); }
+.ai-status.hidden { display: none; }
+.ai-status.running { background: linear-gradient(90deg, var(--text-dim) 30%, var(--text) 50%, var(--text-dim) 70%);
+                     background-size: 200% 100%; -webkit-background-clip: text; background-clip: text;
+                     -webkit-text-fill-color: transparent; animation: ai-shimmer 1.4s linear infinite; }
+@keyframes ai-shimmer { from { background-position: 200% 0; } to { background-position: 0% 0; } }
+
+/* Live query-syntax highlight: a colored backdrop mirror UNDER a transparent input. The
+   two must share identical text metrics (font/size/padding/line-height) so glyphs align. */
+.search-hl { position: absolute; inset: 0; padding: var(--sp-3) var(--sp-2) var(--sp-3) var(--sp-5);
+             font-size: var(--fs-4); font-family: inherit; line-height: normal; color: var(--text);
+             white-space: pre; overflow: hidden; pointer-events: none; z-index: 0; border: none;
+             display: flex; align-items: center; }
+.search-live { position: relative; z-index: 1; background: transparent; -webkit-text-fill-color: transparent; caret-color: var(--text); }
+.qh-prefix { color: var(--accent); font-weight: 600; }
+.qh-neg { color: var(--red, #e5534b); font-weight: 700; }
+.qh-value { color: var(--text); }
+.qh-regex { color: var(--green); }
+.qh-quote { color: var(--text-dim); }
+.qh-unknown { color: var(--red, #e5534b); text-decoration: underline dotted; text-underline-offset: 2px; }
+.qh-ws { color: transparent; }
+
+/* Autocomplete dropdown for the token being typed. */
+/* .search-suggest shares the floating-surface bg/shadow/radius rule above; only its
+   positioning + scroll live here. */
+.search-suggest { position: absolute; top: calc(100% + 4px); left: var(--sp-5); right: var(--sp-2); z-index: 40;
+                  overflow: hidden; max-height: 240px; overflow-y: auto; }
+.search-suggest.hidden { display: none; }
+.search-suggest-item { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3);
+                       padding: var(--sp-2) var(--sp-3); border-radius: var(--r-1); cursor: pointer; font-size: var(--fs-3); }
+.search-suggest-item .ss-text { color: var(--text); font-family: var(--font-mono); }
+.search-suggest-item .ss-hint { color: var(--text-dim); font-size: var(--fs-2); }
+.search-suggest-item.active, .search-suggest-item:hover { background: var(--menu-hover); }
 
 .group-filters { display: flex; align-items: center; gap: var(--sp-2); padding: var(--sp-1) var(--sp-7) var(--sp-1); flex-wrap: wrap; overflow: visible; position: relative; z-index: 30; }
-.filter-tag { min-height: 20px; max-width: 170px; box-sizing: border-box; font-size: var(--fs-3); padding: 0 var(--sp-3); border-radius: var(--r-4); border: 1px solid var(--line-strong);
+/* Tags are FLAT by default — no outline/background until hover (subtle fill) or active
+   (accent fill). Group tags read accent-tinted in BOTH the header bar and on clips so a
+   group looks identical everywhere (the .group-tag class is shared by both). */
+.filter-tag { min-height: 20px; max-width: 170px; box-sizing: border-box; font-size: var(--fs-3); padding: 0 var(--sp-3); border-radius: var(--r-4); border: 1px solid transparent;
               background: transparent; color: var(--text-dim); cursor: pointer; transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease), color var(--dur) var(--ease); line-height: 1; position: relative;
               display: inline-flex; align-items: center; gap: var(--sp-1); vertical-align: top; }
 .filter-tag.icon-filter { min-width: 20px; height: 20px; display: inline-flex; align-items: center; justify-content: center;
                           padding: 0 var(--sp-2); border-color: transparent; border-style: solid; border-radius: var(--r-1); font-size: var(--fs-5); font-weight: 800; }
 .filter-tag.icon-filter .mi { font-size: var(--icon-lg); font-variation-settings: "FILL" 0, "wght" 700, "GRAD" 0, "opsz" 20; }
-.filter-tag:hover { border-color: var(--accent); color: var(--text); }
+.filter-tag.group-tag { color: var(--accent); }
+.filter-tag:hover { background: var(--hover); color: var(--text); border-color: transparent; }
 .filter-tag.active { background: var(--accent); color: var(--active-fg); border-color: var(--accent); }
 .filter-tag.excluded { color: var(--text-dim); text-decoration: line-through; text-decoration-thickness: 1px; opacity: .7; }
 .filter-tag.icon-filter:hover { background: var(--hover); border-color: transparent; color: var(--text); }
@@ -94,7 +141,7 @@
 /* ONE floating-surface definition for every popup panel — the in-row picker,
    hover submenus, and the "..."/bulk menus (dialogs already match) — so all
    menus read as a single system instead of three near-alike variants. */
-.numpad-picker, .tag-submenu, .bc-menu { background: var(--menu); border-radius: var(--r-2); padding: var(--sp-2);
+.search-suggest, .numpad-picker, .tag-submenu, .bc-menu { background: var(--menu); border-radius: var(--r-2); padding: var(--sp-2);
                                          box-shadow: 0 8px 24px var(--shadow), 0 0 0 1px var(--menu-edge); }
 .numpad-picker { display: none; position: absolute; top: 100%; left: -4px; z-index: 40; flex-direction: column; gap: var(--sp-1); overflow: visible; }
 .pin-area:hover .numpad-picker { display: flex; }
@@ -313,6 +360,12 @@ mark { background: var(--mark-bg); color: var(--mark-fg); border-radius: 2px; pa
 .bc-popup[data-surface="glass"] .bc-editor,
 .bc-popup[data-surface="glass"] .bc-editor-area-wrap,
 .bc-popup[data-surface="glass"] .bc-reconcile { background: transparent; }
+/* In-app image viewer: same window chrome as the editor (bc-editor-bar + foot);
+   the stage centers the image and hosts zoom/pan (transform-positioned <img>). */
+.bc-viewer { display: flex; flex-direction: column; height: 100%; width: 100%; background: var(--bg); color: var(--text); min-height: 0; outline: none; }
+.bc-viewer-stage { position: relative; flex: 1; min-height: 0; overflow: hidden; background: var(--bg); }
+.bc-viewer-img { position: absolute; left: 0; top: 0; transform-origin: 0 0; user-select: none; image-rendering: auto; }
+:root[data-surface="glass"] .bc-viewer, :root[data-surface="glass"] .bc-viewer-stage { background: transparent; }
 /* Demo overlay host: the editor floats over the demo popup window. It needs an
    opaque background: in glass mode .bc-editor is transparent (so the app's OS
    acrylic shows through in the editor *window*), but the demo mounts the editor

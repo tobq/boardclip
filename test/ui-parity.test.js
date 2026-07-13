@@ -31,6 +31,7 @@ const siteCss = read('site/styles.css');
     'aiAccessBody', 'aiClients', 'aiMoreClients', 'aiClientsMore',
     'aiAlwaysHead', 'aiAlwaysAllow', 'aiTimeout', 'groupSlots', 'addGroupBtn', 'clearAll',
     'copyDiagnostics', 'buildInfo',
+    'aiSearchEndpoint', 'aiSearchKey', 'aiSearchModel', 'aiSearchScope', 'aiSearchStatus',
   ];
   for (const id of requiredIds) {
     assert.ok(body.includes(`id="${id}"`), `renderSettingsBody() is missing id="${id}"`);
@@ -225,6 +226,57 @@ const siteCss = read('site/styles.css');
     'tag submenus must touch their parent so hover does not drop while moving into the menu');
   assert.ok(popupCss.includes('.gp-row > .tag-menu-node > .tag-submenu { top: -4px; left: calc(100% - 1px); }'),
     'picker submenus must overlap horizontally with their parent so hover does not drop');
+}
+
+// 11) Search bar parity: BOTH consumers render the shared shell's sparkle (AI) +
+//     sort + regex buttons and drive the ONE attachSearchBox enhancer + shared
+//     query engine (bar text = source of truth; no bespoke filter Sets).
+{
+  const shell = ui.renderPopupShell({});
+  for (const id of ['sortBtn', 'aiBtn', 'aiStatus', 'regexBtn']) {
+    assert.ok(shell.includes(`id="${id}"`), `renderPopupShell missing the shared ${id} control`);
+  }
+  for (const [name, html] of [['index.html', appHtml], ['site/index.html', siteHtml]]) {
+    assert.ok(html.includes('Core.attachSearchBox('), `${name} must decorate the search box via the shared Core.attachSearchBox`);
+    assert.ok(!/activeFilters\s*=\s*new Set|excludedFilters\s*=\s*new Set/.test(html),
+      `${name} re-introduced bespoke filter Sets; the query text is the single source of truth`);
+  }
+  // AI mode is desktop-only: the demo pitches the download instead of faking an agent.
+  assert.ok(/Download the app to try AI search/i.test(siteHtml), 'site/index.html should pitch the app download from the AI button');
+  const searchCore = read('site/shared/clip-search.js');
+  assert.ok(searchCore.includes('rankFuzzyIndexes'), 'clip-search.js must export the shared offline AI ranking');
+}
+
+// 12) In-app image viewer + context-menu parity: the viewer window mounts the
+//     SHARED Core.createImageViewer, its menu is the SAME renderClipMenu the
+//     popup rows use (context-aware: viewer swaps "Open image" for "Open
+//     externally"; editor drops "Open in editor"), and both standalone windows
+//     drive the shared controller for dispatch.
+{
+  const viewerHtml = read('viewer.html');
+  const editorHtml = read('editor.html');
+  assert.ok(typeof ui.createImageViewer === 'function', 'core must export createImageViewer');
+  assert.ok(viewerHtml.includes('Core.createImageViewer('), 'viewer.html must mount the shared Core.createImageViewer');
+  assert.ok(viewerHtml.includes('Core.createClipController('), 'viewer.html must drive the shared controller for its menu');
+  assert.ok(editorHtml.includes('Core.createClipController('), 'editor.html must drive the shared controller for its menu');
+  const declares = (css, sel) => new RegExp(`(^|[\\s,])\\.${sel}\\s*[,{]`, 'm').test(css);
+  assert.ok(declares(popupCss, 'bc-viewer'), 'clipboard-popup.css should define .bc-viewer');
+  const img = { id: 'img:a.png', type: 'image', image: 'a.png' };
+  const popupMenu = ui.renderClipMenu(img, { items: [], groups: [], numpadMap: {} });
+  for (const a of ['pin', 'open-img', 'open-img-ext', 'save-img', 'rename', 'del']) {
+    assert.ok(popupMenu.includes(`data-action="${a}"`), `popup image menu missing data-action="${a}"`);
+  }
+  const viewerMenu = ui.renderClipMenu(img, { items: [], groups: [], numpadMap: {}, context: 'viewer' });
+  // NB: the closing quote makes this exact — it does NOT match open-img-ext.
+  assert.ok(!viewerMenu.includes('data-action="open-img"'), 'viewer menu must not offer "Open image" (it IS the open image)');
+  for (const a of ['pin', 'open-img-ext', 'save-img', 'rename', 'del']) {
+    assert.ok(viewerMenu.includes(`data-action="${a}"`), `viewer menu missing data-action="${a}"`);
+  }
+  const editorMenu = ui.renderClipMenu({ id: 'txt:x', type: 'text', text: 'hi' }, { items: [], groups: [], numpadMap: {}, context: 'editor' });
+  assert.ok(!editorMenu.includes('data-action="edit"'), 'editor menu must not offer "Open in editor" (it IS the editor)');
+  for (const a of ['pin', 'rename', 'del']) {
+    assert.ok(editorMenu.includes(`data-action="${a}"`), `editor menu missing data-action="${a}"`);
+  }
 }
 
 // 10) Menu-system consistency: ONE shared floating-surface rule covers the

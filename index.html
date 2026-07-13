@@ -59,10 +59,14 @@ function activeFilterSet() { return facetState().active; }
 // Ranking override for the Best/Recent toggle: null = default (relevance while searching,
 // history order when idle), 'best' | 'new' when the user has flipped it for this query.
 let sortMode = null;
-// AI search mode state (step 8 wires the UI; declared here so settings can reflect readiness).
+// AI search mode: the same box holds a natural-language question. Offline smart
+// ranking (token-IDF + title fuzzy) is always available; Enter runs the BYO-endpoint
+// agent when configured. aiResultIds = the agent's picks (null = live offline ranking).
 let aiMode = false;
 let aiSearchConfigured = false;
-let aiToggleBtn = null;
+let aiRunning = false;
+let aiResultIds = null;
+let searchDocs = [], searchIdf = null;
 let controller = null;
 let dataRevision = -1;
 let diagnosticsEnabled = false;
@@ -165,6 +169,9 @@ function rebuildItemIndexes() {
     searchTexts.push(searchText);
     searchTextLower.push(searchText.toLowerCase());
   });
+  // AI offline ranking caches: normalized docs + corpus IDF (token rarity weights).
+  searchDocs = items.map((item) => Core.search.clipToDoc(item));
+  searchIdf = Core.search.buildIdf(searchDocs);
   recordRendererPerf('indexes.rebuild', startedAt, {
     search_text_bytes: searchTexts.reduce((sum, text) => sum + text.length, 0),
     groups: groupCounts.size,
@@ -189,12 +196,20 @@ function renderGroupFilters() {
 
 function applyFilter() {
   const startedAt = performance.now();
-  filtered = Core.filterItemIndexes(items, { query, regex: regexOn, searchTexts, searchTextLower, sortMode });
+  if (aiMode && aiResultIds) {
+    // Agent picks render as normal rows, in the model's order.
+    filtered = aiResultIds.map((id) => items.findIndex((it) => itemId(it) === id)).filter((i) => i >= 0);
+  } else if (aiMode && query.trim()) {
+    // Offline smart ranking: token-IDF + title fuzzy with a relevance floor.
+    filtered = Core.search.rankFuzzyIndexes(items, query, { docs: searchDocs, idf: searchIdf });
+  } else {
+    filtered = Core.filterItemIndexes(items, { query: aiMode ? '' : query, regex: regexOn, searchTexts, searchTextLower, sortMode });
+  }
   rendered = 0;
   listEl.innerHTML = '';
   loadBatch();
   if (!filtered.length) listEl.innerHTML = `<div class="empty">${query ? 'No matches' : 'Copy something to get started'}</div>`;
-  recordRendererPerf('list.apply_filter', startedAt, { rendered, regex: regexOn }, 60);
+  recordRendererPerf('list.apply_filter', startedAt, { rendered, regex: regexOn, ai: aiMode }, 60);
 }
 
 let rerenderFrame = null;
@@ -207,6 +222,7 @@ function rerenderList() {
   renderGroupFilters();
   applyFilter();
   updateCount();
+  updateAiUi(); // keeps the sort toggle + AI status in step with the query/mode
   if (controller) controller.repaintSelection(); // refresh the selection bar after a rebuild
   scheduleRelativeTimeRefresh();
   recordRendererPerf('list.rerender', startedAt, { rendered }, 90);
@@ -282,6 +298,7 @@ function clearSearchAndFilters() {
   searchEl.value = '';
   query = '';        // clears content AND facet tokens (both live in the query)
   sortMode = null;
+  resetAiRun();
   if (typeof searchBox !== 'undefined' && searchBox) searchBox.refresh();
   if (controller) controller.clearSelection({ paint: false });
   updateClearControls();
@@ -345,6 +362,7 @@ const appAdapter = {
   editClip: (id, _itemEl, options) => window.api.openEditor(id, { ...(query ? { find: query, regex: regexOn } : {}), ...(options || {}) }),
   setClipTitle: (id, title) => window.api.setClipTitle(id, title),
   openImage: (item) => window.api.openImage(itemId(item)),
+  openImageExternal: (item) => window.api.openImageExternal(itemId(item)),
   saveImage: async (item) => { const d = await window.api.copyImagePath(itemId(item)); return d && d.path ? 'Path copied' : null; },
   isSettingsOpen: () => document.getElementById('settingsView').classList.contains('show'),
   closeSettings: () => closeSettings(),
@@ -421,16 +439,38 @@ searchEl.addEventListener('keydown', e => {
       return;
     }
   }
+  // Tab toggles AI mode (autocomplete's capture handler owns Tab while its dropdown is open).
+  if (e.key === 'Tab' && !e.shiftKey && !(searchBox && searchBox.isSuggestOpen())) {
+    e.preventDefault();
+    setAiMode(!aiMode);
+    return;
+  }
+  // In AI mode with an agent configured, Enter asks the agent (never pastes row 1).
+  if (e.key === 'Enter' && aiMode && aiSearchConfigured && query.trim()) {
+    e.preventDefault();
+    e.stopPropagation();
+    runAiSearch();
+  }
 });
 const searchClear = document.getElementById('searchClear');
+// Shared query-state change path (typed input AND autocomplete-applied tokens).
+function onQueryChanged(v) {
+  query = v;
+  if (aiMode) resetAiRun(); // editing the question invalidates stale agent picks
+  if (controller) controller.clearSelection({ paint: false });
+  updateClearControls();
+  updateAiUi();
+  scheduleRerenderList();
+}
 // Live syntax highlighting + autocomplete (shared helper). It decorates the input; the
 // input's own listeners below still own query state + rerender.
 const searchBox = Core.attachSearchBox(searchEl, {
   getRegex: () => regexOn,
   getGroups: () => groups,
-  onChange: (v) => { query = v; if (controller) controller.clearSelection({ paint: false }); updateClearControls(); scheduleRerenderList(); },
+  getAiMode: () => aiMode,
+  onChange: onQueryChanged,
 });
-searchEl.addEventListener('input', e => { query = e.target.value; if (controller) controller.clearSelection({ paint: false }); updateClearControls(); scheduleRerenderList(); });
+searchEl.addEventListener('input', e => onQueryChanged(e.target.value));
 searchClear.addEventListener('click', () => { clearSearchAndFilters(); searchEl.focus(); if (searchBox) searchBox.refresh(); });
 
 // --- Regex toggle ---
@@ -441,6 +481,85 @@ regexBtn.addEventListener('click', () => {
   if (searchBox) searchBox.refresh();
   rerenderList();
 });
+
+// --- Best⇄Recent sort override (visible only while searching; Best is the default) ---
+const sortBtn = document.getElementById('sortBtn');
+function effectiveSort() { return sortMode || 'best'; }
+function updateSortButton() {
+  const show = !aiMode && !!query.trim();
+  sortBtn.classList.toggle('show', show);
+  if (!show) return;
+  const mode = effectiveSort();
+  sortBtn.classList.toggle('active', mode === 'new');
+  sortBtn.title = mode === 'best' ? 'Sorted by best match — click for newest' : 'Sorted by newest — click for best match';
+  sortBtn.setAttribute('aria-label', sortBtn.title);
+  sortBtn.querySelector('.mi').textContent = mode === 'best' ? 'sort' : 'schedule';
+}
+sortBtn.addEventListener('click', () => {
+  sortMode = effectiveSort() === 'best' ? 'new' : 'best';
+  rerenderList(); // repaints the toggle via updateAiUi → updateSortButton
+});
+
+// --- AI search mode (sparkle toggle / Tab). Same box; NL question instead of syntax. ---
+const aiBtn = document.getElementById('aiBtn');
+const aiStatusEl = document.getElementById('aiStatus');
+function aiStatusText() {
+  if (aiRunning) return { text: 'Searching your clips…', cls: 'running' };
+  if (aiResultIds) return { text: aiResultIds.length ? `AI picked ${aiResultIds.length} clip${aiResultIds.length === 1 ? '' : 's'} — Enter to re-ask` : 'AI found no matching clips', cls: '' };
+  if (!aiSearchConfigured) return { text: 'Smart ranking (offline) — add an AI endpoint in Settings for the full agent', cls: '' };
+  return { text: query.trim() ? 'Enter — ask AI to search' : 'Ask about your clips, then press Enter', cls: '' };
+}
+function updateAiUi() {
+  aiBtn.classList.toggle('active', aiMode);
+  aiBtn.classList.toggle('has-agent', aiSearchConfigured);
+  searchEl.closest('.search-row').classList.toggle('ai', aiMode);
+  searchEl.placeholder = aiMode ? 'Ask about your clips…' : 'Search...';
+  updateSortButton();
+  if (!aiMode) { aiStatusEl.classList.add('hidden'); aiStatusEl.classList.remove('running'); return; }
+  const st = aiStatusText();
+  aiStatusEl.textContent = st.text;
+  aiStatusEl.classList.remove('hidden');
+  aiStatusEl.classList.toggle('running', st.cls === 'running');
+}
+function resetAiRun() {
+  if (aiRunning && window.api.aiSearchCancel) window.api.aiSearchCancel();
+  aiRunning = false;
+  aiResultIds = null;
+}
+function setAiMode(on) {
+  if (aiMode === !!on) return;
+  aiMode = !!on;
+  resetAiRun();
+  if (searchBox) searchBox.refresh(); // repaint plain (AI) vs colored (syntax)
+  updateAiUi();
+  rerenderList();
+  searchEl.focus();
+}
+aiBtn.addEventListener('click', () => setAiMode(!aiMode));
+let aiRunSeq = 0;
+async function runAiSearch() {
+  const question = query.trim();
+  if (!question || aiRunning) return;
+  const seq = ++aiRunSeq;
+  aiRunning = true;
+  aiResultIds = null;
+  updateAiUi();
+  const res = await window.api.aiSearch(question).catch((error) => ({ ok: false, error: error && error.message }));
+  if (seq !== aiRunSeq || !aiMode) return; // superseded by a newer run / mode flip
+  aiRunning = false;
+  if (res && res.ok) {
+    aiResultIds = res.ids || [];
+  } else if (res && res.error === 'not_configured') {
+    aiStatusEl.textContent = 'Add an AI endpoint, key and model in Settings first';
+  } else if (res && res.error === 'aborted') {
+    // superseded — a newer run owns the status line
+  }
+  updateAiUi();
+  if (res && res.ok) rerenderList();
+  else if (res && res.error && res.error !== 'not_configured' && res.error !== 'aborted') {
+    aiStatusEl.textContent = `AI search failed: ${res.error}`;
+  }
+}
 
 // --- Keyboard nav (Escape cascade + arrows + Enter + multi-select, via the
 // shared controller which now owns the selection/focus state) ---
@@ -1078,7 +1197,7 @@ function renderAiSearchSettings(s) {
     status.textContent = configured ? 'AI agent ready' : 'Offline smart ranking (add endpoint + key + model for the AI agent)';
     status.className = 'settings-status' + (configured ? ' active' : '');
     aiSearchConfigured = configured;
-    if (aiToggleBtn) aiToggleBtn.classList.toggle('has-agent', configured);
+    updateAiUi(); // sparkle button + status line reflect agent readiness
   };
   endpoint.onchange = () => { window.api.saveSettings({ ai_search_endpoint: endpoint.value.trim() }); refreshStatus(); };
   key.onchange = () => { window.api.saveSettings({ ai_search_key: key.value.trim() }); refreshStatus(); };

@@ -34,6 +34,7 @@
   ::-webkit-scrollbar-thumb { background:var(--line-strong); border-radius:5px; }
 </style></head><body>
 <div id="editorHost"></div>
+<script src="site/shared/clip-search.js"></script>
 <script src="site/shared/clipboard-ui-core.js"></script>
 <script>
 const Core = window.BoardClipCore;
@@ -49,6 +50,44 @@ if (window.editorApi.onColorSchemeChanged) window.editorApi.onColorSchemeChanged
 
 let editor = null;
 let reconcileView = null;
+
+// --- Shared clip menu (pin/group/numpad/title/delete), same as the popup rows
+// and the image viewer. Backed by a light state snapshot fetched right before
+// the menu opens (the clip id changes on every committed edit, so the CURRENT
+// id comes from main at open time too). context 'editor' hides "Open in editor".
+let menuState = { item: null, items: [], groups: [], aiGroup: 'AI' };
+let menuClipId = null;
+const menuAdapter = {
+  menuContext: 'editor',
+  itemById: (id) => menuState.items.find((it) => Core.itemId(it) === id) || null,
+  allItems: () => menuState.items,
+  groupNames: () => menuState.groups,
+  numpadMap: () => Core.numpadMap(menuState.items),
+  protectedGroups: () => new Set([menuState.aiGroup]),
+  pin: (id) => window.editorApi.pin(id),
+  toggleGroup: (id, group) => window.editorApi.groupAssign(id, group),
+  createGroup: (name) => window.editorApi.groupCreate(name),
+  numpadAssign: (id, slot) => window.editorApi.numpadAssign(id, slot),
+  numpadUnassign: (slot) => window.editorApi.numpadUnassign(slot),
+  // The editor's title INPUT is authoritative (it rides every commit); a menu
+  // rename would be reverted by the next commit if it only touched the clip.
+  // Set the input + commit through the session instead — one write path.
+  setClipTitle: (_id, title) => { if (editor) { editor.setTitle(title); editor.commit(); } },
+  // Delete closes the window; main suppresses the close-commit so the draft
+  // can't resurrect the clip.
+  deleteClips: async () => { await window.editorApi.deleteSelf(); return []; },
+  render: () => {},
+  refresh: async () => { menuState = await window.editorApi.state(menuClipId); },
+};
+const menuController = Core.createClipController(menuAdapter);
+document.addEventListener('click', (e) => menuController.onClick(e));
+async function openClipMenu(x, y) {
+  menuClipId = await window.editorApi.currentId();
+  if (!menuClipId) return; // new note not committed yet — no clip to act on
+  menuState = await window.editorApi.state(menuClipId);
+  menuController.openClipMenu(menuClipId, x, y);
+}
+
 window.editorApi.onInit((init) => {
   themeMode = (init.themeMode === 'light' || init.themeMode === 'dark') ? init.themeMode : 'system';
   refreshTheme();
@@ -68,9 +107,21 @@ window.editorApi.onInit((init) => {
     onInput: (payload) => window.editorApi.draft(payload),     // live crash-safe draft, every keystroke
     onCommit: (payload) => window.editorApi.commit(payload),   // idle / Ctrl+S / close -> write the clip
     onClose: () => window.editorApi.close(),
+    // "..." in the editor chrome -> the shared clip menu (existing clips only;
+    // a brand-new note has no clip until its first commit).
+    ...(init.isNew ? {} : { onMenu: (x, y) => openClipMenu(x, y) }),
   });
   host.appendChild(editor.el);
   editor.focus();
+});
+
+// Right-click in the editor chrome (bar/foot — not the text area, where the
+// native text menu belongs) opens the same clip menu.
+document.addEventListener('contextmenu', (e) => {
+  if (e.target.closest('.bc-editor-area, .bc-note-title, .bc-find-input, input, textarea')) return;
+  if (!editor || reconcileView) return;
+  e.preventDefault();
+  openClipMenu(e.clientX, e.clientY);
 });
 
 if (window.editorApi.onFind) {

@@ -264,6 +264,83 @@ clear-all). All popup CSS + theme variables live in `site/shared/clipboard-popup
   `Core.applyTheme`. The Theme control lives in the shared settings body, so it
   shows in BOTH the app and the demo.
 
+## Search engine + AI search + image viewer (2026-07)
+
+- **ONE shared search engine** = `site/shared/clip-search.js` (isomorphic UMD, same
+  header as clipboard-ui-core.js). Pure, no DOM. THE authority for query syntax +
+  filtering + ranking, consumed by the app popup, the demo, AND `lib/mcp-core.js`
+  (`search_clips`). Loaded as a `<script>` BEFORE clipboard-ui-core.js in EVERY html
+  window (index.html, site/index.html, editor.html, viewer.html) → `window.BoardClipSearch`;
+  Node/tests `require` it. clipboard-ui-core re-exports it as `Core.search`. Tests:
+  `test/clip-search.test.js`.
+- **The search bar TEXT is the single source of truth.** Facets (`group:`/`is:`/`num:`/
+  `since:`…) live as tokens INSIDE the query string; the chip bar's active/excluded state
+  is DERIVED via `facetState(parseQuery(q))`. There is NO separate `activeFilters`/
+  `excludedFilters` Set anymore (that dual-model was the drift Forge killed). A chip click
+  rewrites query tokens through `Core.search.applyFacet(query, token, intent)`; deleting a
+  group strips its `group:`/`-group:` tokens. `ui-parity.test.js` #11 guards that neither
+  consumer reintroduces filter Sets.
+- **Grammar** (colon-uniform, quote-aware, `-` negates): free text · `title:` · `text:`/
+  `body:` · `group:` · `is:pinned|image|text|numpad` · `num:1-9` · `since:`/`before:`
+  (`7d`/`24h`/`30d`) · `len:>N` · `id:` · `sort:new|best`. `item.ts` is Unix SECONDS.
+  Unknown `word:val` → stripped to `val` as free text + recorded in `parsed.unknown` for a
+  hint. URL/Windows-path values (`http://`, `C:\`) are left verbatim.
+- **Short + long alias for EVERY prefix** — ONE `PREFIX_ALIASES` map in clip-search.js
+  feeds parse + `lexQuery` (highlight) + `suggestQuery` (autocomplete): `t`=title, `b`=text/
+  body, `g`=group, `n`=num, `s`=since (also `after`), `bf`=before, `l`=len, `o`=sort, plus
+  `is`/`id`. Add a new alias in that map ONLY. Autocomplete offers the long form and hints
+  the short (`title: · or t:`); both forms color as prefixes.
+- **Ranking**: `filterRankIndexes` returns ORIGINAL indexes. Relevance (`relevanceScore`:
+  title/body/phrase hits + `fuzzyMatch` abbreviation + recency blend) when a content query
+  is present; pure history/caller order when idle. A **Best⇄Recent** `sortBtn` (in the
+  shared shell, shown only while searching) forces `sort:best`/`sort:new`. `sort:` token or
+  the toggle wins over the default.
+- **Live highlight + autocomplete** = `Core.attachSearchBox(input, opts)` — ONE enhancer
+  shared by app + demo. Transparent input over a colored backdrop mirror (`lexQuery` →
+  `.qh-*` spans); autocomplete dropdown (`suggestQuery`) for prefixes/group names/`is:`/
+  `sort:`/`since:` presets/`num:`. `opts.getAiMode()` paints the query PLAIN + suppresses
+  the token dropdown in AI mode (it's a natural-language question, not syntax).
+- **AI search mode** (sparkle `aiBtn` / Tab toggle; same box). Offline "smart ranking"
+  (`rankFuzzyIndexes`: token-IDF + title fuzzy with a relevance FLOOR so a vague query
+  returns a few strong hits, never a flood) is ALWAYS available — docs+IDF are cached in
+  `rebuildItemIndexes` (`searchDocs`/`searchIdf`). With a BYO endpoint configured, Enter
+  runs the real agent; picks render as normal clip rows + a one-line `aiStatus` shimmer.
+  Tab toggles mode unless the autocomplete dropdown is open (it owns Tab then).
+- **AI agent** = `lib/ai-search-agent.js` (`runAgent`): pure, dependency-injected Anthropic
+  tool-use loop (`fetchImpl` + `tools.searchClips`/`tools.getClip` injected; `search_clips`/
+  `get_clip`/`pick_clips` exposed to the model). Finishes with ORDERED clip ids, NO prose/
+  thinking UI. Endpoint normalized to append `/v1/messages`; abortable. Tests:
+  `test/ai-search-agent.test.js`.
+- **`ai-search` IPC** (main.js): user-initiated, reads the user's OWN clips with their OWN
+  key. Scope = whole history by default; `ai_search_scope='shared'` restricts the tool fns
+  to the MCP shared-group boundary (reuses `mcpCore.searchClips`/`isShared`). One run at a
+  time (a new run aborts the old via `AbortController`). Settings: `ai_search_endpoint/key/
+  model/scope` — per-machine, DELETED in `remoteSettingsPayload` (never synced), in
+  DEFAULT_SETTINGS. The demo shows the sparkle but pitches "Download the app to try AI
+  search" (no fake agent).
+- **In-app image viewer** = `Core.createImageViewer` (the image twin of `createEditor`;
+  SAME `bc-editor-bar` chrome + foot so the two windows read as one family). Fit-to-window
+  default, click toggles fit⇄100% at the point, wheel zooms around the cursor, drag pans
+  when zoomed (`ResizeObserver` re-fits). `viewer.html` + `viewer-preload.js` mount it;
+  main's `openImageViewer` (one window per clip, `viewer_bounds` persisted via the shared
+  `windowBoundsFromSettings`/`scheduleWindowBoundsSave`). `open-image` IPC now opens it;
+  `open-image-external` keeps the OS-default-app path (a menu action, not the primary).
+- **Context-menu parity** across popup rows / editor / viewer: `renderClipMenu` grew a
+  `context` option (`'popup'` default | `'editor'` | `'viewer'`). Editor drops "Open in
+  editor" (it IS the editor); viewer swaps "Open image" for "Open externally"
+  (`open-img-ext`). The standalone windows drive the SAME `createClipController` via a light
+  `clip-window-state` IPC snapshot (items for numpad previews, groups, pin state — NO full
+  bodies to a second renderer); `controller.openClipMenu(id,x,y)` is the entry for hosts
+  with no clip rows. Right-click + the "…" button both open it; **delete closes the window**.
+  Editor title renames ride the session commit (`editor.setTitle`+`commit`, not a separate
+  clip write); editor delete sets `session.suppressCommit` so the close-commit can't
+  resurrect the clip from the draft. `ui-parity.test.js` #12 guards the viewer/menu contexts.
+- **QA harness**: an isolated instance via `BOARDCLIP_DATA_DIR` + `--user-data-dir` + CDP,
+  seeded with the cloud providers PRE-DISABLED (`sync_disabled_paths`) + p2p/AI off so a
+  throwaway instance can't touch real synced data. The hidden tray popup's `requestAnimation
+  Frame` never fires, so a CDP driver must call `rerenderList()` directly after dispatching
+  input (don't wait on rAF). Detect real providers with `require('./lib/cloud-accounts')()`.
+
 ## Multi-select + bulk actions (Ctrl/Shift-click, bulk Paste/Group/Unify/Delete)
 
 - **Selection is LIFTED into `createClipController`** (`selectedIds` set + `anchorId`

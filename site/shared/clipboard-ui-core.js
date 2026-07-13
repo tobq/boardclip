@@ -504,7 +504,9 @@
       search: 'search',
       searchClear: 'searchClear',
       regexBtn: 'regexBtn',
+      sortBtn: 'sortBtn',
       aiBtn: 'aiBtn',
+      aiStatus: 'aiStatus',
       groupFilters: 'groupFilters',
       selectionBar: 'selectionBar',
       list: 'list',
@@ -534,9 +536,12 @@
           <input class="search" id="${esc(ids.search)}" type="text" placeholder="Search..." autocomplete="off" spellcheck="false">
           <div class="search-btns">
             <button class="icon-btn search-clear" id="${esc(ids.searchClear)}" type="button" title="Clear search" aria-label="Clear search"><span class="mi">close</span></button>
+            <button class="icon-btn sort-btn" id="${esc(ids.sortBtn)}" type="button" title="Sort results" aria-label="Sort results"><span class="mi">sort</span></button>
             <button class="icon-btn rx-btn" id="${esc(ids.regexBtn)}" type="button" title="Regex search" aria-label="Regex search">.*</button>
+            <button class="icon-btn ai-btn" id="${esc(ids.aiBtn)}" type="button" title="AI search (Tab)" aria-label="AI search"><span class="mi">auto_awesome</span></button>
           </div>
         </div>
+        <div class="ai-status hidden" id="${esc(ids.aiStatus)}" aria-live="polite"></div>
         <div class="group-filters" id="${esc(ids.groupFilters)}" aria-label="Filters"></div>
         <div class="selection-bar hidden" id="${esc(ids.selectionBar)}" role="toolbar" aria-label="Selection actions"></div>
       </div>
@@ -657,6 +662,10 @@
   // in-row picker does.
   function renderClipMenu(item, options) {
     const opts = options || {};
+    // context: 'popup' (default, the clip list) | 'editor' | 'viewer' — the
+    // standalone windows reuse this exact menu, minus the "open what's already
+    // open" row (editor: no Edit; viewer: Open→Open externally).
+    const context = opts.context || 'popup';
     const id = itemId(item) || '';
     const isImage = item && item.type === 'image';
     const pinned = isPinned(item);
@@ -668,9 +677,10 @@
     let html = '<div class="bc-menu-list">';
     html += row('pin', 'star', pinned ? 'Unpin' : 'Pin');
     if (isImage) {
-      html += row('open-img', 'open_in_new', 'Open image');
+      if (context !== 'viewer') html += row('open-img', 'open_in_new', 'Open image');
+      html += row('open-img-ext', 'launch', 'Open externally');
       html += row('save-img', 'save', 'Copy to Downloads');
-    } else {
+    } else if (context !== 'editor') {
       html += row('edit', 'open_in_new', 'Open in editor');
     }
     html += row('rename', 'drive_file_rename_outline', isImage ? 'Name image' : 'Set title');
@@ -756,6 +766,9 @@
     const o = opts || {};
     const getRegex = o.getRegex || (() => false);
     const getGroups = o.getGroups || (() => []);
+    // AI mode = the query is a natural-language question, not syntax: paint it
+    // plain and keep the token autocomplete out of the way.
+    const getAiMode = o.getAiMode || (() => false);
     const row = inputEl.closest('.search-row') || inputEl.parentElement;
     // Backdrop mirror: a div positioned under the input, carrying the SAME text metrics.
     const backdrop = document.createElement('div');
@@ -773,6 +786,11 @@
     let suggestOpen = false;
 
     function paintHighlight() {
+      if (getAiMode()) {
+        backdrop.textContent = inputEl.value;
+        backdrop.scrollLeft = inputEl.scrollLeft;
+        return;
+      }
       const segs = Search && Search.lexQuery ? Search.lexQuery(inputEl.value, { regex: !!getRegex() }) : [];
       backdrop.innerHTML = segs.map((s) => `<span class="qh-${s.kind}">${escapeHtml(s.text)}</span>`).join('') || '';
       backdrop.scrollLeft = inputEl.scrollLeft;
@@ -787,6 +805,7 @@
       suggestOpen = true;
     }
     function updateSuggest() {
+      if (getAiMode()) { closeSuggest(); return; }
       const res = Search && Search.suggestQuery ? Search.suggestQuery(inputEl.value, inputEl.selectionStart, { groups: getGroups() }) : null;
       if (!res) { closeSuggest(); return; }
       suggestions = res.suggestions.map((s) => ({ ...s, replaceStart: res.replaceStart, replaceEnd: res.replaceEnd }));
@@ -1535,7 +1554,14 @@
       if (selectedIds.size >= 2 && selectedIds.has(id)) { openBulkMenu(x, y); return; }
       const item = a.itemById(id);
       if (!item) return;
-      menu.open({ id, x, y, html: renderClipMenu(item, { items: allItems(), groups: groupNames(), numpadMap: a.numpadMap ? a.numpadMap() : {} }) });
+      menu.open({ id, x, y, html: renderClipMenu(item, { items: allItems(), groups: groupNames(), numpadMap: a.numpadMap ? a.numpadMap() : {}, context: a.menuContext }) });
+    }
+    // Public entry for hosts without clip rows (the standalone editor/viewer
+    // windows): open the shared clip menu for `id` at x,y.
+    function openClipMenuAt(id, x, y) {
+      const item = a.itemById(id);
+      if (!item) return;
+      menu.open({ id, x, y, html: renderClipMenu(item, { items: allItems(), groups: groupNames(), numpadMap: a.numpadMap ? a.numpadMap() : {}, context: a.menuContext }) });
     }
 
     // Opens the editor (or image viewer for images) for the clip row under event.
@@ -1623,6 +1649,8 @@
       if (pin) { event.stopPropagation(); await a.pin(pin.dataset.id); refresh(); return true; }
       const openImg = t.closest('[data-action="open-img"]');
       if (openImg) { event.stopPropagation(); await a.openImage(a.itemById(openImg.dataset.id)); return true; }
+      const openImgExt = t.closest('[data-action="open-img-ext"]');
+      if (openImgExt) { event.stopPropagation(); if (a.openImageExternal) await a.openImageExternal(a.itemById(openImgExt.dataset.id)); return true; }
       const saveImg = t.closest('[data-action="save-img"]');
       if (saveImg) { event.stopPropagation(); toast(await a.saveImage(a.itemById(saveImg.dataset.id))); return true; }
       const edit = t.closest('[data-action="edit"]');
@@ -1729,6 +1757,7 @@
       toggle: toggleSelect,
       selectRange,
       repaintSelection: paintSelection,
+      openClipMenu: openClipMenuAt, // standalone editor/viewer windows open the same menu
       closeMenu: () => menu.close(), // popup hide/reset must not leave a stale popover
     };
   }
@@ -1796,6 +1825,7 @@
         <div class="bc-editor-bar-actions">
           <button class="icon-btn" type="button" data-x="find" title="Find (Ctrl+F)"><span class="mi">search</span></button>
           <button class="icon-btn" type="button" data-x="revert" title="Revert to original"><span class="mi">undo</span></button>
+          ${o.onMenu ? '<button class="icon-btn" type="button" data-x="menu" title="More actions" aria-label="More actions"><span class="mi">more_horiz</span></button>' : ''}
           <button class="icon-btn close-btn" type="button" data-x="close" title="Close (Esc)">&times;</button>
         </div>
       </div>
@@ -1992,6 +2022,10 @@
     q('findnext').onclick = () => step(1);
     q('findclose').onclick = closeFind;
     q('find').onclick = openFind;
+    // Opt-in clip menu (the app's editor window wires the shared clip menu here;
+    // the demo's in-page editor overlay has no clip context so no button).
+    const menuBtn = q('menu');
+    if (menuBtn) menuBtn.onclick = (e) => { e.stopPropagation(); const r = menuBtn.getBoundingClientRect(); o.onMenu(r.right, r.bottom + 2); };
     q('revert').onclick = () => { area.value = originalText; titleInput.value = originalTitle; updateStats(); emitInput(); commit(); area.focus(); };
     q('close').onclick = () => { commit(); if (o.onClose) o.onClose(); };
     root.addEventListener('keydown', (e) => {
@@ -2013,11 +2047,139 @@
       getTitle: () => cleanTitle(titleInput.value),
       getValue: payload,
       setText: (t) => { area.value = String(t || ''); updateStats(); },
-      setTitle: (t) => { titleInput.value = cleanTitle(t); },
+      // Reveal the (hidden-by-default) title row when a title is set externally
+      // (e.g. the clip menu's rename) so the result is visible immediately.
+      setTitle: (t) => { titleInput.value = cleanTitle(t); if (titleInput.value) showTitleInput(); },
       commit,
       focus: () => area.focus(),
       focusTitle: () => { showTitleInput(); titleInput.focus(); titleInput.select(); },
       openFind,
+    };
+  }
+  // Shared in-app IMAGE VIEWER — the image twin of createEditor, mounted by the
+  // app's viewer window (viewer.html). Same chrome (bc-editor-bar header + foot)
+  // so the two windows read as one family. Interactions: fit-to-window (default),
+  // click toggles fit⇄100%, wheel zooms around the cursor, drag pans when zoomed.
+  //   opts: { src, title, onMenu(x,y), onClose() }
+  // Returns { el, setSrc, setTitle, focus }.
+  function createImageViewer(opts) {
+    if (typeof document === 'undefined') return null;
+    const o = opts || {};
+    const root = document.createElement('div');
+    root.className = 'bc-viewer';
+    root.tabIndex = -1;
+    root.innerHTML = `
+      <div class="bc-editor-bar">
+        <span class="bc-editor-title"></span>
+        <div class="bc-editor-bar-actions">
+          <button class="icon-btn" type="button" data-x="menu" title="More actions" aria-label="More actions"><span class="mi">more_horiz</span></button>
+          <button class="icon-btn close-btn" type="button" data-x="close" title="Close (Esc)">&times;</button>
+        </div>
+      </div>
+      <div class="bc-viewer-stage" data-x="stage"><img class="bc-viewer-img" data-x="img" alt="clip image" draggable="false"></div>
+      <div class="bc-editor-foot"><span data-x="dims"></span><span class="bc-editor-hint" data-x="zoom"></span></div>`;
+    const q = (name) => root.querySelector(`[data-x="${name}"]`);
+    const stage = q('stage');
+    const img = q('img');
+    const dimsEl = q('dims');
+    const zoomEl = q('zoom');
+    const titleEl = root.querySelector('.bc-editor-title');
+    titleEl.textContent = o.title || 'Image';
+
+    // Transform state: scale + translate applied to the image (origin 0 0).
+    let nw = 0, nh = 0;          // natural image size
+    let scale = 1, tx = 0, ty = 0;
+    let fitMode = true;          // true = track window size
+    function fitScale() {
+      const cw = stage.clientWidth, ch = stage.clientHeight;
+      if (!nw || !nh || !cw || !ch) return 1;
+      return Math.min(cw / nw, ch / nh, 1); // never blow up a small image to "fit"
+    }
+    // Keep the image on-screen: center any axis it doesn't fill; clamp pan otherwise.
+    function clamp() {
+      const cw = stage.clientWidth, ch = stage.clientHeight;
+      const w = nw * scale, h = nh * scale;
+      tx = w <= cw ? (cw - w) / 2 : Math.min(0, Math.max(cw - w, tx));
+      ty = h <= ch ? (ch - h) / 2 : Math.min(0, Math.max(ch - h, ty));
+    }
+    function paint() {
+      clamp();
+      img.style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`;
+      const pannable = nw * scale > stage.clientWidth || nh * scale > stage.clientHeight;
+      stage.style.cursor = pannable ? 'grab' : (fitMode && fitScale() < 1 ? 'zoom-in' : 'default');
+      zoomEl.textContent = nw ? `${Math.round(scale * 100)}%` : '';
+    }
+    function applyFit() {
+      fitMode = true;
+      scale = fitScale();
+      paint();
+    }
+    function zoomAt(cx, cy, nextScale) {
+      const s = Math.max(Math.min(nextScale, 8), Math.min(fitScale(), 1) * 0.5);
+      // keep the stage point (cx,cy) anchored on the same image pixel
+      tx = cx - ((cx - tx) / scale) * s;
+      ty = cy - ((cy - ty) / scale) * s;
+      scale = s;
+      fitMode = false;
+      paint();
+    }
+    img.addEventListener('load', () => {
+      nw = img.naturalWidth; nh = img.naturalHeight;
+      dimsEl.textContent = nw ? `${nw} × ${nh} px` : '';
+      applyFit();
+    });
+    stage.addEventListener('wheel', (e) => {
+      if (!nw) return;
+      e.preventDefault();
+      const rect = stage.getBoundingClientRect();
+      zoomAt(e.clientX - rect.left, e.clientY - rect.top, scale * (e.deltaY < 0 ? 1.2 : 1 / 1.2));
+    }, { passive: false });
+    // Pointer: drag pans (when pannable); a still click toggles fit ⇄ 100% at the point.
+    let down = null, moved = false;
+    stage.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0) return;
+      down = { x: e.clientX, y: e.clientY, tx, ty };
+      moved = false;
+      stage.setPointerCapture(e.pointerId);
+    });
+    stage.addEventListener('pointermove', (e) => {
+      if (!down) return;
+      const dx = e.clientX - down.x, dy = e.clientY - down.y;
+      if (Math.abs(dx) + Math.abs(dy) > 4) moved = true;
+      if (moved) {
+        tx = down.tx + dx; ty = down.ty + dy;
+        stage.style.cursor = 'grabbing';
+        paint();
+      }
+    });
+    stage.addEventListener('pointerup', (e) => {
+      const wasDrag = moved;
+      down = null; moved = false;
+      if (wasDrag) { paint(); return; }
+      if (!nw) return;
+      const rect = stage.getBoundingClientRect();
+      if (fitMode && fitScale() < 1) zoomAt(e.clientX - rect.left, e.clientY - rect.top, 1);
+      else applyFit();
+    });
+    if (typeof ResizeObserver !== 'undefined') {
+      const ro = new ResizeObserver(() => { if (fitMode) applyFit(); else paint(); });
+      ro.observe(stage);
+    }
+    q('menu').onclick = (e) => {
+      e.stopPropagation();
+      const r = q('menu').getBoundingClientRect();
+      if (o.onMenu) o.onMenu(r.right, r.bottom + 2);
+    };
+    q('close').onclick = () => { if (o.onClose) o.onClose(); };
+    root.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); if (o.onClose) o.onClose(); }
+    });
+    if (o.src) img.src = o.src;
+    return {
+      el: root,
+      setSrc: (src) => { if (img.src !== src) img.src = src; },
+      setTitle: (t) => { titleEl.textContent = t || 'Image'; },
+      focus: () => root.focus(),
     };
   }
   // Generic LCS diff over token arrays (lines OR words) — the ONE diff engine
@@ -2607,6 +2769,7 @@
     lineNumberAtIndex,
     editorScrollTopForIndex,
     createEditor,
+    createImageViewer,
     lcsSegments,
     diffLineHunks,
     unionMergeText,

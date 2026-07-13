@@ -28,6 +28,7 @@ const { Diagnostics } = require('./lib/diagnostics');
 const { ensureDirectory } = require('./lib/ensure-directory');
 const hmacAuth = require('./lib/hmac-auth');
 const mcpCore = require('./lib/mcp-core');
+const aiSearchAgent = require('./lib/ai-search-agent');
 const mcpPaths = require('./lib/mcp-paths');
 const mcpInstallers = require('./lib/mcp-installers');
 const conflictModel = require('./lib/conflict-model');
@@ -3425,6 +3426,7 @@ function notifyEditOutcome(result) {
 // descends from this one (in-place, not a fork). For a new-note session the
 // first non-blank commit creates the clip.
 function commitEditSession(session, payload, { final = false } = {}) {
+  if (session.suppressCommit) return null; // clip deleted from this window's menu
   const next = editorPayloadFrom(payload, { text: session.lastCommitted, title: session.lastCommittedTitle });
   if (next.text === session.lastCommitted && next.title === session.lastCommittedTitle) return null;
   const result = applyExternalTextEdit({
@@ -3451,29 +3453,35 @@ function commitEditSession(session, payload, { final = false } = {}) {
   return result;
 }
 
-// Editor window bounds persistence (full bounds, unlike the cursor-positioned
-// popup which only stores size). Debounced like schedulePopupSizeSave.
-function editorBoundsFromSettings() {
-  const b = settings.editor_bounds && typeof settings.editor_bounds === 'object' ? settings.editor_bounds : {};
-  const width = Math.max(360, Math.round(Number(b.width) || 560));
-  const height = Math.max(240, Math.round(Number(b.height) || 520));
+// Editor/viewer window bounds persistence (full bounds, unlike the cursor-
+// positioned popup which only stores size). Debounced like schedulePopupSizeSave.
+// One shared helper pair, keyed by settings field (editor_bounds / viewer_bounds).
+function windowBoundsFromSettings(key, defaults) {
+  const d = defaults || { width: 560, height: 520 };
+  const b = settings[key] && typeof settings[key] === 'object' ? settings[key] : {};
+  const width = Math.max(360, Math.round(Number(b.width) || d.width));
+  const height = Math.max(240, Math.round(Number(b.height) || d.height));
   const out = { width, height };
   if (Number.isFinite(Number(b.x)) && Number.isFinite(Number(b.y))) { out.x = Math.round(Number(b.x)); out.y = Math.round(Number(b.y)); }
   return out;
 }
-let saveEditorBoundsTimer = null;
-function scheduleEditorBoundsSave(editorWin) {
-  if (!editorWin || editorWin.isDestroyed()) return;
-  if (saveEditorBoundsTimer) clearTimeout(saveEditorBoundsTimer);
-  saveEditorBoundsTimer = setTimeout(() => {
-    saveEditorBoundsTimer = null;
-    if (!editorWin || editorWin.isDestroyed()) return;
-    const { x, y, width, height } = editorWin.getBounds();
-    settings.editor_bounds = { x, y, width: Math.max(360, width), height: Math.max(240, height) };
+const saveBoundsTimers = new Map();
+function scheduleWindowBoundsSave(childWin, key) {
+  if (!childWin || childWin.isDestroyed()) return;
+  const prior = saveBoundsTimers.get(key);
+  if (prior) clearTimeout(prior);
+  const timer = setTimeout(() => {
+    saveBoundsTimers.delete(key);
+    if (!childWin || childWin.isDestroyed()) return;
+    const { x, y, width, height } = childWin.getBounds();
+    settings[key] = { x, y, width: Math.max(360, width), height: Math.max(240, height) };
     saveSettingsFile();
   }, 300);
-  if (saveEditorBoundsTimer.unref) saveEditorBoundsTimer.unref();
+  if (timer.unref) timer.unref();
+  saveBoundsTimers.set(key, timer);
 }
+function editorBoundsFromSettings() { return windowBoundsFromSettings('editor_bounds', { width: 560, height: 520 }); }
+function scheduleEditorBoundsSave(editorWin) { scheduleWindowBoundsSave(editorWin, 'editor_bounds'); }
 
 function createEditorWindow(session) {
   const editorWin = new BrowserWindow({
@@ -3524,8 +3532,9 @@ function createEditorWindow(session) {
     }
     // Safety net: commit the latest on-disk draft (the IPC commit may have raced
     // the window teardown), then mark the draft finished so it's retained but not
-    // re-recovered, and prune.
-    const draftPayload = session.inConflict ? null : readDraftFile(session, { text: session.draftText, title: session.draftTitle });
+    // re-recovered, and prune. suppressCommit = the clip was deliberately deleted
+    // from this window's menu; committing would resurrect it from the draft.
+    const draftPayload = (session.inConflict || session.suppressCommit) ? null : readDraftFile(session, { text: session.draftText, title: session.draftTitle });
     if (draftPayload != null) commitEditSession(session, draftPayload, { final: true });
     try {
       const done = path.join(path.dirname(session.draftPath), `done-${path.basename(session.draftPath)}`);
@@ -3609,6 +3618,77 @@ function openEditor(id, options = {}) {
   editSessions.set(session.id, session);
   if (originalId != null) editWindowsByClip.set(originalId, session.id);
   createEditorWindow(session);
+}
+
+// --- In-app image viewer (viewer.html mounts the shared Core.createImageViewer;
+// same frameless chrome + theme plumbing as the editor). One window per clip
+// (image ids are stable content hashes). The window carries the SAME shared
+// clip menu the popup rows use (pin/name/group/numpad/save/open-external/delete)
+// via the clip-window-state IPC below.
+const viewerWindows = new Map();
+function openImageViewer(id) {
+  const item = findHistoryItem(id);
+  if (!item || item.type !== 'image') return;
+  const key = itemKey(item);
+  const existing = viewerWindows.get(key);
+  if (existing && !existing.isDestroyed()) {
+    try { existing.show(); existing.focus(); hidePopup(); } catch {}
+    return;
+  }
+  const viewerWin = new BrowserWindow({
+    ...windowBoundsFromSettings('viewer_bounds', { width: 720, height: 560 }),
+    minWidth: 360,
+    minHeight: 240,
+    frame: false,
+    resizable: true,
+    show: false,
+    skipTaskbar: false,
+    title: 'BoardClip - image',
+    ...popupSurfaceOptions(),
+    icon: APP_ICON_PATH,
+    webPreferences: {
+      preload: path.join(SCRIPT_DIR, 'viewer-preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  });
+  viewerWindows.set(key, viewerWin);
+  viewerWin.loadFile(path.join(SCRIPT_DIR, 'viewer.html'));
+  viewerWin.once('ready-to-show', () => { try { viewerWin.show(); viewerWin.focus(); hidePopup(); } catch {} });
+  viewerWin.webContents.on('did-finish-load', () => {
+    try {
+      viewerWin.webContents.send('viewer-init', {
+        id: key,
+        src: `clip-img:///${item.image}`,
+        title: titleOf(item) || 'Image',
+        themeMode: settings.theme_mode || 'system',
+        surfaceStyle: resolvedSurfaceStyle(),
+        ...appearanceVariantPayload(),
+      });
+    } catch {}
+  });
+  viewerWin.on('resize', () => scheduleWindowBoundsSave(viewerWin, 'viewer_bounds'));
+  viewerWin.on('move', () => scheduleWindowBoundsSave(viewerWin, 'viewer_bounds'));
+  viewerWin.on('closed', () => {
+    if (viewerWindows.get(key) === viewerWin) viewerWindows.delete(key);
+  });
+}
+
+// Light state snapshot for the standalone clip windows (editor/viewer "..." menu):
+// enough to render the shared clip menu (groups tree, numpad slot previews, pin
+// state) without shipping full clip bodies to a second renderer.
+function clipWindowState(id) {
+  const items = history.map(h => ({
+    id: itemKey(h),
+    type: h.type === 'image' ? 'image' : 'text',
+    title: h.title,
+    image: h.image,
+    pin: clonePin(h.pin),
+    ts: h.ts,
+    text: h.type === 'image' ? '' : String(h.textPreview || h.text || '').replace(/\s+/g, ' ').slice(0, 120),
+  }));
+  const item = id != null ? items.find(i => i.id === id) || null : null;
+  return { item, items, groups: [...(settings.groups || [])], aiGroup: mcpCore.AI_GROUP_NAME };
 }
 
 function applyConflictResolution(resolution) {
@@ -4662,7 +4742,13 @@ function setupIPC() {
   ipcMain.handle('start-unify', (_, ids) => startUnify(ids));
   ipcMain.handle('unify-step', (_, sessionId, payload) => unifyStep(sessionId, payload));
 
+  // Primary image open: BoardClip's OWN viewer window (fit/zoom/pan + the shared
+  // clip menu). The OS default app stays available via open-image-external.
   ipcMain.handle('open-image', (_, id) => {
+    openImageViewer(id);
+  });
+
+  ipcMain.handle('open-image-external', (_, id) => {
     const item = findHistoryItem(id);
     if (!item || item.type !== 'image') return;
     const imgPath = path.join(IMG_DIR, item.image);
@@ -4672,6 +4758,30 @@ function setupIPC() {
       keepPopupOpenBriefly();
       shell.openPath(imgPath);
     }
+  });
+
+  // Standalone clip windows (editor/viewer): light state for the shared clip
+  // menu + window-scoped actions.
+  ipcMain.handle('clip-window-state', (_, id) => clipWindowState(id));
+  ipcMain.on('viewer-close', (event) => {
+    const senderWin = BrowserWindow.fromWebContents(event.sender);
+    if (senderWin && !senderWin.isDestroyed()) { try { senderWin.close(); } catch {} }
+  });
+  // The editor's clip id CHANGES on every committed edit (content-addressed);
+  // the renderer asks for the CURRENT id right before opening its menu.
+  ipcMain.handle('editor-current-id', (_, sessionId) => {
+    const session = editSessions.get(sessionId);
+    return session ? session.currentId || null : null;
+  });
+  // Deleting the clip out from under an open editor: suppress the close-commit
+  // (it would resurrect the clip from the draft) and close the window.
+  ipcMain.handle('editor-delete-clip', (_, sessionId) => {
+    const session = editSessions.get(sessionId);
+    if (!session || !session.currentId) return false;
+    session.suppressCommit = true;
+    const snapshots = applyDeleteItems([session.currentId]);
+    if (session.win && !session.win.isDestroyed()) { try { session.win.close(); } catch {} }
+    return snapshots.length > 0;
   });
 
   ipcMain.handle('set-sync-path', async (_, syncPath) => {
@@ -4787,6 +4897,57 @@ function setupIPC() {
     saveSettingsFile();
     return aiAccessState();
   });
+
+  // --- In-app AI Search (BYO endpoint agent) ---
+  // User-initiated natural-language search over the user's OWN clipboard with their OWN
+  // key. Scope: whole history by default; ai_search_scope='shared' restricts the tool fns
+  // to the MCP shared-group boundary. One agent run at a time; a new run aborts the old.
+  let aiSearchAbort = null;
+  ipcMain.handle('ai-search', async (_, question) => {
+    if (!settings.ai_search_endpoint || !settings.ai_search_key || !settings.ai_search_model) {
+      return { ok: false, error: 'not_configured' };
+    }
+    if (aiSearchAbort) aiSearchAbort.abort();
+    const ac = new AbortController();
+    aiSearchAbort = ac;
+    const restricted = settings.ai_search_scope === 'shared';
+    const scope = restricted ? 'shared' : 'all';
+    const tools = {
+      searchClips: async (query, limit) =>
+        mcpCore.searchClips(history, settings, { query, scope, limit: Math.min(50, limit || 20) }),
+      getClip: async (id) => {
+        const item = findHistoryItem(id);
+        if (!item) return null;
+        const sharedSet = mcpCore.sharedGroupSet(settings);
+        if (restricted && !mcpCore.isShared(item, sharedSet)) return null;
+        if (item.type === 'image') return mcpCore.clipView(item, { sharedSet });
+        textBlobStore.hydrateTextItem(item, TEXT_DIR);
+        return { id: itemKey(item), title: titleOf(item), text: String(item.text || '').slice(0, 20000) };
+      },
+    };
+    const startedAt = Date.now();
+    try {
+      const result = await aiSearchAgent.runAgent({
+        endpoint: settings.ai_search_endpoint,
+        apiKey: settings.ai_search_key,
+        model: settings.ai_search_model,
+        question: String(question || ''),
+        tools,
+        signal: ac.signal,
+      });
+      diagnostics.record('ai_search.run', { ms: Date.now() - startedAt, steps: result.steps, picked: result.ids.length, aborted: !!result.aborted });
+      if (result.aborted) return { ok: false, error: 'aborted' };
+      // Keep only ids that still exist (the model can't fabricate usable rows).
+      const ids = result.ids.filter((id) => !!findHistoryItem(id));
+      return { ok: true, ids, note: result.note || null };
+    } catch (error) {
+      diagnostics.record('ai_search.error', { error: error && error.message }, { forceFile: true });
+      return { ok: false, error: error && error.message || 'failed' };
+    } finally {
+      if (aiSearchAbort === ac) aiSearchAbort = null;
+    }
+  });
+  ipcMain.handle('ai-search-cancel', () => { if (aiSearchAbort) { aiSearchAbort.abort(); aiSearchAbort = null; } return true; });
   // Approval modal -> main bridge.
   ipcMain.on('approval-decide', (_, id, choice) => {
     const pending = pendingApprovals.get(id);

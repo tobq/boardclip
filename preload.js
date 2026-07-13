@@ -39,6 +39,7 @@ contextBridge.exposeInMainWorld('api', {
   getConflicts: () => ipcRenderer.invoke('get-conflicts'),
   openConflict: (id) => ipcRenderer.invoke('open-conflict', id),
   openImage: (id) => ipcRenderer.invoke('open-image', id),
+  openImageExternal: (id) => ipcRenderer.invoke('open-image-external', id),
   platform: process.platform,
   setSyncPath: (path) => ipcRenderer.invoke('set-sync-path', path),
   chooseSyncFolder: () => ipcRenderer.invoke('choose-sync-folder'),
@@ -76,6 +77,9 @@ contextBridge.exposeInMainWorld('api', {
   revokeAiAlwaysAllow: (tool) => ipcRenderer.invoke('revoke-ai-always-allow', tool),
   setClipTitle: (id, title) => ipcRenderer.invoke('set-clip-title', id, title),
   setAiApprovalTimeout: (sec) => ipcRenderer.invoke('set-ai-approval-timeout', sec),
+  // In-app AI Search (BYO endpoint agent)
+  aiSearch: (question) => ipcRenderer.invoke('ai-search', question),
+  aiSearchCancel: () => ipcRenderer.invoke('ai-search-cancel'),
   onAiAccessChanged: (callback) => {
     const listener = () => callback();
     ipcRenderer.on('ai-access-changed', listener);

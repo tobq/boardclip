@@ -28,6 +28,16 @@ contextBridge.exposeInMainWorld('editorApi', {
   resolveConflict: (payload) => ipcRenderer.invoke('resolve-conflict', payload),
   unifyStep: (payload) => ipcRenderer.invoke('unify-step', sessionId, payload),
   close: () => ipcRenderer.send('editor-close', sessionId),
+  // Clip menu (shared with the popup + viewer). The clip id changes on every
+  // committed edit (content-addressed), so the menu asks for the CURRENT id.
+  currentId: () => ipcRenderer.invoke('editor-current-id', sessionId),
+  state: (id) => ipcRenderer.invoke('clip-window-state', id),
+  pin: (id) => ipcRenderer.invoke('pin', id),
+  groupCreate: (name) => ipcRenderer.invoke('group-create', name),
+  groupAssign: (id, group) => ipcRenderer.invoke('group-assign', id, group),
+  numpadAssign: (id, slot) => ipcRenderer.invoke('numpad-assign', id, slot),
+  numpadUnassign: (slot) => ipcRenderer.invoke('numpad-unassign', slot),
+  deleteSelf: () => ipcRenderer.invoke('editor-delete-clip', sessionId),
   getColorScheme: () => ipcRenderer.invoke('get-color-scheme'),
   onColorSchemeChanged: (callback) => {
     const listener = (_, scheme) => callback(scheme);

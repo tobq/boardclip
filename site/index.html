@@ -166,6 +166,9 @@
         search: "demo-search",
         searchClear: "demo-clear-search",
         regexBtn: "demo-regex",
+        sortBtn: "demo-sort",
+        aiBtn: "demo-ai",
+        aiStatus: "demo-ai-status",
         groupFilters: "filter-chips",
         list: "clip-list",
         settingsView: "demo-settings",
@@ -391,6 +394,7 @@
       const visible = Core.filterItems(clips, state);
       clipCount.textContent = Core.itemCountLabel(clips.length, visible.length, state);
       updateClearControls();
+      updateDemoSortButton(); // defined below; renderClips first runs at the bottom of this script
       renderFilterChips();
       renderDemoSettings();
       const nmap = Core.numpadMap(clips);
@@ -800,6 +804,7 @@
       editClip: (id, _itemEl, options) => openDemoEditor(id, { ...(state.query ? { find: state.query, regex: state.regex } : {}), ...(options || {}) }),
       setClipTitle: (id, title) => { const t = (title || "").trim(); clips = clips.map((item) => Core.itemId(item) === id ? { ...item, title: t || undefined, titleUpdatedAt: Date.now() } : item); },
       openImage: (item) => { if (item && item.imageSrc) openLightbox(item.imageSrc); },
+      openImageExternal: (item) => { if (item && item.imageSrc) window.open(item.imageSrc, "_blank"); },
       saveImage: (item) => {
         if (!item || !item.imageSrc) return null;
         const link = document.createElement("a");
@@ -882,6 +887,27 @@
       if (demoSearchBox) demoSearchBox.refresh();
       renderClips();
       search.focus();
+    });
+    // Best⇄Recent toggle — same behavior as the app (visible while searching).
+    const demoSortBtn = document.getElementById("demo-sort");
+    function updateDemoSortButton() {
+      const show = Boolean(state.query.trim());
+      demoSortBtn.classList.toggle("show", show);
+      if (!show) return;
+      const mode = state.sortMode || "best";
+      demoSortBtn.classList.toggle("active", mode === "new");
+      demoSortBtn.title = mode === "best" ? "Sorted by best match — click for newest" : "Sorted by newest — click for best match";
+      demoSortBtn.querySelector(".mi").textContent = mode === "best" ? "sort" : "schedule";
+    }
+    demoSortBtn.addEventListener("click", () => {
+      state.sortMode = (state.sortMode || "best") === "best" ? "new" : "best";
+      renderClips();
+      search.focus();
+    });
+    // AI search is desktop-only (needs your real clipboard + a local agent):
+    // the demo shows the button but pitches the download.
+    document.getElementById("demo-ai").addEventListener("click", () => {
+      showToast("Download the app to try AI search");
     });
     settingsButton.addEventListener("click", () => {
       const open = !settingsPanel.classList.contains("show");

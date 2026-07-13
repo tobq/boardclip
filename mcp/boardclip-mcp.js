@@ -112,7 +112,7 @@ server.registerTool('list_clips', {
 });
 
 server.registerTool('search_clips', {
-  description: 'Search shared clips by substring (or regex). Returns matching shared clips with previews plus a count of how many NON-shared clips also matched. Set include_unshared to run the full search over everything - that requires the app and pops an approval prompt.',
+  description: 'Search shared clips. Supports the same query syntax as the BoardClip app: plain words (AND, substring), "quoted phrases", field scopes title:/text:/group: (short: t:/b:/g:), facets is:pinned|is:image|is:text|is:numpad, num:1-9 (n:), since:/before: e.g. since:7d (s:/bf:), len:>100 (l:), sort:new|best (o:), id:, and -negation on any token. Every prefix has a short + long alias. Returns matching shared clips with previews plus a count of how many NON-shared clips also matched. Set include_unshared to run the full search over everything - that requires the app and pops an approval prompt.',
   inputSchema: {
     query: z.string().min(1),
     regex: z.boolean().optional(),

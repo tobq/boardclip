@@ -2483,6 +2483,11 @@ function addToHistory(entry, matchFn) {
     entry.pin = clonePin(existing.pin);
     if (existing.pinUpdatedAt) entry.pinUpdatedAt = existing.pinUpdatedAt;
     entry.id = itemKey(existing);
+    // Content-addressed ids mean this is the same clip intentionally moved to
+    // the top, not a second copy. Timestamp changes therefore need their own
+    // LWW clock so stale cloud replicas cannot undo them (and repaired legacy
+    // timestamps can beat an old inflated provider timestamp).
+    entry.tsUpdatedAt = Date.now();
     history.splice(existIdx, 1);
   }
   history.unshift(entry);

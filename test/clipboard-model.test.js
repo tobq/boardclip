@@ -65,6 +65,50 @@ function text(text, extra = {}) {
 }
 
 {
+  const repaired = text('image-hash', { type: 'image', image: 'hash.png', ts: 100, tsUpdatedAt: 300 });
+  const staleInflated = text('image-hash', { type: 'image', image: 'hash.png', ts: 500 });
+  repaired.id = staleInflated.id = 'img:hash.png';
+  const merged = model.mergeHistories([repaired], [staleInflated], {});
+  assert.strictEqual(merged[0].ts, 100);
+  assert.strictEqual(merged[0].tsUpdatedAt, 300);
+}
+
+{
+  const olderRecapture = text('image-hash', { type: 'image', image: 'hash.png', ts: 200, tsUpdatedAt: 200 });
+  const newerRecapture = text('image-hash', { type: 'image', image: 'hash.png', ts: 400, tsUpdatedAt: 400 });
+  olderRecapture.id = newerRecapture.id = 'img:hash.png';
+  const merged = model.mergeHistories([olderRecapture], [newerRecapture], {});
+  assert.strictEqual(merged[0].ts, 400);
+  assert.strictEqual(merged[0].tsUpdatedAt, 400);
+}
+
+{
+  const a = text('image-hash', { type: 'image', image: 'hash.png', ts: 200, tsUpdatedAt: 300 });
+  const b = text('image-hash', { type: 'image', image: 'hash.png', ts: 400, tsUpdatedAt: 300 });
+  a.id = b.id = 'img:hash.png';
+  assert.strictEqual(model.mergeHistories([a], [b], {})[0].ts, 400);
+  assert.strictEqual(model.mergeHistories([b], [a], {})[0].ts, 400);
+}
+
+{
+  const target = text('edited', { ts: 100, tsUpdatedAt: 500 });
+  const stale = text('old', { ts: 900 });
+  const merged = model.mergeHistories([target], [stale], {
+    tombstones: [{ id: stale.id, deletedAt: Date.now() }],
+    supersedes: [{ from: stale.id, to: target.id, updatedAt: Date.now() }],
+  });
+  assert.strictEqual(merged[0].id, target.id);
+  assert.strictEqual(merged[0].ts, 100);
+  assert.strictEqual(merged[0].tsUpdatedAt, 500);
+}
+
+{
+  const legacyA = text('legacy', { ts: 100 });
+  const legacyB = text('legacy', { ts: 200 });
+  assert.strictEqual(model.mergeHistories([legacyA], [legacyB], {})[0].ts, 200);
+}
+
+{
   const local = text('star', { pin: null, ts: 200, updatedAt: 200 });
   const remote = text('star', { pin: { updatedAt: 120 }, pinUpdatedAt: 120, ts: 100, updatedAt: 100 });
   const merged = model.mergeHistories([local], [remote], {});

@@ -38,6 +38,44 @@ function text(text, extra = {}) {
 }
 
 {
+  // Version-guarded tombstone: re-copying the same content AFTER a delete must
+  // survive the (still-syncing) tombstone — the cross-device "no more surprises"
+  // fix. A content-hash id that is touched later than the delete beats it.
+  const now = Date.now();
+  const recopied = text('recycle', { ts: Math.floor(now / 1000), updatedAt: now + 10_000 });
+  const merged = model.mergeHistories([recopied], [], {
+    tombstones: [{ id: recopied.id, deletedAt: now }],
+  });
+  assert.deepStrictEqual(merged.map(i => i.text), ['recycle'], 'newer re-add beats an older tombstone');
+}
+
+{
+  // The resurrection guard still holds: a STALE pre-delete copy (clock <= the
+  // delete) stays deleted, so a lagging provider can never revive a deletion.
+  const now = Date.now();
+  const stale = text('recycle-stale', { ts: 1, updatedAt: now - 10_000 });
+  const merged = model.mergeHistories([stale], [], {
+    tombstones: [{ id: stale.id, deletedAt: now }],
+  });
+  assert.deepStrictEqual(merged.map(i => i.text), [], 'stale pre-delete copy stays deleted');
+}
+
+{
+  // A pin/metadata touch newer than the delete also keeps the item (any mutation
+  // clock counts, not just text capture).
+  const now = Date.now();
+  const repinned = text('repin', {
+    ts: 1,
+    pin: { number: 3, updatedAt: now + 10_000, numberUpdatedAt: now + 10_000 },
+    pinUpdatedAt: now + 10_000,
+  });
+  const merged = model.mergeHistories([repinned], [], {
+    tombstones: [{ id: repinned.id, deletedAt: now }],
+  });
+  assert.deepStrictEqual(merged.map(i => i.text), ['repin'], 'a pin touched after the delete keeps the item');
+}
+
+{
   const oldUnpinned = Array.from({ length: 60 }, (_, i) => text(`old-${i}`, { ts: 1, pin: null }));
   const pinned = text('pinned', { ts: 1, pin: { updatedAt: 10 } });
   const fresh = text('fresh', { ts: 1_000_000, pin: null });

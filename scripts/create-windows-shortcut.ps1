@@ -11,7 +11,8 @@ if (-not $IsWindows -and $env:OS -ne "Windows_NT") {
 if (-not $AppDir) {
   $AppDir = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 } else {
-  $AppDir = (Resolve-Path $AppDir).Path
+  # Normalize a quoted %~dp0 passed through PowerShell before resolving it.
+  $AppDir = (Resolve-Path ($AppDir.Trim().Trim([char]34, [char]39))).Path
 }
 $StartBat = Join-Path $AppDir "start.bat"
 if (-not (Test-Path $StartBat)) {

@@ -937,6 +937,32 @@ function renderUpdateSettings(settings) {
     ? 'Source auto-update enabled; requires Git; checks startup + every 4h'
     : updateUnavailableText(support.reason);
   updateNow.disabled = !supported;
+  const updatesSection = updateBuild.closest('.settings-section');
+  let modeHost = updatesSection && updatesSection.querySelector('#developerUpdateMode');
+  const rt = settings.runtime_info || {};
+  const visible = !!rt.update_mode_visible;
+  if (visible && !modeHost && updatesSection) {
+    modeHost = document.createElement('div');
+    modeHost.id = 'developerUpdateMode';
+    modeHost.className = 'developer-update-mode';
+    updatesSection.appendChild(modeHost);
+  }
+  if (modeHost) {
+    modeHost.classList.toggle('hidden', !visible);
+    modeHost.innerHTML = visible ? `
+      <div class="developer-update-label">Developer mode</div>
+      <div class="seg" role="group" aria-label="Update mode">
+        <button type="button" class="seg-btn${rt.update_mode === 'production' ? ' active' : ''}" data-update-mode="production">Production</button>
+        <button type="button" class="seg-btn${rt.update_mode === 'development' ? ' active' : ''}" data-update-mode="development">Development</button>
+      </div>
+      <div class="settings-status">${rt.update_mode === 'development' ? 'Dirty source checkouts update with autostash.' : 'Clean checkout mode; local tracked edits block updates.'}</div>` : '';
+    modeHost.querySelectorAll('[data-update-mode]').forEach(button => {
+      button.onclick = async () => {
+        await window.api.setUpdateMode(button.dataset.updateMode);
+        openSettings();
+      };
+    });
+  }
   setUpdateStatus('', '');
 }
 

@@ -224,6 +224,8 @@
 .group-slot .gp-name { flex: 1; font-size: var(--fs-3); color: var(--accent); }
 .group-slot .gp-count { font-size: var(--fs-1); color: var(--text-dim); }
 .sync-list, .settings-action-list { flex: 1; display: flex; flex-direction: column; gap: var(--sp-2); min-width: 0; }
+.developer-update-mode { display: flex; flex-direction: column; gap: var(--sp-2); padding-top: var(--sp-3); }
+.developer-update-label { color: var(--text-dim); font-size: 10px; text-transform: uppercase; letter-spacing: .08em; }
 .sync-account, .settings-action-card { display: flex; align-items: center; gap: var(--sp-4); min-width: 0; overflow: hidden; padding: var(--sp-3) var(--sp-4); background: var(--input); border: 1px solid var(--line); border-radius: var(--r-1); }
 .sync-account input, .settings-action-card input { width: auto; accent-color: var(--accent); flex-shrink: 0; }
 .sync-account-main, .settings-action-main { flex: 1; min-width: 0; }

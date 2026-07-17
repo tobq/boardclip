@@ -56,6 +56,7 @@ contextBridge.exposeInMainWorld('api', {
     return () => ipcRenderer.removeListener('sync-progress', listener);
   },
   checkForUpdates: () => ipcRenderer.invoke('check-for-updates'),
+  setUpdateMode: (mode) => ipcRenderer.invoke('set-update-mode', mode),
   getAutoLaunch: () => ipcRenderer.invoke('get-auto-launch'),
   setAutoLaunch: (enabled) => ipcRenderer.invoke('set-auto-launch', enabled),
   getColorScheme: () => ipcRenderer.invoke('get-color-scheme'),

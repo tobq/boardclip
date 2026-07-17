@@ -771,6 +771,7 @@ function text(text, extra = {}) {
     assert.deepStrictEqual(autoUpdate.updateSupport(appDir, { fullCommit: 'abc' }, 'linux'), { supported: false, reason: 'missing-update-script' });
     fs.writeFileSync(path.join(appDir, 'update.sh'), '');
     assert.deepStrictEqual(autoUpdate.updateSupport(appDir, { fullCommit: 'abc', dirty: true }, 'linux'), { supported: false, reason: 'dirty-checkout' });
+    assert.deepStrictEqual(autoUpdate.updateSupport(appDir, { fullCommit: 'abc', dirty: true }, 'linux', { updateMode: 'development' }), { supported: true, reason: 'supported' });
     assert.deepStrictEqual(autoUpdate.updateSupport(appDir, { fullCommit: 'abc', dirty: false }, 'linux'), { supported: true, reason: 'supported' });
   } finally {
     fs.rmSync(appDir, { recursive: true, force: true });
@@ -780,6 +781,12 @@ function text(text, extra = {}) {
   assert.strictEqual(autoUpdate.updateModeForChangedFiles(['site/shared/clipboard-popup.css']), 'reload');
   assert.strictEqual(autoUpdate.updateModeForChangedFiles(['main.js']), 'relaunch');
   assert.strictEqual(autoUpdate.updateModeForChangedFiles([]), 'none');
+  const devEnv = autoUpdate.updateEnvironment({}, { applyOnly: true, updateMode: 'development' });
+  assert.strictEqual(devEnv.BOARDCLIP_UPDATE_ALLOW_DIRTY, '1');
+  assert.strictEqual(devEnv.BOARDCLIP_UPDATE_NO_START, '1');
+  const prodEnv = autoUpdate.updateEnvironment({}, { applyOnly: true, updateMode: 'production' });
+  assert.strictEqual(prodEnv.BOARDCLIP_UPDATE_ALLOW_DIRTY, undefined);
+  assert.strictEqual(prodEnv.BOARDCLIP_UPDATE_NO_START, '1');
 }
 
 

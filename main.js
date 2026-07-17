@@ -186,12 +186,17 @@ function relaunchAfterUpdate() {
   app.exit(0);
 }
 
+function developerUpdateMode() {
+  return !app.isPackaged && settings.update_mode === 'development' ? 'development' : 'production';
+}
+
 const autoUpdater = createAutoUpdater({
   appDir: SCRIPT_DIR,
   buildInfo: BUILD_INFO,
   onReload: reloadRendererAfterUpdate,
   onRelaunch: relaunchAfterUpdate,
   onBuildInfoChanged: refreshBuildInfo,
+  getUpdateMode: developerUpdateMode,
 });
 
 // --- AHK presets for first-run seeding ---
@@ -960,6 +965,7 @@ function remoteSettingsPayload() {
   delete remoteSave.ai_search_key;
   delete remoteSave.ai_search_model;
   delete remoteSave.ai_search_scope;
+  delete remoteSave.update_mode;
   return remoteSave;
 }
 
@@ -4548,7 +4554,7 @@ function setupIPC() {
     item_count: history.length,
     build_info: BUILD_INFO,
     runtime_info: (() => {
-      const support = updateSupport(SCRIPT_DIR, BUILD_INFO);
+      const support = updateSupport(SCRIPT_DIR, BUILD_INFO, process.platform, { updateMode: developerUpdateMode() });
       return {
         app_dir: SCRIPT_DIR,
         data_dir: DATA_DIR,
@@ -4559,6 +4565,9 @@ function setupIPC() {
         surface_style: resolvedSurfaceStyle(),
         surface_supported: glassSupport() !== 'none',
         debug_variants: (!app.isPackaged || !!process.env.BOARDCLIP_DEBUG_VARIANTS),
+        developer_mode: !app.isPackaged,
+        update_mode: developerUpdateMode(),
+        update_mode_visible: !app.isPackaged && (BUILD_INFO.dirty || settings.update_mode === 'development'),
       };
     })(),
     shortcut_info: {
@@ -4651,6 +4660,7 @@ function setupIPC() {
     if (body.ai_search_key !== undefined) settings.ai_search_key = String(body.ai_search_key || '').trim();
     if (body.ai_search_model !== undefined) settings.ai_search_model = String(body.ai_search_model || '').trim();
     if (body.ai_search_scope !== undefined && ['all', 'shared'].includes(body.ai_search_scope)) settings.ai_search_scope = body.ai_search_scope;
+    if (body.update_mode !== undefined && !app.isPackaged && ['production', 'development'].includes(body.update_mode)) settings.update_mode = body.update_mode;
     saveSettingsFile();
     if (surfaceChanged) applySurfaceToPopup();
     pruneHistory();
@@ -4844,6 +4854,12 @@ function setupIPC() {
     const result = await syncMerge({ force: true });
     if (result) result.p2p = p2pResults;
     return result;
+  });
+
+  ipcMain.handle('set-update-mode', (_, mode) => {
+    if (app.isPackaged || !['production', 'development'].includes(mode)) return;
+    settings.update_mode = mode;
+    saveSettingsFile();
   });
 
   ipcMain.handle('check-for-updates', async () => {

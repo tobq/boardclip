@@ -193,6 +193,10 @@ function developerUpdateMode() {
 const autoUpdater = createAutoUpdater({
   appDir: SCRIPT_DIR,
   buildInfo: BUILD_INFO,
+  getBuildInfo: () => {
+    refreshBuildInfo();
+    return BUILD_INFO;
+  },
   onReload: reloadRendererAfterUpdate,
   onRelaunch: relaunchAfterUpdate,
   onBuildInfoChanged: refreshBuildInfo,
@@ -4554,6 +4558,7 @@ function setupIPC() {
     item_count: history.length,
     build_info: BUILD_INFO,
     runtime_info: (() => {
+      refreshBuildInfo();
       const support = updateSupport(SCRIPT_DIR, BUILD_INFO, process.platform, { updateMode: developerUpdateMode() });
       return {
         app_dir: SCRIPT_DIR,
@@ -4567,7 +4572,7 @@ function setupIPC() {
         debug_variants: (!app.isPackaged || !!process.env.BOARDCLIP_DEBUG_VARIANTS),
         developer_mode: !app.isPackaged,
         update_mode: developerUpdateMode(),
-        update_mode_visible: !app.isPackaged && (BUILD_INFO.dirty || settings.update_mode === 'development'),
+        update_mode_visible: !app.isPackaged && !!BUILD_INFO.fullCommit && !!fs.existsSync(path.join(SCRIPT_DIR, '.git')) && (BUILD_INFO.dirty || settings.update_mode === 'development'),
       };
     })(),
     shortcut_info: {

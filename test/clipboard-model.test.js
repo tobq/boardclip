@@ -781,12 +781,13 @@ function text(text, extra = {}) {
   assert.strictEqual(autoUpdate.updateModeForChangedFiles(['site/shared/clipboard-popup.css']), 'reload');
   assert.strictEqual(autoUpdate.updateModeForChangedFiles(['main.js']), 'relaunch');
   assert.strictEqual(autoUpdate.updateModeForChangedFiles([]), 'none');
-  const devEnv = autoUpdate.updateEnvironment({}, { applyOnly: true, updateMode: 'development' });
+  const devEnv = autoUpdate.updateEnvironment({ BOARDCLIP_UPDATE_ALLOW_DIRTY: 'old', BOARDCLIP_UPDATE_NO_START: 'old', KEEP: 'yes' }, { applyOnly: true, updateMode: 'development' });
   assert.strictEqual(devEnv.BOARDCLIP_UPDATE_ALLOW_DIRTY, '1');
   assert.strictEqual(devEnv.BOARDCLIP_UPDATE_NO_START, '1');
-  const prodEnv = autoUpdate.updateEnvironment({}, { applyOnly: true, updateMode: 'production' });
+  assert.strictEqual(devEnv.KEEP, 'yes');
+  const prodEnv = autoUpdate.updateEnvironment({ BOARDCLIP_UPDATE_ALLOW_DIRTY: 'old', BOARDCLIP_UPDATE_NO_START: 'old' }, { applyOnly: false, updateMode: 'production' });
   assert.strictEqual(prodEnv.BOARDCLIP_UPDATE_ALLOW_DIRTY, undefined);
-  assert.strictEqual(prodEnv.BOARDCLIP_UPDATE_NO_START, '1');
+  assert.strictEqual(prodEnv.BOARDCLIP_UPDATE_NO_START, undefined);
 }
 
 

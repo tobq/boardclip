@@ -324,8 +324,24 @@ clear-all). All popup CSS + theme variables live in `site/shared/clipboard-popup
   default, click toggles fit⇄100% at the point, wheel zooms around the cursor, drag pans
   when zoomed (`ResizeObserver` re-fits). `viewer.html` + `viewer-preload.js` mount it;
   main's `openImageViewer` (one window per clip, `viewer_bounds` persisted via the shared
-  `windowBoundsFromSettings`/`scheduleWindowBoundsSave`). `open-image` IPC now opens it;
-  `open-image-external` keeps the OS-default-app path (a menu action, not the primary).
+  `windowBoundsFromSettings`/`scheduleWindowBoundsSave`). `viewer_bounds` is explicitly
+  defaulted and excluded from `remoteSettingsPayload` like every other machine-local window
+  geometry. `open-image` IPC opens it; `open-image-external` keeps the OS-default-app path.
+- **Title-bar tag strip** (editor, viewer, and demo) is single-sourced in
+  `clipboard-ui-core.js`: `renderClipTagChips` renders inert `.filter-tag.group-tag` chips,
+  keyboard-accessible hover/focus × controls, and the `+`; `updateTagStrip` keeps the current
+  content-addressed id on the strip. `openGroupPickerAt` reuses `clipGroupTreeHtml` and the
+  existing controller group mutations - never duplicate a picker or mutation path. New notes
+  supply `ensureClipId`: commit first, re-query the ID, then open the picker; capture the +
+  button rect *before* awaiting because the commit refresh replaces it in the DOM. The chip ×
+  is a real `<button class="gtag-x mi">` for keyboard access — do NOT give `.filter-tag .gtag-x`
+  `font: inherit`, it out-specifies `.mi` and renders the literal word "close" instead of the
+  Material Symbols glyph (guarded by `ui-tokens.test.js` #10); the accent ring is focus-visible
+  only, never on hover.
+- **Hermetic Electron QA**: `BOARDCLIP_DATA_DIR` relocates data and may be a legitimate user
+  configuration. Set **`BOARDCLIP_ISOLATED=1`** as well for throwaway instances; only that
+  explicit flag suppresses cloud account discovery/sync probing. JSON loaders accept an initial
+  UTF-8 BOM because Windows PowerShell tools can produce BOM-prefixed valid JSON.
 - **Context-menu parity** across popup rows / editor / viewer: `renderClipMenu` grew a
   `context` option (`'popup'` default | `'editor'` | `'viewer'`). Editor drops "Open in
   editor" (it IS the editor); viewer swaps "Open image" for "Open externally"
@@ -336,9 +352,9 @@ clear-all). All popup CSS + theme variables live in `site/shared/clipboard-popup
   Editor title renames ride the session commit (`editor.setTitle`+`commit`, not a separate
   clip write); editor delete sets `session.suppressCommit` so the close-commit can't
   resurrect the clip from the draft. `ui-parity.test.js` #12 guards the viewer/menu contexts.
-- **QA harness**: an isolated instance via `BOARDCLIP_DATA_DIR` + `--user-data-dir` + CDP,
-  seeded with the cloud providers PRE-DISABLED (`sync_disabled_paths`) + p2p/AI off so a
-  throwaway instance can't touch real synced data. The hidden tray popup's `requestAnimation
+- **QA harness**: an isolated instance via `BOARDCLIP_DATA_DIR` + **`BOARDCLIP_ISOLATED=1`**
+  + `--user-data-dir` + CDP, seeded with cloud paths pre-disabled plus p2p/AI off so a
+  throwaway instance cannot touch real synced data. The hidden tray popup's `requestAnimation
   Frame` never fires, so a CDP driver must call `rerenderList()` directly after dispatching
   input (don't wait on rAF). Detect real providers with `require('./lib/cloud-accounts')()`.
 

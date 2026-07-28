@@ -81,14 +81,58 @@ const approvalHtml = read('mcp-approval.html');
   assert.ok(mainJs.includes("backgroundMaterial: 'acrylic'"), 'Windows acrylic backdrop should be wired');
 }
 
-// 7) The new appearance settings are per-machine: defaulted, whitelisted, and
-//    excluded from sync.
+// 7) Per-machine UI state is defaulted and excluded from sync. Window geometry
+//    must never migrate between displays/machines (including the image viewer).
 {
   const model = read('lib/clipboard-model.js');
-  for (const key of ['surface_style', 'accent_variant', 'ui_density', 'ui_corners', 'ui_borders']) {
+  for (const key of [
+    'surface_style', 'accent_variant', 'ui_density', 'ui_corners', 'ui_borders',
+    'popup_size', 'editor_bounds', 'viewer_bounds',
+  ]) {
     assert.ok(model.includes(`${key}:`), `DEFAULT_SETTINGS should include ${key}`);
     assert.ok(mainJs.includes(`delete remoteSave.${key}`), `${key} must be excluded from synced settings`);
   }
+}
+
+// 8) A custom data directory can be a real relocation. Hermetic Electron QA is
+//    opt-in so it cannot discover or write the developer's cloud mounts.
+{
+  assert.ok(mainJs.includes("process.env.BOARDCLIP_ISOLATED === '1'"),
+    'BOARDCLIP_ISOLATED must explicitly gate cloud discovery for hermetic QA');
+  assert.ok(!mainJs.includes('if (process.env.BOARDCLIP_DATA_DIR) {\n    cloudAccountsCache = []'),
+    'BOARDCLIP_DATA_DIR alone must not disable real cloud discovery');
+}
+
+// 9) Every JSON store read (local AND remote provider files) goes through the
+//    ONE BOM-tolerant parser. A rejected parse is destructive here: the store
+//    reads as empty and the next canonical write replaces the user's data.
+{
+  const blobStoreSrc = read('lib/blob-store.js');
+  assert.ok(/function parseJsonText\(/.test(blobStoreSrc), 'blob-store must define the shared parseJsonText');
+  assert.ok(/replace\(\/\^\\uFEFF\/, ''\)/.test(blobStoreSrc), 'parseJsonText must strip a leading UTF-8 BOM');
+  const storeReads = mainJs.match(/JSON\.parse\((?:await )?fs\.(?:promises\.)?read[Ff]ile(?:Sync)?\(/g) || [];
+  assert.strictEqual(storeReads.length, 0, `main.js must not JSON.parse a file read directly (found ${storeReads.length}); use blobStore.parseJsonText`);
+  for (const reader of ['SETTINGS_PATH', 'DB_PATH', 'CONFLICTS_PATH', 'remoteDbPath', 'remoteSettingsPath', 'remoteConflictsPath']) {
+    assert.ok(mainJs.includes(`blobStore.parseJsonText(`) && mainJs.includes(reader),
+      `${reader} must be read through blobStore.parseJsonText`);
+  }
+  const blobStore = require('../lib/blob-store');
+  assert.deepStrictEqual(blobStore.parseJsonText('\uFEFF[{"id":"txt:a"}]'), [{ id: 'txt:a' }], 'BOM-prefixed JSON must parse');
+  assert.deepStrictEqual(blobStore.parseJsonText('{"a":1}'), { a: 1 }, 'plain JSON must still parse');
+  assert.throws(() => blobStore.parseJsonText('not json'), 'genuinely invalid JSON must still throw');
+}
+
+// 10) The tag remove control is an icon BUTTON: it must stay keyboard-focusable
+//     WITHOUT `font: inherit` clobbering the Material Symbols ligature (that
+//     renders the literal word "close"), and the accent ring is focus-only.
+{
+  const gtagRule = popupCss.split('\n').find((line) => line.trim().startsWith('.filter-tag .gtag-x {')) || '';
+  assert.ok(gtagRule, 'popup.css must style .filter-tag .gtag-x');
+  assert.ok(!/font:\s*inherit/.test(gtagRule), '.filter-tag .gtag-x must not set font: inherit (it overrides the .mi icon font)');
+  assert.ok(!/\.filter-tag \.gtag-x:hover,\s*\.filter-tag \.gtag-x:focus-visible \{[^}]*outline:/.test(popupCss),
+    'the accent outline must be focus-visible only, never on hover');
+  assert.ok(/\.filter-tag \.gtag-x:focus-visible \{[^}]*outline: 1px solid var\(--accent\)/.test(popupCss),
+    'focus-visible on the remove button must draw the accent ring');
 }
 
 console.log('ui-tokens.test.js: all token/variant/glass guards passed');

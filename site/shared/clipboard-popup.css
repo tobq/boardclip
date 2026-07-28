@@ -107,12 +107,14 @@
 .filter-tag.icon-filter.excluded { background: transparent; border-color: transparent; color: var(--text-dim); opacity: .55; }
 .filter-tag.clear-filter { width: 20px; height: 20px; padding: 0; border: 0; border-radius: 50%; color: var(--text-dim); background: transparent; }
 .filter-tag.clear-filter:hover { color: var(--text); background: var(--hover); }
-.filter-tag .gtag-x { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 14px; margin-left: 0; margin-right: -2px; color: var(--text-dim); font-size: var(--fs-3);
+.filter-tag .gtag-x { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 14px; margin-left: 0; margin-right: -2px; padding: 0; border: 0; color: var(--text-dim); background: transparent; font-size: var(--fs-3);
                       width: 14px; height: 14px; line-height: 14px; text-align: center; border-radius: 50%; cursor: pointer; opacity: 0; transition: opacity var(--dur) var(--ease), background var(--dur) var(--ease), color var(--dur) var(--ease); }
-.filter-tag:hover .gtag-x, .tag-menu-node:hover > .filter-tag .gtag-x { opacity: 1; }
+.filter-tag:hover .gtag-x, .filter-tag:focus-within .gtag-x, .tag-menu-node:hover > .filter-tag .gtag-x { opacity: 1; }
 .filter-tag .gtag-x:hover { color: var(--text); background: var(--hover); }
+.filter-tag .gtag-x:focus-visible { color: var(--text); background: var(--hover); outline: 1px solid var(--accent); outline-offset: 1px; }
 .filter-tag.active .gtag-x { color: color-mix(in srgb, var(--active-fg) 55%, transparent); }
 .filter-tag.active .gtag-x:hover { color: var(--active-fg); background: color-mix(in srgb, var(--active-fg) 22%, transparent); }
+.filter-tag.active .gtag-x:focus-visible { color: var(--active-fg); background: color-mix(in srgb, var(--active-fg) 22%, transparent); outline: 1px solid var(--accent); outline-offset: 1px; }
 /* Borders OFF: group tags become FILLED chips (light solid bg, no outline)
    rather than outlined chips. Icon builtins + submenu items keep their look. */
 :root[data-borders="borderless"] .filter-tag:not(.icon-filter),
@@ -329,6 +331,15 @@ mark { background: var(--mark-bg); color: var(--mark-fg); border-radius: 2px; pa
 .bc-editor-bar { -webkit-app-region: drag; display: flex; align-items: center; gap: var(--sp-4); padding: 0 var(--sp-3) 0 var(--sp-6); height: 30px; flex-shrink: 0; border-bottom: 1px solid var(--line); background: var(--surface); }
 .bc-editor-title { -webkit-app-region: drag; flex: 1; font-size: var(--fs-2); color: var(--text-dim); letter-spacing: .04em; text-transform: uppercase; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .bc-editor-bar-actions { -webkit-app-region: no-drag; display: flex; align-items: center; gap: var(--sp-1); }
+/* Title-bar tag strip (editor + viewer + demo editor): the clip's groups as
+   inert chips (hover reveals the gtag-x remove glyph, same as the filter bar)
+   plus a compact + that opens the shared group picker. Flexes between the
+   title and the bar actions; overflow scrolls horizontally, scrollbar hidden. */
+.bc-tag-strip { -webkit-app-region: no-drag; display: flex; align-items: center; gap: var(--sp-2); min-width: 0; max-width: 60%; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
+.bc-tag-strip::-webkit-scrollbar { display: none; }
+.bc-tag-strip[hidden] { display: none; }
+.bc-tag-strip .filter-tag { flex: 0 0 auto; cursor: default; }
+.bc-tag-strip .tag-add-btn { flex: 0 0 auto; width: 20px; height: 20px; }
 .bc-title-row { flex-shrink: 0; padding: var(--sp-4) var(--sp-5); background: var(--surface); }
 .bc-note-title { width: 100%; background: var(--input); border: 1px solid var(--line); border-radius: var(--r-2); color: var(--text); font: inherit; font-size: var(--fs-4); padding: var(--sp-3) var(--sp-4); outline: none; }
 .bc-note-title:focus { border-color: var(--accent); }

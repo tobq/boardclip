@@ -684,13 +684,34 @@
       html += row('edit', 'open_in_new', 'Open in editor');
     }
     html += row('rename', 'drive_file_rename_outline', isImage ? 'Name image' : 'Set title');
-    const itemGroups = new Set(groupsOf(item));
-    const groupTree = renderTagTreeMenu(buildTagTree([...groups, ...itemGroups]), { mode: 'picker', itemGroups })
-      + '<span class="tag-menu-node"><span class="gp-btn add-group" data-action="add-group" title="New group"><span class="mi sm">add</span> New group</span></span>';
-    html += `<div class="bc-menu-item tag-menu-node has-children"><span class="mi">sell</span><span class="bc-menu-label">Add to group</span><span class="tag-caret mi">chevron_right</span><span class="tag-submenu">${groupTree}</span></div>`;
+    html += `<div class="bc-menu-item tag-menu-node has-children"><span class="mi">sell</span><span class="bc-menu-label">Add to group</span><span class="tag-caret mi">chevron_right</span><span class="tag-submenu">${clipGroupTreeHtml(groups, item)}</span></div>`;
     html += `<div class="bc-menu-item tag-menu-node has-children"><span class="mi">dialpad</span><span class="bc-menu-label">Numpad</span><span class="tag-caret mi">chevron_right</span><span class="tag-submenu"><div class="numpad-picker static"><div class="np-row">${renderNumpadButtons(item, items, nmap)}</div></div></span></div>`;
     html += row('del', 'delete', 'Delete', 'danger');
     html += '</div>';
+    return html;
+  }
+  // Picker group tree + "New group" for ONE clip — the single builder behind
+  // the clip menu's "Add to group" submenu AND the title-bar strip's + popover
+  // (openGroupPicker). Marks the clip's current groups as assigned.
+  function clipGroupTreeHtml(groups, item) {
+    const itemGroups = new Set(groupsOf(item));
+    return renderTagTreeMenu(buildTagTree([...(groups || []), ...itemGroups]), { mode: 'picker', itemGroups })
+      + '<span class="tag-menu-node"><span class="gp-btn add-group" data-action="add-group" title="New group"><span class="mi sm">add</span> New group</span></span>';
+  }
+  // Title-bar tag strip content (editor + viewer windows and the demo editor):
+  // the clip's groups as inert chips — reusing the EXACT filter-tag/group-tag
+  // visual and the hover-revealed gtag-x glyph — plus a compact "+" that opens
+  // the shared group picker. Chips carry data-strip-group (NOT data-group) so
+  // the controller's filter-intent branch can never mistake them for the
+  // popup's filter chips; only the × (untag) and + (tag-add) are actionable.
+  // `item` may be null (a new, not-yet-committed note): renders just the +.
+  function renderClipTagChips(item) {
+    let html = '';
+    for (const group of item ? groupsOf(item) : []) {
+      const label = escapeHtml(group);
+      html += `<span class="filter-tag group-tag" data-strip-group="${label}" title="${label}"><span class="tag-label">${label}</span><button class="gtag-x mi" type="button" data-action="untag" data-group="${label}" title="Remove from ${label}" aria-label="Remove ${label}">close</button></span>`;
+    }
+    html += '<button class="icon-btn tag-add-btn" type="button" data-action="tag-add" title="Add to group" aria-label="Add to group"><span class="mi sm">add</span></button>';
     return html;
   }
   // ONE menu-content builder for the multi-select bulk menu (shared by the
@@ -1563,6 +1584,14 @@
       if (!item) return;
       menu.open({ id, x, y, html: renderClipMenu(item, { items: allItems(), groups: groupNames(), numpadMap: a.numpadMap ? a.numpadMap() : {}, context: a.menuContext }) });
     }
+    // The title-bar strip's + popover: JUST the one-clip group picker (same
+    // clipGroupTreeHtml content as the clip menu's submenu, same gp-btn/add-group
+    // dispatch — the menu root carries data-id). Mirrors openBulkGroupMenu.
+    function openGroupPickerAt(id, x, y) {
+      const item = a.itemById(id);
+      if (!item) return;
+      menu.open({ id, x, y, html: `<div class="bc-menu-list bc-group-list">${clipGroupTreeHtml(groupNames(), item)}</div>` });
+    }
 
     // Opens the editor (or image viewer for images) for the clip row under event.
     // Shared inner helper used by alt+click and middle-click (auxclick) paths.
@@ -1622,6 +1651,31 @@
       const bulkGroupBtn = t.closest('[data-action="bulk-group"]');
       if (bulkGroupBtn) { event.stopPropagation(); bulkGroup(bulkGroupBtn.dataset.group); return true; }
       if (t.closest('[data-action="clear-search-filters"]')) { event.stopPropagation(); if (a.clearFilters) a.clearFilters(); if (a.focusSearch) a.focusSearch(); return true; }
+      // Title-bar tag strip: × on a chip removes the clip from that group…
+      const untag = t.closest('[data-action="untag"]');
+      if (untag) {
+        event.stopPropagation();
+        const strip = untag.closest('[data-id]');
+        if (strip && untag.dataset.group) { await a.toggleGroup(strip.dataset.id, untag.dataset.group); refresh(); }
+        return true;
+      }
+      // …and + opens the shared group picker. A strip without data-id is a new
+      // note that isn't a clip yet: commit-on-add — the host's ensureClipId
+      // force-commits the draft and returns the fresh content-addressed id.
+      const tagAdd = t.closest('[data-action="tag-add"]');
+      if (tagAdd) {
+        event.stopPropagation();
+        // A new note's ensureClipId() commits then refreshes the strip, replacing
+        // this button in the DOM. Capture its anchor before awaiting so the picker
+        // still opens beside the clicked + rather than at viewport origin.
+        const r = tagAdd.getBoundingClientRect();
+        const strip = tagAdd.closest('[data-id]');
+        let id = strip ? strip.dataset.id : null;
+        if (!id && a.ensureClipId) id = await a.ensureClipId();
+        if (!id) { toast(a.emptyClipToast || 'Type something first'); return true; }
+        openGroupPickerAt(id, r.left, r.bottom + 4);
+        return true;
+      }
       const gx = t.closest('[data-action="delete-group"]');
       if (gx) { event.stopPropagation(); deleteGroup(gx.dataset.group); return true; }
       const ftag = t.closest('.filter-tag[data-filter], .filter-tag[data-group]');
@@ -1758,6 +1812,7 @@
       selectRange,
       repaintSelection: paintSelection,
       openClipMenu: openClipMenuAt, // standalone editor/viewer windows open the same menu
+      openGroupPicker: openGroupPickerAt, // title-bar strip's + popover (same picker as the menu submenu)
       closeMenu: () => menu.close(), // popup hide/reset must not leave a stale popover
     };
   }
@@ -1803,6 +1858,21 @@
     const lineTop = lineNumberAtIndex(text, index) * lh + pad;
     return Math.max(0, Math.floor(lineTop - view * 0.35));
   }
+  // Shared updater for the title-bar tag strip both createEditor and
+  // createImageViewer expose as setTags(item, opts). The strip carries the
+  // clip's data-id so the controller's untag/tag-add branches resolve their
+  // target exactly like the menu root does. `item` null + {allowAdd:true} is
+  // the new-note case (just the +, commit-on-add); null without it hides the
+  // strip (hosts that never call setTags keep today's chrome untouched).
+  function updateTagStrip(strip, item, opts) {
+    if (!strip) return;
+    const o = opts || {};
+    const id = item ? itemId(item) : null;
+    if (!id && !o.allowAdd) { strip.hidden = true; strip.innerHTML = ''; delete strip.dataset.id; return; }
+    if (id) strip.dataset.id = id; else delete strip.dataset.id;
+    strip.innerHTML = renderClipTagChips(item);
+    strip.hidden = false;
+  }
   // Shared plain-text editor — ONE implementation mounted by BOTH the desktop
   // app (in its own frameless window) and the website demo (in an in-page
   // overlay). Edits are captured live: every keystroke fires onInput (the host
@@ -1822,6 +1892,7 @@
     root.innerHTML = `
       <div class="bc-editor-bar">
         <span class="bc-editor-title"></span>
+        <div class="bc-tag-strip" data-x="tags" hidden></div>
         <div class="bc-editor-bar-actions">
           <button class="icon-btn" type="button" data-x="find" title="Find (Ctrl+F)"><span class="mi">search</span></button>
           <button class="icon-btn" type="button" data-x="revert" title="Revert to original"><span class="mi">undo</span></button>
@@ -1882,10 +1953,12 @@
     function commit() {
       if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
       const next = payload();
-      if (next.text === lastCommittedText && next.title === lastCommittedTitle) return;
+      if (next.text === lastCommittedText && next.title === lastCommittedTitle) return undefined;
       lastCommittedText = next.text;
       lastCommittedTitle = next.title;
-      if (o.onCommit) o.onCommit(next);
+      // Return the host's result (a promise in the app) so commit-on-add flows
+      // (the tag strip's ensureClipId) can await the write before re-querying.
+      return o.onCommit ? o.onCommit(next) : undefined;
     }
     function scheduleCommit() {
       if (idleTimer) clearTimeout(idleTimer);
@@ -2050,6 +2123,10 @@
       // Reveal the (hidden-by-default) title row when a title is set externally
       // (e.g. the clip menu's rename) so the result is visible immediately.
       setTitle: (t) => { titleInput.value = cleanTitle(t); if (titleInput.value) showTitleInput(); },
+      // Title-bar tag strip (shared with the viewer): the clip's groups as
+      // removable chips + a "+" opening the group picker. Host calls this after
+      // init and after every mutation/commit (the clip id is content-addressed).
+      setTags: (item, tagOpts) => updateTagStrip(q('tags'), item, tagOpts),
       commit,
       focus: () => area.focus(),
       focusTitle: () => { showTitleInput(); titleInput.focus(); titleInput.select(); },
@@ -2071,6 +2148,7 @@
     root.innerHTML = `
       <div class="bc-editor-bar">
         <span class="bc-editor-title"></span>
+        <div class="bc-tag-strip" data-x="tags" hidden></div>
         <div class="bc-editor-bar-actions">
           <button class="icon-btn" type="button" data-x="menu" title="More actions" aria-label="More actions"><span class="mi">more_horiz</span></button>
           <button class="icon-btn close-btn" type="button" data-x="close" title="Close (Esc)">&times;</button>
@@ -2179,6 +2257,8 @@
       el: root,
       setSrc: (src) => { if (img.src !== src) img.src = src; },
       setTitle: (t) => { titleEl.textContent = t || 'Image'; },
+      // Same title-bar tag strip as createEditor (updateTagStrip is shared).
+      setTags: (item, tagOpts) => updateTagStrip(q('tags'), item, tagOpts),
       focus: () => root.focus(),
     };
   }
@@ -2745,6 +2825,8 @@
     renderClipMenu,
     renderBulkMenu,
     bulkGroupTreeHtml,
+    clipGroupTreeHtml,
+    renderClipTagChips,
     renderSelectionBar,
     attachSearchBox,
     createMenu,

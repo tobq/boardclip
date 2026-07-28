@@ -182,6 +182,7 @@ async function reloadRendererAfterUpdate() {
 }
 
 function relaunchAfterUpdate() {
+  app.isQuitting = true;
   app.relaunch();
   app.exit(0);
 }
@@ -357,7 +358,11 @@ async function writeInPlace(filePath, data) {
 
 function loadSettings() {
   try {
-    return { ...DEFAULT_SETTINGS, ...JSON.parse(fs.readFileSync(SETTINGS_PATH, 'utf-8')) };
+    // Shared store parser (blobStore.parseJsonText): accepts BOM-prefixed UTF-8
+    // JSON written by Windows tools rather than reading a valid settings file as
+    // an unreadable store and replacing it with defaults on the next write.
+    const loaded = blobStore.parseJsonText(fs.readFileSync(SETTINGS_PATH, 'utf-8'));
+    return { ...DEFAULT_SETTINGS, ...(loaded && typeof loaded === 'object' ? loaded : {}) };
   } catch {
     return { ...DEFAULT_SETTINGS };
   }
@@ -562,7 +567,10 @@ function notifyDataChanged() {
 // --- History ---
 function loadHistory() {
   try {
-    const loaded = JSON.parse(fs.readFileSync(DB_PATH, 'utf-8'));
+    // Shared store parser: a BOM-prefixed history file (PowerShell's default
+    // UTF-8 writer) is valid JSON and must not be read as an empty store — the
+    // next canonical write would replace the user's real history.
+    const loaded = blobStore.parseJsonText(fs.readFileSync(DB_PATH, 'utf-8'));
     return textBlobStore.hydrateHistory(Array.isArray(loaded) ? loaded : [], TEXT_DIR);
   } catch {
     return [];
@@ -592,7 +600,7 @@ function saveHistory() {
 
 function loadConflicts() {
   try {
-    return conflictModel.normalizeConflictState(JSON.parse(fs.readFileSync(CONFLICTS_PATH, 'utf-8')));
+    return conflictModel.normalizeConflictState(blobStore.parseJsonText(fs.readFileSync(CONFLICTS_PATH, 'utf-8')));
   } catch {
     return conflictModel.normalizeConflictState({});
   }
@@ -951,6 +959,7 @@ function remoteSettingsPayload() {
   delete remoteSave.p2p_device_id;
   delete remoteSave.popup_size;
   delete remoteSave.editor_bounds;
+  delete remoteSave.viewer_bounds;
   // Appearance variants: per-machine (glass support is hardware-dependent; the
   // rest are dev-only auditioning knobs), never synced.
   delete remoteSave.surface_style;
@@ -1035,6 +1044,14 @@ function foldRemoteState(canonicalHistory, remoteHistory, remoteSettings, remote
 }
 
 async function refreshCloudAccounts() {
+  // An explicit isolated-data run must never probe or sync a developer's real
+  // cloud mounts. BOARDCLIP_DATA_DIR may also be a legitimate permanent data
+  // relocation, so it alone is NOT a test-mode signal.
+  if (process.env.BOARDCLIP_ISOLATED === '1') {
+    cloudAccountsCache = [];
+    cloudAccountsCacheAt = Date.now();
+    return cloudAccountsCache;
+  }
   cloudAccountsCache = await getCloudAccounts();
   cloudAccountsCacheAt = Date.now();
   return cloudAccountsCache;
@@ -1318,7 +1335,7 @@ async function healForkedSyncFiles(syncPath) {
 
   const canonHistoryPath = path.join(syncPath, 'clipboard-history.json');
   const canonSettingsPath = path.join(syncPath, 'clipboard-settings.json');
-  const readJson = async (p) => { try { return JSON.parse(await fs.promises.readFile(p, 'utf-8')); } catch { return null; } };
+  const readJson = async (p) => { try { return blobStore.parseJsonText(await fs.promises.readFile(p, 'utf-8')); } catch { return null; } };
   const unlink = async (n) => { try { await fs.promises.unlink(path.join(syncPath, n)); } catch {} };
   const healed = { path: syncPath, historyForks: historyForks.length, settingsForks: settingsForks.length, itemsRecovered: 0 };
 
@@ -1373,7 +1390,7 @@ async function readRemoteState(syncPath) {
   // Flag it so syncMerge can skip inference passes for this cycle.
   let suspectRead = false;
   try {
-    const loaded = JSON.parse(await fs.promises.readFile(remoteDbPath, 'utf-8'));
+    const loaded = blobStore.parseJsonText(await fs.promises.readFile(remoteDbPath, 'utf-8'));
     if (Array.isArray(loaded)) {
       if (!loaded.length) {
         try { suspectRead = (await fs.promises.stat(remoteDbPath)).size > 2; } catch {}
@@ -1387,14 +1404,14 @@ async function readRemoteState(syncPath) {
     try { suspectRead = (await fs.promises.stat(remoteDbPath)).size > 0; } catch {}
   }
   let remoteSettings = {};
-  try { remoteSettings = JSON.parse(await fs.promises.readFile(remoteSettingsPath, 'utf-8')); } catch {}
+  try { remoteSettings = blobStore.parseJsonText(await fs.promises.readFile(remoteSettingsPath, 'utf-8')); } catch {}
   let remoteConflicts = {};
-  try { remoteConflicts = JSON.parse(await fs.promises.readFile(remoteConflictsPath, 'utf-8')); } catch {}
+  try { remoteConflicts = blobStore.parseJsonText(await fs.promises.readFile(remoteConflictsPath, 'utf-8')); } catch {}
   return { remoteHistory, remoteSettings, remoteConflicts: conflictModel.normalizeConflictState(remoteConflicts), suspectRead };
 }
 
 function safeReadJson(filePath, fallback) {
-  try { return JSON.parse(fs.readFileSync(filePath, 'utf-8')); } catch { return fallback; }
+  try { return blobStore.parseJsonText(fs.readFileSync(filePath, 'utf-8')); } catch { return fallback; }
 }
 
 function fileSummary(filePath) {
@@ -2958,6 +2975,71 @@ function createPopup() {
   win.loadFile(path.join(SCRIPT_DIR, 'index.html'));
   win.on('resize', schedulePopupSizeSave);
 
+  // A popup show must NEVER be treated as evidence that the renderer died. A
+  // hidden Chromium renderer can legitimately defer an executeJavaScript round
+  // trip while it wakes, and the old 800ms watchdog turned that harmless delay
+  // into a full reload on every Win+V. Recover only from Electron's native
+  // process-lifecycle signal instead.
+  let popupRendererRecovery = null;
+  win.webContents.on('render-process-gone', (_event, details) => {
+    const reason = details && details.reason || 'unknown';
+    if (app.isQuitting || reason === 'clean-exit' || !win || win.isDestroyed()) return;
+
+    diagnostics.record('popup.renderer_process_gone', {
+      reason,
+      exit_code: details && details.exitCode,
+      visible: win.isVisible(),
+    }, { forceFile: true });
+
+    // A renderer can die AGAIN while its replacement is loading. Cancel the
+    // stale recovery listeners and start a fresh attempt for the newest crash;
+    // otherwise the old boolean guard wedges the popup forever.
+    if (popupRendererRecovery) popupRendererRecovery.cancel();
+
+    let settled = false;
+    const recovery = {
+      cancel() {
+        if (settled) return;
+        settled = true;
+        win.webContents.removeListener('did-finish-load', onLoaded);
+        win.webContents.removeListener('did-fail-load', onFailed);
+        if (popupRendererRecovery === recovery) popupRendererRecovery = null;
+      },
+    };
+    const onLoaded = () => {
+      if (settled) return;
+      recovery.cancel();
+      resetPopupRendererState();
+    };
+    const onFailed = (_event, errorCode, errorDescription) => {
+      if (settled) return;
+      recovery.cancel();
+      diagnostics.record('popup.renderer_recovery_failed', {
+        reason,
+        error_code: errorCode,
+        error: errorDescription,
+      }, { forceFile: true });
+    };
+    popupRendererRecovery = recovery;
+    win.webContents.once('did-finish-load', onLoaded);
+    win.webContents.once('did-fail-load', onFailed);
+    try {
+      win.webContents.reload();
+    } catch (error) {
+      onFailed(null, null, error && error.message);
+    }
+  });
+  win.webContents.on('unresponsive', () => {
+    diagnostics.record('popup.renderer_unresponsive_native', {
+      visible: win && !win.isDestroyed() && win.isVisible(),
+    }, { forceFile: true });
+  });
+  win.webContents.on('responsive', () => {
+    diagnostics.record('popup.renderer_responsive_native', {
+      visible: win && !win.isDestroyed() && win.isVisible(),
+    }, { forceFile: true });
+  });
+
   // Dev/source installs: auto-reload renderer files while iterating.
   let reloadTimer = null;
   const scheduleRendererReload = () => {
@@ -3077,29 +3159,14 @@ function resetPopupRendererState() {
   });
 }
 
-function ensurePopupRendererResponsive() {
+function resetPopupAfterShow() {
   if (!win || win.isDestroyed() || !win.webContents || win.webContents.isDestroyed()) return;
   if (win.webContents.isLoading()) return;
 
-  let settled = false;
-  const timer = setTimeout(() => {
-    if (settled || !win || win.isDestroyed() || !win.isVisible()) return;
-    logSafe('BoardClip popup renderer did not respond after show; reloading.');
-    diagnostics.record('popup.renderer_unresponsive', { timeout_ms: 800 }, { forceFile: true });
-    win.webContents.once('did-finish-load', () => resetPopupRendererState());
-    win.webContents.reloadIgnoringCache();
-  }, 800);
-  if (timer.unref) timer.unref();
-
-  resetPopupRendererState()
-    .then(() => {
-      settled = true;
-      clearTimeout(timer);
-    })
-    .catch(() => {
-      settled = true;
-      clearTimeout(timer);
-    });
+  // Deliberately fire-and-forget. Showing the persistent window is the user
+  // action; reset/focus should clean up state when Chromium schedules it, never
+  // delay the open or convert a slow wake-up into a renderer reload.
+  resetPopupRendererState();
 }
 
 function startClickAwayWatcher() {
@@ -3166,7 +3233,7 @@ function showPopup() {
   win.moveTop();
   if (process.platform === 'darwin') app.focus({ steal: true });
   win.focus();
-  ensurePopupRendererResponsive();
+  resetPopupAfterShow();
   if (windowsHook) windowsHook.setPopupVisible(true);
   startClickAwayWatcher();
   diagnostics.record('popup.show', {
@@ -4715,14 +4782,17 @@ function setupIPC() {
     session.draftTitle = next.title;
     writeDraftFile(session);
   });
-  ipcMain.on('editor-commit', (_, sessionId, payload) => {
+  // handle (not on): commit resolves AFTER the write with the session's current
+  // content-addressed id, so the editor's tag strip can commit-on-add reliably.
+  ipcMain.handle('editor-commit', (_, sessionId, payload) => {
     const session = editSessions.get(sessionId);
-    if (!session) return;
+    if (!session) return null;
     const next = editorPayloadFrom(payload, { text: session.draftText, title: session.draftTitle });
     session.draftText = next.text;
     session.draftTitle = next.title;
     writeDraftFile(session);
     commitEditSession(session, next);
+    return session.currentId || null;
   });
   ipcMain.on('editor-close', (event, sessionId) => {
     if (String(sessionId || '').startsWith('conflict:')) {
@@ -5258,6 +5328,7 @@ app.whenReady().then(() => {
   logSafe(`BoardClip running. ${effectiveShowShortcut()} to open popup.`);
 });
 
+app.on('before-quit', () => { app.isQuitting = true; });
 app.on('will-quit', () => {
   globalShortcut.unregisterAll();
   if (windowsHook) windowsHook.uninstall();

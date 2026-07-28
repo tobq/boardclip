@@ -122,7 +122,17 @@ function applyAppearance(s) {
     uiBorders: s.ui_borders,
   });
 }
-if (window.api.getSettings) window.api.getSettings().then(s => { if (s) { if (s.theme_mode) setThemeMode(s.theme_mode); applyAppearance(s); } }).catch(() => {});
+// Initial readiness must not depend on opening Settings: the search-box sparkle
+// is visible from first paint, so configure it from the initial settings snapshot.
+if (window.api.getSettings) window.api.getSettings().then(s => {
+  if (!s) return;
+  if (s.theme_mode) setThemeMode(s.theme_mode);
+  applyAppearance(s);
+  aiSearchConfigured = !!(s.ai_search_endpoint && s.ai_search_key && s.ai_search_model);
+  // updateAiUi is declared later in this script, so defer to the next task when
+  // settings resolve before its declaration is initialized.
+  queueMicrotask(() => { if (typeof updateAiUi === 'function') updateAiUi(); });
+}).catch(() => {});
 if (window.api.onSurfaceChanged) window.api.onSurfaceChanged((style) => document.documentElement.setAttribute('data-surface', style === 'solid' ? 'solid' : 'glass'));
 
 // --- Helpers ---

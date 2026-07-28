@@ -297,4 +297,52 @@ const siteCss = read('site/styles.css');
   assert.ok(/\.np-row\s*\{[^}]*grid-template-columns:\s*repeat\(3/.test(popupCss), '.np-row must be a 3-column grid (keypad formation)');
 }
 
+// 13) Title-bar tag strip: ONE shared renderer (renderClipTagChips) + ONE
+//     group-picker builder (clipGroupTreeHtml) behind BOTH the clip menu's
+//     "Add to group" submenu and the strip's + popover; the strip container
+//     ships inside the shared createEditor/createImageViewer chrome and every
+//     host (app editor, app viewer, demo editor) drives it via setTags.
+{
+  const viewerHtml = read('viewer.html');
+  const editorHtml = read('editor.html');
+  const coreSrc = read('site/shared/clipboard-ui-core.js');
+  assert.ok(typeof ui.renderClipTagChips === 'function', 'core must export renderClipTagChips');
+  assert.ok(typeof ui.clipGroupTreeHtml === 'function', 'core must export clipGroupTreeHtml');
+  // One picker builder: the clip menu's submenu AND the picker popover both call it.
+  const treeCalls = (coreSrc.match(/clipGroupTreeHtml\(/g) || []).length;
+  assert.ok(treeCalls >= 3, `clipGroupTreeHtml should back both the menu submenu and the + popover (found ${treeCalls} references)`);
+  // Chips: exact filter-tag/group-tag visual, hover ×(untag) carrying the group,
+  // inert body (data-strip-group, NOT the filter chips' data-group), and the +.
+  const item = { id: 'txt:x', type: 'text', text: 'hi', pin: { groups: ['work', 'todo/forge'] } };
+  const chips = ui.renderClipTagChips(item);
+  assert.ok(chips.includes('filter-tag group-tag'), 'tag chips must reuse the filter-tag group-tag visual');
+  assert.ok(chips.includes('data-strip-group="work"') && !/data-group="work"[^>]*>(?!<span class="tag-label")/.test(chips.split('gtag-x')[0]),
+    'chip body must be inert (data-strip-group), never a filter-intent data-group target');
+  assert.ok(chips.includes('data-action="untag"') && chips.includes('data-group="todo/forge"'), 'chip × must dispatch untag with its group');
+  assert.ok(/<button class="gtag-x mi" type="button"[^>]*data-action="untag"/.test(chips), 'chip × must be a keyboard-focusable button');
+  assert.ok(chips.includes('data-action="tag-add"'), 'strip must include the + (tag-add) button');
+  assert.ok(ui.renderClipTagChips(null).includes('data-action="tag-add"'), 'a new note (null item) still renders the +');
+  // The strip container is part of the SHARED chrome (both factories), not host markup.
+  const barStrips = (coreSrc.match(/class="bc-tag-strip" data-x="tags"/g) || []).length;
+  assert.strictEqual(barStrips, 2, `bc-tag-strip must appear exactly twice in core (createEditor + createImageViewer), found ${barStrips}`);
+  for (const [name, html] of [['editor.html', editorHtml], ['viewer.html', viewerHtml], ['site/index.html', siteHtml]]) {
+    assert.ok(html.includes('.setTags('), `${name} must drive the shared title-bar tag strip via setTags`);
+    assert.ok(!html.includes('bc-tag-strip'), `${name} re-inlined the tag strip markup; it belongs to the shared chrome`);
+  }
+  // Commit-on-add: the hosts with a new-note flow supply ensureClipId, and the
+  // controller (not the hosts) owns the untag/tag-add dispatch.
+  assert.ok(editorHtml.includes('ensureClipId'), 'editor.html must supply ensureClipId (commit-on-add)');
+  assert.ok(siteHtml.includes('ensureClipId'), 'site/index.html must supply ensureClipId (commit-on-add)');
+  assert.ok(coreSrc.includes(`closest('[data-action="untag"]')`) || /data-action="untag"/.test(coreSrc), 'controller must own the untag dispatch');
+  // Commit-on-add refreshes the strip (and replaces the + DOM node), so the
+  // picker anchor must be measured before the async commit.
+  const tagAddDispatch = coreSrc.indexOf("const tagAdd = t.closest('[data-action=\"tag-add\"]');");
+  const tagAddAnchor = coreSrc.indexOf('const r = tagAdd.getBoundingClientRect();', tagAddDispatch);
+  const ensureClip = coreSrc.indexOf('await a.ensureClipId()', tagAddDispatch);
+  assert.ok(tagAddDispatch >= 0 && tagAddAnchor > tagAddDispatch && ensureClip > tagAddAnchor,
+    'tag-add must capture its anchor before awaiting commit-on-add');
+  const declares = (css, sel) => new RegExp(`(^|[\\s,])\\.${sel}\\s*[,{]`, 'm').test(css);
+  assert.ok(declares(popupCss, 'bc-tag-strip'), 'clipboard-popup.css should define .bc-tag-strip');
+}
+
 console.log('ui-parity.test.js: all parity guards passed');

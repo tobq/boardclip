@@ -34,6 +34,7 @@
   ::-webkit-scrollbar-thumb { background:var(--line-strong); border-radius:5px; }
 </style></head><body>
 <div id="editorHost"></div>
+<div class="toast" id="toast">Copied</div>
 <script src="site/shared/clip-search.js"></script>
 <script src="site/shared/clipboard-ui-core.js"></script>
 <script>
@@ -50,6 +51,15 @@ if (window.editorApi.onColorSchemeChanged) window.editorApi.onColorSchemeChanged
 
 let editor = null;
 let reconcileView = null;
+let toastTimer = null;
+function showToast(message) {
+  const toast = document.getElementById('toast');
+  if (!toast) return;
+  toast.textContent = message || 'Copied';
+  toast.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toast.classList.remove('show'), 1200);
+}
 
 // --- Shared clip menu (pin/group/numpad/title/delete), same as the popup rows
 // and the image viewer. Backed by a light state snapshot fetched right before
@@ -57,6 +67,17 @@ let reconcileView = null;
 // id comes from main at open time too). context 'editor' hides "Open in editor".
 let menuState = { item: null, items: [], groups: [], aiGroup: 'AI' };
 let menuClipId = null;
+// Title-bar tag strip: re-render from the CURRENT clip (the id is content-
+// addressed, so it changes on every committed text edit — always re-query).
+// A new note that hasn't committed yet shows just the + (commit-on-add).
+async function refreshTags() {
+  if (!editor) return;
+  const id = await window.editorApi.currentId();
+  if (!id) { editor.setTags(null, { allowAdd: true }); return; }
+  menuClipId = id;
+  menuState = await window.editorApi.state(id);
+  editor.setTags(menuState.item, { allowAdd: true });
+}
 const menuAdapter = {
   menuContext: 'editor',
   itemById: (id) => menuState.items.find((it) => Core.itemId(it) === id) || null,
@@ -76,8 +97,17 @@ const menuAdapter = {
   // Delete closes the window; main suppresses the close-commit so the draft
   // can't resurrect the clip.
   deleteClips: async () => { await window.editorApi.deleteSelf(); return []; },
+  // Commit-on-add for the tag strip's + on a new note: force-commit the draft
+  // through the ONE existing write path, then re-query the fresh clip id.
+  ensureClipId: async () => {
+    if (editor) await Promise.resolve(editor.commit());
+    const id = await window.editorApi.currentId();
+    if (id) await refreshTags(); // picker needs the fresh item in menuState
+    return id || null;
+  },
+  toast: (message) => showToast(message),
   render: () => {},
-  refresh: async () => { menuState = await window.editorApi.state(menuClipId); },
+  refresh: async () => { await refreshTags(); },
 };
 const menuController = Core.createClipController(menuAdapter);
 document.addEventListener('click', (e) => menuController.onClick(e));
@@ -105,7 +135,10 @@ window.editorApi.onInit((init) => {
     initialFocusTitle: !!init.focusTitle,
     title: init.title || (init.isNew ? 'New clip' : 'Edit clip'),
     onInput: (payload) => window.editorApi.draft(payload),     // live crash-safe draft, every keystroke
-    onCommit: (payload) => window.editorApi.commit(payload),   // idle / Ctrl+S / close -> write the clip
+    // idle / Ctrl+S / close -> write the clip. The commit changes the content-
+    // addressed id, so refresh the title-bar tag strip once the write lands
+    // (returned promise also lets the strip's commit-on-add await the write).
+    onCommit: (payload) => window.editorApi.commit(payload).then((r) => { refreshTags(); return r; }),
     onClose: () => window.editorApi.close(),
     // "..." in the editor chrome -> the shared clip menu (existing clips only;
     // a brand-new note has no clip until its first commit).
@@ -113,6 +146,7 @@ window.editorApi.onInit((init) => {
   });
   host.appendChild(editor.el);
   editor.focus();
+  refreshTags();
 });
 
 // Right-click in the editor chrome (bar/foot — not the text area, where the

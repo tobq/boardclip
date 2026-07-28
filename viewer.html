@@ -49,6 +49,9 @@ let state = { item: null, items: [], groups: [], aiGroup: 'AI' };
 async function refreshState() {
   state = await window.viewerApi.state();
   if (state && state.item && viewer) viewer.setTitle(Core.titleOf(state.item) || 'Image');
+  // Title-bar tag strip: the clip's groups + the "+" picker (images always
+  // exist as clips, so no commit-on-add here; a null item hides the strip).
+  if (viewer) viewer.setTags(state ? state.item : null);
 }
 
 // The SAME shared controller the popup uses drives the menu dispatch (pin/

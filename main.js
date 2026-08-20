@@ -21,6 +21,7 @@ const backupStore = require('./lib/backup');
 const clipboardModel = require('./lib/clipboard-model');
 const clipboardCapture = require('./lib/clipboard-capture');
 const textBlobStore = require('./lib/text-blob-store');
+const clipBlobStore = require('./lib/clip-blob-store');
 const { planRetention } = require('./lib/retention');
 const { createAutoUpdater, updateSupport } = require('./lib/auto-update');
 const syncPaths = require('./lib/sync-paths');
@@ -67,7 +68,12 @@ const DB_PATH = path.join(DATA_DIR, 'clipboard-history.json');
 const SETTINGS_PATH = path.join(DATA_DIR, 'clipboard-settings.json');
 const CONFLICTS_PATH = path.join(DATA_DIR, 'clipboard-conflicts.json');
 const IMG_DIR = path.join(DATA_DIR, 'clipboard-images');
-const TEXT_DIR = path.join(DATA_DIR, textBlobStore.TEXT_BLOB_DIRNAME);
+const TEXT_DIR = path.join(DATA_DIR, clipBlobStore.TEXT_BLOB_DIRNAME);
+const HTML_DIR = path.join(DATA_DIR, clipBlobStore.HTML_BLOB_DIRNAME);
+const RTF_DIR = path.join(DATA_DIR, clipBlobStore.RTF_BLOB_DIRNAME);
+// Every content-addressed clipboard payload directory, keyed by field. Passed
+// as one unit so a call site can never hydrate/store a subset by accident.
+const BLOB_DIRS = { text: TEXT_DIR, html: HTML_DIR, rtf: RTF_DIR };
 const HISTORY_BACKUP_DIR = path.join(DATA_DIR, 'clipboard-backups');
 // Retention buffer of raw external-edit text. Editor temps are ARCHIVED here on
 // finish (not deleted), so a saved buffer is recoverable straight off disk even
@@ -156,7 +162,7 @@ function setAutoLaunchEnabled(enabled) {
 }
 
 ensureDirectory(IMG_DIR);
-ensureDirectory(TEXT_DIR);
+for (const dir of Object.values(BLOB_DIRS)) ensureDirectory(dir);
 
 let BUILD_INFO = getBuildInfo(SCRIPT_DIR);
 
@@ -571,7 +577,7 @@ function loadHistory() {
     // UTF-8 writer) is valid JSON and must not be read as an empty store — the
     // next canonical write would replace the user's real history.
     const loaded = blobStore.parseJsonText(fs.readFileSync(DB_PATH, 'utf-8'));
-    return textBlobStore.hydrateHistory(Array.isArray(loaded) ? loaded : [], TEXT_DIR);
+    return clipBlobStore.hydrateHistory(Array.isArray(loaded) ? loaded : [], BLOB_DIRS);
   } catch {
     return [];
   }
@@ -579,7 +585,7 @@ function loadHistory() {
 
 function writeHistoryStorageFile() {
   for (const item of history) ensureItemId(item);
-  const storedHistory = textBlobStore.prepareHistoryForStorage(history, TEXT_DIR);
+  const storedHistory = clipBlobStore.prepareHistoryForStorage(history, BLOB_DIRS);
   maybeBackupHistoryBeforeWrite(storedHistory);
   atomicWriteJson(DB_PATH, storedHistory);
 }
@@ -787,7 +793,9 @@ function applyTextEditToItem(item, { newText, newTitle } = {}) {
 function getStorageBytes() {
   let total = 0;
   try { total = fs.statSync(DB_PATH).size; } catch {}
-  return total + blobStore.directoryBytes(IMG_DIR) + blobStore.directoryBytes(TEXT_DIR);
+  total += blobStore.directoryBytes(IMG_DIR);
+  for (const dir of Object.values(BLOB_DIRS)) total += blobStore.directoryBytes(dir);
+  return total;
 }
 
 function removeItemImage(item) {
@@ -803,7 +811,7 @@ function deleteHistoryIndex(index, { tombstone = true } = {}) {
   const item = history[index];
   if (tombstone) addTombstone(itemKey(item));
   removeItemImage(item);
-  textBlobStore.removeLocalBlobIfUnreferenced(item, history, TEXT_DIR);
+  clipBlobStore.removeUnreferencedBlobs(item, history, BLOB_DIRS);
   history.splice(index, 1);
   return item;
 }
@@ -955,6 +963,7 @@ function remoteSettingsPayload() {
   delete remoteSave.show_shortcut;
   delete remoteSave.quick_paste_shortcut;
   delete remoteSave.quick_paste_restore;
+  delete remoteSave.capture_rich;
   delete remoteSave.quick_paste_restore_delay_ms;
   delete remoteSave.p2p_device_id;
   delete remoteSave.popup_size;
@@ -1134,17 +1143,15 @@ async function copyNamedFilesAsync(fromDir, toDir, names, filter = () => true) {
   return copied;
 }
 
-async function syncRemoteAssets(remoteImgDir, remoteTextDir, { pullHistory = [], pushHistory = [] } = {}) {
-  const pullImages = historyImageNames(pullHistory);
-  const pullTexts = historyTextRefs(pullHistory);
-  const pushImages = historyImageNames(pushHistory);
-  const pushTexts = historyTextRefs(pushHistory);
-  await Promise.all([
-    copyNamedFilesAsync(remoteImgDir, IMG_DIR, pullImages, name => !!safeImageName(name)),
-    copyNamedFilesAsync(remoteTextDir, TEXT_DIR, pullTexts, name => !!textBlobStore.safeTextRef(name)),
-    copyNamedFilesAsync(IMG_DIR, remoteImgDir, pushImages, name => !!safeImageName(name)),
-    copyNamedFilesAsync(TEXT_DIR, remoteTextDir, pushTexts, name => !!textBlobStore.safeTextRef(name)),
-  ]);
+async function syncRemoteAssets(syncPath, { pullHistory = [], pushHistory = [] } = {}) {
+  const jobs = [];
+  for (const kind of ASSET_KINDS) {
+    const remoteDir = path.join(syncPath, kind.dirname);
+    const filter = name => !!kind.safeName(name);
+    jobs.push(copyNamedFilesAsync(remoteDir, kind.localDir, kind.namesOf(pullHistory), filter));
+    jobs.push(copyNamedFilesAsync(kind.localDir, remoteDir, kind.namesOf(pushHistory), filter));
+  }
+  await Promise.all(jobs);
 }
 
 function pngSizeFromBuffer(buf) {
@@ -1380,8 +1387,6 @@ async function readRemoteState(syncPath) {
   const remoteDbPath = path.join(syncPath, 'clipboard-history.json');
   const remoteSettingsPath = path.join(syncPath, 'clipboard-settings.json');
   const remoteConflictsPath = path.join(syncPath, 'clipboard-conflicts.json');
-  const remoteImgDir = path.join(syncPath, 'clipboard-images');
-  const remoteTextDir = path.join(syncPath, textBlobStore.TEXT_BLOB_DIRNAME);
   let remoteHistory = [];
   // A torn/mid-write remote read is DANGEROUS to treat as truth: an in-place
   // cloud write caught halfway parses as garbage (or []), the merge then thinks
@@ -1395,8 +1400,8 @@ async function readRemoteState(syncPath) {
       if (!loaded.length) {
         try { suspectRead = (await fs.promises.stat(remoteDbPath)).size > 2; } catch {}
       }
-      await syncRemoteAssets(remoteImgDir, remoteTextDir, { pullHistory: loaded });
-      remoteHistory = textBlobStore.hydrateHistory(loaded, TEXT_DIR);
+      await syncRemoteAssets(syncPath, { pullHistory: loaded });
+      remoteHistory = clipBlobStore.hydrateHistory(loaded, BLOB_DIRS);
     } else {
       suspectRead = true;
     }
@@ -1444,7 +1449,9 @@ function stateSummary(basePath) {
     settings_file: fileSummary(settingsPath),
     history_file: fileSummary(historyPath),
     conflicts_file: fileSummary(conflictsPath),
-    text_dir: fileSummary(path.join(basePath, textBlobStore.TEXT_BLOB_DIRNAME)),
+    text_dir: fileSummary(path.join(basePath, clipBlobStore.TEXT_BLOB_DIRNAME)),
+    html_dir: fileSummary(path.join(basePath, clipBlobStore.HTML_BLOB_DIRNAME)),
+    rtf_dir: fileSummary(path.join(basePath, clipBlobStore.RTF_BLOB_DIRNAME)),
     item_count: Array.isArray(remoteHistory) ? remoteHistory.length : null,
     conflict_count: remoteConflicts.records.length,
     settings_groups: Array.isArray(remoteSettings.groups) ? remoteSettings.groups : [],
@@ -1535,9 +1542,7 @@ async function writeRemoteState(syncPath, canonicalHistory, canonicalSettings) {
   const remoteDbPath = path.join(syncPath, 'clipboard-history.json');
   const remoteSettingsPath = path.join(syncPath, 'clipboard-settings.json');
   const remoteConflictsPath = path.join(syncPath, 'clipboard-conflicts.json');
-  const remoteImgDir = path.join(syncPath, 'clipboard-images');
-  const remoteTextDir = path.join(syncPath, textBlobStore.TEXT_BLOB_DIRNAME);
-  const storedHistory = textBlobStore.prepareHistoryForStorage(canonicalHistory, TEXT_DIR);
+  const storedHistory = clipBlobStore.prepareHistoryForStorage(canonicalHistory, BLOB_DIRS);
   const nextHistoryJson = JSON.stringify(storedHistory);
   const nextSettingsJson = JSON.stringify(canonicalSettings, null, 2);
   const nextConflictsJson = JSON.stringify(conflictModel.normalizeConflictState(conflicts), null, 2);
@@ -1559,7 +1564,7 @@ async function writeRemoteState(syncPath, canonicalHistory, canonicalSettings) {
     wroteHistory ? writeInPlace(remoteDbPath, nextHistoryJson) : Promise.resolve(),
     wroteSettings ? writeInPlace(remoteSettingsPath, nextSettingsJson) : Promise.resolve(),
     wroteConflicts ? writeInPlace(remoteConflictsPath, nextConflictsJson) : Promise.resolve(),
-    syncRemoteAssets(remoteImgDir, remoteTextDir, { pushHistory }),
+    syncRemoteAssets(syncPath, { pushHistory }),
   ]);
   await updateSyncProviderCache(syncPath);
   diagnostics.slow('sync.write_remote.slow', Date.now() - startedAt, {
@@ -1623,7 +1628,7 @@ function safeImageName(name) {
 }
 
 function p2pHistoryStorage() {
-  return textBlobStore.prepareHistoryForStorage(history, TEXT_DIR);
+  return clipBlobStore.prepareHistoryForStorage(history, BLOB_DIRS);
 }
 
 function historyTextRefs(items) {
@@ -1645,18 +1650,45 @@ function historyImageNames(items) {
   return [...names];
 }
 
+// ONE table describing every synced asset kind. Sync, the p2p state payload,
+// asset serving/fetching, the HTTP routes and the push delta all drive off this,
+// so a new clipboard format is a row here instead of a new branch in nine
+// places. Declared after the helpers it references; every consumer is a function
+// called long after module init, so there is no temporal-dead-zone hazard.
+const ASSET_KINDS = [
+  {
+    kind: 'image',
+    dirname: 'clipboard-images',
+    localDir: IMG_DIR,
+    contentType: 'image/png',
+    safeName: name => safeImageName(name),
+    namesOf: items => historyImageNames(items),
+  },
+  ...clipBlobStore.FIELD_STORES.map(store => ({
+    kind: store.field,
+    dirname: store.dirname,
+    localDir: BLOB_DIRS[store.field],
+    contentType: store.field === 'html'
+      ? 'text/html; charset=utf-8'
+      : store.field === 'rtf' ? 'application/rtf' : 'text/plain; charset=utf-8',
+    safeName: name => store.safeRef(name),
+    namesOf: items => store.refsOf(items),
+  })),
+];
+const ASSET_KIND_BY_NAME = new Map(ASSET_KINDS.map(kind => [kind.kind, kind]));
+
 function historyAssetDelta(nextHistory, currentHistory) {
   if (!Array.isArray(currentHistory)) return Array.isArray(nextHistory) ? nextHistory : [];
-  const currentImages = new Set(historyImageNames(currentHistory));
-  const currentTexts = new Set(historyTextRefs(currentHistory));
+  const currentNames = new Map(ASSET_KINDS.map(kind => [kind.kind, new Set(kind.namesOf(currentHistory))]));
   return (Array.isArray(nextHistory) ? nextHistory : []).filter(item => {
     if (!item) return false;
-    if (item.type === 'image') {
-      const name = safeImageName(item.image);
-      return !!name && !currentImages.has(name);
-    }
-    const ref = textBlobStore.safeTextRef(item.textRef);
-    return !!ref && !currentTexts.has(ref);
+    // An item is in the push delta when ANY of its assets is new remotely — a
+    // clip whose text blob is already there but whose html blob is not still
+    // has to be pushed.
+    return ASSET_KINDS.some(kind => {
+      const known = currentNames.get(kind.kind);
+      return kind.namesOf([item]).some(name => !known.has(name));
+    });
   });
 }
 
@@ -1672,8 +1704,12 @@ function p2pStatePayload() {
     history: storedHistory,
     settings: remoteSettingsPayload(),
     conflicts: conflictModel.normalizeConflictState(conflicts),
+    // images/texts stay for peers on the pre-rich build; assets carries every
+    // kind. Additive on purpose — bumping P2P_PROTOCOL_VERSION would break
+    // pairing with a peer that has not updated yet.
     images: historyImageNames(storedHistory),
     texts: historyTextRefs(storedHistory),
+    assets: Object.fromEntries(ASSET_KINDS.map(kind => [kind.kind, kind.namesOf(storedHistory)])),
   };
 }
 
@@ -1698,14 +1734,14 @@ function p2pSendJson(res, status, payload) {
 }
 
 function p2pServeAsset(res, kind, name) {
-  const safeName = kind === 'image' ? safeImageName(name) : textBlobStore.safeTextRef(name);
-  if (!safeName) {
+  const spec = ASSET_KIND_BY_NAME.get(kind);
+  const safeName = spec ? spec.safeName(name) : '';
+  if (!spec || !safeName) {
     res.writeHead(400);
     res.end('Bad asset name');
     return;
   }
-  const baseDir = kind === 'image' ? IMG_DIR : TEXT_DIR;
-  const filePath = path.join(baseDir, safeName);
+  const filePath = path.join(spec.localDir, safeName);
   fs.readFile(filePath, (error, data) => {
     if (error) {
       res.writeHead(404);
@@ -1713,7 +1749,7 @@ function p2pServeAsset(res, kind, name) {
       return;
     }
     res.writeHead(200, {
-      'Content-Type': kind === 'image' ? 'image/png' : 'text/plain; charset=utf-8',
+      'Content-Type': spec.contentType,
       'Content-Length': data.length,
     });
     res.end(data);
@@ -1779,15 +1815,16 @@ function p2pRequestHandler(req, res) {
         p2pSendJson(res, 200, result);
         return;
       }
-      const imagePrefix = '/asset/image/';
-      const textPrefix = '/asset/text/';
-      if (req.method === 'GET' && url.pathname.startsWith(imagePrefix)) {
-        p2pServeAsset(res, 'image', decodeURIComponent(url.pathname.slice(imagePrefix.length)));
-        return;
-      }
-      if (req.method === 'GET' && url.pathname.startsWith(textPrefix)) {
-        p2pServeAsset(res, 'text', decodeURIComponent(url.pathname.slice(textPrefix.length)));
-        return;
+      // /asset/<kind>/<name>. Same shape the pre-rich build served, so an older
+      // peer's /asset/image/ and /asset/text/ requests still resolve here.
+      const assetPrefix = '/asset/';
+      if (req.method === 'GET' && url.pathname.startsWith(assetPrefix)) {
+        const rest = url.pathname.slice(assetPrefix.length);
+        const slash = rest.indexOf('/');
+        if (slash > 0) {
+          p2pServeAsset(res, rest.slice(0, slash), decodeURIComponent(rest.slice(slash + 1)));
+          return;
+        }
       }
       res.writeHead(404);
       res.end('Not found');
@@ -1842,9 +1879,10 @@ function p2pHttpRequest(peer, requestPath, { binary = false, method = 'GET', bod
 }
 
 async function p2pFetchMissingAsset(peer, kind, name) {
-  const safeName = kind === 'image' ? safeImageName(name) : textBlobStore.safeTextRef(name);
-  if (!safeName) return false;
-  const baseDir = kind === 'image' ? IMG_DIR : TEXT_DIR;
+  const spec = ASSET_KIND_BY_NAME.get(kind);
+  const safeName = spec ? spec.safeName(name) : '';
+  if (!spec || !safeName) return false;
+  const baseDir = spec.localDir;
   const target = path.join(baseDir, safeName);
   try {
     await fs.promises.access(target, fs.constants.F_OK);
@@ -1874,7 +1912,7 @@ async function p2pApplyState(state, { peerName, reason, fetchedAssets = 0, notif
   if (!state || state.protocol !== P2P_PROTOCOL_VERSION || !state.deviceId || state.deviceId === settings.p2p_device_id) {
     throw new Error('invalid peer state');
   }
-  const remoteHistory = textBlobStore.hydrateHistory(Array.isArray(state.history) ? state.history : [], TEXT_DIR);
+  const remoteHistory = clipBlobStore.hydrateHistory(Array.isArray(state.history) ? state.history : [], BLOB_DIRS);
   const previousSettingsJson = JSON.stringify(remoteSettingsPayload());
   const previousConflictsJson = JSON.stringify(conflictModel.normalizeConflictState(conflicts));
   const canonicalHistory = foldRemoteState(history.slice(), remoteHistory, state.settings || {}, state.conflicts || {});
@@ -1926,12 +1964,37 @@ async function p2pPullPeer(peer, reason = 'discovery') {
     if (!state || state.protocol !== P2P_PROTOCOL_VERSION || state.deviceId !== peer.deviceId) {
       throw new Error('invalid peer state');
     }
-    const assets = [
-      ...(state.images || []).map(name => ({ kind: 'image', name })),
-      ...(state.texts || []).map(name => ({ kind: 'text', name })),
-    ];
+    // Prefer the peer's full asset map; fall back to the legacy image/text keys
+    // so a peer on the pre-rich build still syncs everything it does have.
+    const advertised = state.assets && typeof state.assets === 'object' ? state.assets : null;
+    const assets = [];
+    for (const kind of ASSET_KINDS) {
+      const names = advertised
+        ? advertised[kind.kind]
+        : (kind.kind === 'image' ? state.images : kind.kind === 'text' ? state.texts : null);
+      for (const name of Array.isArray(names) ? names : []) assets.push({ kind: kind.kind, name });
+    }
+    // A failed asset fetch must NEVER abort the pull. runWithConcurrency
+    // propagates a rejection, so one 404 (a blob the peer has since pruned)
+    // would throw past p2pApplyState and the peer's whole history would fail to
+    // apply — the clips themselves lost because one attachment was missing.
+    // That is disproportionate for text/image and absurd for html/rtf, which
+    // are optional formatting. Every blob store already degrades cleanly when
+    // its file is absent (text falls back to its preview, rich to plain text),
+    // so tolerate the failure, count it, and apply the history regardless.
+    let failedAssets = 0;
     await runWithConcurrency(assets, P2P_ASSET_FETCH_CONCURRENCY, async asset => {
-      if (await p2pFetchMissingAsset(peer, asset.kind, asset.name)) fetchedAssets++;
+      try {
+        if (await p2pFetchMissingAsset(peer, asset.kind, asset.name)) fetchedAssets++;
+      } catch (error) {
+        failedAssets++;
+        diagnostics.record('p2p.asset_fetch.error', {
+          peer: peer.deviceName || peer.deviceId,
+          kind: asset.kind,
+          name: asset.name,
+          error: error && error.message,
+        }, { forceFile: true });
+      }
     });
     const result = await p2pApplyState(state, {
       peerName: peer.deviceName || peer.deviceId,
@@ -1943,8 +2006,9 @@ async function p2pPullPeer(peer, reason = 'discovery') {
       peer: peer.deviceName || peer.deviceId,
       reason,
       ms: Date.now() - startedAt,
+      failed_assets: failedAssets,
       ...result,
-    }, { forceFile: result.local_changed || fetchedAssets > 0 });
+    }, { forceFile: result.local_changed || fetchedAssets > 0 || failedAssets > 0 });
     return result;
   })().catch(error => {
     diagnostics.record('p2p.pull.error', {
@@ -2468,6 +2532,36 @@ function textLooksLikeLink(text) {
   return /^(?:https?:\/\/|www\.|mailto:|file:\/\/)/i.test(String(text || '').trim());
 }
 
+// A single oversized payload must not be able to bloat the history file or a
+// sync push. HTML from a rich email is normally tens of KB; megabytes means a
+// pathological source, and plain text still captures fine without it.
+const RICH_CAPTURE_MAX_BYTES = 2 * 1024 * 1024;
+
+// Read the rich formats that accompany the plain text we are ABOUT TO capture.
+// Deliberately called only from the add paths, never per poll tick: readHTML and
+// readRTF are synchronous OS clipboard reads and the poll runs continuously.
+function readRichClipboardPayload() {
+  if (settings.capture_rich === false) return {};
+  const payload = {};
+  const readers = [['html', () => clipboard.readHTML()], ['rtf', () => clipboard.readRTF()]];
+  for (const [field, read] of readers) {
+    let value = '';
+    try { value = read() || ''; } catch { value = ''; }
+    if (!value) continue;
+    const bytes = Buffer.byteLength(value, 'utf8');
+    if (bytes > RICH_CAPTURE_MAX_BYTES) {
+      diagnostics.record('clipboard.rich_skipped', {
+        field,
+        bytes,
+        limit: RICH_CAPTURE_MAX_BYTES,
+      }, { forceFile: true });
+      continue;
+    }
+    payload[field] = value;
+  }
+  return payload;
+}
+
 function historyEntryDiagnostics(entry) {
   if (!entry) return {};
   if (entry.type === 'image') {
@@ -2484,6 +2578,8 @@ function historyEntryDiagnostics(entry) {
     text_length: text.length,
     text_hash: crypto.createHash('sha256').update(text).digest('hex').slice(0, 16),
     looks_like_link: textLooksLikeLink(text),
+    has_html: clipBlobStore.hasRichPayload(entry, 'html'),
+    has_rtf: clipBlobStore.hasRichPayload(entry, 'rtf'),
   };
 }
 
@@ -2496,9 +2592,18 @@ function addToHistory(entry, matchFn) {
   // Check if already at top
   if (history.length && matchFn(history[0])) {
     if (tombstoneRemoved) saveSettingsFile();
+    // The clip is already top, but this capture may carry formatting it lacks
+    // (copied as plain text first, then re-copied from a rich source). Without
+    // this the early return would silently discard the richer payload.
+    const adoptedRich = clipBlobStore.adoptRichPayload(history[0], entry);
+    if (adoptedRich) {
+      history[0].updatedAt = Date.now();
+      saveHistory();
+    }
     diagnostics.record('history.add_skipped', {
       reason: 'already_top',
       ...historyEntryDiagnostics(entry),
+      adopted_rich: adoptedRich,
       items: history.length,
       ms: Date.now() - startedAt,
     }, { forceFile: true });
@@ -2516,6 +2621,10 @@ function addToHistory(entry, matchFn) {
     // LWW clock so stale cloud replicas cannot undo them (and repaired legacy
     // timestamps can beat an old inflated provider timestamp).
     entry.tsUpdatedAt = Date.now();
+    // Carry the stored clip's formatting onto the new entry for any format this
+    // capture lacks. Re-copying the same words as PLAIN text is not evidence the
+    // formatting is gone, so it must never downgrade a present payload.
+    clipBlobStore.adoptRichPayload(entry, existing);
     history.splice(existIdx, 1);
   }
   history.unshift(entry);
@@ -2553,7 +2662,7 @@ function pollClipboard() {
       lastText = text;
       lastImgHash = '';
       addToHistory(
-        { type: 'text', text, ts: Date.now() / 1000 },
+        { type: 'text', text, ts: Date.now() / 1000, ...readRichClipboardPayload() },
         it => it.text === text
       );
       return;
@@ -2601,7 +2710,7 @@ function pollClipboard() {
       lastText = text;
       lastImgHash = '';
       addToHistory(
-        { type: 'text', text, ts: Date.now() / 1000 },
+        { type: 'text', text, ts: Date.now() / 1000, ...readRichClipboardPayload() },
         it => it.text === text
       );
     }
@@ -3243,13 +3352,28 @@ function showPopup() {
   });
 }
 
+// Put a text clip on the clipboard with EVERY format it captured, so pasting
+// into a rich target (Gmail, Docs, Word) keeps the formatting while a plain
+// target still receives the text. clipboard.write replaces the whole clipboard,
+// so text is always included as the universal fallback — a rich payload never
+// replaces the plain one, it accompanies it.
+function writeTextClipboardFormats(item) {
+  const formats = { text: String(item && item.text || '') };
+  const html = String(item && item.html || '');
+  const rtf = String(item && item.rtf || '');
+  if (html) formats.html = html;
+  if (rtf) formats.rtf = rtf;
+  clipboard.write(formats);
+  return formats;
+}
+
 function setClipboardToItem(item) {
   if (item.type === 'image') {
     const imgPath = path.join(IMG_DIR, item.image);
     if (fs.existsSync(imgPath)) clipboard.writeImage(nativeImage.createFromPath(imgPath));
   } else {
-    textBlobStore.hydrateTextItem(item, TEXT_DIR);
-    clipboard.writeText(item.text || '');
+    clipBlobStore.hydrateItem(item, BLOB_DIRS);
+    writeTextClipboardFormats(item);
   }
 }
 
@@ -4166,7 +4290,9 @@ function applyDeleteItems(ids) {
     const index = findHistoryIndex(id);
     if (index < 0) continue;
     const item = history[index];
-    if (item.type !== 'image') textBlobStore.hydrateTextItem(item, TEXT_DIR); // capture full text for restore
+    // Capture the full payload for restore — including html/rtf, or undoing a
+    // delete would silently strip the clip's formatting.
+    if (item.type !== 'image') clipBlobStore.hydrateItem(item, BLOB_DIRS);
     snapshots.push(cloneHistoryItem(item));
     addTombstone(itemKey(item));
     history.splice(index, 1);

@@ -367,7 +367,10 @@ const appAdapter = {
   deleteClip: (id) => window.api.deleteItem(id),
   clearUnpinned: () => window.api.deleteAll(),
   setGroupSharedAi: (group) => window.api.setGroupSharedAi(group, !aiSharedGroups.has(group)),
-  copyNumpadSlot: (id) => { const it = itemById(id); if (!it) return; return it.type === 'image' ? window.api.paste(id) : window.api.copy(it.text || ''); },
+  // Always the id-based path: window.api.copy() only takes a string, so it
+  // would silently drop the clip's html/rtf. paste(id) puts every captured
+  // format on the clipboard for both text and image clips.
+  copyNumpadSlot: (id) => { const it = itemById(id); if (!it) return; return window.api.paste(id); },
   activateClip: (id) => window.api.pasteAndHide(id),
   editClip: (id, _itemEl, options) => window.api.openEditor(id, { ...(query ? { find: query, regex: regexOn } : {}), ...(options || {}) }),
   setClipTitle: (id, title) => window.api.setClipTitle(id, title),

@@ -12,6 +12,7 @@ const syncPaths = require('../lib/sync-paths');
 const clipboardCapture = require('../lib/clipboard-capture');
 const windowsClipboard = require('../lib/windows-clipboard');
 const textBlobStore = require('../lib/text-blob-store');
+const clipBlobStore = require('../lib/clip-blob-store');
 const { Diagnostics } = require('../lib/diagnostics');
 
 function text(text, extra = {}) {
@@ -855,6 +856,140 @@ function text(text, extra = {}) {
     supersedes: [{ from: oldId, to: edited.id, updatedAt: now }],
   });
   assert.deepStrictEqual(merged.map(i => i.text), ['kept new version']);
+}
+
+{
+  // --- Rich clipboard payloads (html + rtf) ---------------------------------
+  // A clip captured from a rich source keeps its formatting so re-pasting into
+  // Gmail/Docs/Word is not silently downgraded to plain text.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'boardclip-rich-blobs-'));
+  const DIRS = {
+    text: path.join(dir, 'clipboard-text'),
+    html: path.join(dir, 'clipboard-html'),
+    rtf: path.join(dir, 'clipboard-rtf'),
+  };
+  try {
+    const smallHtml = '<b>hello</b>';
+    const smallRtf = '{\\rtf1 hello}';
+    const bigHtml = `<p>${'x'.repeat(textBlobStore.TEXT_BLOB_THRESHOLD_BYTES + 32)}</p>`;
+
+    const rich = text('hello', { html: smallHtml, rtf: smallRtf });
+    const plain = text('plain only');
+    const big = text('big', { html: bigHtml });
+    const image = { id: 'img:1', type: 'image', image: 'a.png', ts: 1 };
+
+    const stored = clipBlobStore.prepareHistoryForStorage([rich, plain, big, image], DIRS);
+
+    // Small payloads stay inline; identity still keys on TEXT only, so adding
+    // formatting must never change a clip's id.
+    assert.strictEqual(stored[0].html, smallHtml);
+    assert.strictEqual(stored[0].rtf, smallRtf);
+    assert.strictEqual(stored[0].id, rich.id, 'rich payload must not change clip identity');
+
+    // A plain clip carries no empty rich keys - every text clip in the history
+    // file would otherwise grow two dead fields.
+    assert.strictEqual('html' in stored[1], false);
+    assert.strictEqual('rtf' in stored[1], false);
+
+    // Oversized payloads externalize to a content-addressed blob.
+    assert.ok(stored[2].htmlRef, 'large html externalizes to a blob');
+    assert.strictEqual(stored[2].htmlSize, Buffer.byteLength(bigHtml, 'utf8'));
+    assert.strictEqual(stored[2].html, undefined, 'externalized html keeps no truncated inline copy');
+    assert.ok(fs.existsSync(path.join(DIRS.html, stored[2].htmlRef)));
+
+    const hydrated = clipBlobStore.hydrateHistory(JSON.parse(JSON.stringify(stored)), DIRS);
+    assert.strictEqual(hydrated[0].html, smallHtml);
+    assert.strictEqual(hydrated[2].html, bigHtml, 'externalized html round-trips byte-exact');
+
+    // A missing blob degrades to ABSENT, never to a truncated fragment: half an
+    // HTML document pastes as visible broken markup, so falling back to the
+    // plain text is the correct failure direction. The ref survives so a peer
+    // can still supply the bytes later.
+    const orphan = clipBlobStore.hydrateHistory(
+      JSON.parse(JSON.stringify([stored[2]])),
+      { ...DIRS, html: path.join(dir, 'absent') }
+    )[0];
+    assert.strictEqual(orphan.html, undefined);
+    assert.strictEqual(orphan.htmlRef, stored[2].htmlRef);
+    // ...and the unresolved metadata is preserved on re-store rather than being
+    // overwritten with the empty value.
+    const reStored = clipBlobStore.prepareHistoryForStorage([orphan], { ...DIRS, html: path.join(dir, 'absent') })[0];
+    assert.strictEqual(reStored.htmlRef, stored[2].htmlRef);
+
+    // Merge: a payload present on ONE side survives (both sides share a text
+    // hash by construction, so the formatting describes the same content).
+    const merged = model.mergeItems(
+      { ...text('same'), ts: 1, updatedAt: 1 },
+      { ...text('same'), ts: 2, updatedAt: 2, html: smallHtml, rtf: smallRtf }
+    );
+    assert.strictEqual(merged.html, smallHtml);
+    assert.strictEqual(merged.rtf, smallRtf);
+
+    // Merge takes a rich payload as ONE GROUP from ONE item. Mixing an inline
+    // value from one side with a ref/hash from the other would describe content
+    // that exists nowhere.
+    const groupMerged = model.mergeItems(
+      { ...text('same'), ts: 2, updatedAt: 2, html: '<i>winner</i>' },
+      { ...text('same'), ts: 1, updatedAt: 1, htmlRef: `${'0'.repeat(64)}.html`, htmlHash: '0'.repeat(64), htmlSize: 99 }
+    );
+    assert.strictEqual(groupMerged.html, '<i>winner</i>');
+    assert.strictEqual(groupMerged.htmlRef, undefined, 'ref from the losing item must not ride along');
+    assert.strictEqual(groupMerged.htmlHash, undefined);
+    assert.strictEqual(groupMerged.htmlSize, undefined);
+
+    // An edit rewrites the text, so formatting captured for the OLD text is
+    // stale - keeping it would paste pre-edit content into a rich target.
+    const edited = { type: 'text', text: 'old', html: smallHtml, rtf: smallRtf, htmlRef: `${'1'.repeat(64)}.html` };
+    model.setInlineText(edited, 'new');
+    assert.strictEqual(edited.text, 'new');
+    assert.strictEqual(edited.html, undefined);
+    assert.strictEqual(edited.rtf, undefined);
+    assert.strictEqual(edited.htmlRef, undefined);
+
+    // Re-copying the same words from a RICH source upgrades a stored plain clip.
+    const target = { type: 'text', text: 'hello' };
+    assert.strictEqual(clipBlobStore.adoptRichPayload(target, { type: 'text', text: 'hello', html: smallHtml }), true);
+    assert.strictEqual(target.html, smallHtml);
+
+    // ...but re-copying as PLAIN text is not evidence the formatting is gone, so
+    // a usable payload is never downgraded.
+    const keep = { type: 'text', text: 'hello', html: '<i>keep</i>' };
+    assert.strictEqual(clipBlobStore.adoptRichPayload(keep, { type: 'text', text: 'hello' }), false);
+    assert.strictEqual(clipBlobStore.adoptRichPayload(keep, { type: 'text', text: 'hello', html: '<i>other</i>' }), false);
+    assert.strictEqual(keep.html, '<i>keep</i>');
+
+    // An ADVERTISED but unreachable payload (synced metadata whose blob has not
+    // arrived) is metadata, not content: a capture with the real bytes replaces
+    // it, and the stale ref must be cleared or the new value reads as unverified.
+    assert.strictEqual(clipBlobStore.hasRichPayload(orphan, 'html'), true, 'orphan still advertises html');
+    assert.strictEqual(clipBlobStore.richPayloadUsable(orphan, 'html'), false, 'orphan html is not usable');
+    assert.strictEqual(clipBlobStore.adoptRichPayload(orphan, { type: 'text', text: 'big', html: '<b>real</b>' }), true);
+    assert.strictEqual(orphan.html, '<b>real</b>');
+    assert.strictEqual(orphan.htmlRef, undefined, 'stale ref cleared when the payload is replaced');
+    assert.strictEqual(orphan.htmlHash, undefined);
+    assert.strictEqual(clipBlobStore.prepareHistoryForStorage([orphan], DIRS)[0].html, '<b>real</b>');
+
+    // An UNHYDRATED item carries no missing-flag; treat it as usable so a
+    // payload is never discarded without proof it is unreachable.
+    const unhydrated = JSON.parse(JSON.stringify(stored[2]));
+    assert.strictEqual(clipBlobStore.richPayloadUsable(unhydrated, 'html'), true);
+    assert.strictEqual(clipBlobStore.adoptRichPayload(unhydrated, { type: 'text', text: 'big', html: '<i>no</i>' }), false);
+
+    // Deleting a clip drops its blobs only when nothing else references them.
+    const htmlBlobPath = path.join(DIRS.html, stored[2].htmlRef);
+    const sharer = { ...JSON.parse(JSON.stringify(stored[2])), id: 'txt:other' };
+    clipBlobStore.removeUnreferencedBlobs(stored[2], [sharer], DIRS);
+    assert.ok(fs.existsSync(htmlBlobPath), 'a blob still referenced by another clip survives');
+    clipBlobStore.removeUnreferencedBlobs(stored[2], [], DIRS);
+    assert.strictEqual(fs.existsSync(htmlBlobPath), false, 'an unreferenced blob is removed');
+
+    // The legacy text-only API keeps working unchanged (every existing caller
+    // still passes a bare text directory).
+    const legacy = textBlobStore.prepareHistoryForStorage([text('legacy')], DIRS.text)[0];
+    assert.strictEqual(legacy.text, 'legacy');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 console.log('clipboard model tests passed');

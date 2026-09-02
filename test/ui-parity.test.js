@@ -48,7 +48,7 @@ const siteCss = read('site/styles.css');
     assert.ok(html.includes('Core.renderClipActions('), `${name} must call Core.renderClipActions()`);
     assert.ok(html.includes('Core.createClipController('), `${name} must drive the shared Core.createClipController`);
     assert.ok(/controller\.onClick|controller\.onKeydown/.test(html), `${name} must route events through the shared controller`);
-    assert.ok(html.includes('controller.onMousedown('), `${name} must route mousedown through the controller (middle-button autoscroll suppression)`);
+    assert.ok(html.includes('controller.onMousedown(') && html.includes('controller.onMouseup('), `${name} must route mousedown + mouseup through the controller (middle-click open without autoscroll)`);
   }
   // The shared controller owns the dialogs; neither side may re-introduce a
   // bespoke confirm/prompt overlay or a hand-rolled pendingAssign dispatch.

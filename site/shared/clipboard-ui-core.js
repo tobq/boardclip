@@ -1605,27 +1605,49 @@
       else { await a.editClip(row.dataset.id, row, KEEP_POPUP); }
       return true;
     }
-    // Middle-button mousedown on a clip row: swallow the default so the OS/Chromium
-    // autoscroll widget never appears (auxclick fires after mouseup - too late for
-    // that; it was masked before because the popup used to vanish instantly).
+    // Middle-click on a clip row = open in editor/viewer WITHOUT the autoscroll
+    // widget. Measured in Electron's Chromium (2026-09-03): preventing the default
+    // on the middle-button MOUSEDOWN is the only thing that stops autoscroll, and
+    // once it is prevented Chromium never fires `auxclick` for that press. So the
+    // open happens on MOUSEUP of a press that stayed on the same row and did not
+    // drag (a drag is what autoscroll would have been). `onAuxclick` remains only
+    // as a fallback for a consumer that does not route mousedown through here.
+    const MIDDLE_DRAG_SLOP_PX = 6;
+    let middleArm = null;        // { id, x, y } from the last middle mousedown on a row
+    let lastMiddleOpen = null;   // { id, at } so a stray auxclick can't double-open
+    function middleRowFor(event) {
+      const t = event.target;
+      if (!t || typeof t.closest !== 'function') return null;
+      if (t.closest('button, .np-btn, .gp-btn, .star, [data-action], a')) return null;
+      const row = t.closest('.item');
+      return row && row.dataset && row.dataset.id ? row : null;
+    }
     function onMousedown(event) {
       if (event.button !== 1) return false;
-      const t = event.target;
-      if (!t || typeof t.closest !== 'function') return false;
-      if (t.closest('button, .np-btn, .gp-btn, .star, [data-action], a')) return false;
-      const row = t.closest('.item');
-      if (!row || !row.dataset || !row.dataset.id) return false;
+      const row = middleRowFor(event);
+      if (!row) { middleArm = null; return false; }
       event.preventDefault();
+      middleArm = { id: row.dataset.id, x: Number(event.clientX) || 0, y: Number(event.clientY) || 0 };
       return true;
     }
-    // Middle-click (button 1) on a clip row → open in editor/viewer.
-    // auxclick fires for non-left buttons; preventDefault stops the scroll widget.
+    async function onMouseup(event) {
+      if (event.button !== 1 || !middleArm) return false;
+      const arm = middleArm;
+      middleArm = null;
+      const row = middleRowFor(event);
+      if (!row || row.dataset.id !== arm.id) return false;
+      const dx = Math.abs((Number(event.clientX) || 0) - arm.x);
+      const dy = Math.abs((Number(event.clientY) || 0) - arm.y);
+      if (dx > MIDDLE_DRAG_SLOP_PX || dy > MIDDLE_DRAG_SLOP_PX) return false;
+      lastMiddleOpen = { id: arm.id, at: Date.now() };
+      return openClipInEditor(event, row);
+    }
     async function onAuxclick(event) {
       if (event.button !== 1) return false;
-      const t = event.target;
-      if (t.closest('button, .np-btn, .gp-btn, .star, [data-action], a')) return false;
-      const row = t.closest('.item');
-      if (!row || !row.dataset.id) return false;
+      const row = middleRowFor(event);
+      if (!row) return false;
+      // Already opened by onMouseup for this press: swallow the (rare) auxclick.
+      if (lastMiddleOpen && lastMiddleOpen.id === row.dataset.id && Date.now() - lastMiddleOpen.at < 800) { event.preventDefault(); return true; }
       return openClipInEditor(event, row);
     }
     async function onClick(event) {
@@ -1813,6 +1835,7 @@
       dialogs,
       onClick,
       onMousedown,
+      onMouseup,
       onAuxclick,
       onContextmenu,
       onKeydown,

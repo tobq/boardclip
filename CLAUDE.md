@@ -213,8 +213,11 @@ build could re-trigger the race.
 - **Opening a clip in the editor/viewer from the popup (2026-09-02):** "open several" gestures
   (middle-click, alt+click, and the DETACHED right-click/"..." menu's Open in editor / Open image -
   detected via `.bc-menu-item`) pass `{ keepPopup: true }`; the row's own primary open button and
-  Ctrl/Alt+Enter stay a hand-off (popup closes). `controller.onMousedown` swallows middle-button
-  mousedown on rows (else Chromium's autoscroll widget appears; auxclick is too late for that).
+  Ctrl/Alt+Enter stay a hand-off (popup closes). middle-click is `controller.onMousedown` (prevents the
+  default: the ONLY way to stop Chromium's autoscroll widget, measured) + `controller.onMouseup`
+  (opens on an in-place release; a preventDefault'ed middle mousedown makes Chromium SKIP
+  `auxclick`, measured 2026-09-03) - `onAuxclick` is only a fallback for consumers that don't
+  route mousedown. Both consumers must wire mousedown + mouseup (ui-parity guard).
   The keepPopup gestures
   -> main's `presentSecondaryWindow` shows the window with `showInactive()` and does NOT
   `hidePopup()`, so several results can be opened one after another; the popup still

@@ -196,31 +196,31 @@ const ui = require('../site/shared/clipboard-ui-core');
     await c.onClick(makeActionEvent('open-img', { id: 'img1', fromMenu: true }));
     assert.deepStrictEqual(lastOpenOpts, { keepPopup: true }, 'menu Open image keeps the popup');
 
-    // (e) Middle-button mousedown on a row is swallowed (no autoscroll widget);
-    //     left-button and inner controls are left alone.
+    // (e) Middle-click = armed mousedown (default prevented: no autoscroll widget)
+    //     + in-place mouseup on the same row -> open with keepPopup. A dragged
+    //     release (autoscroll gesture) opens nothing; a stray auxclick right after
+    //     a mouseup-open is swallowed; auxclick with no prior mousedown still opens
+    //     (fallback for consumers that do not route mousedown).
     let prevented = 0;
-    const md = (button, targetIsButton) => { const e = makeEvent({ button, targetId: 'txt1', targetIsButton }); e.preventDefault = () => { prevented++; }; return e; };
-    assert.strictEqual(c.onMousedown(md(1, false)), true, 'middle mousedown on a row is handled');
+    const mk = (button, targetIsButton, x, y) => { const e = makeEvent({ button, targetId: 'txt1', targetIsButton }); e.clientX = x; e.clientY = y; e.preventDefault = () => { prevented++; }; return e; };
+    assert.strictEqual(c.onMousedown(mk(1, false, 10, 10)), true, 'middle mousedown on a row is armed');
     assert.strictEqual(prevented, 1, 'middle mousedown default (autoscroll) is prevented');
-    assert.strictEqual(c.onMousedown(md(0, false)), false, 'left mousedown passes through');
-    assert.strictEqual(c.onMousedown(md(1, true)), false, 'middle mousedown on an inner control passes through');
-    assert.strictEqual(prevented, 1, 'only the row middle-mousedown was prevented');
-
-    // (d) Middle-click on image row -> openImage
-    lastOpen = null;
-    await c.onAuxclick(makeEvent({ button: 1, targetId: 'img1' }));
-    assert.deepStrictEqual(lastOpen, imgItem, 'middle-click on image row calls openImage');
-
-    // (e) Non-middle auxclick (button=2 = right) is ignored
+    lastEdit = null; lastEditOpts = null;
+    assert.strictEqual(await c.onMouseup(mk(1, false, 12, 11)), true, 'in-place middle mouseup opens');
+    assert.strictEqual(lastEdit, 'txt1', 'middle mouseup opened the editor');
+    assert.deepStrictEqual(lastEditOpts, { keepPopup: true }, 'middle-click keeps the popup');
     lastEdit = null;
-    await c.onAuxclick(makeEvent({ button: 2, targetId: 'txt1' }));
-    assert.strictEqual(lastEdit, null, 'right-auxclick is ignored');
-
-    // (f) Alt+click on an inner control (button) is NOT intercepted
+    assert.strictEqual(await c.onAuxclick(mk(1, false, 12, 11)), true, 'auxclick right after the mouseup-open is swallowed');
+    assert.strictEqual(lastEdit, null, 'no double open from the trailing auxclick');
+    c.onMousedown(mk(1, false, 10, 10));
     lastEdit = null;
-    await c.onClick(makeEvent({ altKey: true, targetId: 'txt1', targetIsButton: true }));
-    assert.strictEqual(lastEdit, null, 'alt+click on an inner button is not intercepted');
+    assert.strictEqual(await c.onMouseup(mk(1, false, 10, 200)), false, 'a dragged middle release opens nothing');
+    assert.strictEqual(lastEdit, null, 'drag did not open');
+    assert.strictEqual(c.onMousedown(mk(0, false, 10, 10)), false, 'left mousedown passes through');
+    assert.strictEqual(c.onMousedown(mk(1, true, 10, 10)), false, 'middle mousedown on an inner control passes through');
+    assert.strictEqual(await c.onMouseup(mk(1, false, 10, 10)), false, 'mouseup without an armed press does nothing');
   }
+
 
   // 7) Ctrl+Enter / Alt+Enter on focused clip -> editClip; on image -> openImage.
   {

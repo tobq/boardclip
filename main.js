@@ -3556,7 +3556,7 @@ function refreshTray() {
 const editSessions = new Map();
 const editWindowsByClip = new Map();
 const conflictWindows = new Map();
-const EDIT_DRAFT_RE = /^boardclip-edit-[0-9a-f]{12}-\d+\.txt$/;   // in-flight drafts only
+const EDIT_DRAFT_RE = /^boardclip-edit-[0-9a-f]{12}-\d+(?:-\d+)?\.txt$/;   // in-flight drafts only (legacy `-<ts>` and current `-<ts>-<seq>` names)
 let editSessionSeq = 0;
 
 // LRU-prune the edit archive (size cap + max age). Runs on every draft finish
@@ -4144,9 +4144,13 @@ function recoverOrphanedEdits() {
       const p = path.join(dir, name);
       const draft = readDraftFile(p);
       if (!draft) continue;
-      // Recover only if not already a live clip (i.e. never committed). Add as a
-      // new clip - fork-safe, never overwrites.
-      if (draft.text.trim() && !history.some(it => (it.text || '') === draft.text)) {
+      // Recover only if the draft's text is not already kept in a clip - exactly, or
+      // inside a longer clip (the draft is an older prefix/excerpt of a note the user
+      // kept editing after the crash). Only genuinely unsaved text is restored, so a
+      // restart never litters history with stale duplicates. Added as a NEW clip -
+      // fork-safe, never overwrites.
+      const draftText = String(draft.text || '').trim();
+      if (draftText && !history.some(it => (it.text || '').includes(draftText))) {
         const result = applyExternalTextEdit({ id: '', originalText: '', originalTitle: '', sourceGroups: [], newText: draft.text, newTitle: draft.title, writeClipboard: false });
         if (result && result.changed) recovered++;
       }

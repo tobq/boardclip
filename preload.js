@@ -78,9 +78,6 @@ contextBridge.exposeInMainWorld('api', {
   revokeAiAlwaysAllow: (tool) => ipcRenderer.invoke('revoke-ai-always-allow', tool),
   setClipTitle: (id, title) => ipcRenderer.invoke('set-clip-title', id, title),
   setAiApprovalTimeout: (sec) => ipcRenderer.invoke('set-ai-approval-timeout', sec),
-  // In-app AI Search (BYO endpoint agent)
-  aiSearch: (question) => ipcRenderer.invoke('ai-search', question),
-  aiSearchCancel: () => ipcRenderer.invoke('ai-search-cancel'),
   onAiAccessChanged: (callback) => {
     const listener = () => callback();
     ipcRenderer.on('ai-access-changed', listener);

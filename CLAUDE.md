@@ -265,7 +265,7 @@ clear-all). All popup CSS + theme variables live in `site/shared/clipboard-popup
   `Core.applyTheme`. The Theme control lives in the shared settings body, so it
   shows in BOTH the app and the demo.
 
-## Search engine + AI search + image viewer (2026-07)
+## Search engine + image viewer (2026-07)
 
 - **ONE shared search engine** = `site/shared/clip-search.js` (isomorphic UMD, same
   header as clipboard-ui-core.js). Pure, no DOM. THE authority for query syntax +
@@ -299,26 +299,15 @@ clear-all). All popup CSS + theme variables live in `site/shared/clipboard-popup
 - **Live highlight + autocomplete** = `Core.attachSearchBox(input, opts)` — ONE enhancer
   shared by app + demo. Transparent input over a colored backdrop mirror (`lexQuery` →
   `.qh-*` spans); autocomplete dropdown (`suggestQuery`) for prefixes/group names/`is:`/
-  `sort:`/`since:` presets/`num:`. `opts.getAiMode()` paints the query PLAIN + suppresses
-  the token dropdown in AI mode (it's a natural-language question, not syntax).
-- **AI search mode** (sparkle `aiBtn` / Tab toggle; same box). Offline "smart ranking"
-  (`rankFuzzyIndexes`: token-IDF + title fuzzy with a relevance FLOOR so a vague query
-  returns a few strong hits, never a flood) is ALWAYS available — docs+IDF are cached in
-  `rebuildItemIndexes` (`searchDocs`/`searchIdf`). With a BYO endpoint configured, Enter
-  runs the real agent; picks render as normal clip rows + a one-line `aiStatus` shimmer.
-  Tab toggles mode unless the autocomplete dropdown is open (it owns Tab then).
-- **AI agent** = `lib/ai-search-agent.js` (`runAgent`): pure, dependency-injected Anthropic
-  tool-use loop (`fetchImpl` + `tools.searchClips`/`tools.getClip` injected; `search_clips`/
-  `get_clip`/`pick_clips` exposed to the model). Finishes with ORDERED clip ids, NO prose/
-  thinking UI. Endpoint normalized to append `/v1/messages`; abortable. Tests:
-  `test/ai-search-agent.test.js`.
-- **`ai-search` IPC** (main.js): user-initiated, reads the user's OWN clips with their OWN
-  key. Scope = whole history by default; `ai_search_scope='shared'` restricts the tool fns
-  to the MCP shared-group boundary (reuses `mcpCore.searchClips`/`isShared`). One run at a
-  time (a new run aborts the old via `AbortController`). Settings: `ai_search_endpoint/key/
-  model/scope` — per-machine, DELETED in `remoteSettingsPayload` (never synced), in
-  DEFAULT_SETTINGS. The demo shows the sparkle but pitches "Download the app to try AI
-  search" (no fake agent).
+  `sort:`/`since:` presets/`num:`.
+- **In-app "AI search" mode REMOVED (2026-09-02)** - the sparkle/Tab toggle, offline IDF
+  "smart ranking" (`rankFuzzyIndexes`/`buildIdf`), the BYO-endpoint agent (`lib/ai-search-agent.js`),
+  the `ai-search` IPC and the `ai_search_*` settings are all gone (owner: "remove the shitty AI
+  search for now, will impl better later"). Clean excision: keyword/structured search is the ONLY
+  mode, `attachSearchBox` no longer takes `getAiMode`, `loadSettings` strips the dead `ai_search_*`
+  keys (one held a plaintext API key). `ui-parity.test.js` #11 fails if any piece creeps back.
+  Rebuild from git history (`git log -S rankFuzzyIndexes`) when a better version is designed -
+  don't resurrect this one.
 - **In-app image viewer** = `Core.createImageViewer` (the image twin of `createEditor`;
   SAME `bc-editor-bar` chrome + foot so the two windows read as one family). Fit-to-window
   default, click toggles fit⇄100% at the point, wheel zooms around the cursor, drag pans
@@ -568,7 +557,7 @@ Tagging is optional/archival now, not required to ship.
   changes always need a full restart.
 - Run `npx electron .` directly (not via start.sh) to see stdout/stderr
 - **Silent main-process death = check the System event log FIRST** (`Get-WinEvent -FilterHashtable @{LogName='System'; Id=2004}` / Application Popup 26). 2026-09-01 21:52: BoardClip (9-day uptime) vanished mid-keystroke with NO Event 1000, NO crash dump, NO diag quit event; the tiny MCP helpers survived. Cause was a machine-wide *Out of Virtual Memory* (commit exhausted by chrome.exe 13GB + WSL 5GB + a node 4GB) - the allocating process aborts and WER can't even record it. Not a BoardClip bug. Every editor draft was already idle-committed (verified byte-for-byte against history via `clipboard-edit-archive`), zero data loss.
-- **Relaunch under a WMI wedge**: `start.bat`/`kill.bat` use `Get-CimInstance` and hang forever when WMI is wedged (memory starvation wedges it; other tools' 2-min supervisors then pile up hung powershells). If no `\\.\pipe\boardclip-mcp-<user>` pipe exists and the diag heartbeat is silent, launch electron.exe directly from the install dir (`Start-Process ... -ArgumentList '.' -WorkingDirectory <install>`); the single-instance lock is free.
+- **Relaunch under a WMI wedge**: `start.bat`/`kill.bat` use `Get-CimInstance` and hang forever when WMI is wedged (memory starvation wedges it; other tools' 2-min supervisors then pile up hung powershells). If no `\.\pipeoardclip-mcp-<user>` pipe exists and the diag heartbeat is silent, launch electron.exe directly from the install dir (`Start-Process ... -ArgumentList '.' -WorkingDirectory <install>`); the single-instance lock is free.
 - **Orphan-draft recovery was DEAD from the `-<seq>` filename change until 2026-09-01**: `EDIT_DRAFT_RE` only matched legacy `boardclip-edit-<12hex>-<ts>.txt`, but sessions write `...-<ts>-<seq>.txt`, so `recoverOrphanedEdits` skipped every in-flight draft (15 lingered since July, never retired). Fixed + guarded by `test/edit-draft-recovery.test.js` (reads the regex + generator out of main.js). Idle-commit had covered the gap in practice. Recovery now also SKIPS a draft whose text already sits inside a longer clip (an older prefix of a note edited after the crash) so the first restart doesn't resurrect stale duplicates - only genuinely unsaved text comes back as a new clip.
 - Main process errors go to terminal, renderer errors to DevTools (Cmd+Option+I)
 - To test the app's renderer (`index.html`) without Electron, serve the repo root

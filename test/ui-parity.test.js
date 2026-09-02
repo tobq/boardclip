@@ -31,7 +31,6 @@ const siteCss = read('site/styles.css');
     'aiAccessBody', 'aiClients', 'aiMoreClients', 'aiClientsMore',
     'aiAlwaysHead', 'aiAlwaysAllow', 'aiTimeout', 'groupSlots', 'addGroupBtn', 'clearAll',
     'copyDiagnostics', 'buildInfo',
-    'aiSearchEndpoint', 'aiSearchKey', 'aiSearchModel', 'aiSearchScope', 'aiSearchStatus',
   ];
   for (const id of requiredIds) {
     assert.ok(body.includes(`id="${id}"`), `renderSettingsBody() is missing id="${id}"`);
@@ -228,12 +227,15 @@ const siteCss = read('site/styles.css');
     'picker submenus must overlap horizontally with their parent so hover does not drop');
 }
 
-// 11) Search bar parity: BOTH consumers render the shared shell's sparkle (AI) +
-//     sort + regex buttons and drive the ONE attachSearchBox enhancer + shared
-//     query engine (bar text = source of truth; no bespoke filter Sets).
+// 11) Search bar parity: BOTH consumers render the shared shell's sort + regex
+//     buttons and drive the ONE attachSearchBox enhancer + shared query engine
+//     (bar text = source of truth; no bespoke filter Sets). The in-app "AI search"
+//     mode (sparkle/Tab toggle, BYO-endpoint agent, offline IDF ranking) was REMOVED
+//     on 2026-09-02 ("remove the shitty AI search for now, will impl better later");
+//     neither consumer, the shared shell, nor the search engine may grow it back.
 {
   const shell = ui.renderPopupShell({});
-  for (const id of ['sortBtn', 'aiBtn', 'aiStatus', 'regexBtn']) {
+  for (const id of ['sortBtn', 'regexBtn']) {
     assert.ok(shell.includes(`id="${id}"`), `renderPopupShell missing the shared ${id} control`);
   }
   for (const [name, html] of [['index.html', appHtml], ['site/index.html', siteHtml]]) {
@@ -241,10 +243,12 @@ const siteCss = read('site/styles.css');
     assert.ok(!/activeFilters\s*=\s*new Set|excludedFilters\s*=\s*new Set/.test(html),
       `${name} re-introduced bespoke filter Sets; the query text is the single source of truth`);
   }
-  // AI mode is desktop-only: the demo pitches the download instead of faking an agent.
-  assert.ok(/Download the app to try AI search/i.test(siteHtml), 'site/index.html should pitch the app download from the AI button');
   const searchCore = read('site/shared/clip-search.js');
-  assert.ok(searchCore.includes('rankFuzzyIndexes'), 'clip-search.js must export the shared offline AI ranking');
+  const uiCore = read('site/shared/clipboard-ui-core.js');
+  for (const [name, text] of [['renderPopupShell', shell], ['index.html', appHtml], ['site/index.html', siteHtml], ['clip-search.js', searchCore], ['clipboard-ui-core.js', uiCore]]) {
+    assert.ok(!/aiBtn|aiStatus|ai-search|aiSearch|rankFuzzyIndexes|getAiMode/.test(text), `${name} re-introduced a piece of the removed AI search mode`);
+  }
+  assert.ok(!require('fs').existsSync(require('path').join(__dirname, '..', 'lib', 'ai-search-agent.js')), 'lib/ai-search-agent.js was removed with the AI search mode');
 }
 
 // 12) In-app image viewer + context-menu parity: the viewer window mounts the

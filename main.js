@@ -29,7 +29,6 @@ const { Diagnostics } = require('./lib/diagnostics');
 const { ensureDirectory } = require('./lib/ensure-directory');
 const hmacAuth = require('./lib/hmac-auth');
 const mcpCore = require('./lib/mcp-core');
-const aiSearchAgent = require('./lib/ai-search-agent');
 const mcpPaths = require('./lib/mcp-paths');
 const mcpInstallers = require('./lib/mcp-installers');
 const conflictModel = require('./lib/conflict-model');
@@ -362,13 +361,20 @@ async function writeInPlace(filePath, data) {
   }
 }
 
+// Settings keys dropped by removed features. Stripped on load so a file written by an
+// older build cannot keep dead state alive (the in-app AI search keys included a
+// plaintext API key). In-app AI search was removed 2026-09-02.
+const REMOVED_SETTING_KEYS = ['ai_search_endpoint', 'ai_search_key', 'ai_search_model', 'ai_search_scope'];
+
 function loadSettings() {
   try {
     // Shared store parser (blobStore.parseJsonText): accepts BOM-prefixed UTF-8
     // JSON written by Windows tools rather than reading a valid settings file as
     // an unreadable store and replacing it with defaults on the next write.
     const loaded = blobStore.parseJsonText(fs.readFileSync(SETTINGS_PATH, 'utf-8'));
-    return { ...DEFAULT_SETTINGS, ...(loaded && typeof loaded === 'object' ? loaded : {}) };
+    const merged = { ...DEFAULT_SETTINGS, ...(loaded && typeof loaded === 'object' ? loaded : {}) };
+    for (const key of REMOVED_SETTING_KEYS) delete merged[key];
+    return merged;
   } catch {
     return { ...DEFAULT_SETTINGS };
   }
@@ -982,11 +988,6 @@ function remoteSettingsPayload() {
   delete remoteSave.ai_access_enabled;
   delete remoteSave.ai_always_allow;
   delete remoteSave.ai_approval_timeout_sec;
-  // In-app AI Search config is per-machine (BYO endpoint/key) — never synced.
-  delete remoteSave.ai_search_endpoint;
-  delete remoteSave.ai_search_key;
-  delete remoteSave.ai_search_model;
-  delete remoteSave.ai_search_scope;
   delete remoteSave.update_mode;
   return remoteSave;
 }
@@ -4857,11 +4858,6 @@ function setupIPC() {
     if (body.ui_density !== undefined && ['normal', 'compact'].includes(body.ui_density)) settings.ui_density = body.ui_density;
     if (body.ui_corners !== undefined && ['soft', 'sharp'].includes(body.ui_corners)) settings.ui_corners = body.ui_corners;
     if (body.ui_borders !== undefined && ['bordered', 'borderless'].includes(body.ui_borders)) settings.ui_borders = body.ui_borders;
-    // In-app AI Search (BYO endpoint) — per-machine, not synced.
-    if (body.ai_search_endpoint !== undefined) settings.ai_search_endpoint = String(body.ai_search_endpoint || '').trim();
-    if (body.ai_search_key !== undefined) settings.ai_search_key = String(body.ai_search_key || '').trim();
-    if (body.ai_search_model !== undefined) settings.ai_search_model = String(body.ai_search_model || '').trim();
-    if (body.ai_search_scope !== undefined && ['all', 'shared'].includes(body.ai_search_scope)) settings.ai_search_scope = body.ai_search_scope;
     if (body.update_mode !== undefined && !app.isPackaged && ['production', 'development'].includes(body.update_mode)) settings.update_mode = body.update_mode;
     saveSettingsFile();
     if (surfaceChanged) applySurfaceToPopup();
@@ -5119,56 +5115,6 @@ function setupIPC() {
     return aiAccessState();
   });
 
-  // --- In-app AI Search (BYO endpoint agent) ---
-  // User-initiated natural-language search over the user's OWN clipboard with their OWN
-  // key. Scope: whole history by default; ai_search_scope='shared' restricts the tool fns
-  // to the MCP shared-group boundary. One agent run at a time; a new run aborts the old.
-  let aiSearchAbort = null;
-  ipcMain.handle('ai-search', async (_, question) => {
-    if (!settings.ai_search_endpoint || !settings.ai_search_key || !settings.ai_search_model) {
-      return { ok: false, error: 'not_configured' };
-    }
-    if (aiSearchAbort) aiSearchAbort.abort();
-    const ac = new AbortController();
-    aiSearchAbort = ac;
-    const restricted = settings.ai_search_scope === 'shared';
-    const scope = restricted ? 'shared' : 'all';
-    const tools = {
-      searchClips: async (query, limit) =>
-        mcpCore.searchClips(history, settings, { query, scope, limit: Math.min(50, limit || 20) }),
-      getClip: async (id) => {
-        const item = findHistoryItem(id);
-        if (!item) return null;
-        const sharedSet = mcpCore.sharedGroupSet(settings);
-        if (restricted && !mcpCore.isShared(item, sharedSet)) return null;
-        if (item.type === 'image') return mcpCore.clipView(item, { sharedSet });
-        textBlobStore.hydrateTextItem(item, TEXT_DIR);
-        return { id: itemKey(item), title: titleOf(item), text: String(item.text || '').slice(0, 20000) };
-      },
-    };
-    const startedAt = Date.now();
-    try {
-      const result = await aiSearchAgent.runAgent({
-        endpoint: settings.ai_search_endpoint,
-        apiKey: settings.ai_search_key,
-        model: settings.ai_search_model,
-        question: String(question || ''),
-        tools,
-        signal: ac.signal,
-      });
-      diagnostics.record('ai_search.run', { ms: Date.now() - startedAt, steps: result.steps, picked: result.ids.length, aborted: !!result.aborted });
-      if (result.aborted) return { ok: false, error: 'aborted' };
-      // Keep only ids that still exist (the model can't fabricate usable rows).
-      const ids = result.ids.filter((id) => !!findHistoryItem(id));
-      return { ok: true, ids, note: result.note || null };
-    } catch (error) {
-      diagnostics.record('ai_search.error', { error: error && error.message }, { forceFile: true });
-      return { ok: false, error: error && error.message || 'failed' };
-    } finally {
-      if (aiSearchAbort === ac) aiSearchAbort = null;
-    }
-  });
-  ipcMain.handle('ai-search-cancel', () => { if (aiSearchAbort) { aiSearchAbort.abort(); aiSearchAbort = null; } return true; });
   // Approval modal -> main bridge.
   ipcMain.on('approval-decide', (_, id, choice) => {
     const pending = pendingApprovals.get(id);

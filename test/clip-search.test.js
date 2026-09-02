@@ -160,19 +160,6 @@ const idsOf = (items, parsed, opts) => S.filterRankIndexes(items, parsed, opts).
   assert.ok(S.fuzzyMatch('search', 'Search') !== null);
 }
 
-// ── fuzzy IDF ranking (AI no-key) with relevance floor ──
-{
-  const items = [
-    textItem('how to fix the sync data-loss incident in clipboard', { id: 'a' }),
-    textItem('the quick brown fox the the the', { id: 'b' }),  // only common words
-    textItem('clipboard sync bug', { id: 'c' }),
-  ];
-  const idf = S.buildIdf(items.map(S.clipToDoc));
-  const ranked = S.rankFuzzyIndexes(items, 'sync data loss', { idf }).map((i) => items[i].id);
-  assert.ok(ranked[0] === 'txt:a');
-  assert.ok(!ranked.includes('txt:b')); // common-word-only doc doesn't clear the floor
-}
-
 // ── lexQuery: segments concatenate back to the exact input ──
 {
   const q = 'foo title:hi -is:image "a b" \\d+';

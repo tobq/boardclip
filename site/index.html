@@ -167,8 +167,6 @@
         searchClear: "demo-clear-search",
         regexBtn: "demo-regex",
         sortBtn: "demo-sort",
-        aiBtn: "demo-ai",
-        aiStatus: "demo-ai-status",
         groupFilters: "filter-chips",
         list: "clip-list",
         settingsView: "demo-settings",
@@ -912,11 +910,6 @@
       state.sortMode = (state.sortMode || "best") === "best" ? "new" : "best";
       renderClips();
       search.focus();
-    });
-    // AI search is desktop-only (needs your real clipboard + a local agent):
-    // the demo shows the button but pitches the download.
-    document.getElementById("demo-ai").addEventListener("click", () => {
-      showToast("Download the app to try AI search");
     });
     settingsButton.addEventListener("click", () => {
       const open = !settingsPanel.classList.contains("show");

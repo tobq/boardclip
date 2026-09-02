@@ -437,75 +437,6 @@
   }
   function fuzzyFloor(queryLen) { return 8 * queryLen + 4; }
 
-  // ── token-IDF fuzzy ranking (ported from claude-utils session-core.js sessionQueryScore) —
-  //    the AI-mode-no-key "smart ranking": weighted token overlap + phrase boost + a relevance
-  //    floor so a vague query returns a FEW strong matches, never a flood. ──
-  function tokenize(text) {
-    return String(text || '').toLowerCase().match(/[a-z0-9]+/gi) ? String(text || '').toLowerCase().match(/[a-z0-9]+/g) || [] : [];
-  }
-  function buildIdf(docs) {
-    const df = new Map();
-    const N = docs.length || 1;
-    for (const doc of docs) {
-      if (!doc) continue;
-      const seen = new Set(tokenize(doc.title + ' ' + doc.body + ' ' + doc.groups.join(' ')));
-      for (const t of seen) df.set(t, (df.get(t) || 0) + 1);
-    }
-    const idf = new Map();
-    for (const [t, c] of df) idf.set(t, Math.log(1 + N / c));
-    return idf;
-  }
-  function phraseBoost(text, phrase, amount) {
-    const p = normalizedPhrase(phrase);
-    if (p.length < 6 || !/\s/.test(p)) return 0;
-    return String(text || '').toLowerCase().includes(p) ? amount : 0;
-  }
-  function fuzzyDocScore(doc, queryTokens, query, idf) {
-    const titleTokens = new Set(tokenize(doc.title));
-    const bodyTokens = new Set(tokenize(doc.body + ' ' + doc.groups.join(' ')));
-    let score = 0;
-    let matchedWeight = 0;
-    let totalWeight = 0;
-    for (const t of queryTokens) {
-      const w = (idf && idf.get(t)) || 1;
-      totalWeight += w;
-      let hit = 0;
-      if (titleTokens.has(t)) hit = w * 3;      // title tokens weigh more
-      else if (bodyTokens.has(t)) hit = w;
-      if (hit) { score += hit; matchedWeight += w; }
-    }
-    score += phraseBoost(doc.title, query, 8);
-    score += phraseBoost(doc.body, query, 4);
-    // title abbreviation (sdi -> Sync Data Incident)
-    if (query && !/\s/.test(query.trim())) { const fm = fuzzyMatch(query.trim(), doc.title); if (fm && fm.score >= fuzzyFloor(query.trim().length)) score += 6 + Math.min(10, fm.score / 8); }
-    return { score, matchedWeight, totalWeight };
-  }
-  // Rank ALL docs fuzzily, keep those clearing the relevance floor. `opts`: { idf, now,
-  // floor (fraction 0..1 of query weight that must be matched, default 0.34), limit }.
-  function rankFuzzyIndexes(items, query, opts) {
-    const o = opts || {};
-    const docs = o.docs || (items || []).map(clipToDoc);
-    const q = String(query || '').trim();
-    if (!q) return [];
-    const queryTokens = [...new Set(tokenize(q))];
-    if (!queryTokens.length) return [];
-    const idf = o.idf || buildIdf(docs);
-    const floor = o.floor != null ? o.floor : 0.34;
-    const now = o.now || Date.now();
-    const scored = [];
-    for (let i = 0; i < docs.length; i++) {
-      const doc = docs[i];
-      if (!doc) continue;
-      const r = fuzzyDocScore(doc, queryTokens, q, idf);
-      if (r.score <= 0) continue;
-      if (r.totalWeight > 0 && r.matchedWeight / r.totalWeight < floor) continue;
-      scored.push({ i, total: r.score + recencyScore(doc, now) * 0.15, ts: doc.ts });
-    }
-    scored.sort((a, b) => b.total - a.total || b.ts - a.ts);
-    const out = scored.map((s) => s.i);
-    return o.limit ? out.slice(0, o.limit) : out;
-  }
-
   // ── query syntax lexer (presentational, for the highlight overlay) ──
   // Walks the EXACT raw text (whitespace + quotes preserved, concat(text) === input) into
   // typed segments: prefix | value | neg | quote | regex | unknown | ws. parseQuery stays
@@ -642,7 +573,7 @@
     tokenizeQuery, quoteToken, parseQuery, serializeQuery, applyFacet, facetState,
     anyFilterActive, isEmptyQuery, resolveTimeMs,
     matchDoc, relevanceScore, recencyScore, filterRankIndexes,
-    fuzzyMatch, fuzzyFloor, tokenize, buildIdf, fuzzyDocScore, rankFuzzyIndexes,
+    fuzzyMatch, fuzzyFloor,
     lexQuery, suggestQuery,
     BUILTIN_TO_IS, IS_TO_BUILTIN, IS_VALUES, RECOGNIZED_PREFIXES, NON_FILTER_SCHEMES,
   };

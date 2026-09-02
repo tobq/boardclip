@@ -505,8 +505,6 @@
       searchClear: 'searchClear',
       regexBtn: 'regexBtn',
       sortBtn: 'sortBtn',
-      aiBtn: 'aiBtn',
-      aiStatus: 'aiStatus',
       groupFilters: 'groupFilters',
       selectionBar: 'selectionBar',
       list: 'list',
@@ -538,10 +536,8 @@
             <button class="icon-btn search-clear" id="${esc(ids.searchClear)}" type="button" title="Clear search" aria-label="Clear search"><span class="mi">close</span></button>
             <button class="icon-btn sort-btn" id="${esc(ids.sortBtn)}" type="button" title="Sort results" aria-label="Sort results"><span class="mi">sort</span></button>
             <button class="icon-btn rx-btn" id="${esc(ids.regexBtn)}" type="button" title="Regex search" aria-label="Regex search">.*</button>
-            <button class="icon-btn ai-btn" id="${esc(ids.aiBtn)}" type="button" title="AI search (Tab)" aria-label="AI search"><span class="mi">auto_awesome</span></button>
           </div>
         </div>
-        <div class="ai-status hidden" id="${esc(ids.aiStatus)}" aria-live="polite"></div>
         <div class="group-filters" id="${esc(ids.groupFilters)}" aria-label="Filters"></div>
         <div class="selection-bar hidden" id="${esc(ids.selectionBar)}" role="toolbar" aria-label="Selection actions"></div>
       </div>
@@ -787,9 +783,6 @@
     const o = opts || {};
     const getRegex = o.getRegex || (() => false);
     const getGroups = o.getGroups || (() => []);
-    // AI mode = the query is a natural-language question, not syntax: paint it
-    // plain and keep the token autocomplete out of the way.
-    const getAiMode = o.getAiMode || (() => false);
     const row = inputEl.closest('.search-row') || inputEl.parentElement;
     // Backdrop mirror: a div positioned under the input, carrying the SAME text metrics.
     const backdrop = document.createElement('div');
@@ -807,11 +800,6 @@
     let suggestOpen = false;
 
     function paintHighlight() {
-      if (getAiMode()) {
-        backdrop.textContent = inputEl.value;
-        backdrop.scrollLeft = inputEl.scrollLeft;
-        return;
-      }
       const segs = Search && Search.lexQuery ? Search.lexQuery(inputEl.value, { regex: !!getRegex() }) : [];
       backdrop.innerHTML = segs.map((s) => `<span class="qh-${s.kind}">${escapeHtml(s.text)}</span>`).join('') || '';
       backdrop.scrollLeft = inputEl.scrollLeft;
@@ -826,7 +814,6 @@
       suggestOpen = true;
     }
     function updateSuggest() {
-      if (getAiMode()) { closeSuggest(); return; }
       const res = Search && Search.suggestQuery ? Search.suggestQuery(inputEl.value, inputEl.selectionStart, { groups: getGroups() }) : null;
       if (!res) { closeSuggest(); return; }
       suggestions = res.suggestions.map((s) => ({ ...s, replaceStart: res.replaceStart, replaceEnd: res.replaceEnd }));
@@ -1135,21 +1122,6 @@
         <div id="aiAlwaysAllow"></div>
         <div class="setting-row"><label>Approval timeout (seconds)</label><input id="aiTimeout" type="number" min="5" max="600" step="5"></div>
       </div>
-    </div>
-    <div class="settings-section">
-      <h3>AI Search</h3>
-      <div class="ai-hint">Search with natural language. Works offline with smart ranking; add an Anthropic-compatible endpoint below to enable the AI agent (it searches with your key, on your machine).</div>
-      <div class="setting-row"><label>Endpoint</label><input id="aiSearchEndpoint" type="text" placeholder="https://cp.twoshot.app" autocomplete="off" spellcheck="false"></div>
-      <div class="setting-row"><label>API key</label><input id="aiSearchKey" type="password" placeholder="sk-…" autocomplete="off" spellcheck="false"></div>
-      <div class="setting-row"><label>Model</label><input id="aiSearchModel" type="text" placeholder="claude-3-5-sonnet-latest" autocomplete="off" spellcheck="false"></div>
-      <div class="setting-row">
-        <label>Reads</label>
-        <div class="seg" id="aiSearchScope" role="group" aria-label="AI search scope">
-          <button type="button" class="seg-btn" data-ai-scope="all" title="Search your whole clipboard history">All clips</button>
-          <button type="button" class="seg-btn" data-ai-scope="shared" title="Only clips in groups you've shared with AI">Shared only</button>
-        </div>
-      </div>
-      <div class="settings-status" id="aiSearchStatus"></div>
     </div>
     <div class="settings-section hidden" id="conflictsSection">
       <h3>Conflicts</h3>
@@ -2811,7 +2783,7 @@
     filterItems,
     filterItemIndexes,
     parsedFromState,
-    search: Search, // the shared engine (parseQuery/applyFacet/facetState/rankFuzzyIndexes/…)
+    search: Search, // the shared engine (parseQuery/applyFacet/facetState/filterRankIndexes/…)
     itemCountLabel,
     escapeHtml,
     builtinFilterTitle,

@@ -44,22 +44,10 @@
 .rx-btn { font-family: var(--font-mono); font-size: var(--fs-3); }
 .rx-btn.active { color: var(--accent); background: var(--accent-bg); }
 .rx-btn.active:hover { color: var(--accent); background: var(--accent-bg-strong); }
-.ai-btn.active { color: var(--accent); background: var(--accent-bg); }
-.ai-btn.active:hover { color: var(--accent); background: var(--accent-bg-strong); }
 /* Best⇄Recent override: only shown while a query is present (default = Best). */
 .sort-btn { display: none; }
 .sort-btn.show { display: flex; }
 .sort-btn.active { color: var(--accent); background: var(--accent-bg); }
-/* AI mode: syntax buttons make no sense for a natural-language question. */
-.search-row.ai .rx-btn, .search-row.ai .sort-btn { display: none; }
-/* AI status line under the search row: offline-ranking hint / agent progress /
-   result summary. Shimmers while the agent is running. */
-.ai-status { margin: 0 var(--sp-7); padding: var(--sp-1) var(--sp-5) 0; font-size: var(--fs-2); color: var(--text-dim); }
-.ai-status.hidden { display: none; }
-.ai-status.running { background: linear-gradient(90deg, var(--text-dim) 30%, var(--text) 50%, var(--text-dim) 70%);
-                     background-size: 200% 100%; -webkit-background-clip: text; background-clip: text;
-                     -webkit-text-fill-color: transparent; animation: ai-shimmer 1.4s linear infinite; }
-@keyframes ai-shimmer { from { background-position: 200% 0; } to { background-position: 0% 0; } }
 
 /* Live query-syntax highlight: a colored backdrop mirror UNDER a transparent input. The
    two must share identical text metrics (font/size/padding/line-height) so glyphs align. */

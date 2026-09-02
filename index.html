@@ -69,6 +69,15 @@ document.getElementById('newNoteBtn').addEventListener('click', () => {
   window.api.newNote({ sourceGroups: Core.sourceGroupsFromFilters(activeFilterSet()) });
 });
 
+// Renderer exceptions used to vanish (a tray popup has no DevTools open): a thrown
+// handler left the UI half-updated with nothing in the log. Route window errors +
+// unhandled rejections into the diagnostics file (always written, not gated on the
+// diagnostics toggle) so they sit next to the perf events.
+Core.installRendererErrorReporting((details) => {
+  const promise = window.api.recordDiagnostics?.('error', details);
+  if (promise && promise.catch) promise.catch(() => {});
+});
+
 function recordRendererPerf(event, startedAt, details = {}, thresholdMs = 50) {
   const ms = performance.now() - startedAt;
   if (!diagnosticsEnabled && ms < thresholdMs) return ms;
@@ -283,7 +292,6 @@ function clearSearchAndFilters() {
   searchEl.value = '';
   query = '';        // clears content AND facet tokens (both live in the query)
   sortMode = null;
-  resetAiRun();
   if (typeof searchBox !== 'undefined' && searchBox) searchBox.refresh();
   if (controller) controller.clearSelection({ paint: false });
   updateClearControls();

@@ -308,6 +308,15 @@ clear-all). All popup CSS + theme variables live in `site/shared/clipboard-popup
   keys (one held a plaintext API key). `ui-parity.test.js` #11 fails if any piece creeps back.
   Rebuild from git history (`git log -S rankFuzzyIndexes`) when a better version is designed -
   don't resurrect this one.
+- **Regression from that removal (shipped 36c82a9 06:18, fixed same day):** `clearSearchAndFilters` still called the
+  deleted `resetAiRun()`, so every clear-X / filter-bar-clear threw a ReferenceError AFTER emptying the input
+  and `query` but BEFORE `searchBox.refresh()`/`rerenderList()` - the highlight mirror kept showing the old
+  query while results showed everything ("search stuck with an old search"). Lessons baked in: (a) when
+  excising a block, grep for EVERY identifier it defined (the guard regex now lists them all), (b) the
+  sandbox check must exercise the clear paths (clear X, filter-bar clear chip, chip click/right-click),
+  (c) renderer exceptions now reach the diagnostics file as `renderer.error` via the shared
+  `Core.installRendererErrorReporting` + `record-diagnostics` (forceFile for errors) - a thrown popup
+  handler is never silent again.
 - **In-app image viewer** = `Core.createImageViewer` (the image twin of `createEditor`;
   SAME `bc-editor-bar` chrome + foot so the two windows read as one family). Fit-to-window
   default, click toggles fit⇄100% at the point, wheel zooms around the cursor, drag pans

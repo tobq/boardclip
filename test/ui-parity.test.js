@@ -246,7 +246,7 @@ const siteCss = read('site/styles.css');
   const searchCore = read('site/shared/clip-search.js');
   const uiCore = read('site/shared/clipboard-ui-core.js');
   for (const [name, text] of [['renderPopupShell', shell], ['index.html', appHtml], ['site/index.html', siteHtml], ['clip-search.js', searchCore], ['clipboard-ui-core.js', uiCore]]) {
-    assert.ok(!/aiBtn|aiStatus|ai-search|aiSearch|rankFuzzyIndexes|getAiMode/.test(text), `${name} re-introduced a piece of the removed AI search mode`);
+    assert.ok(!/aiBtn|aiStatus|ai-search|aiSearch|rankFuzzyIndexes|getAiMode|resetAiRun|runAiSearch|aiStatusText|aiRunning|aiResultIds|updateAiUi|setAiMode|searchIdf/.test(text), `${name} re-introduced a piece of the removed AI search mode`);
   }
   assert.ok(!require('fs').existsSync(require('path').join(__dirname, '..', 'lib', 'ai-search-agent.js')), 'lib/ai-search-agent.js was removed with the AI search mode');
 }

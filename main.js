@@ -5117,7 +5117,9 @@ function setupIPC() {
   ipcMain.handle('get-p2p-status', () => p2pStatus());
   ipcMain.handle('get-sync-diagnostics', () => syncDiagnostics());
   ipcMain.handle('record-diagnostics', (_, event, details) => {
-    const forceFile = !!(details && details.slow && !diagnostics.isEnabled());
+    // Slow marks and renderer errors are written even with diagnostics off - an
+    // exception in a popup handler is otherwise invisible (no DevTools on a tray app).
+    const forceFile = !!((details && details.slow) || event === 'error') && !diagnostics.isEnabled();
     if (!diagnostics.isEnabled() && !forceFile) return;
     diagnostics.record(`renderer.${event || 'event'}`, details || {}, { forceFile });
   });

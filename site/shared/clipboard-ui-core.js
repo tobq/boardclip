@@ -324,6 +324,27 @@
     return parsed;
   }
   // Ranked, filtered ORIGINAL indexes (relevance when searching, history order when idle).
+  // Forward window 'error' + 'unhandledrejection' to `report({type, message, stack,
+  // source, line})`. Shared so every renderer (popup, editor, viewer, demo) can log
+  // exceptions the same way; a no-op outside a browser.
+  function installRendererErrorReporting(report) {
+    if (typeof window === 'undefined' || typeof report !== 'function') return () => {};
+    const onError = (e) => {
+      try {
+        report({ type: 'error', message: String(e.message || ''), stack: e.error && e.error.stack ? String(e.error.stack).slice(0, 2000) : '', source: e.filename || '', line: e.lineno || 0 });
+      } catch {}
+    };
+    const onRejection = (e) => {
+      try {
+        const r = e.reason;
+        report({ type: 'unhandledrejection', message: r && r.message ? String(r.message) : String(r), stack: r && r.stack ? String(r.stack).slice(0, 2000) : '' });
+      } catch {}
+    };
+    window.addEventListener('error', onError);
+    window.addEventListener('unhandledrejection', onRejection);
+    return () => { window.removeEventListener('error', onError); window.removeEventListener('unhandledrejection', onRejection); };
+  }
+
   function filterItemIndexes(items, state) {
     const s = state || {};
     return Search.filterRankIndexes(items, parsedFromState(s), {
@@ -2787,6 +2808,7 @@
     filterItems,
     filterItemIndexes,
     parsedFromState,
+    installRendererErrorReporting,
     search: Search, // the shared engine (parseQuery/applyFacet/facetState/filterRankIndexes/…)
     itemCountLabel,
     escapeHtml,

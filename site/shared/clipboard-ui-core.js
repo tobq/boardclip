@@ -1592,12 +1592,17 @@
 
     // Opens the editor (or image viewer for images) for the clip row under event.
     // Shared inner helper used by alt+click and middle-click (auxclick) paths.
+    // MOUSE-driven opens keep the popup: the window opens WITHOUT taking focus
+    // (main: showInactive, no hidePopup) so several results can be opened in a
+    // row; the popup still blur-hides the moment the user clicks into one of them.
+    // Keyboard opens (Ctrl/Alt+Enter) stay a hand-off: focus moves to the editor.
+    const KEEP_POPUP = { keepPopup: true };
     async function openClipInEditor(event, row) {
       event.preventDefault(); event.stopPropagation();
       const item = a.itemById(row.dataset.id);
       if (!item) return true;
-      if (item.type === 'image') { if (a.openImage) await a.openImage(item); }
-      else { await a.editClip(row.dataset.id, row); }
+      if (item.type === 'image') { if (a.openImage) await a.openImage(item, KEEP_POPUP); }
+      else { await a.editClip(row.dataset.id, row, KEEP_POPUP); }
       return true;
     }
     // Middle-click (button 1) on a clip row → open in editor/viewer.
@@ -1699,13 +1704,13 @@
       const pin = t.closest('[data-action="pin"]');
       if (pin) { event.stopPropagation(); await a.pin(pin.dataset.id); refresh(); return true; }
       const openImg = t.closest('[data-action="open-img"]');
-      if (openImg) { event.stopPropagation(); await a.openImage(a.itemById(openImg.dataset.id)); return true; }
+      if (openImg) { event.stopPropagation(); await a.openImage(a.itemById(openImg.dataset.id), KEEP_POPUP); return true; }
       const openImgExt = t.closest('[data-action="open-img-ext"]');
       if (openImgExt) { event.stopPropagation(); if (a.openImageExternal) await a.openImageExternal(a.itemById(openImgExt.dataset.id)); return true; }
       const saveImg = t.closest('[data-action="save-img"]');
       if (saveImg) { event.stopPropagation(); toast(await a.saveImage(a.itemById(saveImg.dataset.id))); return true; }
       const edit = t.closest('[data-action="edit"]');
-      if (edit) { event.stopPropagation(); await a.editClip(edit.dataset.id, edit.closest('.item')); return true; }
+      if (edit) { event.stopPropagation(); await a.editClip(edit.dataset.id, edit.closest('.item'), KEEP_POPUP); return true; }
       const rename = t.closest('[data-action="rename"]');
       if (rename) { event.stopPropagation(); await renameClip(rename.dataset.id); return true; }
       const del = t.closest('[data-action="del"]');

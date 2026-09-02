@@ -210,6 +210,13 @@ build could re-trigger the race.
 - **Null-guard `it.text`** — always use `(it.text||'')` in templates
 - **Filter tags**: shared app/site UI. Left click includes a filter, right click excludes it, and the global clear X resets search plus include/exclude filters.
 - **Confirm dialog** shared between numpad reassign, group delete, and clear all
+- **Opening a clip in the editor/viewer from the popup (2026-09-02):** MOUSE-driven opens
+  (middle-click, alt+click, the row menu's Open in editor / Open image) pass `{ keepPopup: true }`
+  -> main's `presentSecondaryWindow` shows the window with `showInactive()` and does NOT
+  `hidePopup()`, so several results can be opened one after another; the popup still
+  blur-hides the moment the user clicks into one of the windows (that is what makes it NOT
+  "sticky" - the July complaint was a popup that ignored blur, never revisit a blur-suppress
+  flag). Keyboard opens (Ctrl/Alt+Enter) stay a hand-off: show + focus + hidePopup.
 - **Settings auto-save** — max age/size save on input change, no Save button
 - **Dev auto-reload** — `fs.watch` on `index.html` triggers `reloadIgnoringCache()` (debounced 300ms)
 

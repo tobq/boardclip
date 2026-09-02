@@ -38,7 +38,7 @@ contextBridge.exposeInMainWorld('api', {
   newNote: (options) => ipcRenderer.invoke('new-note', options || {}),
   getConflicts: () => ipcRenderer.invoke('get-conflicts'),
   openConflict: (id) => ipcRenderer.invoke('open-conflict', id),
-  openImage: (id) => ipcRenderer.invoke('open-image', id),
+  openImage: (id, options) => ipcRenderer.invoke('open-image', id, options || {}),
   openImageExternal: (id) => ipcRenderer.invoke('open-image-external', id),
   platform: process.platform,
   setSyncPath: (path) => ipcRenderer.invoke('set-sync-path', path),

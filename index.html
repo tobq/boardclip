@@ -362,7 +362,7 @@ const appAdapter = {
   activateClip: (id) => window.api.pasteAndHide(id),
   editClip: (id, _itemEl, options) => window.api.openEditor(id, { ...(query ? { find: query, regex: regexOn } : {}), ...(options || {}) }),
   setClipTitle: (id, title) => window.api.setClipTitle(id, title),
-  openImage: (item) => window.api.openImage(itemId(item)),
+  openImage: (item, options) => window.api.openImage(itemId(item), options || {}),
   openImageExternal: (item) => window.api.openImageExternal(itemId(item)),
   saveImage: async (item) => { const d = await window.api.copyImagePath(itemId(item)); return d && d.path ? 'Path copied' : null; },
   isSettingsOpen: () => document.getElementById('settingsView').classList.contains('show'),

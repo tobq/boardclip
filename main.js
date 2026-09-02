@@ -3779,7 +3779,7 @@ function scheduleWindowBoundsSave(childWin, key) {
 function editorBoundsFromSettings() { return windowBoundsFromSettings('editor_bounds', { width: 560, height: 520 }); }
 function scheduleEditorBoundsSave(editorWin) { scheduleWindowBoundsSave(editorWin, 'editor_bounds'); }
 
-function createEditorWindow(session) {
+function createEditorWindow(session, presentOptions = {}) {
   const editorWin = new BrowserWindow({
     ...editorBoundsFromSettings(),
     minWidth: 360,
@@ -3801,7 +3801,10 @@ function createEditorWindow(session) {
   editorWin.loadFile(path.join(SCRIPT_DIR, 'editor.html'));
   // Show + focus the editor, then dismiss the popup so it doesn't linger behind
   // the editor window (focus is already on the editor, so hiding ours is safe).
-  editorWin.once('ready-to-show', () => { try { editorWin.show(); editorWin.focus(); hidePopup(); } catch {} });
+  // keepPopup (mouse-driven opens): show WITHOUT activating and leave the popup
+  // alone, so several results can be opened in a row; the popup's normal
+  // blur-to-hide still fires when the user clicks into an editor.
+  editorWin.once('ready-to-show', () => { try { presentSecondaryWindow(editorWin, presentOptions); } catch {} });
   editorWin.webContents.on('did-finish-load', () => {
     try {
       editorWin.webContents.send('editor-init', {
@@ -3847,21 +3850,35 @@ function sourceGroupsForNewNote(options) {
 }
 
 // Open the editor for clip `id`, or a blank new-note editor when id is null.
+// Bring an editor/viewer window on screen. Default = a deliberate hand-off: the
+// window takes focus and the popup is dismissed (a popup lingering behind the
+// editor felt "sticky" - you had to click back to it + Escape). With
+// options.keepPopup (mouse-driven opens: middle-click, alt+click, the row menu)
+// the window is shown WITHOUT activating and the popup stays where it is, so
+// several results can be opened one after another; the popup still hides on
+// its own blur the moment the user clicks into one of the windows.
+function presentSecondaryWindow(targetWin, options = {}) {
+  if (!targetWin || targetWin.isDestroyed()) return;
+  if (options && options.keepPopup) {
+    targetWin.showInactive();
+    if (typeof targetWin.moveTop === 'function') { try { targetWin.moveTop(); } catch {} }
+    return;
+  }
+  targetWin.show();
+  targetWin.focus();
+  hidePopup();
+}
+
 function openEditor(id, options = {}) {
-  // Opening the editor is a deliberate hand-off: the editor becomes the focus,
-  // so dismiss the popup rather than leaving it lingering behind the editor
-  // window (that felt "sticky" - you had to click back to the popup + Escape).
   if (id != null) {
     const openSessionId = editWindowsByClip.get(id);
     if (openSessionId) {
       const s = editSessions.get(openSessionId);
       if (s && s.win && !s.win.isDestroyed()) {
         try {
-          s.win.show();
-          s.win.focus();
+          presentSecondaryWindow(s.win, options);
           if (options && options.find) s.win.webContents.send('editor-find', { query: options.find, regex: !!options.regex });
           if (options && options.focusTitle) s.win.webContents.send('editor-find', { focusTitle: true });
-          hidePopup();
         } catch {}
         return;
       }
@@ -3913,7 +3930,7 @@ function openEditor(id, options = {}) {
   writeDraftFile(session);
   editSessions.set(session.id, session);
   if (originalId != null) editWindowsByClip.set(originalId, session.id);
-  createEditorWindow(session);
+  createEditorWindow(session, options);
 }
 
 // --- In-app image viewer (viewer.html mounts the shared Core.createImageViewer;
@@ -3922,13 +3939,13 @@ function openEditor(id, options = {}) {
 // clip menu the popup rows use (pin/name/group/numpad/save/open-external/delete)
 // via the clip-window-state IPC below.
 const viewerWindows = new Map();
-function openImageViewer(id) {
+function openImageViewer(id, options = {}) {
   const item = findHistoryItem(id);
   if (!item || item.type !== 'image') return;
   const key = itemKey(item);
   const existing = viewerWindows.get(key);
   if (existing && !existing.isDestroyed()) {
-    try { existing.show(); existing.focus(); hidePopup(); } catch {}
+    try { presentSecondaryWindow(existing, options); } catch {}
     return;
   }
   const viewerWin = new BrowserWindow({
@@ -3950,7 +3967,7 @@ function openImageViewer(id) {
   });
   viewerWindows.set(key, viewerWin);
   viewerWin.loadFile(path.join(SCRIPT_DIR, 'viewer.html'));
-  viewerWin.once('ready-to-show', () => { try { viewerWin.show(); viewerWin.focus(); hidePopup(); } catch {} });
+  viewerWin.once('ready-to-show', () => { try { presentSecondaryWindow(viewerWin, options); } catch {} });
   viewerWin.webContents.on('did-finish-load', () => {
     try {
       viewerWin.webContents.send('viewer-init', {
@@ -5056,8 +5073,8 @@ function setupIPC() {
 
   // Primary image open: BoardClip's OWN viewer window (fit/zoom/pan + the shared
   // clip menu). The OS default app stays available via open-image-external.
-  ipcMain.handle('open-image', (_, id) => {
-    openImageViewer(id);
+  ipcMain.handle('open-image', (_, id, options) => {
+    openImageViewer(id, options || {});
   });
 
   ipcMain.handle('open-image-external', (_, id) => {

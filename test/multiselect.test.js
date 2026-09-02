@@ -122,14 +122,16 @@ const ui = require('../site/shared/clipboard-ui-core');
     const byId = { txt1: textItem, img1: imgItem };
     let lastEdit = null;
     let lastOpen = null;
+    let lastEditOpts = null;
+    let lastOpenOpts = null;
     const c = ui.createClipController({
       itemById: (id) => byId[id],
       visibleIds: () => ['txt1', 'img1'],
       renderSelection: () => {},
       render() {},
       refresh() {},
-      editClip: async (id) => { lastEdit = id; },
-      openImage: async (item) => { lastOpen = item; },
+      editClip: async (id, _el, options) => { lastEdit = id; lastEditOpts = options || null; },
+      openImage: async (item, options) => { lastOpen = item; lastOpenOpts = options || null; },
     });
 
     // Helper: minimal fake event + DOM surface the controller needs.
@@ -151,16 +153,19 @@ const ui = require('../site/shared/clipboard-ui-core');
     lastEdit = null;
     await c.onClick(makeEvent({ altKey: true, targetId: 'txt1' }));
     assert.strictEqual(lastEdit, 'txt1', 'alt+click on text row calls editClip');
+    assert.deepStrictEqual(lastEditOpts, { keepPopup: true }, 'alt+click keeps the popup open (mouse-driven open)');
 
     // (b) Alt+click on image row -> openImage
     lastOpen = null;
     await c.onClick(makeEvent({ altKey: true, targetId: 'img1' }));
     assert.deepStrictEqual(lastOpen, imgItem, 'alt+click on image row calls openImage');
+    assert.deepStrictEqual(lastOpenOpts, { keepPopup: true }, 'alt+click on an image keeps the popup open');
 
     // (c) Middle-click (button=1) on text row -> editClip
     lastEdit = null;
     await c.onAuxclick(makeEvent({ button: 1, targetId: 'txt1' }));
     assert.strictEqual(lastEdit, 'txt1', 'middle-click on text row calls editClip');
+    assert.deepStrictEqual(lastEditOpts, { keepPopup: true }, 'middle-click keeps the popup open (mouse-driven open)');
 
     // (d) Middle-click on image row -> openImage
     lastOpen = null;

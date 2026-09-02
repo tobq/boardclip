@@ -1605,6 +1605,19 @@
       else { await a.editClip(row.dataset.id, row, KEEP_POPUP); }
       return true;
     }
+    // Middle-button mousedown on a clip row: swallow the default so the OS/Chromium
+    // autoscroll widget never appears (auxclick fires after mouseup - too late for
+    // that; it was masked before because the popup used to vanish instantly).
+    function onMousedown(event) {
+      if (event.button !== 1) return false;
+      const t = event.target;
+      if (!t || typeof t.closest !== 'function') return false;
+      if (t.closest('button, .np-btn, .gp-btn, .star, [data-action], a')) return false;
+      const row = t.closest('.item');
+      if (!row || !row.dataset || !row.dataset.id) return false;
+      event.preventDefault();
+      return true;
+    }
     // Middle-click (button 1) on a clip row → open in editor/viewer.
     // auxclick fires for non-left buttons; preventDefault stops the scroll widget.
     async function onAuxclick(event) {
@@ -1703,14 +1716,18 @@
       if (npBtn) { event.stopPropagation(); const item = npBtn.closest('[data-id]'); if (item) tryAssignNumpad(item.dataset.id, Number(npBtn.dataset.n)); return true; }
       const pin = t.closest('[data-action="pin"]');
       if (pin) { event.stopPropagation(); await a.pin(pin.dataset.id); refresh(); return true; }
+      // The row's primary open button is the "normal" open: a hand-off (the
+      // popup closes, like before). Only the detached "..."/right-click MENU's
+      // Open in editor / Open image keeps the popup, alongside middle/alt-click.
+      const fromMenu = !!t.closest('.bc-menu-item');
       const openImg = t.closest('[data-action="open-img"]');
-      if (openImg) { event.stopPropagation(); await a.openImage(a.itemById(openImg.dataset.id), KEEP_POPUP); return true; }
+      if (openImg) { event.stopPropagation(); await a.openImage(a.itemById(openImg.dataset.id), fromMenu ? KEEP_POPUP : undefined); return true; }
       const openImgExt = t.closest('[data-action="open-img-ext"]');
       if (openImgExt) { event.stopPropagation(); if (a.openImageExternal) await a.openImageExternal(a.itemById(openImgExt.dataset.id)); return true; }
       const saveImg = t.closest('[data-action="save-img"]');
       if (saveImg) { event.stopPropagation(); toast(await a.saveImage(a.itemById(saveImg.dataset.id))); return true; }
       const edit = t.closest('[data-action="edit"]');
-      if (edit) { event.stopPropagation(); await a.editClip(edit.dataset.id, edit.closest('.item'), KEEP_POPUP); return true; }
+      if (edit) { event.stopPropagation(); await a.editClip(edit.dataset.id, edit.closest('.item'), fromMenu ? KEEP_POPUP : undefined); return true; }
       const rename = t.closest('[data-action="rename"]');
       if (rename) { event.stopPropagation(); await renameClip(rename.dataset.id); return true; }
       const del = t.closest('[data-action="del"]');
@@ -1795,6 +1812,7 @@
     return {
       dialogs,
       onClick,
+      onMousedown,
       onAuxclick,
       onContextmenu,
       onKeydown,

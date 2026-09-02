@@ -870,6 +870,7 @@
     // mirroring the app's document-level binding so the shared dispatch handles
     // everything once.
     demoWindowEl.addEventListener("click", (event) => controller.onClick(event));
+    demoWindowEl.addEventListener("mousedown", (event) => controller.onMousedown(event));
     demoWindowEl.addEventListener("auxclick", (event) => controller.onAuxclick(event));
     demoWindowEl.addEventListener("contextmenu", (event) => controller.onContextmenu(event));
 

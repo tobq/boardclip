@@ -400,6 +400,7 @@ controller = Core.createClipController(appAdapter);
 const appDialogs = controller.dialogs;
 
 document.addEventListener('click', (e) => controller.onClick(e));
+document.addEventListener('mousedown', (e) => controller.onMousedown(e));
 document.addEventListener('auxclick', (e) => controller.onAuxclick(e));
 document.addEventListener('contextmenu', (e) => controller.onContextmenu(e));
 

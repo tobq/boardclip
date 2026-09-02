@@ -167,6 +167,45 @@ const ui = require('../site/shared/clipboard-ui-core');
     assert.strictEqual(lastEdit, 'txt1', 'middle-click on text row calls editClip');
     assert.deepStrictEqual(lastEditOpts, { keepPopup: true }, 'middle-click keeps the popup open (mouse-driven open)');
 
+    // (d) The row's primary open button (data-action=edit, NOT inside the menu) is
+    //     the normal open: a hand-off with no keepPopup. The same action fired from
+    //     a detached menu item keeps the popup.
+    function makeActionEvent(action, { fromMenu = false, id = 'txt1' } = {}) {
+      const row = { dataset: { id }, closest(sel) { return sel === '.item' ? this : null; } };
+      const btn = { dataset: { id }, closest(sel) {
+        if (sel === `[data-action="${action}"]`) return this;
+        if (sel === '.item') return row;
+        if (sel === '.bc-menu-item') return fromMenu ? this : null;
+        return null;
+      } };
+      return { button: 0, target: btn, preventDefault() {}, stopPropagation() {} };
+    }
+    lastEdit = null; lastEditOpts = null;
+    await c.onClick(makeActionEvent('edit'));
+    assert.strictEqual(lastEdit, 'txt1', 'row edit button opens the editor');
+    assert.strictEqual(lastEditOpts, null, 'row edit button is a hand-off (no keepPopup)');
+    lastEdit = null; lastEditOpts = null;
+    await c.onClick(makeActionEvent('edit', { fromMenu: true }));
+    assert.strictEqual(lastEdit, 'txt1', 'menu Open in editor opens the editor');
+    assert.deepStrictEqual(lastEditOpts, { keepPopup: true }, 'menu Open in editor keeps the popup');
+    lastOpen = null; lastOpenOpts = null;
+    await c.onClick(makeActionEvent('open-img', { id: 'img1' }));
+    assert.deepStrictEqual(lastOpen, imgItem, 'row open-image button opens the viewer');
+    assert.strictEqual(lastOpenOpts, null, 'row open-image button is a hand-off');
+    lastOpen = null; lastOpenOpts = null;
+    await c.onClick(makeActionEvent('open-img', { id: 'img1', fromMenu: true }));
+    assert.deepStrictEqual(lastOpenOpts, { keepPopup: true }, 'menu Open image keeps the popup');
+
+    // (e) Middle-button mousedown on a row is swallowed (no autoscroll widget);
+    //     left-button and inner controls are left alone.
+    let prevented = 0;
+    const md = (button, targetIsButton) => { const e = makeEvent({ button, targetId: 'txt1', targetIsButton }); e.preventDefault = () => { prevented++; }; return e; };
+    assert.strictEqual(c.onMousedown(md(1, false)), true, 'middle mousedown on a row is handled');
+    assert.strictEqual(prevented, 1, 'middle mousedown default (autoscroll) is prevented');
+    assert.strictEqual(c.onMousedown(md(0, false)), false, 'left mousedown passes through');
+    assert.strictEqual(c.onMousedown(md(1, true)), false, 'middle mousedown on an inner control passes through');
+    assert.strictEqual(prevented, 1, 'only the row middle-mousedown was prevented');
+
     // (d) Middle-click on image row -> openImage
     lastOpen = null;
     await c.onAuxclick(makeEvent({ button: 1, targetId: 'img1' }));

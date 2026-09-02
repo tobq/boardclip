@@ -56,6 +56,18 @@ const approvalHtml = read('mcp-approval.html');
 //    layer keys on is actually driven by the applier.
 {
   assert.ok(typeof ui.applyVariants === 'function', 'core must export applyVariants');
+  // The audit axes must never leak into real installs: gated on the env flag only
+  // (git installs are un-packaged, so `!app.isPackaged` was true everywhere), and
+  // both the popup and the secondary windows fall back to the default look.
+  {
+    const mainSrc = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
+    const appSrc = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
+    assert.ok(mainSrc.includes('debug_variants: debugVariantsEnabled(),'), 'debug_variants must come from debugVariantsEnabled()');
+    assert.ok(/function debugVariantsEnabled\(\) \{\s*return !!process\.env\.BOARDCLIP_DEBUG_VARIANTS;/.test(mainSrc), 'debug variants must be gated on BOARDCLIP_DEBUG_VARIANTS only');
+    assert.ok(!/debug_variants:.*isPackaged/.test(mainSrc), 'debug variants must not be tied to app.isPackaged');
+    assert.ok(appSrc.includes("uiBorders: debug ? s.ui_borders : 'bordered',"), 'popup must apply the audit axes only under debug_variants');
+    assert.ok(mainSrc.includes("return { accentVariant: 'blue', uiDensity: 'normal', uiCorners: 'soft', uiBorders: 'bordered' };"), 'secondary windows must get the default axes when debug variants are off');
+  }
   assert.ok(typeof ui.createVariantSwitcher === 'function', 'core must export createVariantSwitcher');
   for (const attr of ['data-surface', 'data-accent', 'data-density', 'data-corners', 'data-borders']) {
     assert.ok(tokensCss.includes(`[${attr}=`), `clipboard-tokens.css should define overrides for [${attr}]`);

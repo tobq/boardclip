@@ -485,8 +485,11 @@ clear-all). All popup CSS + theme variables live in `site/shared/clipboard-popup
   (normal/compact), `data-corners` (soft/sharp), `data-borders`
   (bordered/borderless). Applied by shared `Core.applyVariants(root, opts)`;
   audited live via `Core.createVariantSwitcher` (reuses `.seg`/`.seg-btn`). The
-  app renders **Surface as a real user setting** + the other axes ONLY when
-  `runtime_info.debug_variants` (`!app.isPackaged || BOARDCLIP_DEBUG_VARIANTS`);
+  app renders AND APPLIES **Surface as a real user setting** + the other axes ONLY when
+  `runtime_info.debug_variants` (= `BOARDCLIP_DEBUG_VARIANTS=1`, env-only since 2026-09-02: the old
+  `!app.isPackaged ||` leaked the audit axes into every git install, and a stale
+  `ui_borders:'borderless'` made tags FILLED chips on one machine while another showed the
+  default no-bg style - off the flag every window renders the code's default look);
   the demo renders all axes always-on, persisted to `localStorage`. Ship default
   is graphite+blue+glass-where-supported+normal+soft. New settings keys
   (`surface_style` + `accent_variant/ui_density/ui_corners/ui_borders`) are

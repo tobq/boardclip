@@ -115,12 +115,17 @@ if (window.api.onColorSchemeChanged) window.api.onColorSchemeChanged(applyColorS
 function applyAppearance(s) {
   if (!s) return;
   const rt = s.runtime_info || {};
+  // Surface is a real user setting; the other axes are a design-audit tool and
+  // apply ONLY under BOARDCLIP_DEBUG_VARIANTS (runtime_info.debug_variants). Off
+  // the flag, the code's default look wins regardless of what the settings file
+  // holds - the tags-look-different-per-machine bug of 2026-09-02.
+  const debug = !!rt.debug_variants;
   Core.applyVariants(document.documentElement, {
     surfaceStyle: rt.surface_style || 'solid',
-    accentVariant: s.accent_variant,
-    uiDensity: s.ui_density,
-    uiCorners: s.ui_corners,
-    uiBorders: s.ui_borders,
+    accentVariant: debug ? s.accent_variant : 'blue',
+    uiDensity: debug ? s.ui_density : 'normal',
+    uiCorners: debug ? s.ui_corners : 'soft',
+    uiBorders: debug ? s.ui_borders : 'bordered',
   });
 }
 if (window.api.getSettings) window.api.getSettings().then(s => {

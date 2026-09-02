@@ -3120,7 +3120,22 @@ function notifyColorSchemeChanged() {
 // Non-surface appearance variants (accent/density/corners/borders), shared by
 // the editor + conflict windows so they match the popup. Surface stays solid on
 // those windows (a text editor / merge view reads better opaque).
+// The accent/density/corners/borders axes are a DESIGN-AUDIT tool, not user
+// settings: they apply only with BOARDCLIP_DEBUG_VARIANTS=1. They used to leak
+// into every git install (the primary distribution is un-packaged, so
+// `!app.isPackaged` was always true): a stale `ui_borders: 'borderless'` on one
+// machine turned group tags into filled chips while the Mac on defaults showed
+// the intended no-background style - same commit, different look (2026-09-02).
+// With the flag off every window renders the code's default look, whatever the
+// settings file says.
+function debugVariantsEnabled() {
+  return !!process.env.BOARDCLIP_DEBUG_VARIANTS;
+}
+
 function appearanceVariantPayload() {
+  if (!debugVariantsEnabled()) {
+    return { accentVariant: 'blue', uiDensity: 'normal', uiCorners: 'soft', uiBorders: 'bordered' };
+  }
   return {
     accentVariant: settings.accent_variant,
     uiDensity: settings.ui_density,
@@ -4853,7 +4868,7 @@ function setupIPC() {
         p2p: p2pStatus(),
         surface_style: resolvedSurfaceStyle(),
         surface_supported: glassSupport() !== 'none',
-        debug_variants: (!app.isPackaged || !!process.env.BOARDCLIP_DEBUG_VARIANTS),
+        debug_variants: debugVariantsEnabled(),
         developer_mode: !app.isPackaged,
         update_mode: developerUpdateMode(),
         update_mode_visible: !app.isPackaged && !!BUILD_INFO.fullCommit && !!fs.existsSync(path.join(SCRIPT_DIR, '.git')) && (BUILD_INFO.dirty || settings.update_mode === 'development'),

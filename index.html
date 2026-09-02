@@ -1205,21 +1205,44 @@ async function refreshGroups({render = true} = {}) {
   } catch {}
 }
 
-async function refreshGroupsAndList() {
-  await refreshGroups({render: false});
-  await refresh({force: true});
+// Refreshes coalesce: a burst of history-changed events plus the show/focus
+// refresh used to stack five full refreshes (~7s of renderer work after three
+// quick captures, measured 2026-09-02). Now ONE runs and at most ONE more is
+// queued behind it, carrying the strongest `force`.
+let refreshInFlight = null;
+let refreshQueued = null;
+function refreshGroupsAndList({force = true} = {}) {
+  if (refreshInFlight) {
+    refreshQueued = { force: !!(refreshQueued && refreshQueued.force) || force };
+    return refreshInFlight;
+  }
+  refreshInFlight = (async () => {
+    try {
+      await refreshGroups({render: false});
+      await refresh({force});
+    } finally {
+      refreshInFlight = null;
+      if (refreshQueued) {
+        const next = refreshQueued;
+        refreshQueued = null;
+        refreshGroupsAndList(next);
+      }
+    }
+  })();
+  return refreshInFlight;
 }
 
 // --- Data refresh ---
 async function refresh({force = false} = {}) {
   const startedAt = performance.now();
   try {
-    const state = window.api.getHistoryState ? await window.api.getHistoryState() : {revision: Date.now(), items: await window.api.getHistory()};
-    const data = state.items || [];
-    const changed = state.revision !== dataRevision;
+    // Hand main the revision we already hold: unchanged history comes back as a
+    // revision-only reply, not a ~10k-item clone.
+    const state = window.api.getHistoryState ? await window.api.getHistoryState(dataRevision) : {revision: Date.now(), items: await window.api.getHistory()};
+    const changed = !state.unchanged && state.revision !== dataRevision;
     if (changed) {
       dataRevision = state.revision;
-      items = data;
+      items = state.items || [];
       rebuildItemIndexes();
     }
     if (changed || force) rerenderList();

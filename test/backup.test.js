@@ -187,6 +187,60 @@ function throttleDefersGc() {
   ok('object GC is throttled off the hot path but stays correct');
 }
 
+// ---------------------------------------------------------------------------
+// 8. Pool index: putObject consults an in-memory index (one readdir), not a stat
+//    per item per snapshot; GC invalidates it so a re-referenced object is
+//    re-written rather than assumed present.
+// ---------------------------------------------------------------------------
+function poolIndexSurvivesGc() {
+  const base = tmpBase();
+  const ab = [item('a', 'alpha'), item('b', 'beta')];
+  const { manifestPath: oldPath } = backup.writeSnapshot(base, { history: ab, settings: null, reason: 'periodic' });
+  backup.writeSnapshot(base, { history: [item('c', 'gamma')], settings: null, reason: 'periodic' });
+  assert.strictEqual(objectCount(base), 3, 'three distinct objects stored');
+  // Age the a+b manifest out (eviction keys on file mtime) -> GC drops a and b.
+  const past = Date.now() - 10 * 86400 * 1000;
+  fs.utimesSync(oldPath, new Date(past), new Date(past));
+  backup.pruneBackups(base, { maxAgeMs: 48 * 3600 * 1000, now: Date.now() });
+  assert.strictEqual(objectCount(base), 1, 'GC dropped the two orphaned objects');
+  // a+b again: the index must NOT believe they still exist.
+  const { manifestPath } = backup.writeSnapshot(base, { history: ab, settings: null, reason: 'periodic' });
+  assert.strictEqual(objectCount(base), 3, 'objects re-written after GC (index invalidated)');
+  backup.writeSnapshot(base, { history: ab, settings: null, reason: 'periodic' });
+  assert.strictEqual(objectCount(base), 3, 'unchanged items dedup through the index');
+  assert.deepStrictEqual(backup.readSnapshot(base, manifestPath).history, ab, 'snapshot still round-trips');
+  fs.rmSync(base, { recursive: true, force: true });
+  ok('pool index dedups without per-item stats and is invalidated by GC');
+}
+
+// ---------------------------------------------------------------------------
+// 9. Worker entry (lib/backup-worker.js): the main process hands over JSON
+//    strings and gets one message back; the snapshot lands and round-trips.
+// ---------------------------------------------------------------------------
+async function workerEntryWritesSnapshot() {
+  const { Worker } = require('worker_threads');
+  const base = tmpBase();
+  const h1 = [item('a', 'alpha'), item('b', 'beta')];
+  const msg = await new Promise((resolve, reject) => {
+    const w = new Worker(path.join(__dirname, '..', 'lib', 'backup-worker.js'), { workerData: {
+      baseDir: base,
+      historyJson: '\uFEFF' + JSON.stringify(h1), // BOM-prefixed like a PowerShell-written file
+      settingsJson: JSON.stringify({ s: 1 }),
+      reason: 'slots',
+      createdAt: Date.now(),
+      source: { probe: true },
+      prune: { maxAgeMs: 48 * 3600 * 1000, maxBytes: Infinity, maxManifests: 10, gcMinIntervalMs: 0 },
+    } });
+    w.once('message', resolve);
+    w.once('error', reject);
+  });
+  assert.strictEqual(msg.ok, true, `worker reports success (${msg.error || ''})`);
+  assert.strictEqual(objectCount(base), 3, 'worker wrote 2 items + the settings object');
+  assert.deepStrictEqual(backup.readSnapshot(base, msg.manifestPath).history, h1, 'worker snapshot round-trips');
+  fs.rmSync(base, { recursive: true, force: true });
+  ok('backup worker entry writes a snapshot off-thread and reports back');
+}
+
 (async () => {
   console.log('backup.test.js');
   roundTrip();
@@ -196,5 +250,7 @@ function throttleDefersGc() {
   sizeCeiling();
   legacyCompat();
   throttleDefersGc();
+  poolIndexSurvivesGc();
+  await workerEntryWritesSnapshot();
   console.log(`\n${passed} assertions passed`);
 })().catch(e => { console.error('\nFAILED:', e && e.stack || e); process.exit(1); });

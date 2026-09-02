@@ -1453,7 +1453,11 @@
       selectedIds.clear();
       for (const id of ids) selectedIds.add(id);
       anchorId = ids[0];
-      focusId = ids[ids.length - 1];
+      // Keep the cursor where it is. Jumping focus to the LAST row made the
+      // lazily-rendered popup list materialise every row just to scroll there
+      // (9.7k DOM rows after one Ctrl+A, measured 2026-09-02); nothing about
+      // select-all needs the cursor to move.
+      if (focusId == null || !selectedIds.has(focusId)) focusId = ids[0];
       paintSelection();
     }
     function moveFocus(dir, opts) {

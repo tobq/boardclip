@@ -2,7 +2,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('api', {
   getHistory: () => ipcRenderer.invoke('get-history'),
-  getHistoryState: () => ipcRenderer.invoke('get-history-state'),
+  getHistoryState: (knownRevision) => ipcRenderer.invoke('get-history-state', knownRevision),
   onHistoryChanged: (callback) => {
     const listener = (_, revision) => callback(revision);
     ipcRenderer.on('history-changed', listener);

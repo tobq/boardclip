@@ -73,4 +73,35 @@ assert.ok(mainJs.includes("app.on('before-quit', () => { app.isQuitting = true; 
 assert.ok(between(mainJs, 'function relaunchAfterUpdate() {', 'function developerUpdateMode() {').includes('app.isQuitting = true;'),
   'updater relaunch must mark the app as quitting before app.exit()');
 
+// Popup-open + save hot-path cost guards (2026-09-02 freeze investigation). Each
+// of these was a measured multi-hundred-ms main-thread or renderer stall on a
+// ~10k-item history, on EVERY popup open or clipboard capture.
+{
+  const indexHtml = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
+  const preloadJs = fs.readFileSync(path.join(__dirname, '..', 'preload.js'), 'utf8');
+  assert.ok(/ipcMain\.handle\('get-history-state', \(_, knownRevision\)/.test(mainJs),
+    'get-history-state must take the renderer\'s known revision and short-circuit when unchanged');
+  assert.ok(mainJs.includes('{ revision: dataRevision, unchanged: true }'),
+    'unchanged history must answer without cloning the items');
+  assert.ok(preloadJs.includes("getHistoryState: (knownRevision) => ipcRenderer.invoke('get-history-state', knownRevision)"),
+    'preload must forward the known revision');
+  assert.ok(indexHtml.includes('window.api.getHistoryState(dataRevision)'),
+    'renderer must pass its revision to get-history-state');
+  assert.ok(indexHtml.includes('let refreshInFlight = null;') && indexHtml.includes('refreshQueued'),
+    'renderer refreshes must coalesce (one in flight + one queued)');
+  assert.ok(mainJs.includes('...rendererSettingsView(),') && mainJs.includes("const RENDERER_HIDDEN_SETTINGS = ['tombstones', 'group_tombstones', 'supersedes']"),
+    'get-settings must not ship the sync ledgers to the renderer');
+  assert.ok(mainJs.includes('storage_bytes: cachedStorageBytes()'),
+    'get-settings must not walk the data dir on every call');
+  assert.ok(mainJs.includes('refreshBuildInfo({ maxAgeMs: 60 * 1000 })'),
+    'get-settings must not spawn git on every call');
+  // The backup snapshot (hash ~10k items + retention) must never run inline on the save path.
+  const decide = between(mainJs, 'function maybeBackupHistoryBeforeWrite(', 'function runBackupSnapshotInWorker(');
+  assert.ok(!decide.includes('backupStore.writeSnapshot('), 'the save path must not snapshot inline');
+  assert.ok(decide.includes('if (currentHistoryJson == null) {') && decide.split('readFileSync(DB_PATH').length === 2,
+    'the save path may read the history file only once, to seed the in-memory copy');
+  assert.ok(mainJs.includes("new Worker(path.join(__dirname, 'lib', 'backup-worker.js')"),
+    'backup snapshots run on a worker thread');
+}
+
 console.log('popup lifecycle tests passed');

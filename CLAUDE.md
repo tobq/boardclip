@@ -559,6 +559,21 @@ Tagging is optional/archival now, not required to ship.
 - **Silent main-process death = check the System event log FIRST** (`Get-WinEvent -FilterHashtable @{LogName='System'; Id=2004}` / Application Popup 26). 2026-09-01 21:52: BoardClip (9-day uptime) vanished mid-keystroke with NO Event 1000, NO crash dump, NO diag quit event; the tiny MCP helpers survived. Cause was a machine-wide *Out of Virtual Memory* (commit exhausted by chrome.exe 13GB + WSL 5GB + a node 4GB) - the allocating process aborts and WER can't even record it. Not a BoardClip bug. Every editor draft was already idle-committed (verified byte-for-byte against history via `clipboard-edit-archive`), zero data loss.
 - **Relaunch under a WMI wedge**: `start.bat`/`kill.bat` use `Get-CimInstance` and hang forever when WMI is wedged (memory starvation wedges it; other tools' 2-min supervisors then pile up hung powershells). If no `\.\pipeoardclip-mcp-<user>` pipe exists and the diag heartbeat is silent, launch electron.exe directly from the install dir (`Start-Process ... -ArgumentList '.' -WorkingDirectory <install>`); the single-instance lock is free.
 - **Orphan-draft recovery was DEAD from the `-<seq>` filename change until 2026-09-01**: `EDIT_DRAFT_RE` only matched legacy `boardclip-edit-<12hex>-<ts>.txt`, but sessions write `...-<ts>-<seq>.txt`, so `recoverOrphanedEdits` skipped every in-flight draft (15 lingered since July, never retired). Fixed + guarded by `test/edit-draft-recovery.test.js` (reads the regex + generator out of main.js). Idle-commit had covered the gap in practice. Recovery now also SKIPS a draft whose text already sits inside a longer clip (an older prefix of a note edited after the crash) so the first restart doesn't resurrect stale duplicates - only genuinely unsaved text comes back as a new clip.
+- **Popup-open / save hot path (2026-09-02, ~10k items, 7.7MB history) - measured, don't regress:**
+  the 1-2s "freeze on open" was FOUR stacked costs, none of them the file write (15ms) or
+  stringify (23ms). (1) `backupStore.writeSnapshot` ran INLINE in every save: ~0.9s warm (an
+  existsSync per item = 10k stats) / 9.5s cold -> p50 636ms, p90 2.4s, max 5.8s of main-thread
+  block per clipboard capture. Now: `lib/backup.js` keeps an in-memory pool index (one readdir,
+  invalidated by GC) and main hands the PRE-write JSON strings (cached, never re-read) to
+  `lib/backup-worker.js` on a worker thread (one at a time; failure -> async full-JSON fallback).
+  (2) `get-settings` (called on EVERY popup open via `refreshGroups`) shipped ~475KB of
+  tombstones/supersedes + spawned git (65ms) + walked the blob dirs: now `rendererSettingsView()`
+  strips the ledgers, `refreshBuildInfo({maxAgeMs})` and `cachedStorageBytes()` cache. (3) the
+  renderer re-cloned all items over IPC on every refresh even when unchanged: `get-history-state`
+  takes the renderer's known revision and answers `{unchanged:true}`; `refreshGroupsAndList`
+  coalesces (one in flight + one queued) instead of stacking five refreshes. (4) Ctrl+A moved focus
+  to the LAST row and the lazy list materialised all 9.7k rows to scroll there: `selectAll` keeps
+  the cursor. Guards: `popup-lifecycle.test.js` (source), `backup.test.js` #8-9, `multiselect`.
 - Main process errors go to terminal, renderer errors to DevTools (Cmd+Option+I)
 - To test the app's renderer (`index.html`) without Electron, serve the repo root
   and load it with a stubbed `window.api` (CDP `Page.addScriptToEvaluateOnNewDocument`)

@@ -31,6 +31,7 @@ const hmacAuth = require('./lib/hmac-auth');
 const mcpCore = require('./lib/mcp-core');
 const mcpPaths = require('./lib/mcp-paths');
 const mcpInstallers = require('./lib/mcp-installers');
+const { Worker } = require('worker_threads');
 const conflictModel = require('./lib/conflict-model');
 const { ControlServer } = require('./lib/control-server');
 
@@ -165,8 +166,14 @@ for (const dir of Object.values(BLOB_DIRS)) ensureDirectory(dir);
 
 let BUILD_INFO = getBuildInfo(SCRIPT_DIR);
 
-function refreshBuildInfo() {
+// getBuildInfo spawns git (~65ms, measured 2026-09-02) - callers on a hot path
+// (get-settings runs on EVERY popup open) pass maxAgeMs to reuse a recent answer.
+let buildInfoRefreshedAt = 0;
+function refreshBuildInfo({ maxAgeMs = 0 } = {}) {
+  const now = Date.now();
+  if (maxAgeMs > 0 && BUILD_INFO && now - buildInfoRefreshedAt < maxAgeMs) return BUILD_INFO;
   BUILD_INFO = getBuildInfo(SCRIPT_DIR);
+  buildInfoRefreshedAt = now;
   return BUILD_INFO;
 }
 
@@ -236,6 +243,14 @@ function atomicWriteJson(filePath, value, spacing) {
 
 let lastHistoryBackupAt = 0;
 let lastHistoryBackupHash = '';
+// The exact JSON strings last written to disk (seeded from the files on first
+// use). maybeBackupHistoryBeforeWrite snapshots the PRE-write state; holding the
+// strings in memory means no 7.7MB re-read + re-parse on every save.
+let lastWrittenHistoryJson = null;
+let lastWrittenSlots = null;          // slotFingerprintFromItems() of lastWrittenHistoryJson
+let lastWrittenSettingsJson = null;
+let lastBackupPruneAt = 0;
+let backupWorkerChain = Promise.resolve();
 
 function historyContentHash(historyJson, settingsJson = '') {
   return crypto.createHash('sha256').update(historyJson).update('\0').update(settingsJson || '').digest('hex');
@@ -271,68 +286,108 @@ function pruneDirectory(dir, policy, { ext } = {}) {
   }
 }
 
-function pruneHistoryBackups() {
-  backupStore.pruneBackups(HISTORY_BACKUP_DIR, {
-    maxAgeMs: HISTORY_BACKUP_MAX_AGE_MS,
-    maxBytes: HISTORY_BACKUP_MAX_BYTES,
-    maxManifests: HISTORY_BACKUP_MAX_MANIFESTS,
-    // Object GC scans surviving manifests — keep it off the save hot path; at most
-    // every 5 min (orphans between GCs are a changed item each, negligible).
-    gcMinIntervalMs: 5 * 60 * 1000,
-    now: Date.now(),
-  });
-}
+const HISTORY_BACKUP_PRUNE_MIN_INTERVAL_MS = 5 * 60 * 1000;
 
+// Decide whether the PRE-write state deserves a snapshot (numpad slots changed,
+// or the periodic interval elapsed) and, if so, hand the snapshot to a worker
+// thread. Everything here is cheap: cached JSON strings, one sha256, two slot
+// fingerprints. The expensive part (hashing ~10k items into the pool + retention)
+// used to run inline and cost 0.6s median / 5.8s worst per clipboard capture
+// (measured 2026-09-02); it now never touches the main thread.
 function maybeBackupHistoryBeforeWrite(nextStoredHistory) {
-  let currentHistoryJson = '';
-  try { currentHistoryJson = fs.readFileSync(DB_PATH, 'utf-8'); } catch { return; }
+  let currentHistoryJson = lastWrittenHistoryJson;
+  if (currentHistoryJson == null) {
+    try { currentHistoryJson = fs.readFileSync(DB_PATH, 'utf-8'); } catch { return; }
+  }
   if (!currentHistoryJson) return;
 
-  let currentSettingsJson = '';
-  try { currentSettingsJson = fs.readFileSync(SETTINGS_PATH, 'utf-8'); } catch {}
+  let currentSettingsJson = lastWrittenSettingsJson;
+  if (currentSettingsJson == null) {
+    try { currentSettingsJson = fs.readFileSync(SETTINGS_PATH, 'utf-8'); } catch { currentSettingsJson = ''; }
+  }
 
   const contentHash = historyContentHash(currentHistoryJson, currentSettingsJson);
   if (contentHash === lastHistoryBackupHash) return;
 
-  let currentHistory = [];
-  try {
-    const parsed = JSON.parse(currentHistoryJson);
-    currentHistory = Array.isArray(parsed) ? parsed : [];
-  } catch { return; }
-
-  const currentSlots = slotFingerprintFromItems(currentHistory);
+  let currentSlots = lastWrittenSlots;
+  if (currentSlots == null) {
+    let currentHistory = [];
+    try {
+      const parsed = blobStore.parseJsonText(currentHistoryJson);
+      currentHistory = Array.isArray(parsed) ? parsed : [];
+    } catch { return; }
+    currentSlots = slotFingerprintFromItems(currentHistory);
+  }
   const nextSlots = slotFingerprintFromItems(nextStoredHistory);
   const slotChanged = currentSlots !== nextSlots;
   const now = Date.now();
   if (!slotChanged && now - lastHistoryBackupAt < HISTORY_BACKUP_MIN_INTERVAL_MS) return;
 
-  let currentSettings = null;
-  try { currentSettings = currentSettingsJson ? JSON.parse(currentSettingsJson) : null; } catch {}
-
   const reason = slotChanged ? 'slots' : 'periodic';
   const source = { historyPath: DB_PATH, settingsPath: SETTINGS_PATH, historyHash: contentHash, slotChanged };
-  try {
-    // Content-addressed snapshot (dedup pool + manifest). Falls back to a full-JSON
-    // copy if anything in the new path throws, so a backup is never silently skipped.
+  lastHistoryBackupAt = now;
+  lastHistoryBackupHash = contentHash;
+  const prune = now - lastBackupPruneAt >= HISTORY_BACKUP_PRUNE_MIN_INTERVAL_MS;
+  if (prune) lastBackupPruneAt = now;
+  runBackupSnapshotInWorker({ historyJson: currentHistoryJson, settingsJson: currentSettingsJson, reason, createdAt: now, source, prune });
+}
+
+// One snapshot worker at a time (a promise chain); a failure falls back to a
+// full-JSON copy written asynchronously, so a backup is never silently skipped.
+function runBackupSnapshotInWorker(job) {
+  backupWorkerChain = backupWorkerChain.then(() => new Promise((resolve) => {
+    const startedAt = Date.now();
+    let settled = false;
+    const finish = (msg) => {
+      if (settled) return;
+      settled = true;
+      if (msg && msg.ok) {
+        diagnostics.record('history.backup', { ms: Date.now() - startedAt, reason: job.reason, pruned: !!job.prune, off_thread: true });
+      } else {
+        diagnostics.record('history.backup.fallback', { error: msg && msg.error }, { forceFile: true });
+        writeFullBackupFallback(job).catch(() => {});
+      }
+      resolve();
+    };
     try {
-      backupStore.writeSnapshot(HISTORY_BACKUP_DIR, {
-        history: currentHistory,
-        settings: currentSettings,
-        reason,
-        createdAt: new Date(now),
-        source,
+      const worker = new Worker(path.join(__dirname, 'lib', 'backup-worker.js'), {
+        workerData: {
+          baseDir: HISTORY_BACKUP_DIR,
+          historyJson: job.historyJson,
+          settingsJson: job.settingsJson,
+          reason: job.reason,
+          createdAt: job.createdAt,
+          source: job.source,
+          prune: job.prune ? {
+            maxAgeMs: HISTORY_BACKUP_MAX_AGE_MS,
+            maxBytes: HISTORY_BACKUP_MAX_BYTES,
+            maxManifests: HISTORY_BACKUP_MAX_MANIFESTS,
+            gcMinIntervalMs: 0,
+          } : null,
+        },
       });
+      worker.once('message', finish);
+      worker.once('error', (err) => finish({ ok: false, error: err && err.message }));
+      worker.once('exit', (code) => finish(code === 0 ? { ok: true } : { ok: false, error: `backup worker exited ${code}` }));
     } catch (err) {
-      diagnostics.record('history.backup.fallback', { error: err && err.message }, { forceFile: true });
-      const stamp = new Date(now).toISOString().replace(/[:.]/g, '-');
-      const backupPath = path.join(HISTORY_BACKUP_DIR, `${stamp}-${reason}-${contentHash.slice(0, 12)}.json`);
-      fs.mkdirSync(HISTORY_BACKUP_DIR, { recursive: true });
-      atomicWriteJson(backupPath, { createdAt: new Date(now).toISOString(), reason, source, history: currentHistory, settings: currentSettings });
+      finish({ ok: false, error: err && err.message });
     }
-    lastHistoryBackupAt = now;
-    lastHistoryBackupHash = contentHash;
-    pruneHistoryBackups();
-  } catch {}
+  }));
+  return backupWorkerChain;
+}
+
+async function writeFullBackupFallback(job) {
+  let history = [];
+  let settings = null;
+  try {
+    const parsed = blobStore.parseJsonText(job.historyJson);
+    history = Array.isArray(parsed) ? parsed : [];
+  } catch { return; }
+  try { settings = job.settingsJson ? blobStore.parseJsonText(job.settingsJson) : null; } catch {}
+  const stamp = new Date(job.createdAt).toISOString().replace(/[:.]/g, '-');
+  const backupPath = path.join(HISTORY_BACKUP_DIR, `${stamp}-${job.reason}-${String(job.source.historyHash || '').slice(0, 12)}.json`);
+  fs.mkdirSync(HISTORY_BACKUP_DIR, { recursive: true });
+  await atomicWriteFileAsync(backupPath, JSON.stringify({ createdAt: new Date(job.createdAt).toISOString(), reason: job.reason, source: job.source, history, settings }));
 }
 
 async function atomicWriteFileAsync(filePath, data) {
@@ -392,10 +447,12 @@ function saveSettingsFile() {
   settings.group_tombstones = s.group_tombstones;
   settings.supersedes = s.supersedes;
   delete s.numpad_slots;
-  atomicWriteJson(SETTINGS_PATH, s, 2);
+  const settingsJson = JSON.stringify(s, null, 2);
+  atomicWriteFile(SETTINGS_PATH, settingsJson);
+  lastWrittenSettingsJson = settingsJson;
   diagnostics.setEnabled(process.env.BOARDCLIP_DIAGNOSTICS === '1' || !!settings.diagnostics_enabled);
   diagnostics.slow('settings.save.slow', Date.now() - startedAt, {
-    bytes: Buffer.byteLength(JSON.stringify(s)),
+    bytes: Buffer.byteLength(settingsJson),
     diagnostics_changed: previousDiagnosticsEnabled !== diagnostics.isEnabled(),
   }, 50);
   dataRevision++;
@@ -593,7 +650,10 @@ function writeHistoryStorageFile() {
   for (const item of history) ensureItemId(item);
   const storedHistory = clipBlobStore.prepareHistoryForStorage(history, BLOB_DIRS);
   maybeBackupHistoryBeforeWrite(storedHistory);
-  atomicWriteJson(DB_PATH, storedHistory);
+  const json = JSON.stringify(storedHistory);
+  atomicWriteFile(DB_PATH, json);
+  lastWrittenHistoryJson = json;
+  lastWrittenSlots = slotFingerprintFromItems(storedHistory);
 }
 
 function saveHistory() {
@@ -794,6 +854,25 @@ function applyTextEditToItem(item, { newText, newTitle } = {}) {
     newTitle: newTitle !== undefined ? newTitle : titleOf(item),
     writeClipboard: false, // an edit-by-id never hijacks the user's clipboard
   });
+}
+
+// The popup renderer never needs the sync ledgers; on a mature install they were
+// ~470KB of the ~475KB settings payload cloned across IPC on EVERY popup open
+// (measured 2026-09-02). Keep the renderer's view slim.
+const RENDERER_HIDDEN_SETTINGS = ['tombstones', 'group_tombstones', 'supersedes'];
+function rendererSettingsView() {
+  const view = { ...settings };
+  for (const key of RENDERER_HIDDEN_SETTINGS) delete view[key];
+  return view;
+}
+
+// getStorageBytes walks every blob dir (~26ms); the usage line in Settings is
+// happy with a 30s-old number.
+let storageBytesCache = { at: 0, value: 0 };
+function cachedStorageBytes(maxAgeMs = 30 * 1000) {
+  const now = Date.now();
+  if (now - storageBytesCache.at > maxAgeMs) storageBytesCache = { at: now, value: getStorageBytes() };
+  return storageBytesCache.value;
 }
 
 function getStorageBytes() {
@@ -4748,15 +4827,22 @@ function mcpExecute(tool, args) {
 // --- IPC handlers ---
 function setupIPC() {
   ipcMain.handle('get-history', () => history);
-  ipcMain.handle('get-history-state', () => ({ revision: dataRevision, items: history }));
+  // The renderer passes the revision it already holds; when nothing changed we
+  // answer with the revision alone instead of cloning ~10k items (7.7MB) across
+  // IPC on every popup open (0.5-2.3s per open, measured 2026-09-02).
+  ipcMain.handle('get-history-state', (_, knownRevision) => (
+    knownRevision === dataRevision
+      ? { revision: dataRevision, unchanged: true }
+      : { revision: dataRevision, items: history }
+  ));
 
   ipcMain.handle('get-settings', () => ({
-    ...settings,
-    storage_bytes: getStorageBytes(),
+    ...rendererSettingsView(),
+    storage_bytes: cachedStorageBytes(),
     item_count: history.length,
     build_info: BUILD_INFO,
     runtime_info: (() => {
-      refreshBuildInfo();
+      refreshBuildInfo({ maxAgeMs: 60 * 1000 });
       const support = updateSupport(SCRIPT_DIR, BUILD_INFO, process.platform, { updateMode: developerUpdateMode() });
       return {
         app_dir: SCRIPT_DIR,

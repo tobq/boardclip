@@ -53,10 +53,11 @@ const ui = require('../site/shared/clipboard-ui-core');
 
   c.selectAll();
   assert.strictEqual(c.selection().count, 4, 'select-all selects every visible id');
+  assert.strictEqual(c.focusedId(), 'b', 'select-all keeps the cursor where it was (never jumps to the last row)');
 
   c.moveFocus(1); // plain move clears the multi-set and advances focus
   assert.strictEqual(c.selection().count, 0, 'plain arrow move clears the multi-selection');
-  assert.strictEqual(c.focusedId(), 'd', 'focus clamps to the last row');
+  assert.strictEqual(c.focusedId(), 'c', 'plain move advances from the kept cursor');
 
   c.clearSelection();
   assert.strictEqual(c.selection().count, 0);

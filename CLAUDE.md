@@ -210,10 +210,12 @@ build could re-trigger the race.
 - **Null-guard `it.text`** — always use `(it.text||'')` in templates
 - **Filter tags**: shared app/site UI. Left click includes a filter, right click excludes it, and the global clear X resets search plus include/exclude filters.
 - **Confirm dialog** shared between numpad reassign, group delete, and clear all
-- **Opening a clip in the editor/viewer from the popup (2026-09-02):** "open several" gestures
-  (middle-click, alt+click, and the DETACHED right-click/"..." menu's Open in editor / Open image -
-  detected via `.bc-menu-item`) pass `{ keepPopup: true }`; the row's own primary open button and
-  Ctrl/Alt+Enter stay a hand-off (popup closes). middle-click is `controller.onMousedown` (prevents the
+- **Opening a clip in the editor/viewer from the popup (2026-09-02/03):** "open several" gestures
+  pass `{ keepPopup: true }`: middle-click or RIGHT-click on the row's own open button (the owner's
+  actual ask - right-click there opens, it never shows the row menu), middle-click / alt+click on
+  the row body, and the detached right-click/"..." menu's Open in editor / Open image (detected via
+  `.bc-menu-item`). A NORMAL click on the row's open button and Ctrl/Alt+Enter stay a hand-off
+  (popup closes). middle-click is `controller.onMousedown` (prevents the
   default: the ONLY way to stop Chromium's autoscroll widget, measured) + `controller.onMouseup`
   (opens on an in-place release; a preventDefault'ed middle mousedown makes Chromium SKIP
   `auxclick`, measured 2026-09-03) - `onAuxclick` is only a fallback for consumers that don't

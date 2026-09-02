@@ -1615,11 +1615,15 @@
     const MIDDLE_DRAG_SLOP_PX = 6;
     let middleArm = null;        // { id, x, y } from the last middle mousedown on a row
     let lastMiddleOpen = null;   // { id, at } so a stray auxclick can't double-open
+    // The row's own open button: a NORMAL click hands off (editor takes focus, popup
+    // closes); a middle-click or RIGHT-click on that same button opens while keeping
+    // the popup - the "open several results" gesture the owner asked for.
+    const OPEN_BTN_SEL = '[data-action="edit"], [data-action="open-img"]';
     function middleRowFor(event) {
       const t = event.target;
       if (!t || typeof t.closest !== 'function') return null;
-      if (t.closest('button, .np-btn, .gp-btn, .star, [data-action], a')) return null;
-      const row = t.closest('.item');
+      const openBtn = t.closest(OPEN_BTN_SEL);
+      const row = openBtn ? openBtn.closest('.item') : (t.closest('button, .np-btn, .gp-btn, .star, [data-action], a') ? null : t.closest('.item'));
       return row && row.dataset && row.dataset.id ? row : null;
     }
     function onMousedown(event) {
@@ -1759,6 +1763,12 @@
       return false;
     }
     function onContextmenu(event) {
+      // Right-click on the row's open button = open and KEEP the popup (no menu).
+      const openBtn = event.target.closest && event.target.closest(OPEN_BTN_SEL);
+      if (openBtn) {
+        const row = openBtn.closest('.item');
+        if (row && row.dataset && row.dataset.id) return openClipInEditor(event, row);
+      }
       const ftag = event.target.closest('.filter-tag[data-filter], .filter-tag[data-group]');
       if (ftag && !event.target.closest('[data-action="delete-group"]')) {
         event.preventDefault();

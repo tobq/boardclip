@@ -219,6 +219,33 @@ const ui = require('../site/shared/clipboard-ui-core');
     assert.strictEqual(c.onMousedown(mk(0, false, 10, 10)), false, 'left mousedown passes through');
     assert.strictEqual(c.onMousedown(mk(1, true, 10, 10)), false, 'middle mousedown on an inner control passes through');
     assert.strictEqual(await c.onMouseup(mk(1, false, 10, 10)), false, 'mouseup without an armed press does nothing');
+
+    // (f) The row's OWN open button: right-click and middle-click open with
+    //     keepPopup and never fall through to the row context menu.
+    const OPEN_BTN_SEL = '[data-action="edit"], [data-action="open-img"]';
+    function makeOpenBtnEvent(button, action, id) {
+      const row = { dataset: { id }, closest(sel) { return sel === '.item' ? this : null; } };
+      const btn = { dataset: { id }, closest(sel) { if (sel === OPEN_BTN_SEL || sel === `[data-action="${action}"]`) return this; if (sel === '.item') return row; if (/button/.test(sel)) return this; return null; } };
+      let prevented = false;
+      const e = { button, clientX: 5, clientY: 5, target: btn, preventDefault() { prevented = true; }, stopPropagation() {} };
+      e.wasPrevented = () => prevented;
+      return e;
+    }
+    lastEdit = null; lastEditOpts = null;
+    let rc = makeOpenBtnEvent(2, 'edit', 'txt1');
+    assert.strictEqual(await c.onContextmenu(rc), true, 'right-click on the open button is handled');
+    assert.ok(rc.wasPrevented(), 'right-click on the open button suppresses the context menu');
+    assert.strictEqual(lastEdit, 'txt1', 'right-click on the open button opens the editor');
+    assert.deepStrictEqual(lastEditOpts, { keepPopup: true }, 'right-click on the open button keeps the popup');
+    lastOpen = null; lastOpenOpts = null;
+    rc = makeOpenBtnEvent(2, 'open-img', 'img1');
+    await c.onContextmenu(rc);
+    assert.deepStrictEqual(lastOpen, imgItem, 'right-click on the image open button opens the viewer');
+    assert.deepStrictEqual(lastOpenOpts, { keepPopup: true }, 'and keeps the popup');
+    lastEdit = null; lastEditOpts = null;
+    assert.strictEqual(c.onMousedown(makeOpenBtnEvent(1, 'edit', 'txt1')), true, 'middle mousedown on the open button arms');
+    assert.strictEqual(await c.onMouseup(makeOpenBtnEvent(1, 'edit', 'txt1')), true, 'middle mouseup on the open button opens');
+    assert.deepStrictEqual(lastEditOpts, { keepPopup: true }, 'middle-click on the open button keeps the popup');
   }
 
 

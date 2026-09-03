@@ -318,7 +318,7 @@ build could re-trigger the race.
   stays in the local backups"), `why` (why it is asking: always-gated vs not-in-a-shared-group),
   `facts` ([Clip size, Captured, Groups, Numpad]) and a LABELLED `preview` ("Clip text" / "New
   text" / "Text to append" / "Query"). The modal also states that Always/Session apply to that
-  kind of action only. Sandbox proof: `scratchpad/approval-shot.js` pattern (isolated instance
+  kind of action only. Sandbox proof: `node scripts/qa-approval-shot.js` (isolated instance
   with `ai_access_enabled`, `BOARDCLIP_MCP_DISCOVERY` + `BOARDCLIP_MCP_PIPE_TAG` overrides and a
   fake HOME/APPDATA so the registrar never touches real client configs; screenshot each modal
   over CDP). `BOARDCLIP_MCP_PIPE_TAG` is the test seam that lets a sandbox run its own control
@@ -337,7 +337,7 @@ build could re-trigger the race.
   request runs and `control-client` treats `timeoutMs` as MAX SILENCE, so the helper waits as
   long as the user reads. Legacy helpers (no flag, still-running MCP children spawned before the
   update) get exactly one line as before. Tests: `test/control-channel.test.js` (keepalive,
-  legacy first-line, abort-on-disconnect); sandbox proof `scratchpad/approval-hold.js` (5 s
+  legacy first-line, abort-on-disconnect); sandbox proof `node scripts/qa-approval-hold.js` (5 s
   timeout held past 8 s, resume, client_gone).
 - **Discovery:** app writes `~/.boardclip/mcp.json` `{dataDir,pipePath,secret,command,args,env,pid}` on launch when enabled; helper reads it (falls back to default userData for read-only). Registered command is **electron-as-node** (`process.execPath` + `ELECTRON_RUN_AS_NODE=1` + entry path) - works for source + packaged.
 - **`edit_clip` tool (replace/append clip text):** because text ids are content-addressed (`txt:{sha256}`), there is NO in-place text mutation - editing changes the id, which is why an "edit" was previously an add+delete dance. The tool REUSES `applyExternalTextEdit` (the same metadata-preserving core the built-in editor + conflict/unify flows use): when `originalText` matches the current item, `clipboardModel.applyTextEdit` mutates the item in place, re-derives its content-key id, keeps pin/groups/numpad, and tombstones the old id - so all metadata survives automatically. Returns the NEW id. `append:true` newline-joins onto existing text (done app-side, so it works on non-shared clips too); else it replaces. In `MCP_ALWAYS_GATED` (lossy overwrite -> prompts like delete, NOT free-on-shared; users can "always allow" per-tool). Images can't be edited. Don't hand-roll add+delete for an edit.

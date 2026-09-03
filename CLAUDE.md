@@ -124,7 +124,10 @@ Otherwise the key passes through so normal numpad typing works. Main thread call
 
 ### DATA-LOSS BUG (2026-07-06 incident) — sync merge vs content-hash edits — FIXED 2026-07-09 (`61f5cff`)
 
-Sync was PAUSED (`sync_disabled_paths` = all 3 providers, `p2p_enabled: false`) from the
+**Sync RE-ENABLED 2026-09-03** (both devices on eb530dc; first merge folded the Mac's 350 clips into
+Windows' 9.8k with zero loss; 4 stale pre-edit Mac copies were pre-tombstoned so they could not
+resurrect; the Mac had in fact kept syncing to Google Drive alone the whole time). History: sync
+was PAUSED on Windows (`sync_disabled_paths` = all 3 providers, `p2p_enabled: false`) from the
 incident until the fix. RE-ENABLE ONLY once BOTH devices run `61f5cff`+ (Windows + Mac) —
 old code doesn't understand the supersedes ledger, so a stale device still on the old
 build could re-trigger the race.

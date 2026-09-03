@@ -828,6 +828,10 @@ function writeEditedTextToClipboard(text) {
 }
 
 function applyExternalTextEdit({ id, originalText, originalTitle, sourceGroups, newText, newTitle, writeClipboard = true }) {
+  // Forensics for the fork branch: was the base clip still there, and did its
+  // text still match what the editor started from?
+  const baseItem = id ? history.find(item => itemKey(item) === id) : null;
+  const baseProbe = { base_found: !!baseItem, base_text_matches: baseItem ? String(baseItem.text || '') === String(originalText || '') : null };
   const result = clipboardModel.applyTextEdit(history, {
     id,
     originalText,
@@ -859,7 +863,9 @@ function applyExternalTextEdit({ id, originalText, originalTitle, sourceGroups, 
     conflict: !!result.conflictRecord,
     tombstones: (result.tombstoneIds || []).length,
     text_len: String(newText || '').length,
-  }, { forceFile: diagnostics.isEnabled() });
+    base_id: id ? String(id).slice(0, 20) : '',
+    ...baseProbe,
+  }, { forceFile: diagnostics.isEnabled() || /conflict/.test(String(result.reason)) });
   return result;
 }
 
@@ -2422,8 +2428,24 @@ async function p2pApplyState(state, { peerName, reason, fetchedAssets = 0, notif
   const remoteHistory = clipBlobStore.hydrateHistory(Array.isArray(state.history) ? state.history : [], BLOB_DIRS);
   const previousSettingsJson = JSON.stringify(remoteSettingsPayload());
   const previousConflictsJson = JSON.stringify(conflictModel.normalizeConflictState(conflicts));
-  const canonicalHistory = foldRemoteState(history.slice(), remoteHistory, state.settings || {}, state.conflicts || {});
+  let canonicalHistory = foldRemoteState(history.slice(), remoteHistory, state.settings || {}, state.conflicts || {});
+  const foldedAtRevision = dataRevision;
   const recoveredImages = await recoverRecentOrphanImages(canonicalHistory);
+  // The orphan scan above is an await: an editor idle-save (or any local write)
+  // can land meanwhile. Replacing `history` with the pre-await fold would throw
+  // that save away (its new content-hash id gone, the tombstoned old id back),
+  // and the editor's next save would fork the note as "a separate clip" - the
+  // race behind the 2026-09-03 nine-copies incident. Re-fold the live history
+  // onto the canonical view, exactly like syncMerge's rebase.
+  if (dataRevision !== foldedAtRevision) {
+    canonicalHistory = mergeHistories(history.slice(), canonicalHistory);
+    diagnostics.record('p2p.state_apply_rebased', {
+      peer: peerName || state.deviceName || state.deviceId,
+      folded_revision: foldedAtRevision,
+      current_revision: dataRevision,
+      items: canonicalHistory.length,
+    }, { forceFile: true });
+  }
   const localChanged = JSON.stringify(canonicalHistory) !== JSON.stringify(history);
   const settingsChanged = JSON.stringify(remoteSettingsPayload()) !== previousSettingsJson;
   const conflictsChanged = JSON.stringify(conflictModel.normalizeConflictState(conflicts)) !== previousConflictsJson;

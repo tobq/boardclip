@@ -526,6 +526,7 @@
       searchClear: 'searchClear',
       regexBtn: 'regexBtn',
       sortBtn: 'sortBtn',
+      searchHelpBtn: 'searchHelpBtn',
       groupFilters: 'groupFilters',
       selectionBar: 'selectionBar',
       list: 'list',
@@ -557,6 +558,7 @@
             <button class="icon-btn search-clear" id="${esc(ids.searchClear)}" type="button" title="Clear search" aria-label="Clear search"><span class="mi">close</span></button>
             <button class="icon-btn sort-btn" id="${esc(ids.sortBtn)}" type="button" title="Sort results" aria-label="Sort results"><span class="mi">sort</span></button>
             <button class="icon-btn rx-btn" id="${esc(ids.regexBtn)}" type="button" title="Regex search" aria-label="Regex search">.*</button>
+            <button class="icon-btn help-btn" id="${esc(ids.searchHelpBtn)}" type="button" title="Search syntax" aria-label="Search syntax" aria-haspopup="true" aria-expanded="false"><span class="mi">help</span></button>
           </div>
         </div>
         <div class="group-filters" id="${esc(ids.groupFilters)}" aria-label="Filters"></div>
@@ -799,6 +801,51 @@
   // since: presets, num:). ONE implementation shared by the app popup + demo.
   //   opts: { getRegex(): bool, getGroups(): string[], onChange(value), onEnter?() }
   // Returns { refresh(), destroy() }. The input keeps its id/handlers; we only decorate.
+  // The "?" reference next to the search box: SYNTAX_HELP rendered as a
+  // hover/click popover (hover peeks, click pins, Escape / outside click closes).
+  function renderSearchHelp() {
+    const rows = ((Search && Search.SYNTAX_HELP) || []).map((h) =>
+      `<div class="search-help-row"><code class="sh-token">${escapeHtml(h.token)}</code><span class="sh-desc">${escapeHtml(h.desc)}</span><code class="sh-example">${escapeHtml(h.example)}</code></div>`
+    ).join('');
+    return `<div class="search-help-title">Search syntax</div>${rows}<div class="search-help-foot">Filters combine with AND. Click a filter chip to add it; right-click to exclude.</div>`;
+  }
+
+  function attachSearchHelp(buttonEl, hostEl) {
+    if (typeof document === 'undefined' || !buttonEl) return { destroy() {} };
+    const host = hostEl || buttonEl.parentElement || document.body;
+    const box = document.createElement('div');
+    box.className = 'search-help hidden';
+    box.setAttribute('role', 'dialog');
+    box.setAttribute('aria-label', 'Search syntax');
+    box.innerHTML = renderSearchHelp();
+    host.appendChild(box);
+    let pinned = false;
+    let hideTimer = null;
+    const show = () => { if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; } box.classList.remove('hidden'); buttonEl.setAttribute('aria-expanded', 'true'); };
+    const hide = () => { box.classList.add('hidden'); buttonEl.setAttribute('aria-expanded', 'false'); pinned = false; };
+    const hideSoon = () => { if (pinned) return; if (hideTimer) clearTimeout(hideTimer); hideTimer = setTimeout(() => { if (!pinned) hide(); }, 180); };
+    const onEnter = () => show();
+    const onLeave = () => hideSoon();
+    const onClick = (e) => { e.preventDefault(); e.stopPropagation(); if (pinned) { hide(); return; } pinned = true; show(); };
+    const onDocClick = (e) => { if (pinned && !box.contains(e.target) && e.target !== buttonEl && !buttonEl.contains(e.target)) hide(); };
+    const onKey = (e) => { if (e.key === 'Escape' && !box.classList.contains('hidden')) { hide(); e.stopPropagation(); } };
+    buttonEl.addEventListener('mouseenter', onEnter);
+    buttonEl.addEventListener('mouseleave', onLeave);
+    buttonEl.addEventListener('click', onClick);
+    box.addEventListener('mouseenter', onEnter);
+    box.addEventListener('mouseleave', onLeave);
+    document.addEventListener('mousedown', onDocClick);
+    document.addEventListener('keydown', onKey, true);
+    return {
+      isOpen: () => !box.classList.contains('hidden'),
+      destroy() {
+        buttonEl.removeEventListener('mouseenter', onEnter); buttonEl.removeEventListener('mouseleave', onLeave); buttonEl.removeEventListener('click', onClick);
+        document.removeEventListener('mousedown', onDocClick); document.removeEventListener('keydown', onKey, true);
+        box.remove();
+      },
+    };
+  }
+
   function attachSearchBox(inputEl, opts) {
     if (typeof document === 'undefined' || !inputEl) return { refresh() {}, destroy() {} };
     const o = opts || {};
@@ -816,6 +863,8 @@
     const dropdown = document.createElement('div');
     dropdown.className = 'search-suggest hidden';
     (row || inputEl.parentElement).appendChild(dropdown);
+    const helpBtn = (row || inputEl.parentElement || document).querySelector('.help-btn');
+    const help = attachSearchHelp(helpBtn, row || inputEl.parentElement);
     let suggestions = [];
     let active = -1;
     let suggestOpen = false;
@@ -886,7 +935,7 @@
         inputEl.removeEventListener('scroll', onScroll);
         inputEl.removeEventListener('blur', onBlur);
         inputEl.removeEventListener('keydown', onKeyDown, true);
-        backdrop.remove(); dropdown.remove();
+        backdrop.remove(); dropdown.remove(); help.destroy();
         inputEl.classList.remove('search-live');
       },
     };
@@ -2886,6 +2935,8 @@
     renderClipTagChips,
     renderSelectionBar,
     attachSearchBox,
+    attachSearchHelp,
+    renderSearchHelp,
     createMenu,
     installSubmenuAutoflip,
     showActionToast,

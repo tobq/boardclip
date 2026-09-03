@@ -167,6 +167,22 @@ Otherwise the key passes through so normal numpad typing works. Main thread call
   `sync.delta_apply`, `sync.journal.write/read`, `p2p.peer.seen/lost`; tray tooltip shows
   peers + transport + last sync + last latency; Settings lists peers and the tailnet line.
   QA: `node scripts/qa-sync-two-instances.js all` (p2p + cloud-only scenarios, measured).
+- **Editor forks were a state-apply RACE, not divergence (found 2026-09-03 right after P2P first
+  paired)**: the v1 `p2pApplyState` folded remote state, then `await`ed the orphan-image scan,
+  then replaced `history` with the PRE-await fold. An editor idle-save landing inside that await
+  was discarded (its new id gone, the tombstoned old id back), so the next save found no base
+  and took the `conflict_created` branch: "saved as a separate clip" toasts + a new copy every
+  few seconds while typing (nine copies of one note). Fixed with the same `dataRevision` rebase
+  guard `syncMerge` already had (`p2p.state_apply_rebased`); `applyRemoteEnvelope` (v2) has no
+  await between fold and commit by construction. `editor.text_applied` now logs `base_found` /
+  `base_text_matches` so a fork's cause is readable from the log. RULE: never `await` between a
+  `foldRemoteState` and the `history` replacement without re-folding the live history.
+- **Search facets (2026-09-03)**: `len:` accepts ranges (`len:50-200`), plus `lines:`/`ln:` and
+  `words:`/`wd:` with the same comparators, and `is:url` / `is:multiline` / `is:rich`. The
+  user-facing reference is `SYNTAX_HELP` in clip-search.js (ONE table next to the parser),
+  rendered by the shared `attachSearchHelp` as the "?" hover/click box beside the search field
+  (both app + demo get it via `attachSearchBox`); `.search-help` rides the shared floating-surface
+  rule. Add a facet = parser + `SYNTAX_HELP` + `PREFIX_HINTS`/`PREFIX_SHORT`, nothing else.
 - **macOS**: detects Google Drive and OneDrive from `~/Library/CloudStorage/`, plus iCloud Drive from `~/Library/Mobile Documents/com~apple~CloudDocs`.
 - **Windows**: scans Google DriveFS mount letters and labels from PSDrive descriptions, DriveFS preference cache/WAL strings, and recent DriveFS logs; also detects OneDrive environment folders and common iCloud Drive folders.
 

@@ -70,6 +70,17 @@
 .search-suggest { position: absolute; top: calc(100% + 4px); left: var(--sp-5); right: var(--sp-2); z-index: 40;
                   overflow: hidden; max-height: 240px; overflow-y: auto; }
 .search-suggest.hidden { display: none; }
+/* "?" syntax reference: same floating surface as the suggest dropdown. */
+.search-help { position: absolute; top: calc(100% + 4px); left: var(--sp-5); right: var(--sp-2); z-index: 41; max-height: 70vh; overflow-y: auto; padding: var(--sp-3) var(--sp-4); }
+.search-help.hidden { display: none; }
+.search-help-title { font-size: var(--fs-2); font-weight: 600; color: var(--text); margin-bottom: var(--sp-2); }
+.search-help-row { display: grid; grid-template-columns: minmax(96px, 1.1fr) 2fr minmax(72px, 1fr); gap: var(--sp-3); align-items: baseline; padding: 3px 0; border-top: 1px solid var(--line); }
+.search-help-row code { font-family: var(--font-mono); font-size: var(--fs-1); white-space: pre-wrap; }
+.sh-token { color: var(--accent); font-weight: 600; }
+.sh-desc { font-size: var(--fs-1); color: var(--text); }
+.sh-example { color: var(--text-dim); text-align: right; }
+.search-help-foot { font-size: var(--fs-1); color: var(--text-dim); margin-top: var(--sp-2); }
+.help-btn.active, .help-btn[aria-expanded="true"] { color: var(--accent); background: var(--accent-bg); }
 .search-suggest-item { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3);
                        padding: var(--sp-2) var(--sp-3); border-radius: var(--r-1); cursor: pointer; font-size: var(--fs-3); }
 .search-suggest-item .ss-text { color: var(--text); font-family: var(--font-mono); }
@@ -131,7 +142,7 @@
 /* ONE floating-surface definition for every popup panel — the in-row picker,
    hover submenus, and the "..."/bulk menus (dialogs already match) — so all
    menus read as a single system instead of three near-alike variants. */
-.search-suggest, .numpad-picker, .tag-submenu, .bc-menu { background: var(--menu); border-radius: var(--r-2); padding: var(--sp-2);
+.search-suggest, .search-help, .numpad-picker, .tag-submenu, .bc-menu { background: var(--menu); border-radius: var(--r-2); padding: var(--sp-2);
                                          box-shadow: 0 8px 24px var(--shadow), 0 0 0 1px var(--menu-edge); }
 .numpad-picker { display: none; position: absolute; top: 100%; left: -4px; z-index: 40; flex-direction: column; gap: var(--sp-1); overflow: visible; }
 .pin-area:hover .numpad-picker { display: flex; }

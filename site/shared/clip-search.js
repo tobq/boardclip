@@ -17,9 +17,13 @@
 //   is:pinned is:image is:text is:numpad     boolean facets
 //   num:N                    numpad slot 1-9 (alias for is:numpad + that slot)
 //   since:SPEC  before:SPEC  time bounds ("24h" | "7d" | "2026-01-01" | ISO)
-//   len:>N  len:<N  len:>=N  character-count bound (text length)
+//   len:>N  len:<N  len:>=N  character-count bound (text length); also len:N-M (range)
+//   lines:>N  words:>N       line / word count bounds (same comparators as len:)
+//   is:url is:multiline is:rich   body is a link / spans lines / carries HTML or RTF
 //   id:PREFIX                clip id contains PREFIX
 //   sort:new|best            explicit ranking override
+// The user-facing reference for all of this is SYNTAX_HELP (rendered by the popup's
+// "?" help box) - keep it in step with the parser.
 // Free text + title:/text: honour the caller's regex flag (the app's `.*` toggle); every
 // other facet is an enum/number/time spec, never a regex.
 
@@ -35,6 +39,8 @@
   function pinGroups(item) { return item && item.pin && Array.isArray(item.pin.groups) ? [...new Set(item.pin.groups)] : []; }
   function isPinnedItem(item) { return !!(item && item.pin != null); }
   function cleanTitle(v) { return String(v == null ? '' : v).replace(/\s+/g, ' ').trim(); }
+  // A clip that IS a link: one line, a URL scheme or a bare domain, no spaces.
+  const URL_BODY_RE = /^(?:[a-z][a-z0-9+.-]*:\/\/|www\.)[^\s]+$|^[a-z0-9-]+(?:\.[a-z0-9-]+)+(?:\/[^\s]*)?$/i;
 
   // Normalized search document for a clip. mcp-core + ui-core both build these.
   function clipToDoc(item) {
@@ -51,6 +57,10 @@
       pinned: isPinnedItem(item),
       ts: Number(item.ts) || 0, // Unix SECONDS
       len: isImage ? 0 : body.length,
+      lines: isImage || !body ? 0 : body.split(/\r\n|\r|\n/).length,
+      words: isImage || !body.trim() ? 0 : body.trim().split(/\s+/).length,
+      url: !isImage && URL_BODY_RE.test(body.trim()),
+      rich: !isImage && !!(item.html || item.htmlRef || item.htmlHash || item.rtf || item.rtfRef || item.rtfHash),
     };
   }
 
@@ -95,7 +105,7 @@
   // Builtin chip ids (used by the filter bar) <-> is: facets.
   const BUILTIN_TO_IS = { __pinned__: 'pinned', __images__: 'image', __numbered__: 'numpad' };
   const IS_TO_BUILTIN = { pinned: '__pinned__', image: '__images__', numpad: '__numbered__' };
-  const IS_VALUES = ['pinned', 'image', 'text', 'numpad'];
+  const IS_VALUES = ['pinned', 'image', 'text', 'numpad', 'url', 'multiline', 'rich'];
 
   // Canonical prefix + every accepted alias (short + long). ONE map feeds the
   // parser, the highlight lexer, and autocomplete, so a new alias is added in
@@ -109,6 +119,8 @@
     s: 'since', since: 'since', after: 'since',
     bf: 'before', before: 'before',
     l: 'len', len: 'len',
+    ln: 'lines', lines: 'lines',
+    wd: 'words', words: 'words',
     id: 'id',
     o: 'sort', sort: 'sort',
   };
@@ -124,7 +136,9 @@
       is: [], negIs: [],      // arrays of 'pinned'|'image'|'text'|'numpad'
       nums: [], negNums: [],  // numbers 1-9
       since: null, before: null,
-      len: null,              // { op:'>'|'<'|'>='|'<='|'=', n }
+      len: null,              // { op:'>'|'<'|'>='|'<='|'='|'range', n, m? }
+      lines: null,            // same shape as len
+      words: null,            // same shape as len
       id: null,
       sort: null,             // 'new' | 'best'
       unknown: [],            // unrecognized prefixes (for the "not a filter" hint)
@@ -133,6 +147,18 @@
 
   const TIME_RE = /^(\d+)([mhdw])$/i;
   const LEN_RE = /^(>=|<=|>|<|=)?(\d+)$/;
+  const RANGE_RE = /^(\d+)\s*(?:-|\.\.)\s*(\d+)$/;
+  function parseBound(val) {
+    const rm = RANGE_RE.exec(val);
+    if (rm) { const a = parseInt(rm[1], 10); const b = parseInt(rm[2], 10); return { op: 'range', n: Math.min(a, b), m: Math.max(a, b) }; }
+    const lm = LEN_RE.exec(val);
+    return lm ? { op: lm[1] || '=', n: parseInt(lm[2], 10) } : null;
+  }
+  function serializeBound(b) {
+    if (!b) return '';
+    if (b.op === 'range') return `${b.n}-${b.m}`;
+    return (b.op === '=' ? '' : b.op) + b.n;
+  }
 
   function parseQuery(query) {
     const out = emptyParsed(query);
@@ -160,9 +186,9 @@
         }
         if (key === 'since') { out.since = val; continue; }
         if (key === 'before') { out.before = val; continue; }
-        if (key === 'len') {
-          const lm = LEN_RE.exec(val);
-          if (lm) { out.len = { op: lm[1] || '=', n: parseInt(lm[2], 10) }; continue; }
+        if (key === 'len' || key === 'lines' || key === 'words') {
+          const bound = parseBound(val);
+          if (bound) { out[key] = bound; continue; }
         }
         if (key === 'id') { out.id = val; continue; }
         if (key === 'sort') { const v = val.toLowerCase(); if (v === 'new' || v === 'best' || v === 'recent' || v === 'relevance') { out.sort = (v === 'recent' ? 'new' : v === 'relevance' ? 'best' : v); continue; } }
@@ -194,7 +220,9 @@
     for (const n of p.negNums) parts.push('-num:' + n);
     if (p.since) parts.push('since:' + quoteToken(p.since));
     if (p.before) parts.push('before:' + quoteToken(p.before));
-    if (p.len) parts.push('len:' + (p.len.op === '=' ? '' : p.len.op) + p.len.n);
+    if (p.len) parts.push('len:' + serializeBound(p.len));
+    if (p.lines) parts.push('lines:' + serializeBound(p.lines));
+    if (p.words) parts.push('words:' + serializeBound(p.words));
     if (p.id) parts.push('id:' + quoteToken(p.id));
     if (p.sort) parts.push('sort:' + p.sort);
     return parts.join(' ');
@@ -239,7 +267,7 @@
 
   function anyFilterActive(parsed) {
     return !!(parsed.groups.length || parsed.negGroups.length || parsed.is.length || parsed.negIs.length ||
-      parsed.nums.length || parsed.negNums.length || parsed.since || parsed.before || parsed.len || parsed.id);
+      parsed.nums.length || parsed.negNums.length || parsed.since || parsed.before || parsed.len || parsed.lines || parsed.words || parsed.id);
   }
   function isEmptyQuery(parsed) {
     return !parsed.content.length && !anyFilterActive(parsed) && !parsed.sort;
@@ -268,6 +296,7 @@
       case '<': return len < cond.n;
       case '>=': return len >= cond.n;
       case '<=': return len <= cond.n;
+      case 'range': return len >= cond.n && len <= cond.m;
       default: return len === cond.n;
     }
   }
@@ -291,6 +320,8 @@
     if (parsed.since != null) { const b = resolveTimeMs(parsed.since, o.now); if (b != null && doc.ts * 1000 < b) return false; }
     if (parsed.before != null) { const b = resolveTimeMs(parsed.before, o.now); if (b != null && doc.ts * 1000 > b) return false; }
     if (parsed.len && !lenSatisfies(doc.len, parsed.len)) return false;
+    if (parsed.lines && !lenSatisfies(doc.lines || 0, parsed.lines)) return false;
+    if (parsed.words && !lenSatisfies(doc.words || 0, parsed.words)) return false;
     if (parsed.id && !doc.id.toLowerCase().includes(String(parsed.id).toLowerCase())) return false;
     return true;
   }
@@ -299,6 +330,9 @@
     if (v === 'image') return doc.type === 'image';
     if (v === 'text') return doc.type === 'text';
     if (v === 'numpad') return doc.numpad != null;
+    if (v === 'url') return !!doc.url;
+    if (v === 'multiline') return (doc.lines || 0) > 1;
+    if (v === 'rich') return !!doc.rich;
     return false;
   }
 
@@ -504,16 +538,37 @@
 
   // ── autocomplete suggestions for the token being typed at `caret` ──
   // Returns { replaceStart, replaceEnd, suggestions: [{ text, label, hint }] } or null.
-  const IS_SUGGESTIONS = ['is:pinned', 'is:image', 'is:text', 'is:numpad'];
+  const IS_SUGGESTIONS = IS_VALUES.map((v) => 'is:' + v);
   const SINCE_PRESETS = ['1h', '24h', '7d', '30d'];
   const PREFIX_HINTS = {
     'title:': 'match the clip title', 'text:': 'match the clip body', 'group:': 'in group',
-    'is:': 'pinned / image / text / numpad', 'num:': 'numpad slot 1-9', 'since:': 'newer than',
-    'before:': 'older than', 'len:': 'character count (len:>100)', 'id:': 'clip id prefix', 'sort:': 'new / best',
+    'is:': 'pinned / image / text / numpad / url / multiline / rich', 'num:': 'numpad slot 1-9', 'since:': 'newer than',
+    'before:': 'older than', 'len:': 'character count (len:>100, len:50-200)', 'lines:': 'line count (lines:>3)',
+    'words:': 'word count (words:<20)', 'id:': 'clip id prefix', 'sort:': 'new / best',
   };
   // Canonical prefix → its short alias (for the "or t:" hint on suggestions). Kept
   // in sync with PREFIX_ALIASES; only prefixes with a distinct short form appear.
-  const PREFIX_SHORT = { 'title:': 't:', 'text:': 'b:', 'group:': 'g:', 'num:': 'n:', 'since:': 's:', 'before:': 'bf:', 'len:': 'l:', 'sort:': 'o:' };
+  const PREFIX_SHORT = { 'title:': 't:', 'text:': 'b:', 'group:': 'g:', 'num:': 'n:', 'since:': 's:', 'before:': 'bf:', 'len:': 'l:', 'lines:': 'ln:', 'words:': 'wd:', 'sort:': 'o:' };
+
+  // The user-facing syntax reference (the popup's "?" help box renders exactly
+  // this). ONE table, next to the parser, so help can never drift from grammar.
+  const SYNTAX_HELP = [
+    { token: 'word  "a phrase"', desc: 'match anywhere (title, body, groups); several words = all must match', example: 'invoice "q3 report"' },
+    { token: '-word  -group:x', desc: 'exclude: put - in front of any word or filter', example: 'meeting -group:Work' },
+    { token: 'title:  t:', desc: 'match the clip title only', example: 't:todo' },
+    { token: 'text:  b:', desc: 'match the clip body only', example: 'b:"api key"' },
+    { token: 'group:  g:', desc: 'in a group (and its sub-groups)', example: 'g:Work/Docs' },
+    { token: 'is:pinned  is:image  is:text  is:numpad', desc: 'kind of clip', example: 'is:pinned -is:image' },
+    { token: 'is:url  is:multiline  is:rich', desc: 'body is a link / spans several lines / has HTML or RTF formatting', example: 'is:url since:7d' },
+    { token: 'num:1-9  n:', desc: 'in a numpad quick-paste slot', example: 'n:3' },
+    { token: 'since:  s:   before:  bf:', desc: 'time window: 1h 24h 7d 30d or a date (2026-01-31)', example: 's:24h bf:1h' },
+    { token: 'len:  l:', desc: 'character count: >N <N >=N <=N or a range N-M', example: 'len:>500  len:20-80' },
+    { token: 'lines:  ln:', desc: 'line count, same comparators', example: 'lines:>10' },
+    { token: 'words:  wd:', desc: 'word count, same comparators', example: 'wd:<5' },
+    { token: 'id:', desc: 'clip id starts with', example: 'id:txt:9f' },
+    { token: 'sort:new  sort:best  o:', desc: 'order results by recency or relevance', example: 'o:best' },
+    { token: '.*  (button)', desc: 'treat free text and title:/text: values as regular expressions', example: '\\d{3}-\\d{4}' },
+  ];
   function suggestQuery(text, caret, opts) {
     const o = opts || {};
     const s = String(text || '');
@@ -576,5 +631,6 @@
     fuzzyMatch, fuzzyFloor,
     lexQuery, suggestQuery,
     BUILTIN_TO_IS, IS_TO_BUILTIN, IS_VALUES, RECOGNIZED_PREFIXES, NON_FILTER_SCHEMES,
+    SYNTAX_HELP, PREFIX_HINTS,
   };
 });

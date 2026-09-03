@@ -119,6 +119,18 @@ Otherwise the key passes through so normal numpad typing works. Main thread call
 - **Images synced bidirectionally** — content-addressed filenames mean no conflicts.
 - **Remote settings exclusions**: `sync_path`, `sync_disabled_paths`, and legacy `numpad_slots` are excluded from remote settings writes.
 - **Cloud account discovery** lives in `lib/cloud-accounts.js`.
+- **P2P discovery = `lib/p2p-discovery.js` (2026-09-03)**: ONE UDP socket joined to
+  `239.255.43.21:45454` on EVERY real IPv4 interface (`addMembership(group, ifaceIp)` per
+  adapter; re-enumerated every 30 s) and announcing once per interface via
+  `setMulticastInterface`. A bare `addMembership(group)` lets Windows pick ONE adapter and on
+  this PC it picked the Hyper-V Default Switch, so the Mac's Wi-Fi announcements were never
+  heard and every copy took the 30-90 s cloud path. Announcements are ALSO unicast to every peer
+  heard in the last 5 min (multicast is often one-directional). P2P HTTP prefers the fixed port
+  45455 (ephemeral fallback on EADDRINUSE). Peers carry `transport` (`lan`|`tailnet`, CGNAT
+  100.64/10 = Tailscale); `p2p.peer.seen`/`p2p.peer.lost` diagnostics answer "did the Mac ever
+  show up". Unit: `test/p2p-discovery.test.js`; real two-instance loopback check:
+  `node scripts/qa-sync-two-instances.js` (seeds A/B, asserts mutual discovery + convergence).
+  Full overhaul plan (delta P2P + delta cloud journals + Tailscale + AES-GCM): `SYNC-P2P-PLAN.md`.
 - **macOS**: detects Google Drive and OneDrive from `~/Library/CloudStorage/`, plus iCloud Drive from `~/Library/Mobile Documents/com~apple~CloudDocs`.
 - **Windows**: scans Google DriveFS mount letters and labels from PSDrive descriptions, DriveFS preference cache/WAL strings, and recent DriveFS logs; also detects OneDrive environment folders and common iCloud Drive folders.
 

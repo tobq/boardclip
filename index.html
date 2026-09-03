@@ -528,7 +528,7 @@ function p2pStatusText(status) {
   if (!status.running) return 'Starting local network sync...';
   const peers = Array.isArray(status.peers) ? status.peers : [];
   if (!peers.length) return 'On; looking for nearby BoardClip devices';
-  const names = peers.slice(0, 3).map(peer => peer.deviceName || 'Device').join(', ');
+  const names = peers.slice(0, 3).map(peer => `${peer.deviceName || 'Device'} (${peer.transport === 'tailnet' ? 'Tailscale' : 'LAN'})`).join(', ');
   const extra = peers.length > 3 ? ` +${peers.length - 3}` : '';
   return `On; ${peers.length} peer${peers.length === 1 ? '' : 's'} nearby: ${names}${extra}`;
 }

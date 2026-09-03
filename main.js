@@ -5,7 +5,6 @@ const fs = require('fs');
 const crypto = require('crypto');
 const os = require('os');
 const http = require('http');
-const dgram = require('dgram');
 const { exec, execFile } = require('child_process');
 
 // Windows-specific fast input (keybd_event, Get/SetForegroundWindow).
@@ -28,6 +27,7 @@ const syncPaths = require('./lib/sync-paths');
 const { Diagnostics } = require('./lib/diagnostics');
 const { ensureDirectory } = require('./lib/ensure-directory');
 const hmacAuth = require('./lib/hmac-auth');
+const p2pDiscovery = require('./lib/p2p-discovery');
 const mcpCore = require('./lib/mcp-core');
 const mcpPaths = require('./lib/mcp-paths');
 const mcpInstallers = require('./lib/mcp-installers');
@@ -102,6 +102,12 @@ const SYNC_ASSET_COPY_CONCURRENCY = 8;
 const CONTENT_IMAGE_RE = /^([a-f0-9]{12})(?: \(\d+\))?\.png$/i;
 const P2P_DISCOVERY_ADDR = '239.255.43.21';
 const P2P_DISCOVERY_PORT = 45454;
+// Fixed HTTP port so a peer that knows our address (tailnet, pinned, cloud
+// registry) can reach us without having heard a multicast announcement.
+// Falls back to an ephemeral port when taken (a second instance on one host).
+const P2P_PORT_DEFAULT = 45455;
+const P2P_PEER_STALE_MS = 30 * 1000;
+const P2P_UNICAST_REANNOUNCE_MS = 5 * 60 * 1000;
 const P2P_PROTOCOL_VERSION = 1;
 const P2P_ANNOUNCE_INTERVAL_MS = 2000;
 const P2P_PULL_THROTTLE_MS = 1000;
@@ -1675,7 +1681,7 @@ function withTimeout(promise, ms, label) {
 
 const p2p = {
   server: null,
-  socket: null,
+  discovery: null,
   port: 0,
   announceTimer: null,
   announceSoonTimer: null,
@@ -1874,17 +1880,22 @@ function p2pRequestHandler(req, res) {
         const port = Number(state.port) || 0;
         if (port > 0 && port <= 65535) {
           const previous = p2p.peers.get(state.deviceId);
-          p2p.peers.set(state.deviceId, {
+          const host = p2pDiscovery.normalizeIp(req.socket && req.socket.remoteAddress || previous && previous.host || '');
+          const peer = {
             deviceId: state.deviceId,
             deviceName: state.deviceName || state.deviceId.slice(0, 8),
-            host: req.socket && req.socket.remoteAddress || previous && previous.host || '',
+            host,
             port,
+            transport: p2pDiscovery.transportFor(host),
             revision: Number(state.revision) || 0,
             build: state.build || '',
             items: Array.isArray(state.history) ? state.history.length : 0,
             lastSeen: Date.now(),
             lastPulledRevision: previous ? previous.lastPulledRevision : 0,
-          });
+            reportedLost: false,
+          };
+          p2p.peers.set(state.deviceId, peer);
+          p2pRecordPeerSeen(peer, previous, 'push');
         }
         const result = await p2pApplyState(state, {
           peerName: state.deviceName || state.deviceId,
@@ -2120,11 +2131,38 @@ function p2pAnnouncementPayload() {
   };
 }
 
+// Addresses to unicast the announcement to as well as multicasting it: every
+// peer heard from in the last few minutes. Multicast is frequently
+// one-directional (one side's OS picked a virtual switch, an AP filters it), so
+// a peer that reached us once keeps hearing us directly, whatever its network
+// does with multicast.
+function p2pUnicastTargets() {
+  const cutoff = Date.now() - P2P_UNICAST_REANNOUNCE_MS;
+  return [...p2p.peers.values()]
+    .filter(peer => peer.host && peer.lastSeen >= cutoff)
+    .map(peer => ({ host: peer.host, port: P2P_DISCOVERY_PORT }));
+}
+
+function p2pSweepPeers() {
+  const cutoff = Date.now() - P2P_PEER_STALE_MS;
+  for (const peer of p2p.peers.values()) {
+    if (peer.lastSeen >= cutoff || peer.reportedLost) continue;
+    peer.reportedLost = true;
+    diagnostics.record('p2p.peer.lost', {
+      peer: peer.deviceName || peer.deviceId,
+      host: peer.host,
+      transport: peer.transport,
+      unseen_ms: Date.now() - peer.lastSeen,
+    }, { forceFile: true });
+  }
+}
+
 function p2pAnnounceNow() {
-  if (!p2pEnabled() || !p2p.socket || !p2p.port) return;
+  if (!p2pEnabled() || !p2p.discovery || !p2p.port) return;
+  p2pSweepPeers();
   const body = Buffer.from(JSON.stringify(p2pAnnouncementPayload()));
   try {
-    p2p.socket.send(body, 0, body.length, P2P_DISCOVERY_PORT, P2P_DISCOVERY_ADDR);
+    p2p.discovery.announce(body, { unicast: p2pUnicastTargets() });
   } catch {}
 }
 
@@ -2186,18 +2224,22 @@ function p2pHandleAnnouncement(message, rinfo) {
 
   const previous = p2p.peers.get(payload.deviceId);
   const revision = Number(payload.revision) || 0;
+  const host = p2pDiscovery.normalizeIp(rinfo.address);
   const peer = {
     deviceId: payload.deviceId,
     deviceName: payload.deviceName || payload.deviceId.slice(0, 8),
-    host: rinfo.address,
+    host,
     port,
+    transport: p2pDiscovery.transportFor(host),
     revision,
     build: payload.build || '',
     items: Number(payload.items) || 0,
     lastSeen: Date.now(),
     lastPulledRevision: previous ? previous.lastPulledRevision : 0,
+    reportedLost: false,
   };
   p2p.peers.set(peer.deviceId, peer);
+  p2pRecordPeerSeen(peer, previous, 'announcement');
   if (!previous || previous.revision !== revision || previous.host !== peer.host || previous.port !== peer.port) {
     peer.lastPulledRevision = previous ? previous.lastPulledRevision : 0;
     if (revision && revision !== peer.lastPulledRevision) {
@@ -2207,8 +2249,28 @@ function p2pHandleAnnouncement(message, rinfo) {
   }
 }
 
+// First sight of a peer, or a peer coming back / moving address: one durable
+// diagnostic line, so "did the Mac ever show up over P2P?" is answerable from
+// the log instead of by guessing.
+function p2pRecordPeerSeen(peer, previous, via) {
+  const wasStale = !previous || previous.reportedLost || (Date.now() - previous.lastSeen) > P2P_PEER_STALE_MS;
+  const moved = previous && (previous.host !== peer.host || previous.port !== peer.port);
+  if (!wasStale && !moved) return;
+  diagnostics.record('p2p.peer.seen', {
+    peer: peer.deviceName || peer.deviceId,
+    host: peer.host,
+    port: peer.port,
+    transport: peer.transport,
+    via,
+    build: peer.build,
+    items: peer.items,
+    returned: !!previous,
+    moved: !!moved,
+  }, { forceFile: true });
+}
+
 function p2pPeerSummaries() {
-  const cutoff = Date.now() - 30 * 1000;
+  const cutoff = Date.now() - P2P_PEER_STALE_MS;
   return [...p2p.peers.values()]
     .filter(peer => peer.lastSeen >= cutoff)
     .sort((a, b) => b.lastSeen - a.lastSeen)
@@ -2217,6 +2279,7 @@ function p2pPeerSummaries() {
       deviceName: peer.deviceName,
       host: peer.host,
       port: peer.port,
+      transport: peer.transport || p2pDiscovery.transportFor(peer.host),
       build: peer.build,
       items: peer.items,
       lastSeen: peer.lastSeen,
@@ -2228,32 +2291,44 @@ async function startP2PSync() {
   p2p.started = true;
   try {
     p2p.server = http.createServer(p2pRequestHandler);
-    await new Promise((resolve, reject) => {
-      p2p.server.once('error', reject);
-      p2p.server.listen(0, '0.0.0.0', () => {
-        p2p.server.off('error', reject);
-        resolve();
-      });
+    const listenOn = port => new Promise((resolve, reject) => {
+      const onError = error => { p2p.server.off('listening', onListening); reject(error); };
+      const onListening = () => { p2p.server.off('error', onError); resolve(); };
+      p2p.server.once('error', onError);
+      p2p.server.once('listening', onListening);
+      p2p.server.listen(port, '0.0.0.0');
     });
+    let fixedPort = true;
+    try {
+      await listenOn(P2P_PORT_DEFAULT);
+    } catch (error) {
+      if (!error || error.code !== 'EADDRINUSE') throw error;
+      fixedPort = false;
+      await listenOn(0);
+    }
     p2p.port = p2p.server.address().port;
-    p2p.socket = dgram.createSocket({ type: 'udp4', reuseAddr: true });
-    p2p.socket.on('message', p2pHandleAnnouncement);
-    p2p.socket.on('error', error => {
-      diagnostics.record('p2p.discovery.error', { error: error && error.message }, { forceFile: true });
+    p2p.discovery = p2pDiscovery.createDiscovery({
+      group: P2P_DISCOVERY_ADDR,
+      port: P2P_DISCOVERY_PORT,
+      ttl: 1,
+      onMessage: p2pHandleAnnouncement,
+      onError: error => {
+        diagnostics.record('p2p.discovery.error', { error: error && error.message }, { forceFile: true });
+      },
+      log: (event, details) => {
+        diagnostics.record(`p2p.discovery.${event}`, details, { forceFile: event !== 'send.error' });
+      },
     });
-    await new Promise((resolve, reject) => {
-      p2p.socket.once('error', reject);
-      p2p.socket.bind(P2P_DISCOVERY_PORT, () => {
-        p2p.socket.off('error', reject);
-        try { p2p.socket.addMembership(P2P_DISCOVERY_ADDR); } catch {}
-        try { p2p.socket.setMulticastTTL(1); } catch {}
-        resolve();
-      });
-    });
+    await p2p.discovery.start();
     p2p.announceTimer = setInterval(p2pAnnounceNow, P2P_ANNOUNCE_INTERVAL_MS);
     if (p2p.announceTimer.unref) p2p.announceTimer.unref();
     p2pAnnounceNow();
-    diagnostics.record('p2p.start', { port: p2p.port, device: p2pDeviceName() }, { forceFile: true });
+    diagnostics.record('p2p.start', {
+      port: p2p.port,
+      fixed_port: fixedPort,
+      device: p2pDeviceName(),
+      interfaces: p2p.discovery.joinedInterfaces(),
+    }, { forceFile: true });
   } catch (error) {
     diagnostics.record('p2p.start.error', { error: error && error.message }, { forceFile: true });
     stopP2PSync();
@@ -2266,9 +2341,9 @@ function stopP2PSync() {
   if (p2p.announceSoonTimer) clearTimeout(p2p.announceSoonTimer);
   p2p.announceTimer = null;
   p2p.announceSoonTimer = null;
-  try { if (p2p.socket) p2p.socket.close(); } catch {}
+  try { if (p2p.discovery) p2p.discovery.stop(); } catch {}
   try { if (p2p.server) p2p.server.close(); } catch {}
-  p2p.socket = null;
+  p2p.discovery = null;
   p2p.server = null;
   p2p.port = 0;
 }
@@ -2289,10 +2364,11 @@ async function setP2PEnabled(enabled) {
 function p2pStatus() {
   return {
     enabled: !!settings.p2p_enabled,
-    running: !!(p2p.started && p2p.server && p2p.socket),
+    running: !!(p2p.started && p2p.server && p2p.discovery && p2p.discovery.running),
     port: p2p.port,
     deviceId: settings.p2p_device_id,
     deviceName: p2pDeviceName(),
+    interfaces: p2p.discovery ? p2p.discovery.joinedInterfaces() : [],
     peers: p2pPeerSummaries(),
   };
 }

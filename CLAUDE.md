@@ -671,7 +671,8 @@ Tagging is optional/archival now, not required to ship.
   changes always need a full restart.
 - Run `npx electron .` directly (not via start.sh) to see stdout/stderr
 - **Silent main-process death = check the System event log FIRST** (`Get-WinEvent -FilterHashtable @{LogName='System'; Id=2004}` / Application Popup 26). 2026-09-01 21:52: BoardClip (9-day uptime) vanished mid-keystroke with NO Event 1000, NO crash dump, NO diag quit event; the tiny MCP helpers survived. Cause was a machine-wide *Out of Virtual Memory* (commit exhausted by chrome.exe 13GB + WSL 5GB + a node 4GB) - the allocating process aborts and WER can't even record it. Not a BoardClip bug. Every editor draft was already idle-committed (verified byte-for-byte against history via `clipboard-edit-archive`), zero data loss.
-- **Silent stop #2 (2026-09-03 05:54 local)**: heartbeats simply ended, RSS flat at 393 MB, no
+- **Silent stops #2 and #3 (2026-09-03 05:54 and 06:30 local) = console-close kills of instances
+  launched from an agent shell (see the bullet below)**: heartbeats simply ended, RSS flat, no
   Event 1000/2004, no crashpad dump, updater ruled out (`.git/FETCH_HEAD` untouched since 05:15).
   Indistinguishable from a tray Quit because nothing logged exits, so main.js now records
   `app.quit {reason: tray-quit|update-relaunch|quit}` on before-quit, `app.exit {code}` on process
@@ -679,7 +680,20 @@ Tagging is optional/archival now, not required to ship.
   `app.render_process_gone`. A death with heartbeats and NO `app.quit` line = external kill or
   native crash. Check `git reflog --date=iso` in the install + `.git/FETCH_HEAD` mtime to rule
   the auto-updater in or out (its relaunch is `app.exit(0)` after `update.bat`).
-- **Relaunch under a WMI wedge**: `start.bat`/`kill.bat` use `Get-CimInstance` and hang forever when WMI is wedged (memory starvation wedges it; other tools' 2-min supervisors then pile up hung powershells). If no `\.\pipeoardclip-mcp-<user>` pipe exists and the diag heartbeat is silent, launch electron.exe directly from the install dir (`Start-Process ... -ArgumentList '.' -WorkingDirectory <install>`); the single-instance lock is free.
+- **NEVER launch the live app as `electron.exe .` from an agent tool shell (2026-09-03, two
+  "crashes")**: electron attaches to the parent console, and the harness's hidden PowerShell/Bash
+  console is torn down later (26 min and 58 min after launch today) - Windows then sends a console
+  control event to every attached process: the Network Service child logged
+  `app.child_process_gone exit_code -1073741510` (0xC000013A = STATUS_CONTROL_C_EXIT) and the main
+  process died in the same second with NO `app.quit` line. The user's Start Menu shortcut /
+  Startup `BoardClip.vbs` run `start.bat` in a NEW hidden console that the app then owns, which is
+  why it runs for days. To relaunch from a tool: `Start-Process -FilePath <install>\start.bat
+  -WindowStyle Hidden` (ShellExecute gives the batch its own console), or `wscript.exe
+  "%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\BoardClip.vbs"`. Verify afterwards
+  that the new electron.exe's parent has exited (`Win32_Process.ParentProcessId` dead = it owns
+  its console). Possible code hardening, not done: `kernel32!FreeConsole` on win32 when stdout is
+  not a real terminal (koffi is already a dependency); risk = stdout writes hitting a dead handle.
+- **Relaunch under a WMI wedge**: `start.bat`/`kill.bat` use `Get-CimInstance` and hang forever when WMI is wedged (memory starvation wedges it; other tools' 2-min supervisors then pile up hung powershells). If no `\.\pipeoardclip-mcp-<user>` pipe exists and the diag heartbeat is silent, run the Startup `BoardClip.vbs` (it skips nothing but needs no WMI to launch; kill.bat inside start.bat DOES need WMI, so under a wedge use `wscript` on the VBS only after confirming no instance holds UDP 45454 via `netstat -ano`); the single-instance lock is free.
 - **Orphan-draft recovery was DEAD from the `-<seq>` filename change until 2026-09-01**: `EDIT_DRAFT_RE` only matched legacy `boardclip-edit-<12hex>-<ts>.txt`, but sessions write `...-<ts>-<seq>.txt`, so `recoverOrphanedEdits` skipped every in-flight draft (15 lingered since July, never retired). Fixed + guarded by `test/edit-draft-recovery.test.js` (reads the regex + generator out of main.js). Idle-commit had covered the gap in practice. Recovery now also SKIPS a draft whose text already sits inside a longer clip (an older prefix of a note edited after the crash) so the first restart doesn't resurrect stale duplicates - only genuinely unsaved text comes back as a new clip.
 - **Popup-open / save hot path (2026-09-02, ~10k items, 7.7MB history) - measured, don't regress:**
   the 1-2s "freeze on open" was FOUR stacked costs, none of them the file write (15ms) or

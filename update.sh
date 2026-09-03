@@ -38,6 +38,10 @@ fi
 if [ "$need_install" = "1" ]; then
   echo "Installing dependencies..."
   npm install
+  # npm may rewrite the tracked lockfile (a dep that changed between the old and
+  # new package.json); a dirty lock would block the NEXT update, so restore the
+  # repo's copy - node_modules is already installed.
+  git checkout -- package-lock.json 2>/dev/null || true
 else
   echo "Dependencies unchanged."
 fi

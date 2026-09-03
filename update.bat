@@ -54,6 +54,9 @@ if defined NEED_INSTALL (
 
   echo Installing dependencies...
   call npm install
+  :: npm may rewrite the tracked lockfile; a dirty lock would block the NEXT update,
+  :: so restore the repo copy (node_modules is already installed).
+  git checkout -- package-lock.json >nul 2>&1
   if errorlevel 1 (
     echo Dependency install failed.
     exit /b 1

@@ -1856,7 +1856,11 @@ async function writeRemoteJournalOrSnapshot(syncPath, canonicalSettings, { fullS
   const folderId = await providerIdentity(syncPath);
   const cursors = journalCursorsFor(folderId);
   const deviceId = settings.p2p_device_id;
-  if (dirty && deviceId) {
+  // First-ever write to this folder: a journal "since 0" would be the whole
+  // history as one file, which is exactly what the snapshot below is. Skip the
+  // journal, take the snapshot, and start journaling from that revision.
+  const firstWrite = !(cursors.written > 0);
+  if (dirty && deviceId && !firstWrite) {
     const envelope = localDeltaSince(cursors.written || 0);
     if (!syncState.tracker.isEmpty(envelope)) {
       const startedAt = Date.now();
@@ -1886,7 +1890,7 @@ async function writeRemoteJournalOrSnapshot(syncPath, canonicalSettings, { fullS
   // when nothing changed) every full-sync interval or after N journal writes,
   // then drop our own journal files it covers once every reader had an hour.
   const writes = cursors.writes || 0;
-  const snapshotDue = (writes > 0 || dirty) && (fullSync || writes >= SYNC_JOURNAL_COMPACT_EVERY || !cursors.snapshotAt || Date.now() - cursors.snapshotAt > SYNC_FULL_INTERVAL_MS);
+  const snapshotDue = (writes > 0 || dirty) && (firstWrite || fullSync || writes >= SYNC_JOURNAL_COMPACT_EVERY || !cursors.snapshotAt || Date.now() - cursors.snapshotAt > SYNC_FULL_INTERVAL_MS);
   if (!snapshotDue) return;
   const historyBytes = lastWrittenHistoryJson ? lastWrittenHistoryJson.length : 0;
   try {
@@ -1898,6 +1902,7 @@ async function writeRemoteJournalOrSnapshot(syncPath, canonicalSettings, { fullS
     cursors.snapshotRevision = syncState.tracker.revision;
     cursors.snapshotAt = Date.now();
     cursors.writes = 0;
+    if (firstWrite) cursors.written = syncState.tracker.revision;
     scheduleSyncStateSave();
     if (deviceId) {
       const pruned = await syncJournal.pruneJournal(syncPath, deviceId, { upToRevision: cursors.snapshotRevision, olderThanMs: SYNC_JOURNAL_PRUNE_AFTER_MS });

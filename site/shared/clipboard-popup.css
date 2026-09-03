@@ -460,7 +460,9 @@ mark { background: var(--mark-bg); color: var(--mark-fg); border-radius: 2px; pa
 .bc-reconcile-actions { flex-shrink: 0; display: flex; justify-content: flex-end; gap: var(--sp-3); padding: var(--sp-4); background: var(--surface); }
 .bc-reconcile-actions button { border: none; border-radius: var(--r-2); background: var(--surface2); color: var(--text); font-size: var(--fs-2); padding: var(--sp-3) var(--sp-4); cursor: pointer; transition: var(--dur) var(--ease); }
 .bc-reconcile-actions button:hover { background: var(--menu-hover); }
-.bc-reconcile-actions button.primary { background: var(--accent); color: var(--active-fg); }
+.bc-reconcile-actions button.primary { background: var(--accent); color: var(--active-fg); min-width: 10.5em; text-align: center; }
+/* The primary label changes on a Unify's last step; a fixed width keeps the
+   other buttons from sliding under a cursor that is about to click. */
 .bc-reconcile-actions button.primary:hover { background: var(--accent-hover); }
 @media (max-width: 760px) {
   .bc-reconcile-actions { flex-wrap: wrap; }

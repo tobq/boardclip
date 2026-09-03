@@ -2446,6 +2446,19 @@
       .flatMap((seg) => seg.type === 'same' ? seg.lines : [...seg.leftLines, ...seg.rightLines])
       .join('\n');
   }
+  // Would replacing `leftText` (a Result chunk) with `rightText` (the incoming
+  // side of the same chunk) lose anything? Lossless when the left side is blank
+  // (a pure insertion) or every non-blank left line still occurs in the right
+  // text - the successive-edit case (a line grew, a paragraph was appended). A
+  // reworded or unrelated block is NOT lossless and stays a decision.
+  function losslessChange(leftText, rightText) {
+    const norm = (s) => String(s == null ? '' : s).replace(/\s+/g, ' ').trim();
+    const right = norm(rightText);
+    const leftLines = String(leftText == null ? '' : leftText).split(/\r?\n/).map(norm).filter(Boolean);
+    if (!leftLines.length) return true;
+    if (!right) return false;
+    return leftLines.every((line) => right.includes(line));
+  }
   // IntelliJ-style merge built on the vendored CodeMirror 5 merge addon
   // (site/shared/vendor/cm5, loaded by BOTH editor.html and the demo).
   //
@@ -2709,6 +2722,25 @@
       forceRecompute();
       updateStatus(); // deterministic: recompute done, so the count reflects reality now
     }
+    // What "Merge & continue" does before saving a Unify step: pull in every
+    // pending chunk that cannot lose Result text (insertions, grown lines,
+    // appended paragraphs). A chunk that would REPLACE Result text stays pending
+    // and is surfaced by the save confirm - that one needs a human decision.
+    function mergeLosslessPending() {
+      if (!mv) return 0;
+      const info = survey();
+      const inConflict = (c) => info.conflicts.some((reg) => c.editFrom <= reg.to && reg.from <= c.editTo);
+      const chunkTexts = (p) => {
+        const r = chunkRanges(p.dv, p.chunk);
+        return { left: p.dv.edit.getRange(r.editStart, r.editEnd), right: p.dv.orig.getRange(r.origStart, r.origEnd) };
+      };
+      const safe = info.pending
+        .filter((p) => !inConflict(p.chunk) && (() => { const tx = chunkTexts(p); return losslessChange(tx.left, tx.right); })())
+        .sort((a, b) => b.chunk.editFrom - a.chunk.editFrom);
+      for (const p of safe) applyChunk(p.side, p.chunk);
+      if (safe.length) { forceRecompute(); updateStatus(); }
+      return safe.length;
+    }
     // Ignore-whitespace, the diff-viewer way: normalize blank-line RUNS (and
     // trailing whitespace) so regions that differ only in blank spacing become
     // truly identical and therefore FOLD (the addon's own ignoreWhitespace only
@@ -2782,14 +2814,21 @@
     const removeBtn = q('remove');
     if (removeBtn) removeBtn.onclick = () => resolve('remove');
     q('save').onclick = async () => {
-      // Unhandled = real changes neither merged nor dismissed. Applies to unify
-      // too (Result starts as Current, so unpulled incoming = potential loss).
+      // Unify's primary button says "Merge & continue", so it MERGES first:
+      // every lossless pending chunk is pulled into Result. Only chunks that
+      // would replace Result text are left for the confirm below (the button
+      // used to save as-is and warn, which read as "merge did nothing").
+      if (record.unify) mergeLosslessPending();
+      // Unhandled = real changes neither merged nor dismissed (Result starts as
+      // Current, so an unpulled incoming replacement = potential loss).
       const pending = mv ? survey().pending.length : 0;
       if (pending > 0) {
         const ok = await dialogs.confirm({
-          title: `${pending} change${pending === 1 ? '' : 's'} not merged or dismissed`,
-          message: 'Save anyway with the current Result?',
-          okLabel: 'Save',
+          title: `${pending} change${pending === 1 ? '' : 's'} still pending`,
+          message: record.unify
+            ? 'It would replace text in Result, so it was not merged automatically. Merge it with the arrow, Keep both to append it, or save Result as it is.'
+            : 'Save anyway with the current Result?',
+          okLabel: record.unify ? 'Save as is' : 'Save',
         });
         if (!ok) return;
       }
@@ -2963,6 +3002,7 @@
     lcsSegments,
     diffLineHunks,
     unionMergeText,
+    losslessChange,
     createReconciliationView,
     sortItems,
     touchItem,

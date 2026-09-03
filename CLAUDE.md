@@ -495,10 +495,20 @@ clear-all). All popup CSS + theme variables live in `site/shared/clipboard-popup
   sync-conflict regions remain (SKIPPED for unify — the union seed already holds
   both sides; warning there blocked saves invisibly, caught only by the real-app
   pen-test), and a plain-textarea fallback if the vendor scripts fail to load.
-- **Merge seeds**: `base.text` when the record has one (true 3-way) → unify:
-  `Core.unionMergeText` (shared regions once + both sides of every change; built
-  on `diffLineHunks`/`lcsSegments`, which remain the in-house pure diff for
-  seeding + tests) → else Current. **CRLF is normalized to LF at the view
+- **Merge seeds**: `base.text` when the record has one (true 3-way) → else
+  Current (2-pane: unify + baseless conflicts). `Core.unionMergeText` (shared
+  regions once + both sides of every change; built on `diffLineHunks`/
+  `lcsSegments`, the in-house pure diff) backs "Keep both". **Unify's
+  "Merge & continue" MERGES before saving (2026-09-03)**: `mergeLosslessPending`
+  pulls every pending chunk that cannot lose Result text (`losslessChange`:
+  insertion, grown line, appended lines); only a chunk that would REPLACE
+  Result text stays pending and triggers the "still pending" confirm. Before
+  this the button just saved as-is and warned, which read as "merge did
+  nothing" (owner hit it unifying nine versions of one note).
+  The last step's label is `Merge & finish` (same shape as `Merge & continue`) and the
+  primary button has a fixed `min-width`: a shorter last-step label once slid "Accept
+  current" under a cursor aimed at "Accept incoming" and dropped the newest clip's tail
+  (recovered from `clipboard-edit-archive/`, which keeps the final draft of every session). **CRLF is normalized to LF at the view
   boundary** (`toLF`) — stray `\r` defeats BOTH the addon's chunking and
   `collapseIdentical` (its ignoreWhitespace covers spaces/tabs only) and caused
   the original "all-green wall, zero matched lines" bug.

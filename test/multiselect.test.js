@@ -98,6 +98,15 @@ const ui = require('../site/shared/clipboard-ui-core');
 //    and indentation must NOT defeat the diff (the all-green-panes bug: clips of
 //    the same text copied from different sources matched zero lines).
 {
+  // losslessChange: what "Merge & continue" may pull into a Unify Result on its
+  // own - insertions and grown lines yes, rewordings no.
+  assert.strictEqual(ui.losslessChange('', 'new paragraph'), true, 'pure insertion is lossless');
+  assert.strictEqual(ui.losslessChange('(due to extra', '(due to extra context usage deteriorating perf'), true, 'a grown line is lossless');
+  assert.strictEqual(ui.losslessChange('one\ntwo', 'one\ntwo\nthree'), true, 'appended lines are lossless');
+  assert.strictEqual(ui.losslessChange('one  \n\ntwo', 'one\ntwo more'), true, 'whitespace differences do not count');
+  assert.strictEqual(ui.losslessChange('the old wording', 'a new wording'), false, 'a rewording is a decision');
+  assert.strictEqual(ui.losslessChange('kept\ndropped', 'kept'), false, 'a removed line is a decision');
+  assert.strictEqual(ui.losslessChange('something', ''), false, 'incoming blank never replaces text');
   const crlf = ui.diffLineHunks('a \r\nb\r\nc', 'a\nb\nc plus');
   assert.deepStrictEqual(crlf.map((s) => s.type), ['same', 'change'], 'CRLF + trailing space still matches');
   assert.deepStrictEqual(crlf[0].leftLines, ['a ', 'b'], 'same segs keep the LEFT originals');

@@ -4969,7 +4969,10 @@ function unifyRecord(session) {
     id: `${session.id}:${session.step}`,
     unify: true,
     title: `Unify - step ${session.step + 1} of ${session.total}`,
-    saveLabel: session.step + 1 >= session.total ? 'Merge all' : 'Merge & continue',
+    // Same length on every step: the bar must not reflow under a hovering cursor
+    // when the label changes (a shorter last-step label once slid "Accept current"
+    // under a click meant for "Accept incoming" and dropped the final clip).
+    saveLabel: session.step + 1 >= session.total ? 'Merge & finish' : 'Merge & continue',
     left: { id: 'acc', type: 'text', title: session.acc.title, text: session.acc.text, groups: session.acc.groups },
     right: { id: right.id, type: 'text', title: right.title, text: right.text, groups: right.groups },
     // No hunks here: createReconciliationView computes its own line diff

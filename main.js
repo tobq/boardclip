@@ -38,6 +38,7 @@ const mcpInstallers = require('./lib/mcp-installers');
 const { Worker } = require('worker_threads');
 const conflictModel = require('./lib/conflict-model');
 const { ControlServer } = require('./lib/control-server');
+const windowsConsole = require('./lib/windows-console');
 
 function guardBrokenPipe(stream) {
   try {
@@ -53,6 +54,19 @@ function logSafe(...args) {
 
 guardBrokenPipe(process.stdout);
 guardBrokenPipe(process.stderr);
+// Tray apps must not die with a console they merely inherited (lib/windows-console).
+const consoleState = windowsConsole.detachInheritedConsole();
+// Native crashes (main, GPU, renderer) leave a minidump under userData/Crashpad
+// instead of nothing: three silent stops on 2026-09-03 had no WER record and no
+// dump, so "crash or kill?" could not be answered. Local only, never uploaded.
+let crashReporterState = 'off';
+try {
+  const { crashReporter } = require('electron');
+  crashReporter.start({ productName: 'BoardClip', uploadToServer: false, compress: false, ignoreSystemCrashHandler: false });
+  crashReporterState = 'on';
+} catch (error) {
+  crashReporterState = `error: ${error && error.message}`;
+}
 for (const method of ['log', 'warn', 'error']) {
   const original = console[method].bind(console);
   console[method] = (...args) => {
@@ -543,6 +557,9 @@ function runtimeDiagnosticSnapshot() {
     history_items: history ? history.length : 0,
     groups: settings.groups ? settings.groups.length : 0,
     diagnostics_enabled: diagnostics.isEnabled(),
+    console: consoleState,
+    crash_reporter: crashReporterState,
+    ppid: process.ppid,
   };
 }
 

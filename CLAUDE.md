@@ -691,8 +691,22 @@ Tagging is optional/archival now, not required to ship.
   -WindowStyle Hidden` (ShellExecute gives the batch its own console), or `wscript.exe
   "%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\BoardClip.vbs"`. Verify afterwards
   that the new electron.exe's parent has exited (`Win32_Process.ParentProcessId` dead = it owns
-  its console). Possible code hardening, not done: `kernel32!FreeConsole` on win32 when stdout is
-  not a real terminal (koffi is already a dependency); risk = stdout writes hitting a dead handle.
+  its console). Code hardening (2026-09-03, `lib/windows-console.js`): at startup on win32 the app
+  `FreeConsole()`s any console that OTHER processes are attached to (`GetConsoleProcessList` > 1 =
+  a shell that may close it); a console it is alone on (the VBS/start.bat path after cmd exits)
+  is kept. A "window visible" heuristic was tried first and is WRONG - an agent shell's hidden
+  console still reports WS_VISIBLE. `npx electron .` output in the terminal now needs
+  `BOARDCLIP_KEEP_CONSOLE=1`. `app.start.console` reports `{action: detached|kept|none, reason,
+  attached}` plus `ppid`; stdout/stderr are error-guarded and only logSafe writes to them. Unit:
+  `test/windows-console.test.js`; sandbox proof = launch via `Start-Process electron.exe` from a
+  tool shell and read `app.start.console` (`detached`, `shared-console`).
+- **Electron `crashReporter` is now started at boot (local only, `uploadToServer:false`)**, so a
+  native crash of main/GPU/renderer leaves a minidump under `%APPDATA%\BoardClip\Crashpad`.
+  `app.start.crash_reporter` says `on`. Third silent stop of 2026-09-03 (11:05 local, an instance
+  the user launched from the Start Menu, console owned, WER enabled and working, no dump, no
+  `app.quit`, no child event): the only remaining signature is an external `TerminateProcess`,
+  e.g. another agent session running `taskkill /IM electron.exe` for its own Electron app (Forge
+  is Electron too) - the global rule "never kill by image name" exists for exactly this.
 - **Relaunch under a WMI wedge**: `start.bat`/`kill.bat` use `Get-CimInstance` and hang forever when WMI is wedged (memory starvation wedges it; other tools' 2-min supervisors then pile up hung powershells). If no `\.\pipeoardclip-mcp-<user>` pipe exists and the diag heartbeat is silent, run the Startup `BoardClip.vbs` (it skips nothing but needs no WMI to launch; kill.bat inside start.bat DOES need WMI, so under a wedge use `wscript` on the VBS only after confirming no instance holds UDP 45454 via `netstat -ano`); the single-instance lock is free.
 - **Orphan-draft recovery was DEAD from the `-<seq>` filename change until 2026-09-01**: `EDIT_DRAFT_RE` only matched legacy `boardclip-edit-<12hex>-<ts>.txt`, but sessions write `...-<ts>-<seq>.txt`, so `recoverOrphanedEdits` skipped every in-flight draft (15 lingered since July, never retired). Fixed + guarded by `test/edit-draft-recovery.test.js` (reads the regex + generator out of main.js). Idle-commit had covered the gap in practice. Recovery now also SKIPS a draft whose text already sits inside a longer clip (an older prefix of a note edited after the crash) so the first restart doesn't resurrect stale duplicates - only genuinely unsaved text comes back as a new clip.
 - **Popup-open / save hot path (2026-09-02, ~10k items, 7.7MB history) - measured, don't regress:**

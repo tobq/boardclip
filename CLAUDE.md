@@ -323,6 +323,22 @@ build could re-trigger the race.
   fake HOME/APPDATA so the registrar never touches real client configs; screenshot each modal
   over CDP). `BOARDCLIP_MCP_PIPE_TAG` is the test seam that lets a sandbox run its own control
   channel beside the live app instead of colliding on the per-user pipe.
+  **Hover pauses the countdown (2026-09-03, owner: "pause the timer while mouse over")**: the
+  modal stops ticking on `mouseenter` of `<html>` (label "Paused while your mouse is over this",
+  resumes from the same second on `mouseleave`; a resting cursor is caught via `:hover` after
+  render) and reports `approval-hold(id, held, remainingSec)`; main's timer was only ever the
+  safety net 3 s behind the renderer, so `requestApproval` clears it while held (bounded by
+  `APPROVAL_MAX_HOLD_MS` = 15 min, then `timeout`) and re-arms it with the reported seconds on
+  resume. Two control-channel rules make the pause SAFE end to end: (1) `ControlServer` passes
+  `{ signal }` to `handleRequest`, aborted when the caller's socket closes, and `requestApproval`
+  then finishes with `client_gone` (modal closes, nothing executes for a caller that gave up -
+  before this an allow clicked after the helper's 60 s timeout still ran the action); (2) a
+  client that sends `keepalive` in its envelope gets `{id, pending:true}` every 10 s while the
+  request runs and `control-client` treats `timeoutMs` as MAX SILENCE, so the helper waits as
+  long as the user reads. Legacy helpers (no flag, still-running MCP children spawned before the
+  update) get exactly one line as before. Tests: `test/control-channel.test.js` (keepalive,
+  legacy first-line, abort-on-disconnect); sandbox proof `scratchpad/approval-hold.js` (5 s
+  timeout held past 8 s, resume, client_gone).
 - **Discovery:** app writes `~/.boardclip/mcp.json` `{dataDir,pipePath,secret,command,args,env,pid}` on launch when enabled; helper reads it (falls back to default userData for read-only). Registered command is **electron-as-node** (`process.execPath` + `ELECTRON_RUN_AS_NODE=1` + entry path) - works for source + packaged.
 - **`edit_clip` tool (replace/append clip text):** because text ids are content-addressed (`txt:{sha256}`), there is NO in-place text mutation - editing changes the id, which is why an "edit" was previously an add+delete dance. The tool REUSES `applyExternalTextEdit` (the same metadata-preserving core the built-in editor + conflict/unify flows use): when `originalText` matches the current item, `clipboardModel.applyTextEdit` mutates the item in place, re-derives its content-key id, keeps pin/groups/numpad, and tombstones the old id - so all metadata survives automatically. Returns the NEW id. `append:true` newline-joins onto existing text (done app-side, so it works on non-shared clips too); else it replaces. In `MCP_ALWAYS_GATED` (lossy overwrite -> prompts like delete, NOT free-on-shared; users can "always allow" per-tool). Images can't be edited. Don't hand-roll add+delete for an edit.
 - **Reuse, don't duplicate:** the `apply*` functions in main.js (applyPinToggle/applyGroupAssign/applyDeleteItem/...) are the SINGLE mutation path for BOTH the IPC handlers and the MCP dispatch. HMAC auth is `lib/hmac-auth.js`, shared by P2P + the control channel. DEFAULT_SETTINGS adds `ai_access_enabled/groups_shared_with_ai/ai_always_allow/ai_approval_timeout_sec/mcp_secret` (mcp_secret + the 3 ai_* prefs are excluded from sync in `remoteSettingsPayload`; groups_shared_with_ai DOES sync).

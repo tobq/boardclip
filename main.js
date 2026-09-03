@@ -5409,6 +5409,8 @@ let mcpControlServer = null;
 const mcpSessionAllow = new Set();
 let approvalSeq = 0;
 const pendingApprovals = new Map();
+// Longest a prompt may sit paused (mouse over it) before the safety net denies it.
+const APPROVAL_MAX_HOLD_MS = 15 * 60 * 1000;
 
 function clampApprovalTimeout(value) {
   const n = Math.round(Number(value));
@@ -5536,22 +5538,49 @@ function notifyAiAccessChanged() {
 }
 
 // ---- Approval modal ----
-function requestApproval(request) {
+function requestApproval(request, { signal } = {}) {
   return new Promise(resolve => {
+    // The caller (MCP helper) already gave up: never open a prompt for nobody.
+    if (signal && signal.aborted) return resolve('client_gone');
     const id = `appr-${++approvalSeq}`;
     const timeoutSec = clampApprovalTimeout(settings.ai_approval_timeout_sec);
     const payload = { ...request, id, timeoutSec };
     let settled = false;
+    let timer = null;
+    let holdCeiling = null;
+    const onAbort = () => finish('client_gone');
     const finish = decision => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      clearTimeout(holdCeiling);
+      if (signal) signal.removeEventListener('abort', onAbort);
       pendingApprovals.delete(id);
       try { if (modal && !modal.isDestroyed()) modal.close(); } catch {}
       diagnostics.record('mcp.approval', { tool: request.tool, client: request.client, decision }, { forceFile: true });
       resolve(decision);
     };
-    const timer = setTimeout(() => finish('timeout'), (timeoutSec + 3) * 1000);
+    // The renderer owns the visible countdown; this timer is only the safety
+    // net for a hung or blank modal, so it runs 3 s behind it. While the mouse
+    // is over the prompt the renderer reports a HOLD and the countdown stops on
+    // both sides (owner: "pause the timer while mouse over"), bounded by
+    // APPROVAL_MAX_HOLD_MS so a forgotten prompt still resolves. The control
+    // channel keeps the waiting helper alive with keepalive frames meanwhile.
+    const armTimer = seconds => {
+      clearTimeout(timer);
+      timer = setTimeout(() => finish('timeout'), (Math.max(1, seconds) + 3) * 1000);
+    };
+    const hold = (held, remainingSec) => {
+      if (settled) return;
+      clearTimeout(timer);
+      clearTimeout(holdCeiling);
+      if (held) holdCeiling = setTimeout(() => finish('timeout'), APPROVAL_MAX_HOLD_MS);
+      else armTimer(Number.isFinite(Number(remainingSec)) ? Number(remainingSec) : timeoutSec);
+    };
+    armTimer(timeoutSec);
+    // The caller timed out or died mid-prompt: drop the prompt, never run the
+    // action later for nobody.
+    if (signal) signal.addEventListener('abort', onAbort, { once: true });
 
     const modal = new BrowserWindow({
       width: 440,
@@ -5575,7 +5604,7 @@ function requestApproval(request) {
       },
     });
     modal.setAlwaysOnTop(true, 'screen-saver');
-    pendingApprovals.set(id, { finish });
+    pendingApprovals.set(id, { finish, hold });
     modal.loadFile(path.join(SCRIPT_DIR, 'mcp-approval.html'));
     modal.once('ready-to-show', () => { try { modal.show(); modal.focus(); } catch {} });
     modal.webContents.on('did-finish-load', () => {
@@ -5759,7 +5788,7 @@ function mcpNeedsApproval(tool, targetItem) {
   return true;
 }
 
-async function mcpHandleRequest(reqPath, payload) {
+async function mcpHandleRequest(reqPath, payload, ctx = {}) {
   const { tool, args = {}, client } = payload || {};
   if (!tool) throw new Error('missing_tool');
   if (!settings.ai_access_enabled) throw new Error('ai_access_disabled');
@@ -5768,9 +5797,10 @@ async function mcpHandleRequest(reqPath, payload) {
 
   let decision = 'auto';
   if (mcpNeedsApproval(tool, targetItem)) {
-    decision = await requestApproval(buildApprovalRequest(tool, args, targetItem, client));
+    decision = await requestApproval(buildApprovalRequest(tool, args, targetItem, client), { signal: ctx.signal });
     if (decision === 'deny') throw new Error('denied');
     if (decision === 'timeout') throw new Error('timed_out');
+    if (decision === 'client_gone') throw new Error('client_gone');
     if (decision === 'session') mcpSessionAllow.add(tool);
     if (decision === 'always') {
       if (!Array.isArray(settings.ai_always_allow)) settings.ai_always_allow = [];
@@ -6238,6 +6268,12 @@ function setupIPC() {
   ipcMain.on('approval-decide', (_, id, choice) => {
     const pending = pendingApprovals.get(id);
     if (pending) pending.finish(choice);
+  });
+  // The modal reports the mouse entering (hold) or leaving it (resume, with the
+  // seconds it still shows) so main's safety timer follows the visible one.
+  ipcMain.on('approval-hold', (_, id, held, remainingSec) => {
+    const pending = pendingApprovals.get(id);
+    if (pending && pending.hold) pending.hold(!!held, remainingSec);
   });
   // Modal asks to size itself to its content so there is never an empty gap.
   ipcMain.on('approval-resize', (event, height) => {

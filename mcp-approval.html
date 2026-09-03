@@ -39,6 +39,7 @@
   .meter { height:3px; border-radius:var(--r-pill); background:var(--line); overflow:hidden; }
   .meter > span { display:block; height:100%; width:100%; background:var(--accent); transition:width 1s linear; }
   .meter.danger > span { background:var(--red); }
+  .meter.paused > span { opacity:.45; }
   .countdown { font-size:var(--fs-1); color:var(--text-dim); display:flex; justify-content:space-between; margin-top:var(--sp-3); }
   .acts { display:flex; flex-direction:column; gap:var(--sp-3); margin-top:var(--sp-1); }
   .row2 { display:flex; gap:var(--sp-3); }
@@ -72,7 +73,7 @@
     </div>
     <div>
       <div class="meter" id="meter"><span id="meterBar"></span></div>
-      <div class="countdown"><span>Denies automatically if you don't respond</span><span id="countNum"></span></div>
+      <div class="countdown"><span id="countLabel">Denies automatically if you don't respond</span><span id="countNum"></span></div>
     </div>
     <div class="acts">
       <button class="primary" id="allowOnce">Allow once</button>
@@ -87,7 +88,7 @@
 
 <script>
   const $ = id => document.getElementById(id);
-  let current = null, remaining = 60, timer = null, decided = false;
+  let current = null, remaining = 60, timer = null, decided = false, paused = false;
   const ICONS = {
     delete_clip:'delete', edit_clip:'edit', copy_to_clipboard:'content_paste', paste_clip:'content_paste_go',
     add_clip:'add', pin_clip:'push_pin', set_numpad:'dialpad', assign_group:'folder',
@@ -121,7 +122,21 @@
     if (timer) clearInterval(timer);
     window.approval.decide(current.id, choice);
   }
+  // The countdown stops while the mouse is over the prompt so it can be read
+  // at leisure; main is told so its safety timer (and the waiting helper's
+  // keepalive) follow. Leaving the window resumes from the same second.
+  function setPaused(next) {
+    if (decided || !current || paused === next) return;
+    paused = next;
+    $('countLabel').textContent = paused ? 'Paused while your mouse is over this' : "Denies automatically if you don't respond";
+    $('countNum').textContent = paused ? 'paused' : remaining + 's';
+    $('meter').classList.toggle('paused', paused);
+    if (window.approval.hold) window.approval.hold(current.id, paused, remaining);
+  }
+  document.documentElement.addEventListener('mouseenter', () => setPaused(true));
+  document.documentElement.addEventListener('mouseleave', () => setPaused(false));
   function tick() {
+    if (paused) return;
     remaining -= 1;
     $('countNum').textContent = remaining + 's';
     $('meterBar').style.width = Math.max(0, (remaining / (current.timeoutSec || 60)) * 100) + '%';
@@ -157,6 +172,8 @@
     $('countNum').textContent = remaining + 's';
     timer = setInterval(tick, 1000);
     requestAnimationFrame(fit);
+    // Opened under a resting cursor: no mouseenter fires, so ask directly.
+    requestAnimationFrame(() => { if (document.documentElement.matches(':hover')) setPaused(true); });
   });
 
   $('allowOnce').onclick = () => decide('once');

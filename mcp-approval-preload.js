@@ -10,5 +10,6 @@ contextBridge.exposeInMainWorld('approval', {
     ipcRenderer.on('approval-settings', (_, s) => callback(s));
   },
   decide: (id, choice) => ipcRenderer.send('approval-decide', id, choice),
+  hold: (id, held, remainingSec) => ipcRenderer.send('approval-hold', id, held, remainingSec),
   resize: (height) => ipcRenderer.send('approval-resize', height),
 });

@@ -538,6 +538,60 @@ function renderP2PStatus(status) {
   if (!statusEl) return;
   statusEl.textContent = p2pStatusText(status);
   statusEl.className = 'sync-status' + (status && status.enabled && status.running ? ' active' : '');
+  renderP2PPeers(status);
+}
+
+function agoText(at) {
+  if (!at) return 'never';
+  const s = Math.max(0, Math.round((Date.now() - at) / 1000));
+  if (s < 60) return `${s}s ago`;
+  if (s < 3600) return `${Math.round(s / 60)}m ago`;
+  return `${Math.round(s / 3600)}h ago`;
+}
+
+// Per-peer rows (name, transport, address, last exchange, build) + the tailnet
+// line, so "is the Mac paired, and over what?" is visible without a log.
+function renderP2PPeers(status) {
+  const list = document.getElementById('p2pPeers');
+  if (!list) return;
+  list.innerHTML = '';
+  const peers = status && Array.isArray(status.peers) ? status.peers : [];
+  for (const peer of peers) {
+    const row = document.createElement('div');
+    row.className = 'sync-account';
+    const main = document.createElement('span');
+    main.className = 'sync-account-main';
+    const title = document.createElement('span');
+    title.className = 'sync-provider';
+    const transport = peer.transport === 'tailnet' ? 'Tailscale' : 'LAN';
+    title.textContent = `${peer.deviceName || 'Device'} \u00b7 ${transport}${(peer.protocol || 1) >= 2 ? '' : ' \u00b7 older build (full-state sync)'}`;
+    title.title = title.textContent;
+    const detail = document.createElement('span');
+    detail.className = 'sync-account-path';
+    detail.textContent = `${peer.host}:${peer.port} \u00b7 seen ${agoText(peer.lastSeen)}${peer.build ? ' \u00b7 ' + peer.build : ''}`;
+    detail.title = detail.textContent;
+    main.append(title, detail);
+    row.append(main);
+    list.appendChild(row);
+  }
+  const tail = document.getElementById('p2pTailnet');
+  if (tail) {
+    const tailnet = status && status.tailnet;
+    if (!status || !status.enabled) tail.textContent = '';
+    else if (tailnet && tailnet.available) {
+      const online = (tailnet.peers || []).filter(node => node.online);
+      tail.textContent = `Tailscale: ${online.length} other device${online.length === 1 ? '' : 's'} online${online.length ? ' (' + online.slice(0, 3).map(node => node.name).join(', ') + ')' : ''}`;
+    } else tail.textContent = 'Tailscale CLI not found: LAN, synced addresses and pinned peers only';
+  }
+}
+
+let p2pStatusTimer = null;
+function startP2PStatusRefresh() {
+  if (p2pStatusTimer) clearInterval(p2pStatusTimer);
+  p2pStatusTimer = setInterval(async () => {
+    if (!document.getElementById('settingsView').classList.contains('show')) { clearInterval(p2pStatusTimer); p2pStatusTimer = null; return; }
+    try { renderP2PStatus(await window.api.getP2PStatus()); } catch {}
+  }, 5000);
 }
 
 // Live coarse progress for long syncs (first sync after a pause can hydrate
@@ -1024,6 +1078,16 @@ async function openSettings() {
     const status = await window.api.setP2PEnabled(nextEnabled);
     renderP2PStatus(status);
   };
+  const pinnedEl = document.getElementById('p2pPinned');
+  if (pinnedEl) {
+    pinnedEl.value = (Array.isArray(s.p2p_pinned_peers) ? s.p2p_pinned_peers : []).join(', ');
+    pinnedEl.onchange = async () => {
+      const pins = pinnedEl.value.split(/[,\s]+/).map(v => v.trim()).filter(Boolean);
+      await window.api.saveSettings({ p2p_pinned_peers: pins });
+      renderP2PStatus(await window.api.getP2PStatus());
+    };
+  }
+  startP2PStatusRefresh();
   renderUpdateSettings(s);
   const buildInfoEl = document.getElementById('buildInfo');
   buildInfoEl.innerHTML = '';

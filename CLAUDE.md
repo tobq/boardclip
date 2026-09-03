@@ -131,6 +131,42 @@ Otherwise the key passes through so normal numpad typing works. Main thread call
   show up". Unit: `test/p2p-discovery.test.js`; real two-instance loopback check:
   `node scripts/qa-sync-two-instances.js` (seeds A/B, asserts mutual discovery + convergence).
   Full overhaul plan (delta P2P + delta cloud journals + Tailscale + AES-GCM): `SYNC-P2P-PLAN.md`.
+- **Sync v2 = ONE delta changes feed for P2P AND cloud (2026-09-03, `SYNC-P2P-PLAN.md`)**:
+  `lib/sync-delta.js` `createChangeTracker` stamps every entry (item / tombstone / group
+  tombstone / supersede / conflict record / small synced settings) with the LOCAL revision at
+  which it last changed on this device, whatever its source; `deltaSince(cursor)` = CouchDB
+  `_changes?since=seq`. Revisions are per-device monotonic (start = max(persisted+1, Date.now())),
+  so cursors are "the sender's revision" and never compare clocks across devices. Persisted
+  lazily to `sync-state.json` (local only: tracker entries + `p2pCursors` + `journalCursors`);
+  an entry whose arrival was lost in the lazy window is re-sent once (over-send is idempotent,
+  under-send would be a silent hole). `observeLocalChange()` runs in EVERY save path
+  (history/settings/conflicts), including saves that apply remote state - what arrived from one
+  peer must reach the others. Applying a delta = the existing `foldRemoteState` union merge
+  (partial history can only add/update; deletes need tombstones), change detection is
+  O(delta) via `historyChangedBy(before, after, touchedIds)` - NOT a full 8 MB stringify.
+- **P2P v2**: `/delta?since=` (GET) + `/delta` (POST) carry envelopes sealed with AES-256-GCM
+  (`lib/p2p-crypto.js`, key = HKDF(`p2p_secret`)); HMAC still signs the sealed bytes. v1
+  `/state` stays for un-updated peers (announcement/manifest carry `protocolMax`). Push = delta
+  since the peer's acked cursor (`p2pCursors[id].sent`), pull = `/delta?since=pulled`; after
+  applying a peer's delta, `sent` is set to the new revision so it is never echoed back.
+  Peers keep an ADDRESS BOOK (`peer.addrs`: LAN + tailnet); `p2pChooseAddress` prefers a
+  fresh LAN address, then tailnet. Discovery beyond multicast: synced `p2p_endpoints`
+  registry (each device publishes name/port/lan/tailnet ips, newest wins), `tailscale status
+  --json` every 60 s (`lib/tailscale.js`), manual `p2p_pinned_peers`; all are unicast
+  announcement targets AND `/manifest` probe targets every 30 s (+ on Refresh).
+- **Cloud journals** (`lib/sync-journal.js`): each change appends ONE small NEW file
+  `sync/<deviceId>/<revision16>.json` (tmp + rename to a fresh name, never rename-over: DriveFS
+  forks) per provider; readers apply other devices' files newer than their per-device cursor
+  (`journalCursors[folderId].read`), a `since` past the cursor = gap -> snapshot re-read. The
+  monolith is now a SNAPSHOT rewritten every 5 min / 50 journal writes (content-compared) and
+  own journal files it covers are pruned after 1 h. `fs.watch` on each provider's `sync/` tree
+  (recursive, own device dir ignored) applies a peer's file within ~300 ms; the 30 s poll stays
+  as the floor. Providers dedupe by a `.boardclip-folder-id` marker (G:/H: = one folder).
+  Watchdogs are adaptive (base + 2 s/MB) and a late completion logs `sync.timeout.late`, not an
+  error. Telemetry: `sync.latency {source, transport, peer, ms}` (originClock -> applied),
+  `sync.delta_apply`, `sync.journal.write/read`, `p2p.peer.seen/lost`; tray tooltip shows
+  peers + transport + last sync + last latency; Settings lists peers and the tailnet line.
+  QA: `node scripts/qa-sync-two-instances.js all` (p2p + cloud-only scenarios, measured).
 - **macOS**: detects Google Drive and OneDrive from `~/Library/CloudStorage/`, plus iCloud Drive from `~/Library/Mobile Documents/com~apple~CloudDocs`.
 - **Windows**: scans Google DriveFS mount letters and labels from PSDrive descriptions, DriveFS preference cache/WAL strings, and recent DriveFS logs; also detects OneDrive environment folders and common iCloud Drive folders.
 

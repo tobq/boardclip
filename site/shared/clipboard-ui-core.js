@@ -1100,6 +1100,9 @@
         <span class="switch" aria-hidden="true"></span>
       </label>
       <div class="sync-status" id="p2pStatus"></div>
+      <div class="sync-list" id="p2pPeers"></div>
+      <div class="sync-status" id="p2pTailnet"></div>
+      <div class="setting-row"><label for="p2pPinned">Pinned peers</label><input id="p2pPinned" type="text" placeholder="host or host:port, comma-separated"></div>
     </div>
     <div class="settings-section">
       <h3>Updates</h3>

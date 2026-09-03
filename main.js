@@ -28,6 +28,10 @@ const { Diagnostics } = require('./lib/diagnostics');
 const { ensureDirectory } = require('./lib/ensure-directory');
 const hmacAuth = require('./lib/hmac-auth');
 const p2pDiscovery = require('./lib/p2p-discovery');
+const p2pCrypto = require('./lib/p2p-crypto');
+const syncDelta = require('./lib/sync-delta');
+const syncJournal = require('./lib/sync-journal');
+const tailscale = require('./lib/tailscale');
 const mcpCore = require('./lib/mcp-core');
 const mcpPaths = require('./lib/mcp-paths');
 const mcpInstallers = require('./lib/mcp-installers');
@@ -67,6 +71,7 @@ const DATA_DIR = process.env.BOARDCLIP_DATA_DIR || (app.isPackaged ? app.getPath
 const DB_PATH = path.join(DATA_DIR, 'clipboard-history.json');
 const SETTINGS_PATH = path.join(DATA_DIR, 'clipboard-settings.json');
 const CONFLICTS_PATH = path.join(DATA_DIR, 'clipboard-conflicts.json');
+const SYNC_STATE_PATH = path.join(DATA_DIR, 'sync-state.json');
 const IMG_DIR = path.join(DATA_DIR, 'clipboard-images');
 const TEXT_DIR = path.join(DATA_DIR, clipBlobStore.TEXT_BLOB_DIRNAME);
 const HTML_DIR = path.join(DATA_DIR, clipBlobStore.HTML_BLOB_DIRNAME);
@@ -108,6 +113,17 @@ const P2P_DISCOVERY_PORT = 45454;
 const P2P_PORT_DEFAULT = 45455;
 const P2P_PEER_STALE_MS = 30 * 1000;
 const P2P_UNICAST_REANNOUNCE_MS = 5 * 60 * 1000;
+// Sync protocol v2 = delta envelopes (lib/sync-delta) with AES-GCM bodies.
+// v1 (/state full payloads) is kept for peers that have not updated.
+const P2P_PROTOCOL_MAX = 2;
+const P2P_PROBE_INTERVAL_MS = 30 * 1000;
+const P2P_PROBE_TIMEOUT_MS = 3000;
+const TAILSCALE_POLL_MS = 60 * 1000;
+const SYNC_JOURNAL_COMPACT_EVERY = 50;
+const SYNC_JOURNAL_PRUNE_AFTER_MS = 60 * 60 * 1000;
+const SYNC_WATCH_DEBOUNCE_MS = 300;
+const SYNC_FOLDER_ID_TIMEOUT_MS = 4000;
+const TRAY_TOOLTIP_REFRESH_MS = 5000;
 const P2P_PROTOCOL_VERSION = 1;
 const P2P_ANNOUNCE_INTERVAL_MS = 2000;
 const P2P_PULL_THROTTLE_MS = 1000;
@@ -462,7 +478,8 @@ function saveSettingsFile() {
     diagnostics_changed: previousDiagnosticsEnabled !== diagnostics.isEnabled(),
   }, 50);
   dataRevision++;
-  p2pNotifyLocalChange();
+  observeLocalChange();
+  if (!suppressP2PNotify) p2pNotifyLocalChange();
   notifyDataChanged();
   scheduleSyncMerge();
 }
@@ -477,6 +494,9 @@ const diagnostics = new Diagnostics({
   maxEvents: 5000,
 });
 let dataRevision = 0;
+// Assigned once the sync change feed loads (below); saves that happen during
+// module init (fresh-install identity) simply skip the feed until then.
+let syncState = null;
 let cloudAccountsCache = [];
 let cloudAccountsCacheAt = 0;
 const CLOUD_ACCOUNTS_CACHE_TTL_MS = 5 * 60 * 1000;
@@ -660,6 +680,7 @@ function writeHistoryStorageFile() {
   atomicWriteFile(DB_PATH, json);
   lastWrittenHistoryJson = json;
   lastWrittenSlots = slotFingerprintFromItems(storedHistory);
+  lastStoredHistory = storedHistory;
 }
 
 function saveHistory() {
@@ -670,6 +691,7 @@ function saveHistory() {
     file_bytes: fileSummary(DB_PATH).size || 0,
   }, 75);
   dataRevision++;
+  observeLocalChange();
   if (!suppressP2PNotify) p2pNotifyLocalChange();
   notifyDataChanged();
   scheduleSyncMerge();
@@ -694,6 +716,7 @@ function saveConflictsFile() {
     file_bytes: fileSummary(CONFLICTS_PATH).size || 0,
   }, 50);
   dataRevision++;
+  observeLocalChange();
   if (!suppressP2PNotify) p2pNotifyLocalChange();
   notifyDataChanged();
   scheduleSyncMerge();
@@ -1097,8 +1120,47 @@ function mergeSyncedSettings(remoteSettings) {
   if (remoteSettings.p2p_enabled !== undefined && settings.p2p_enabled === undefined) {
     settings.p2p_enabled = !!remoteSettings.p2p_enabled;
   }
+  settings.p2p_endpoints = mergeEndpointRegistry(settings.p2p_endpoints, remoteSettings.p2p_endpoints);
+  settings.p2p_pinned_peers = normalizePinnedPeers([...(settings.p2p_pinned_peers || []), ...(remoteSettings.p2p_pinned_peers || [])]);
   ensureP2PIdentity();
   return JSON.stringify(remoteSettingsPayload()) !== before;
+}
+
+// Per-device endpoint registry (synced): where each device can be reached when
+// multicast cannot carry the announcement (other network, tailnet). Newest
+// entry per device wins; entries nobody refreshed in 30 days age out.
+const ENDPOINT_MAX_AGE_MS = 30 * 86400 * 1000;
+function mergeEndpointRegistry(local, remote, now = Date.now()) {
+  const merged = {};
+  for (const source of [local, remote]) {
+    for (const [deviceId, entry] of Object.entries(source && typeof source === 'object' ? source : {})) {
+      if (!entry || typeof entry !== 'object' || !/^[a-f0-9]{8,64}$/i.test(deviceId)) continue;
+      const updatedAt = Number(entry.updatedAt) || 0;
+      if (now - updatedAt > ENDPOINT_MAX_AGE_MS) continue;
+      const current = merged[deviceId];
+      if (current && (Number(current.updatedAt) || 0) >= updatedAt) continue;
+      merged[deviceId] = {
+        name: String(entry.name || '').slice(0, 80),
+        port: Math.max(0, Math.min(65535, Number(entry.port) || 0)),
+        lan: [...new Set((Array.isArray(entry.lan) ? entry.lan : []).map(String).filter(Boolean))].slice(0, 16),
+        tailnet: [...new Set((Array.isArray(entry.tailnet) ? entry.tailnet : []).map(String).filter(Boolean))].slice(0, 8),
+        updatedAt,
+      };
+    }
+  }
+  return merged;
+}
+
+const PINNED_PEER_RE = /^[a-z0-9.-]+(?::\d{1,5})?$/i;
+function normalizePinnedPeers(list) {
+  const out = [];
+  for (const raw of Array.isArray(list) ? list : []) {
+    const value = String(raw || '').trim().toLowerCase();
+    if (!value || value.length > 120 || !PINNED_PEER_RE.test(value) || out.includes(value)) continue;
+    out.push(value);
+    if (out.length >= 32) break;
+  }
+  return out;
 }
 
 function mergeSyncedConflicts(remoteConflicts) {
@@ -1136,6 +1198,107 @@ function foldRemoteState(canonicalHistory, remoteHistory, remoteSettings, remote
   const historyGroups = canonicalHistory.flatMap(h => groupsOf(h));
   settings.groups = mergeGroups(settings.groups, [...(remoteSettings && remoteSettings.groups || []), ...historyGroups]);
   return mergeHistories(canonicalHistory, remoteHistory);
+}
+
+// ---- Sync change feed (lib/sync-delta): one revision counter + per-entry
+// arrival revisions on THIS device, feeding both the P2P /delta endpoints and
+// the cloud journals. Persisted lazily to sync-state.json (local only).
+let lastStoredHistory = null;
+let syncStateSaveTimer = null;
+syncState = loadSyncState();
+
+function loadSyncState() {
+  let persisted = null;
+  try { persisted = blobStore.parseJsonText(fs.readFileSync(SYNC_STATE_PATH, 'utf-8')); } catch {}
+  if (!persisted || typeof persisted !== 'object') persisted = {};
+  const revision = syncDelta.startRevisionAfterLoad(persisted.revision);
+  return {
+    tracker: syncDelta.createChangeTracker({ revision, entries: persisted.entries }),
+    // deviceId -> { pulled, sent }: the peer's revision we last pulled through /
+    // our revision the peer last acknowledged.
+    p2pCursors: persisted.p2pCursors && typeof persisted.p2pCursors === 'object' ? persisted.p2pCursors : {},
+    // folderId -> { written, writes, snapshotRevision, snapshotAt, read: { deviceId: revision } }
+    journalCursors: persisted.journalCursors && typeof persisted.journalCursors === 'object' ? persisted.journalCursors : {},
+  };
+}
+
+function scheduleSyncStateSave() {
+  if (syncStateSaveTimer) return;
+  syncStateSaveTimer = setTimeout(() => {
+    syncStateSaveTimer = null;
+    const payload = JSON.stringify({
+      ...syncState.tracker.serialize(),
+      p2pCursors: syncState.p2pCursors,
+      journalCursors: syncState.journalCursors,
+    });
+    syncState.tracker.markClean();
+    atomicWriteFileAsync(SYNC_STATE_PATH, payload).catch(error => {
+      diagnostics.record('sync.state.save.error', { error: error && error.message }, { forceFile: true });
+    });
+  }, 1000);
+  if (syncStateSaveTimer.unref) syncStateSaveTimer.unref();
+}
+
+function syncStateView() {
+  return {
+    items: lastStoredHistory || p2pHistoryStorage(),
+    tombstones: normalizeTombstones(settings.tombstones),
+    groupTombstones: normalizeGroupTombstones(settings.group_tombstones),
+    supersedes: normalizeSupersedes(settings.supersedes),
+    conflicts: conflictModel.normalizeConflictState(conflicts),
+    settings: remoteSettingsPayload(),
+  };
+}
+
+// Called by EVERY local persist (history / settings / conflicts), including
+// ones that apply remote state: what arrived from one peer must be forwarded
+// to the others and journaled to the cloud, so nothing is exempt.
+function observeLocalChange() {
+  if (!syncState) return [];
+  syncState.tracker.bump();
+  const changed = syncState.tracker.observe(syncStateView());
+  p2p.revision = syncState.tracker.revision;
+  scheduleSyncStateSave();
+  return changed;
+}
+
+function deltaMeta() {
+  return {
+    deviceId: settings.p2p_device_id,
+    deviceName: p2pDeviceName(),
+    build: BUILD_INFO.label,
+    port: p2p.port,
+    assetsOf: items => Object.fromEntries(ASSET_KINDS.map(kind => [kind.kind, kind.namesOf(items)])),
+  };
+}
+
+function localDeltaSince(since) {
+  return syncState.tracker.deltaSince(since, syncStateView(), deltaMeta());
+}
+
+function p2pCursorFor(deviceId) {
+  if (!syncState.p2pCursors[deviceId]) syncState.p2pCursors[deviceId] = { pulled: 0, sent: 0 };
+  return syncState.p2pCursors[deviceId];
+}
+
+function journalCursorsFor(folderId) {
+  if (!syncState.journalCursors[folderId]) {
+    syncState.journalCursors[folderId] = { written: 0, writes: 0, snapshotRevision: 0, snapshotAt: 0, read: {} };
+  }
+  const cursors = syncState.journalCursors[folderId];
+  if (!cursors.read || typeof cursors.read !== 'object') cursors.read = {};
+  return cursors;
+}
+
+// Last successful sync activity, for the tray tooltip + Settings.
+const syncActivity = { lastAppliedAt: 0, lastSentAt: 0, lastJournalAt: 0, lastLatencyMs: null, lastSource: '' };
+
+function recordSyncLatency({ source, transport, peer, originClock, items, provider }) {
+  if (!originClock || !items) return;
+  const ms = Date.now() - Number(originClock);
+  syncActivity.lastLatencyMs = ms;
+  syncActivity.lastSource = source;
+  diagnostics.record('sync.latency', { source, transport: transport || '', peer: peer || '', provider: provider || '', ms, items }, { forceFile: true });
 }
 
 async function refreshCloudAccounts() {
@@ -1177,12 +1340,33 @@ async function getCloudAccountsForSettings() {
   return accounts.map(acc => ({ ...acc, enabled: !disabled.has(normalizeSyncPath(acc.path)) }));
 }
 
+const providerIdentityCache = new Map(); // syncPath -> { id, at }
+let syncDuplicateOf = {};                 // syncPath -> the primary path it mirrors
+const PROVIDER_IDENTITY_TTL_MS = 10 * 60 * 1000;
+
+async function providerIdentity(syncPath) {
+  const cached = providerIdentityCache.get(syncPath);
+  if (cached && Date.now() - cached.at < PROVIDER_IDENTITY_TTL_MS) return cached.id;
+  let id = `path:${syncPath}`;
+  try {
+    id = await withTimeout(syncJournal.folderIdentity(syncPath), SYNC_FOLDER_ID_TIMEOUT_MS, `folder id ${syncPath}`);
+  } catch {}
+  providerIdentityCache.set(syncPath, { id, at: Date.now() });
+  return id;
+}
+
+// Two mount paths of ONE cloud folder (Google Drive on G: and H:) are one
+// provider: written once, watched once. The marker inside the folder decides.
 async function getEnabledSyncPaths() {
   const accounts = syncAccountsWithCustom(await getCachedCloudAccounts());
   const disabled = syncDisabledPathSet();
-  return accounts
+  const enabled = accounts
     .map(acc => normalizeSyncPath(acc.path))
     .filter(syncPath => syncPath && !disabled.has(syncPath));
+  const entries = await Promise.all(enabled.map(async syncPath => ({ path: syncPath, id: await providerIdentity(syncPath) })));
+  const { primary, duplicateOf } = syncJournal.dedupeByIdentity(entries);
+  syncDuplicateOf = duplicateOf;
+  return primary;
 }
 
 function syncDisabledPathSet() {
@@ -1666,17 +1850,178 @@ async function writeRemoteState(syncPath, canonicalHistory, canonicalSettings) {
   }, 150);
 }
 
+// ---- Cloud journals (lib/sync-journal): one small NEW file per change, the
+// monolith rewritten as a periodic snapshot, own files pruned once covered.
+async function writeRemoteJournalOrSnapshot(syncPath, canonicalSettings, { fullSync = false, dirty = false } = {}) {
+  const folderId = await providerIdentity(syncPath);
+  const cursors = journalCursorsFor(folderId);
+  const deviceId = settings.p2p_device_id;
+  if (dirty && deviceId) {
+    const envelope = localDeltaSince(cursors.written || 0);
+    if (!syncState.tracker.isEmpty(envelope)) {
+      const startedAt = Date.now();
+      const bytes = Buffer.byteLength(JSON.stringify(envelope));
+      try {
+        // Assets first, so a reader never meets a clip whose blob is not there yet.
+        await syncRemoteAssets(syncPath, { pushHistory: envelope.history });
+        await withTimeout(
+          syncJournal.writeJournalEntry(syncPath, deviceId, envelope),
+          adaptiveTimeoutMs(SYNC_REMOTE_WRITE_TIMEOUT_MS, bytes, 2000),
+          `journal ${syncPath}`
+        );
+        cursors.written = envelope.revision;
+        cursors.writes = (cursors.writes || 0) + 1;
+        syncActivity.lastJournalAt = Date.now();
+        scheduleSyncStateSave();
+        diagnostics.record('sync.journal.write', {
+          path: syncPath, bytes, items: envelope.history.length, tombstones: envelope.tombstones.length,
+          settings: !!envelope.settings, revision: envelope.revision, since: envelope.since, ms: Date.now() - startedAt,
+        });
+      } catch (error) {
+        diagnostics.record('sync.journal.write.error', { path: syncPath, error: error && error.message }, { forceFile: true });
+      }
+    }
+  }
+  // Snapshot compaction: rewrite the monolith (content-compared, so a no-op
+  // when nothing changed) every full-sync interval or after N journal writes,
+  // then drop our own journal files it covers once every reader had an hour.
+  const writes = cursors.writes || 0;
+  const snapshotDue = (writes > 0 || dirty) && (fullSync || writes >= SYNC_JOURNAL_COMPACT_EVERY || !cursors.snapshotAt || Date.now() - cursors.snapshotAt > SYNC_FULL_INTERVAL_MS);
+  if (!snapshotDue) return;
+  const historyBytes = lastWrittenHistoryJson ? lastWrittenHistoryJson.length : 0;
+  try {
+    await withTimeout(
+      writeRemoteState(syncPath, history, canonicalSettings),
+      adaptiveTimeoutMs(SYNC_REMOTE_WRITE_TIMEOUT_MS, historyBytes, 2000),
+      `write ${syncPath}`
+    );
+    cursors.snapshotRevision = syncState.tracker.revision;
+    cursors.snapshotAt = Date.now();
+    cursors.writes = 0;
+    scheduleSyncStateSave();
+    if (deviceId) {
+      const pruned = await syncJournal.pruneJournal(syncPath, deviceId, { upToRevision: cursors.snapshotRevision, olderThanMs: SYNC_JOURNAL_PRUNE_AFTER_MS });
+      if (pruned) diagnostics.record('sync.journal.prune', { path: syncPath, pruned });
+    }
+  } catch (error) {
+    diagnostics.record('sync.write_remote.error', { path: syncPath, error: error && error.message }, { forceFile: true });
+  }
+}
+
+// Read every other device's journal files newer than our cursor for that
+// device, oldest first. Returns folded-ready entries; a file that does not
+// parse (mid-write) stops that device for this pass so the cursor never skips
+// it. A first file whose `since` is past our cursor means files were pruned we
+// never saw: report a gap so the caller re-reads the snapshot.
+async function readRemoteJournal(syncPath) {
+  const folderId = await providerIdentity(syncPath);
+  const cursors = journalCursorsFor(folderId);
+  const files = await syncJournal.listJournal(syncPath, { excludeDeviceId: settings.p2p_device_id });
+  const entries = [];
+  let gap = false;
+  const byDevice = new Map();
+  for (const file of files) {
+    if (!byDevice.has(file.deviceId)) byDevice.set(file.deviceId, []);
+    byDevice.get(file.deviceId).push(file);
+  }
+  for (const [deviceId, list] of byDevice) {
+    const cursor = Number(cursors.read[deviceId]) || 0;
+    const pending = list.filter(file => file.revision > cursor).sort((a, b) => a.revision - b.revision);
+    for (const file of pending) {
+      const envelope = await syncJournal.readJournalEntry(file.path);
+      if (!syncDelta.isEnvelope(envelope) || envelope.deviceId !== deviceId) break;
+      if (cursor > 0 && Number(envelope.since) > cursor) gap = true;
+      const { remoteHistory: storedItems, remoteSettings, remoteConflicts } = syncDelta.envelopeToRemoteState(envelope);
+      await syncRemoteAssets(syncPath, { pullHistory: storedItems });
+      entries.push({
+        deviceId,
+        deviceName: envelope.deviceName || deviceId.slice(0, 8),
+        revision: file.revision,
+        originClock: Number(envelope.originClock) || 0,
+        items: storedItems.length + (envelope.tombstones || []).length,
+        remoteHistory: clipBlobStore.hydrateHistory(storedItems.map(item => ({ ...item })), BLOB_DIRS),
+        remoteSettings,
+        remoteConflicts: conflictModel.normalizeConflictState(remoteConflicts),
+      });
+    }
+  }
+  if (entries.length) {
+    diagnostics.record('sync.journal.read', {
+      path: syncPath, entries: entries.length, items: entries.reduce((n, e) => n + e.items, 0),
+      devices: [...new Set(entries.map(e => e.deviceName))], gap,
+    });
+  }
+  return { folderId, entries, gap };
+}
+
+// Directory watchers on each provider's sync/ tree: a journal file from the
+// other device is applied within the watch debounce instead of the 30 s poll.
+// The poll stays as the floor for mounts whose notifications are lazy.
+const syncWatchers = new Map();
+let syncWatchTimer = null;
+
+function requestSyncRead(reason) {
+  if (syncWatchTimer) return;
+  syncWatchTimer = setTimeout(() => {
+    syncWatchTimer = null;
+    if (insideSync) { syncPending = true; return; }
+    syncMerge({ reason });
+  }, SYNC_WATCH_DEBOUNCE_MS);
+  if (syncWatchTimer.unref) syncWatchTimer.unref();
+}
+
+function ensureSyncWatchers(syncPaths) {
+  for (const [watchedPath, watcher] of syncWatchers) {
+    if (syncPaths.includes(watchedPath)) continue;
+    try { watcher.close(); } catch {}
+    syncWatchers.delete(watchedPath);
+  }
+  const ownDevice = syncJournal.safeDeviceId(settings.p2p_device_id);
+  for (const syncPath of syncPaths) {
+    if (syncWatchers.has(syncPath)) continue;
+    const dir = syncJournal.journalRoot(syncPath);
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+      const watcher = fs.watch(dir, { recursive: true, persistent: false }, (eventType, filename) => {
+        const name = String(filename || '').replace(/\\/g, '/');
+        if (ownDevice && name.startsWith(`${ownDevice}/`)) return;   // our own writes
+        if (name && !/\.json$/.test(name)) return;                  // tmp files
+        requestSyncRead('watch');
+      });
+      watcher.on('error', error => {
+        diagnostics.record('sync.watch.error', { path: syncPath, error: error && error.message }, { forceFile: true });
+        try { watcher.close(); } catch {}
+        syncWatchers.delete(syncPath);
+      });
+      syncWatchers.set(syncPath, watcher);
+      diagnostics.record('sync.watch.start', { path: syncPath });
+    } catch (error) {
+      diagnostics.record('sync.watch.error', { path: syncPath, error: error && error.message }, { forceFile: true });
+    }
+  }
+}
+
 function withTimeout(promise, ms, label) {
   let timer = null;
+  let timedOut = false;
+  const startedAt = Date.now();
   return Promise.race([
     promise.finally(() => {
       if (timer) clearTimeout(timer);
+      // The watchdog fired but the work finished anyway (an 8 MB DriveFS write
+      // taking 10 s): say so, so the log does not read as a failure.
+      if (timedOut) diagnostics.record('sync.timeout.late', { label, ms: Date.now() - startedAt, budget_ms: ms }, { forceFile: true });
     }),
     new Promise((_, reject) => {
-      timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+      timer = setTimeout(() => { timedOut = true; reject(new Error(`${label} timed out after ${ms}ms`)); }, ms);
       if (timer.unref) timer.unref();
     }),
   ]);
+}
+
+// Budgets scale with payload: base + per-MB allowance.
+function adaptiveTimeoutMs(baseMs, bytes, perMbMs) {
+  return baseMs + Math.ceil(Math.max(0, Number(bytes) || 0) / (1024 * 1024)) * perMbMs;
 }
 
 const p2p = {
@@ -1686,11 +2031,26 @@ const p2p = {
   announceTimer: null,
   announceSoonTimer: null,
   pushSoonTimer: null,
+  probeTimer: null,
+  tailnetTimer: null,
   peers: new Map(),
   pulls: new Map(),
+  probing: new Set(),
+  tailnet: { available: false, self: null, peers: [], at: 0 },
+  key: null,
+  keySecret: '',
   started: false,
   revision: 1,
 };
+
+function p2pKey() {
+  if (!settings.p2p_secret) return null;
+  if (!p2p.key || p2p.keySecret !== settings.p2p_secret) {
+    p2p.key = p2pCrypto.deriveKey(settings.p2p_secret);
+    p2p.keySecret = settings.p2p_secret;
+  }
+  return p2p.key;
+}
 
 function p2pEnabled() {
   return !!settings.p2p_enabled && !!settings.p2p_secret && !!settings.p2p_device_id;
@@ -1810,6 +2170,16 @@ function p2pVerifyRequest(req, bodyBuffer) {
   });
 }
 
+function p2pSendSealed(res, key, payload) {
+  const sealed = p2pCrypto.sealJson(key, payload);
+  res.writeHead(200, {
+    'Content-Type': 'application/octet-stream',
+    'Content-Length': sealed.length,
+    'x-boardclip-enc': '2',
+  });
+  res.end(sealed);
+}
+
 function p2pSendJson(res, status, payload) {
   const body = JSON.stringify(payload);
   res.writeHead(status, {
@@ -1857,12 +2227,55 @@ function p2pRequestHandler(req, res) {
       if (req.method === 'GET' && url.pathname === '/manifest') {
         p2pSendJson(res, 200, {
           protocol: P2P_PROTOCOL_VERSION,
+          protocolMax: P2P_PROTOCOL_MAX,
           deviceId: settings.p2p_device_id,
           deviceName: p2pDeviceName(),
           build: BUILD_INFO.label,
           revision: p2p.revision,
+          port: p2p.port,
           items: history.length,
         });
+        return;
+      }
+      // v2: delta envelopes, AES-GCM sealed both ways. A peer that speaks v2
+      // sends `x-boardclip-enc: 2`; the HMAC signature covers the sealed bytes.
+      if (url.pathname === '/delta' && (req.method === 'GET' || req.method === 'POST')) {
+        const key = p2pKey();
+        if (!key) { res.writeHead(400); res.end('No key'); return; }
+        if (req.method === 'GET') {
+          const since = Number(url.searchParams.get('since')) || 0;
+          const envelope = localDeltaSince(since);
+          p2pSendSealed(res, key, envelope);
+          return;
+        }
+        let envelope = null;
+        try { envelope = p2pCrypto.openJson(key, body); } catch { res.writeHead(400); res.end('Bad seal'); return; }
+        if (!syncDelta.isEnvelope(envelope) || envelope.deviceId === settings.p2p_device_id) {
+          res.writeHead(400);
+          res.end('Bad delta');
+          return;
+        }
+        const host = p2pDiscovery.normalizeIp(req.socket && req.socket.remoteAddress || '');
+        const peer = p2pRememberPeer({
+          deviceId: envelope.deviceId,
+          deviceName: envelope.deviceName,
+          host,
+          port: Number(envelope.port) || 0,
+          revision: Number(envelope.revision) || 0,
+          build: envelope.build || '',
+          protocolMax: 2,
+        }, 'push');
+        const result = await applyRemoteEnvelope(envelope, {
+          peer,
+          reason: 'push',
+          source: 'p2p-push',
+          notifyPeers: false,
+        });
+        // Everything in the revision we just committed came from THIS peer:
+        // acknowledge it so the next push to them does not echo it back.
+        if (peer && result.local_changed) p2pCursorFor(peer.deviceId).sent = syncState.tracker.revision;
+        if (peer) { p2pCursorFor(peer.deviceId).pulled = Math.max(p2pCursorFor(peer.deviceId).pulled, Number(envelope.revision) || 0); scheduleSyncStateSave(); }
+        p2pSendSealed(res, key, { ...result, revision: syncState.tracker.revision });
         return;
       }
       if (req.method === 'GET' && url.pathname === '/state') {
@@ -1877,26 +2290,16 @@ function p2pRequestHandler(req, res) {
           res.end('Bad state');
           return;
         }
-        const port = Number(state.port) || 0;
-        if (port > 0 && port <= 65535) {
-          const previous = p2p.peers.get(state.deviceId);
-          const host = p2pDiscovery.normalizeIp(req.socket && req.socket.remoteAddress || previous && previous.host || '');
-          const peer = {
-            deviceId: state.deviceId,
-            deviceName: state.deviceName || state.deviceId.slice(0, 8),
-            host,
-            port,
-            transport: p2pDiscovery.transportFor(host),
-            revision: Number(state.revision) || 0,
-            build: state.build || '',
-            items: Array.isArray(state.history) ? state.history.length : 0,
-            lastSeen: Date.now(),
-            lastPulledRevision: previous ? previous.lastPulledRevision : 0,
-            reportedLost: false,
-          };
-          p2p.peers.set(state.deviceId, peer);
-          p2pRecordPeerSeen(peer, previous, 'push');
-        }
+        p2pRememberPeer({
+          deviceId: state.deviceId,
+          deviceName: state.deviceName,
+          host: req.socket && req.socket.remoteAddress || '',
+          port: Number(state.port) || 0,
+          revision: Number(state.revision) || 0,
+          build: state.build || '',
+          items: Array.isArray(state.history) ? state.history.length : 0,
+          protocolMax: Number(state.protocolMax) || 1,
+        }, 'push');
         const result = await p2pApplyState(state, {
           peerName: state.deviceName || state.deviceId,
           reason: 'push',
@@ -1931,19 +2334,24 @@ function p2pAuthHeaders(method, requestPath, body = Buffer.alloc(0)) {
   return hmacAuth.signedHeaders(settings.p2p_secret, settings.p2p_device_id, method, requestPath, body);
 }
 
-function p2pHttpRequest(peer, requestPath, { binary = false, method = 'GET', body = Buffer.alloc(0) } = {}) {
-  const requestBody = Buffer.isBuffer(body) ? body : Buffer.from(String(body || ''));
+function p2pHttpRequest(peer, requestPath, { binary = false, method = 'GET', body = Buffer.alloc(0), sealed = false, timeoutMs = 0 } = {}) {
+  let requestBody = Buffer.isBuffer(body) ? body : Buffer.from(String(body || ''));
+  const key = sealed ? p2pKey() : null;
+  if (sealed && !key) return Promise.reject(new Error('no p2p key'));
+  if (sealed && requestBody.length) requestBody = p2pCrypto.seal(key, requestBody);
+  const timeout = timeoutMs || adaptiveTimeoutMs(P2P_HTTP_TIMEOUT_MS, requestBody.length, 1000);
   return new Promise((resolve, reject) => {
     const request = http.request({
       hostname: peer.host,
       port: peer.port,
       path: requestPath,
       method,
-      timeout: P2P_HTTP_TIMEOUT_MS,
+      timeout,
       headers: {
         ...p2pAuthHeaders(method, requestPath, requestBody),
+        ...(sealed ? { 'x-boardclip-enc': '2' } : {}),
         ...(requestBody.length ? {
-          'Content-Type': 'application/json',
+          'Content-Type': sealed ? 'application/octet-stream' : 'application/json',
           'Content-Length': requestBody.length,
         } : {}),
       },
@@ -1951,10 +2359,13 @@ function p2pHttpRequest(peer, requestPath, { binary = false, method = 'GET', bod
       const chunks = [];
       response.on('data', chunk => chunks.push(chunk));
       response.on('end', () => {
-        const body = chunks.length ? Buffer.concat(chunks) : Buffer.alloc(0);
+        let body = chunks.length ? Buffer.concat(chunks) : Buffer.alloc(0);
         if (response.statusCode < 200 || response.statusCode >= 300) {
           reject(new Error(`HTTP ${response.statusCode}`));
           return;
+        }
+        if (response.headers['x-boardclip-enc'] === '2') {
+          try { body = p2pCrypto.open(key || p2pKey(), body); } catch (error) { reject(new Error('bad sealed response')); return; }
         }
         if (binary) {
           resolve(body);
@@ -2043,12 +2454,113 @@ async function p2pApplyState(state, { peerName, reason, fetchedAssets = 0, notif
   return { ok: true, local_changed: localChanged, settings_changed: settingsChanged, conflicts_changed: conflictsChanged, fetched_assets: fetchedAssets };
 }
 
+// Fetch every asset an envelope references that we do not have, from the peer
+// it came from. A failed fetch never aborts the apply (see p2pPullPeer).
+async function p2pFetchEnvelopeAssets(peer, envelope) {
+  const advertised = envelope.assets && typeof envelope.assets === 'object' ? envelope.assets : {};
+  const assets = [];
+  for (const kind of ASSET_KINDS) {
+    for (const name of Array.isArray(advertised[kind.kind]) ? advertised[kind.kind] : []) assets.push({ kind: kind.kind, name });
+  }
+  let fetched = 0;
+  let failed = 0;
+  await runWithConcurrency(assets, P2P_ASSET_FETCH_CONCURRENCY, async asset => {
+    try {
+      if (await p2pFetchMissingAsset(peer, asset.kind, asset.name)) fetched++;
+    } catch (error) {
+      failed++;
+      diagnostics.record('p2p.asset_fetch.error', {
+        peer: peer.deviceName || peer.deviceId, kind: asset.kind, name: asset.name, error: error && error.message,
+      }, { forceFile: true });
+    }
+  });
+  return { fetched, failed };
+}
+
+// Commit a folded canonical state exactly the way p2pApplyState does: save what
+// changed, without re-notifying the peer it came from, then let the cloud
+// journal + other peers pick it up.
+function commitRemoteFold(canonicalHistory, { localChanged, previousSettingsJson, previousConflictsJson, notifyPeers }) {
+  const settingsChanged = JSON.stringify(remoteSettingsPayload()) !== previousSettingsJson;
+  const conflictsChanged = JSON.stringify(conflictModel.normalizeConflictState(conflicts)) !== previousConflictsJson;
+  if (localChanged) {
+    history.length = 0;
+    history.push(...canonicalHistory);
+  }
+  if (localChanged || settingsChanged || conflictsChanged) {
+    applyingSyncState = true;
+    suppressP2PNotify = !notifyPeers;
+    try {
+      if (localChanged) saveHistory();
+      if (settingsChanged) saveSettingsFile();
+      if (conflictsChanged) saveConflictsFile();
+    } finally {
+      suppressP2PNotify = false;
+      applyingSyncState = false;
+    }
+    scheduleSyncMerge();
+    syncActivity.lastAppliedAt = Date.now();
+  }
+  return { settingsChanged, conflictsChanged };
+}
+
+// Apply a v2 delta envelope (from a P2P push/pull or a cloud journal file).
+// `hydrated` = the caller already fetched assets + hydrated the items.
+async function applyRemoteEnvelope(envelope, { peer = null, reason, source, transport = '', provider = '', notifyPeers = true, fetchAssets = true } = {}) {
+  const startedAt = Date.now();
+  if (!syncDelta.isEnvelope(envelope) || envelope.deviceId === settings.p2p_device_id) throw new Error('invalid delta envelope');
+  let fetchedAssets = 0;
+  let failedAssets = 0;
+  if (fetchAssets && peer) {
+    const fetched = await p2pFetchEnvelopeAssets(peer, envelope);
+    fetchedAssets = fetched.fetched;
+    failedAssets = fetched.failed;
+  }
+  const { remoteHistory: storedItems, remoteSettings, remoteConflicts } = syncDelta.envelopeToRemoteState(envelope);
+  const remoteHistory = clipBlobStore.hydrateHistory(storedItems.map(item => ({ ...item })), BLOB_DIRS);
+  const previousSettingsJson = JSON.stringify(remoteSettingsPayload());
+  const previousConflictsJson = JSON.stringify(conflictModel.normalizeConflictState(conflicts));
+  const before = history.slice();
+  const canonicalHistory = foldRemoteState(history.slice(), remoteHistory, remoteSettings, conflictModel.normalizeConflictState(remoteConflicts));
+  const localChanged = syncDelta.historyChangedBy(before, canonicalHistory, syncDelta.touchedIds(envelope));
+  const { settingsChanged, conflictsChanged } = commitRemoteFold(canonicalHistory, { localChanged, previousSettingsJson, previousConflictsJson, notifyPeers });
+  const peerName = peer ? (peer.deviceName || peer.deviceId) : (envelope.deviceName || envelope.deviceId);
+  if (localChanged || settingsChanged || conflictsChanged) {
+    recordSyncLatency({ source, transport: transport || (peer && peer.transport) || '', peer: peerName, provider, originClock: envelope.originClock, items: remoteHistory.length + (envelope.tombstones || []).length });
+  }
+  diagnostics.record('sync.delta_apply', {
+    source, reason, peer: peerName, provider, transport: transport || (peer && peer.transport) || '',
+    ms: Date.now() - startedAt, remote_items: remoteHistory.length, tombstones: (envelope.tombstones || []).length,
+    full: !!envelope.full, since: envelope.since, revision: envelope.revision,
+    local_changed: localChanged, settings_changed: settingsChanged, conflicts_changed: conflictsChanged,
+    fetched_assets: fetchedAssets, failed_assets: failedAssets, items: history.length,
+  }, { forceFile: localChanged || fetchedAssets > 0 || failedAssets > 0 });
+  return { ok: true, local_changed: localChanged, settings_changed: settingsChanged, conflicts_changed: conflictsChanged, fetched_assets: fetchedAssets, failed_assets: failedAssets };
+}
+
+async function p2pPullPeerDelta(peer, reason) {
+  const startedAt = Date.now();
+  const cursor = p2pCursorFor(peer.deviceId);
+  const envelope = await p2pHttpRequest(peer, `/delta?since=${encodeURIComponent(cursor.pulled || 0)}`, { sealed: true });
+  if (!syncDelta.isEnvelope(envelope) || envelope.deviceId !== peer.deviceId) throw new Error('invalid peer delta');
+  const result = await applyRemoteEnvelope(envelope, { peer, reason, source: 'p2p-pull', notifyPeers: true });
+  cursor.pulled = Math.max(cursor.pulled || 0, Number(envelope.revision) || 0);
+  if (result.local_changed) cursor.sent = syncState.tracker.revision;
+  scheduleSyncStateSave();
+  diagnostics.record('p2p.pull', {
+    peer: peer.deviceName || peer.deviceId, reason, protocol: 2, ms: Date.now() - startedAt,
+    remote_items: envelope.history.length, full: !!envelope.full, ...result,
+  }, { forceFile: result.local_changed || result.fetched_assets > 0 || result.failed_assets > 0 });
+  return result;
+}
+
 async function p2pPullPeer(peer, reason = 'discovery') {
   if (!p2pEnabled() || !peer || peer.deviceId === settings.p2p_device_id) return null;
   const existing = p2p.pulls.get(peer.deviceId);
   if (existing && Date.now() - existing.startedAt < P2P_PULL_THROTTLE_MS) return existing.promise;
 
   const promise = (async () => {
+    if ((peer.protocolMax || 1) >= 2) return p2pPullPeerDelta(peer, reason);
     const startedAt = Date.now();
     let fetchedAssets = 0;
     const state = await p2pHttpRequest(peer, '/state');
@@ -2121,6 +2633,7 @@ function p2pAnnouncementPayload() {
   return {
     app: 'boardclip',
     protocol: P2P_PROTOCOL_VERSION,
+    protocolMax: P2P_PROTOCOL_MAX,
     deviceId: settings.p2p_device_id,
     deviceName: p2pDeviceName(),
     secretHash: p2pSecretHash(),
@@ -2136,11 +2649,117 @@ function p2pAnnouncementPayload() {
 // one-directional (one side's OS picked a virtual switch, an AP filters it), so
 // a peer that reached us once keeps hearing us directly, whatever its network
 // does with multicast.
-function p2pUnicastTargets() {
+function parsePinnedPeer(value) {
+  const match = /^([a-z0-9.-]+)(?::(\d{1,5}))?$/i.exec(String(value || '').trim());
+  if (!match) return null;
+  const port = Number(match[2]) || 0;
+  return { host: match[1], port: port > 0 && port <= 65535 ? port : 0 };
+}
+
+// Every address worth telling about ourselves directly: peers heard recently
+// (all their addresses), the synced endpoint registry, online tailnet devices
+// and manual pins. Announcements go to the UDP discovery port; the HTTP port
+// rides inside the payload.
+function p2pKnownAddresses() {
+  const out = [];
   const cutoff = Date.now() - P2P_UNICAST_REANNOUNCE_MS;
-  return [...p2p.peers.values()]
-    .filter(peer => peer.host && peer.lastSeen >= cutoff)
-    .map(peer => ({ host: peer.host, port: P2P_DISCOVERY_PORT }));
+  for (const peer of p2p.peers.values()) {
+    for (const [host, addr] of Object.entries(peer.addrs || {})) {
+      if (addr.lastSeen >= cutoff) out.push({ host, httpPort: addr.port, source: 'peer' });
+    }
+  }
+  for (const [deviceId, entry] of Object.entries(settings.p2p_endpoints || {})) {
+    if (deviceId === settings.p2p_device_id || !entry) continue;
+    for (const host of [...(entry.lan || []), ...(entry.tailnet || [])]) out.push({ host, httpPort: entry.port || P2P_PORT_DEFAULT, source: 'registry', deviceId });
+  }
+  for (const node of p2p.tailnet.peers || []) {
+    if (!node.online) continue;
+    for (const host of node.ips || []) out.push({ host, httpPort: P2P_PORT_DEFAULT, source: 'tailnet', name: node.name });
+  }
+  for (const pin of settings.p2p_pinned_peers || []) {
+    const parsed = parsePinnedPeer(pin);
+    if (parsed) out.push({ host: parsed.host, httpPort: parsed.port || P2P_PORT_DEFAULT, source: 'pin' });
+  }
+  const seen = new Set();
+  return out.filter(target => {
+    const key = `${target.host}:${target.httpPort}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function p2pUnicastTargets() {
+  return p2pKnownAddresses().map(target => ({ host: target.host, port: P2P_DISCOVERY_PORT }));
+}
+
+// Addresses we know of but hear nothing from (multicast filtered, UDP blocked,
+// other network): ask their HTTP port for a manifest and pair from that.
+function p2pIsSeenAddress(host) {
+  const cutoff = Date.now() - P2P_PEER_STALE_MS;
+  for (const peer of p2p.peers.values()) {
+    const addr = peer.addrs && peer.addrs[host];
+    if (addr && addr.lastSeen >= cutoff) return true;
+  }
+  return false;
+}
+
+async function p2pProbeTargets(reason = 'timer') {
+  if (!p2pEnabled() || !p2p.started) return [];
+  const local = new Set((p2p.discovery ? p2p.discovery.joinedInterfaces() : []).map(i => i.address));
+  for (const ip of (p2p.tailnet.self && p2p.tailnet.self.ips) || []) local.add(ip);
+  const targets = p2pKnownAddresses().filter(target => target.source !== 'peer' && !local.has(target.host) && !p2pIsSeenAddress(target.host));
+  const results = [];
+  await runWithConcurrency(targets, 4, async target => {
+    const key = `${target.host}:${target.httpPort}`;
+    if (p2p.probing.has(key)) return;
+    p2p.probing.add(key);
+    try {
+      const manifest = await p2pHttpRequest({ host: target.host, port: target.httpPort }, '/manifest', { timeoutMs: P2P_PROBE_TIMEOUT_MS });
+      if (!manifest || !manifest.deviceId || manifest.deviceId === settings.p2p_device_id) return;
+      const peer = p2pRememberPeer({
+        deviceId: manifest.deviceId,
+        deviceName: manifest.deviceName,
+        host: target.host,
+        port: Number(manifest.port) || target.httpPort,
+        revision: Number(manifest.revision) || 0,
+        build: manifest.build || '',
+        items: Number(manifest.items) || 0,
+        protocolMax: Number(manifest.protocolMax) || 1,
+      }, `probe:${target.source}`);
+      results.push({ host: target.host, deviceId: manifest.deviceId });
+      if (peer && peer.revision && peer.revision !== peer.lastPulledRevision) {
+        peer.lastPulledRevision = peer.revision;
+        p2pPullPeer(peer, `probe:${reason}`);
+      }
+    } catch {
+      // Unreachable right now: normal for an offline device; the next probe retries.
+    } finally {
+      p2p.probing.delete(key);
+    }
+  });
+  return results;
+}
+
+async function pollTailscale() {
+  const status = await tailscale.readStatus();
+  p2p.tailnet = { available: !!status.available, self: status.self || null, peers: status.peers || [], at: Date.now() };
+  p2pPublishEndpoint();
+}
+
+// Publish where THIS device can be reached into the synced registry, only when
+// it actually changed (each publish is a settings save that syncs).
+function p2pPublishEndpoint() {
+  if (!p2pEnabled() || !p2p.port || !settings.p2p_device_id) return;
+  const lan = (p2p.discovery ? p2p.discovery.joinedInterfaces() : []).map(i => i.address);
+  const tailnet = (p2p.tailnet.self && p2p.tailnet.self.ips) || [];
+  const current = (settings.p2p_endpoints || {})[settings.p2p_device_id] || null;
+  const same = current && current.port === p2p.port && current.name === p2pDeviceName()
+    && JSON.stringify(current.lan || []) === JSON.stringify(lan) && JSON.stringify(current.tailnet || []) === JSON.stringify(tailnet)
+    && Date.now() - (Number(current.updatedAt) || 0) < 7 * 86400 * 1000;
+  if (same) return;
+  settings.p2p_endpoints = { ...(settings.p2p_endpoints || {}), [settings.p2p_device_id]: { name: p2pDeviceName(), port: p2p.port, lan, tailnet, updatedAt: Date.now() } };
+  saveSettingsFile();
 }
 
 function p2pSweepPeers() {
@@ -2168,12 +2787,30 @@ function p2pAnnounceNow() {
 
 async function p2pPushPeer(peer, reason = 'local-change') {
   if (!p2pEnabled() || !peer || peer.deviceId === settings.p2p_device_id) return null;
-  const body = Buffer.from(JSON.stringify(p2pStatePayload()));
+  const v2 = (peer.protocolMax || 1) >= 2;
+  let envelope = null;
+  if (v2) {
+    envelope = localDeltaSince(p2pCursorFor(peer.deviceId).sent || 0);
+    if (syncState.tracker.isEmpty(envelope)) return { ok: true, skipped: true };
+  }
+  const body = Buffer.from(JSON.stringify(v2 ? envelope : p2pStatePayload()));
   try {
-    const result = await p2pHttpRequest(peer, '/state', { method: 'POST', body });
+    const startedAt = Date.now();
+    const result = await p2pHttpRequest(peer, v2 ? '/delta' : '/state', { method: 'POST', body, sealed: v2 });
+    if (v2 && result && result.ok) {
+      const cursor = p2pCursorFor(peer.deviceId);
+      cursor.sent = Math.max(cursor.sent || 0, envelope.revision);
+      if (Number(result.revision)) peer.revision = Number(result.revision);
+      scheduleSyncStateSave();
+      syncActivity.lastSentAt = Date.now();
+    }
     diagnostics.record('p2p.push', {
       peer: peer.deviceName || peer.deviceId,
       reason,
+      protocol: v2 ? 2 : 1,
+      ms: Date.now() - startedAt,
+      bytes: body.length,
+      items: v2 ? envelope.history.length : history.length,
       ok: !!(result && result.ok),
       local_changed: result && result.local_changed,
       settings_changed: result && result.settings_changed,
@@ -2194,14 +2831,13 @@ function p2pPushPeersSoon(reason = 'local-change') {
   if (p2p.pushSoonTimer) clearTimeout(p2p.pushSoonTimer);
   p2p.pushSoonTimer = setTimeout(() => {
     p2p.pushSoonTimer = null;
-    const peers = p2pPeerSummaries();
-    for (const peer of peers) p2pPushPeer(peer, reason);
+    for (const peer of p2pActivePeers()) p2pPushPeer(peer, reason);
   }, 150);
   if (p2p.pushSoonTimer.unref) p2p.pushSoonTimer.unref();
 }
 
 function p2pNotifyLocalChange() {
-  p2p.revision++;
+  p2p.revision = syncState.tracker.revision;
   if (!p2pEnabled()) return;
   if (p2p.announceSoonTimer) clearTimeout(p2p.announceSoonTimer);
   p2p.announceSoonTimer = setTimeout(() => {
@@ -2210,6 +2846,54 @@ function p2pNotifyLocalChange() {
   }, 50);
   if (p2p.announceSoonTimer.unref) p2p.announceSoonTimer.unref();
   p2pPushPeersSoon('local-change');
+}
+
+// One record per device with an ADDRESS BOOK: a peer can be heard on the LAN
+// and over the tailnet at once. LAN wins while it is fresh, then tailnet, then
+// whatever was heard last; the chosen address is what the HTTP client dials.
+function p2pChooseAddress(peer) {
+  const cutoff = Date.now() - P2P_PEER_STALE_MS;
+  const entries = Object.entries(peer.addrs || {}).map(([host, addr]) => ({ host, ...addr }));
+  if (!entries.length) return null;
+  const fresh = entries.filter(addr => addr.lastSeen >= cutoff);
+  const pick = (list, transport) => list.filter(addr => addr.transport === transport).sort((a, b) => b.lastSeen - a.lastSeen)[0];
+  return pick(fresh, 'lan') || pick(fresh, 'tailnet') || entries.sort((a, b) => b.lastSeen - a.lastSeen)[0];
+}
+
+function p2pRememberPeer({ deviceId, deviceName, host, port, revision, build, items, protocolMax }, via) {
+  if (!deviceId || deviceId === settings.p2p_device_id) return null;
+  const httpPort = Number(port) || 0;
+  if (httpPort <= 0 || httpPort > 65535) return null;
+  const previous = p2p.peers.get(deviceId) || null;
+  const peer = previous || {
+    deviceId,
+    addrs: {},
+    lastPulledRevision: 0,
+    reportedLost: false,
+    firstSeen: Date.now(),
+  };
+  const before = previous ? { host: previous.host, port: previous.port, lastSeen: previous.lastSeen, reportedLost: previous.reportedLost } : null;
+  if (!peer.addrs || typeof peer.addrs !== 'object') peer.addrs = {};
+  const address = p2pDiscovery.normalizeIp(host);
+  if (address) {
+    peer.addrs[address] = { port: httpPort, transport: p2pDiscovery.transportFor(address), lastSeen: Date.now() };
+  }
+  peer.deviceName = deviceName || peer.deviceName || deviceId.slice(0, 8);
+  if (build) peer.build = build;
+  if (items != null) peer.items = Number(items) || 0;
+  if (revision != null) peer.revision = Number(revision) || 0;
+  peer.protocolMax = Math.max(peer.protocolMax || 1, Number(protocolMax) || 1);
+  peer.lastSeen = Date.now();
+  peer.reportedLost = false;
+  const chosen = p2pChooseAddress(peer);
+  if (chosen) {
+    peer.host = chosen.host;
+    peer.port = chosen.port;
+    peer.transport = chosen.transport;
+  }
+  p2p.peers.set(deviceId, peer);
+  p2pRecordPeerSeen(peer, before, via);
+  return peer;
 }
 
 function p2pHandleAnnouncement(message, rinfo) {
@@ -2223,25 +2907,21 @@ function p2pHandleAnnouncement(message, rinfo) {
   if (port <= 0 || port > 65535) return;
 
   const previous = p2p.peers.get(payload.deviceId);
+  const previousRevision = previous ? previous.revision : 0;
+  const previousAddress = previous ? `${previous.host}:${previous.port}` : '';
   const revision = Number(payload.revision) || 0;
-  const host = p2pDiscovery.normalizeIp(rinfo.address);
-  const peer = {
+  const peer = p2pRememberPeer({
     deviceId: payload.deviceId,
-    deviceName: payload.deviceName || payload.deviceId.slice(0, 8),
-    host,
+    deviceName: payload.deviceName,
+    host: rinfo.address,
     port,
-    transport: p2pDiscovery.transportFor(host),
     revision,
     build: payload.build || '',
     items: Number(payload.items) || 0,
-    lastSeen: Date.now(),
-    lastPulledRevision: previous ? previous.lastPulledRevision : 0,
-    reportedLost: false,
-  };
-  p2p.peers.set(peer.deviceId, peer);
-  p2pRecordPeerSeen(peer, previous, 'announcement');
-  if (!previous || previous.revision !== revision || previous.host !== peer.host || previous.port !== peer.port) {
-    peer.lastPulledRevision = previous ? previous.lastPulledRevision : 0;
+    protocolMax: Number(payload.protocolMax) || 1,
+  }, 'announcement');
+  if (!peer) return;
+  if (!previous || previousRevision !== revision || previousAddress !== `${peer.host}:${peer.port}`) {
     if (revision && revision !== peer.lastPulledRevision) {
       peer.lastPulledRevision = revision;
       p2pPullPeer(peer, 'announcement');
@@ -2254,7 +2934,7 @@ function p2pHandleAnnouncement(message, rinfo) {
 // the log instead of by guessing.
 function p2pRecordPeerSeen(peer, previous, via) {
   const wasStale = !previous || previous.reportedLost || (Date.now() - previous.lastSeen) > P2P_PEER_STALE_MS;
-  const moved = previous && (previous.host !== peer.host || previous.port !== peer.port);
+  const moved = previous && previous.host && (previous.host !== peer.host || previous.port !== peer.port);
   if (!wasStale && !moved) return;
   diagnostics.record('p2p.peer.seen', {
     peer: peer.deviceName || peer.deviceId,
@@ -2269,20 +2949,28 @@ function p2pRecordPeerSeen(peer, previous, via) {
   }, { forceFile: true });
 }
 
-function p2pPeerSummaries() {
+// The live peer RECORDS (address book, protocol, cursors apply to these);
+// summaries below are the read-only view for IPC/UI.
+function p2pActivePeers() {
   const cutoff = Date.now() - P2P_PEER_STALE_MS;
   return [...p2p.peers.values()]
-    .filter(peer => peer.lastSeen >= cutoff)
-    .sort((a, b) => b.lastSeen - a.lastSeen)
+    .filter(peer => peer.lastSeen >= cutoff && peer.host && peer.port)
+    .sort((a, b) => b.lastSeen - a.lastSeen);
+}
+
+function p2pPeerSummaries() {
+  return p2pActivePeers()
     .map(peer => ({
       deviceId: peer.deviceId,
       deviceName: peer.deviceName,
       host: peer.host,
       port: peer.port,
       transport: peer.transport || p2pDiscovery.transportFor(peer.host),
+      protocol: peer.protocolMax || 1,
       build: peer.build,
       items: peer.items,
       lastSeen: peer.lastSeen,
+      addresses: Object.keys(peer.addrs || {}),
     }));
 }
 
@@ -2320,9 +3008,15 @@ async function startP2PSync() {
       },
     });
     await p2p.discovery.start();
+    p2p.revision = syncState.tracker.revision;
     p2p.announceTimer = setInterval(p2pAnnounceNow, P2P_ANNOUNCE_INTERVAL_MS);
     if (p2p.announceTimer.unref) p2p.announceTimer.unref();
+    p2p.probeTimer = setInterval(() => { p2pProbeTargets('timer').catch(() => {}); }, P2P_PROBE_INTERVAL_MS);
+    if (p2p.probeTimer.unref) p2p.probeTimer.unref();
+    p2p.tailnetTimer = setInterval(() => { pollTailscale().catch(() => {}); }, TAILSCALE_POLL_MS);
+    if (p2p.tailnetTimer.unref) p2p.tailnetTimer.unref();
     p2pAnnounceNow();
+    pollTailscale().then(() => p2pProbeTargets('start')).catch(() => {});
     diagnostics.record('p2p.start', {
       port: p2p.port,
       fixed_port: fixedPort,
@@ -2339,8 +3033,12 @@ function stopP2PSync() {
   p2p.started = false;
   if (p2p.announceTimer) clearInterval(p2p.announceTimer);
   if (p2p.announceSoonTimer) clearTimeout(p2p.announceSoonTimer);
+  if (p2p.probeTimer) clearInterval(p2p.probeTimer);
+  if (p2p.tailnetTimer) clearInterval(p2p.tailnetTimer);
   p2p.announceTimer = null;
   p2p.announceSoonTimer = null;
+  p2p.probeTimer = null;
+  p2p.tailnetTimer = null;
   try { if (p2p.discovery) p2p.discovery.stop(); } catch {}
   try { if (p2p.server) p2p.server.close(); } catch {}
   p2p.discovery = null;
@@ -2369,6 +3067,16 @@ function p2pStatus() {
     deviceId: settings.p2p_device_id,
     deviceName: p2pDeviceName(),
     interfaces: p2p.discovery ? p2p.discovery.joinedInterfaces() : [],
+    protocolMax: P2P_PROTOCOL_MAX,
+    revision: syncState.tracker.revision,
+    tailnet: {
+      available: !!p2p.tailnet.available,
+      self: p2p.tailnet.self ? { name: p2p.tailnet.self.name, ips: p2p.tailnet.self.ips } : null,
+      peers: (p2p.tailnet.peers || []).map(node => ({ name: node.name, ips: node.ips, online: !!node.online, os: node.os })),
+    },
+    pinned: settings.p2p_pinned_peers || [],
+    registry: Object.entries(settings.p2p_endpoints || {}).filter(([id]) => id !== settings.p2p_device_id).map(([id, e]) => ({ deviceId: id, name: e.name, port: e.port, lan: e.lan, tailnet: e.tailnet, updatedAt: e.updatedAt })),
+    activity: { ...syncActivity },
     peers: p2pPeerSummaries(),
   };
 }
@@ -2431,6 +3139,8 @@ async function syncMerge(options = {}) {
     let canonicalHistory = history.slice();
     const previousSettingsJson = JSON.stringify(remoteSettingsPayload());
     const previousConflictsJson = JSON.stringify(conflictModel.normalizeConflictState(conflicts));
+    const journalLatencies = [];
+    ensureSyncWatchers(syncPaths);
 
     emitSyncProgress({ phase: 'start', total: syncPaths.length });
     let providerIndex = 0;
@@ -2504,6 +3214,27 @@ async function syncMerge(options = {}) {
           error: error && error.message,
         }, { forceFile: true });
       }
+      // Other devices' journal files (small deltas) since our per-device
+      // cursors. Independent of the snapshot read above: a gap in a device's
+      // journal (files pruned past our cursor) forces the snapshot next pass.
+      try {
+        const journalRead = await withTimeout(readRemoteJournal(syncPath), SYNC_PROVIDER_READ_TIMEOUT_MS, `journal ${syncPath}`);
+        for (const entry of journalRead.entries) {
+          canonicalHistory = foldRemoteState(canonicalHistory, entry.remoteHistory, entry.remoteSettings, entry.remoteConflicts);
+          journalCursorsFor(journalRead.folderId).read[entry.deviceId] = entry.revision;
+          if (entry.originClock && entry.items) {
+            journalLatencies.push({ provider: syncPath, peer: entry.deviceName, originClock: entry.originClock, items: entry.items, transport: 'cloud' });
+          }
+        }
+        if (journalRead.entries.length || journalRead.gap) {
+          scheduleSyncStateSave();
+          const last = providers[providers.length - 1];
+          if (last && last.path === syncPath) { last.journal_entries = journalRead.entries.length; last.journal_gap = journalRead.gap; }
+          if (journalRead.gap) syncProviderCache.delete(syncPath); // force a snapshot read next pass
+        }
+      } catch (error) {
+        diagnostics.record('sync.journal.read.error', { path: syncPath, error: error && error.message }, { forceFile: true });
+      }
     }
 
     if (syncDirtyVersion !== startedDirtyVersion || dataRevision !== startedDataRevision) {
@@ -2548,24 +3279,15 @@ async function syncMerge(options = {}) {
       } finally {
         applyingSyncState = false;
       }
+      syncActivity.lastAppliedAt = Date.now();
+      for (const latency of journalLatencies) recordSyncLatency({ source: 'cloud', ...latency });
     }
 
     shouldWriteRemotes = hadLocalDirty || localChanged || settingsChanged || conflictsChanged;
     const canonicalSettings = remoteSettingsPayload();
-    if (shouldWriteRemotes) {
+    if (shouldWriteRemotes || fullSync) {
       emitSyncProgress({ phase: 'write', total: syncPaths.length });
-      await Promise.all(syncPaths.map(syncPath => (
-        withTimeout(
-            writeRemoteState(syncPath, history, canonicalSettings),
-            SYNC_REMOTE_WRITE_TIMEOUT_MS,
-            `write ${syncPath}`
-        ).catch(error => {
-          diagnostics.record('sync.write_remote.error', {
-            path: syncPath,
-            error: error && error.message,
-          }, { forceFile: true });
-        })
-      )));
+      await Promise.all(syncPaths.map(syncPath => writeRemoteJournalOrSnapshot(syncPath, canonicalSettings, { fullSync, dirty: shouldWriteRemotes })));
     }
     if (fullSync) lastFullSyncAt = Date.now();
     syncSucceeded = true;
@@ -3686,11 +4408,43 @@ function createTray() {
   refreshTray();
   tray.on('click', showPopup);
   tray.on('double-click', showPopup);
+  const tooltipTimer = setInterval(updateTrayTooltip, TRAY_TOOLTIP_REFRESH_MS);
+  if (tooltipTimer.unref) tooltipTimer.unref();
+}
+
+function agoLabel(at) {
+  if (!at) return '';
+  const s = Math.max(0, Math.round((Date.now() - at) / 1000));
+  if (s < 60) return `${s}s ago`;
+  if (s < 3600) return `${Math.round(s / 60)}m ago`;
+  return `${Math.round(s / 3600)}h ago`;
+}
+
+function syncTooltipText() {
+  const parts = [`BoardClip ${BUILD_INFO.label}`];
+  if (settings.p2p_enabled) {
+    const peers = p2pPeerSummaries();
+    if (peers.length) {
+      const transports = [...new Set(peers.map(peer => peer.transport === 'tailnet' ? 'Tailscale' : 'LAN'))].join('+');
+      parts.push(`${peers.length} peer${peers.length === 1 ? '' : 's'} (${transports})`);
+    } else {
+      parts.push('no peers');
+    }
+  }
+  const last = Math.max(syncActivity.lastAppliedAt, syncActivity.lastSentAt, syncActivity.lastJournalAt, lastSyncResult && lastSyncResult.ok ? Date.now() - (lastSyncResult.ms || 0) - 0 : 0);
+  if (last) parts.push(`synced ${agoLabel(last)}`);
+  if (syncActivity.lastLatencyMs != null) parts.push(`${syncActivity.lastLatencyMs} ms via ${syncActivity.lastSource}`);
+  return parts.join(' \u00b7 ');
+}
+
+function updateTrayTooltip() {
+  if (!tray) return;
+  try { tray.setToolTip(syncTooltipText()); } catch {}
 }
 
 function refreshTray() {
   if (!tray) return;
-  tray.setToolTip(`BoardClip ${BUILD_INFO.label}`);
+  updateTrayTooltip();
 
   const contextMenu = Menu.buildFromTemplate([
     { label: 'Open', click: showPopup },
@@ -5053,6 +5807,10 @@ function setupIPC() {
     if (body.ui_corners !== undefined && ['soft', 'sharp'].includes(body.ui_corners)) settings.ui_corners = body.ui_corners;
     if (body.ui_borders !== undefined && ['bordered', 'borderless'].includes(body.ui_borders)) settings.ui_borders = body.ui_borders;
     if (body.update_mode !== undefined && !app.isPackaged && ['production', 'development'].includes(body.update_mode)) settings.update_mode = body.update_mode;
+    if (body.p2p_pinned_peers !== undefined) {
+      settings.p2p_pinned_peers = normalizePinnedPeers(body.p2p_pinned_peers);
+      if (p2p.started) p2pProbeTargets('pins').catch(() => {});
+    }
     saveSettingsFile();
     if (surfaceChanged) applySurfaceToPopup();
     pruneHistory();
@@ -5233,7 +5991,11 @@ function setupIPC() {
   });
 
   ipcMain.handle('sync-now', async () => {
-    const peers = p2pPeerSummaries();
+    // Refresh reaches beyond what multicast has found: announce + probe every
+    // known address (registry, tailnet, pins) before pulling from peers.
+    p2pAnnounceNow();
+    await p2pProbeTargets('manual').catch(() => []);
+    const peers = p2pActivePeers();
     const p2pResults = await Promise.all(peers.flatMap(peer => ([
       withTimeout(
         p2pPullPeer(peer, 'manual'),
@@ -5575,6 +6337,9 @@ app.whenReady().then(() => {
   migrateNumpad();
   recoverOrphanedEdits();   // restore any external edit orphaned by a prior crash/restart
   writeHistoryStorageFile();
+  syncState.tracker.observe(syncStateView());
+  p2p.revision = syncState.tracker.revision;
+  scheduleSyncStateSave();
   setupIPC();
   createPopup();
   createTray();

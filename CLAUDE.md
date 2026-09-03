@@ -671,6 +671,14 @@ Tagging is optional/archival now, not required to ship.
   changes always need a full restart.
 - Run `npx electron .` directly (not via start.sh) to see stdout/stderr
 - **Silent main-process death = check the System event log FIRST** (`Get-WinEvent -FilterHashtable @{LogName='System'; Id=2004}` / Application Popup 26). 2026-09-01 21:52: BoardClip (9-day uptime) vanished mid-keystroke with NO Event 1000, NO crash dump, NO diag quit event; the tiny MCP helpers survived. Cause was a machine-wide *Out of Virtual Memory* (commit exhausted by chrome.exe 13GB + WSL 5GB + a node 4GB) - the allocating process aborts and WER can't even record it. Not a BoardClip bug. Every editor draft was already idle-committed (verified byte-for-byte against history via `clipboard-edit-archive`), zero data loss.
+- **Silent stop #2 (2026-09-03 05:54 local)**: heartbeats simply ended, RSS flat at 393 MB, no
+  Event 1000/2004, no crashpad dump, updater ruled out (`.git/FETCH_HEAD` untouched since 05:15).
+  Indistinguishable from a tray Quit because nothing logged exits, so main.js now records
+  `app.quit {reason: tray-quit|update-relaunch|quit}` on before-quit, `app.exit {code}` on process
+  exit, `main.uncaught_exception` / `main.unhandled_rejection`, and `app.child_process_gone` /
+  `app.render_process_gone`. A death with heartbeats and NO `app.quit` line = external kill or
+  native crash. Check `git reflog --date=iso` in the install + `.git/FETCH_HEAD` mtime to rule
+  the auto-updater in or out (its relaunch is `app.exit(0)` after `update.bat`).
 - **Relaunch under a WMI wedge**: `start.bat`/`kill.bat` use `Get-CimInstance` and hang forever when WMI is wedged (memory starvation wedges it; other tools' 2-min supervisors then pile up hung powershells). If no `\.\pipeoardclip-mcp-<user>` pipe exists and the diag heartbeat is silent, launch electron.exe directly from the install dir (`Start-Process ... -ArgumentList '.' -WorkingDirectory <install>`); the single-instance lock is free.
 - **Orphan-draft recovery was DEAD from the `-<seq>` filename change until 2026-09-01**: `EDIT_DRAFT_RE` only matched legacy `boardclip-edit-<12hex>-<ts>.txt`, but sessions write `...-<ts>-<seq>.txt`, so `recoverOrphanedEdits` skipped every in-flight draft (15 lingered since July, never retired). Fixed + guarded by `test/edit-draft-recovery.test.js` (reads the regex + generator out of main.js). Idle-commit had covered the gap in practice. Recovery now also SKIPS a draft whose text already sits inside a longer clip (an older prefix of a note edited after the crash) so the first restart doesn't resurrect stale duplicates - only genuinely unsaved text comes back as a new clip.
 - **Popup-open / save hot path (2026-09-02, ~10k items, 7.7MB history) - measured, don't regress:**

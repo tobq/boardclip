@@ -218,6 +218,8 @@ async function reloadRendererAfterUpdate() {
 
 function relaunchAfterUpdate() {
   app.isQuitting = true;
+  quitReason = 'update-relaunch';
+  diagnostics.record('app.quit', { reason: quitReason, build: BUILD_INFO.label, uptime_s: Math.round(process.uptime()) }, { forceFile: true });
   app.relaunch();
   app.exit(0);
 }
@@ -4486,7 +4488,7 @@ function refreshTray() {
     { label: `Build ${BUILD_INFO.label}`, enabled: false },
     { label: 'Check for Updates', click: () => autoUpdater.check({ manual: true }) },
     { type: 'separator' },
-    { label: 'Quit', click: () => { app.isQuitting = true; app.quit(); } },
+    { label: 'Quit', click: () => { app.isQuitting = true; quitReason = 'tray-quit'; app.quit(); } },
   ]);
 
   tray.setContextMenu(contextMenu);
@@ -6402,7 +6404,34 @@ app.whenReady().then(() => {
   logSafe(`BoardClip running. ${effectiveShowShortcut()} to open popup.`);
 });
 
-app.on('before-quit', () => { app.isQuitting = true; });
+// Exit forensics. A silent main-process death (2026-09-01: machine-wide OOM;
+// 2026-09-03 05:54: no crash record at all) is indistinguishable from a tray
+// Quit unless the app says how it is leaving. Every exit path records
+// `app.quit` with its reason; a death with no `app.quit` line after the last
+// heartbeat is therefore an external kill or a native crash, never a quit.
+let quitReason = '';
+app.on('before-quit', () => {
+  app.isQuitting = true;
+  if (!quitReason) quitReason = 'quit';
+  diagnostics.record('app.quit', { reason: quitReason, build: BUILD_INFO.label, uptime_s: Math.round(process.uptime()) }, { forceFile: true });
+});
+process.on('exit', (code) => {
+  try { diagnostics.record('app.exit', { code, reason: quitReason || 'unknown', uptime_s: Math.round(process.uptime()) }, { forceFile: true }); } catch {}
+});
+process.on('uncaughtException', (error) => {
+  try { diagnostics.record('main.uncaught_exception', { error: error && error.message, stack: error && error.stack }, { forceFile: true }); } catch {}
+  // Re-throw so Electron's default handling (the error dialog) still happens.
+  throw error;
+});
+process.on('unhandledRejection', (reason) => {
+  try { diagnostics.record('main.unhandled_rejection', { error: reason && reason.message ? reason.message : String(reason), stack: reason && reason.stack }, { forceFile: true }); } catch {}
+});
+app.on('child-process-gone', (_, details) => {
+  diagnostics.record('app.child_process_gone', { type: details && details.type, reason: details && details.reason, exit_code: details && details.exitCode, name: details && details.name }, { forceFile: true });
+});
+app.on('render-process-gone', (_, contents, details) => {
+  diagnostics.record('app.render_process_gone', { url: contents && !contents.isDestroyed() ? (contents.getURL() || '').split('/').pop() : '', reason: details && details.reason, exit_code: details && details.exitCode }, { forceFile: true });
+});
 app.on('will-quit', () => {
   globalShortcut.unregisterAll();
   if (windowsHook) windowsHook.uninstall();

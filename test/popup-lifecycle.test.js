@@ -68,8 +68,10 @@ assert.ok(!mainJs.includes("popup.renderer_unresponsive', { timeout_ms: 800"),
 
 // Quitting is process-wide, including updater-driven app.exit(), so renderer
 // recovery cannot revive a window while BoardClip is intentionally exiting.
-assert.ok(mainJs.includes("app.on('before-quit', () => { app.isQuitting = true; });"),
+assert.ok(between(mainJs, "app.on('before-quit'", "app.on('will-quit'").includes('app.isQuitting = true;'),
   'before-quit must mark the app as quitting for renderer recovery');
+assert.ok(between(mainJs, "app.on('before-quit'", "app.on('will-quit'").includes("diagnostics.record('app.quit'"),
+  'before-quit must record app.quit so a silent death is distinguishable from a quit');
 assert.ok(between(mainJs, 'function relaunchAfterUpdate() {', 'function developerUpdateMode() {').includes('app.isQuitting = true;'),
   'updater relaunch must mark the app as quitting before app.exit()');
 

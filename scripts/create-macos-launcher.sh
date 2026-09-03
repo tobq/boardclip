@@ -37,6 +37,36 @@ if [ -f "$APP_DIR/icon.png" ]; then
   cp "$APP_DIR/icon.png" "$RESOURCES_DIR/icon.png" 2>/dev/null || true
 fi
 
+# Finder only shows a bundle icon from an .icns named by CFBundleIconFile; a
+# bare PNG in Resources is ignored (the launcher used to show a blank icon).
+# Build the icns from the 512px source with the stock sips + iconutil.
+ICON_SRC="$APP_DIR/icon@2x.png"
+[ -f "$ICON_SRC" ] || ICON_SRC="$APP_DIR/icon.png"
+HAS_ICNS=0
+if [ -f "$ICON_SRC" ] && command -v sips >/dev/null 2>&1 && command -v iconutil >/dev/null 2>&1; then
+  ICONSET_PARENT="$(mktemp -d 2>/dev/null || echo "/tmp/boardclip-iconset-$$")"
+  ICONSET="$ICONSET_PARENT/BoardClip.iconset"
+  mkdir -p "$ICONSET"
+  for px in 16 32 64 128 256 512; do
+    sips -z "$px" "$px" "$ICON_SRC" --out "$ICONSET/icon_${px}x${px}.png" >/dev/null 2>&1 || true
+  done
+  cp "$ICONSET/icon_32x32.png" "$ICONSET/icon_16x16@2x.png" 2>/dev/null || true
+  cp "$ICONSET/icon_64x64.png" "$ICONSET/icon_32x32@2x.png" 2>/dev/null || true
+  rm -f "$ICONSET/icon_64x64.png"
+  cp "$ICONSET/icon_256x256.png" "$ICONSET/icon_128x128@2x.png" 2>/dev/null || true
+  cp "$ICONSET/icon_512x512.png" "$ICONSET/icon_256x256@2x.png" 2>/dev/null || true
+  if iconutil -c icns "$ICONSET" -o "$RESOURCES_DIR/icon.icns" >/dev/null 2>&1; then
+    HAS_ICNS=1
+  fi
+  rm -rf "$ICONSET_PARENT" 2>/dev/null || true
+fi
+ICON_KEY=""
+if [ "$HAS_ICNS" = "1" ]; then
+  ICON_KEY="  <key>CFBundleIconFile</key>
+  <string>icon</string>
+"
+fi
+
 APP_DIR_XML="$(xml_escape "$APP_DIR")"
 cat > "$LAUNCHER_DIR/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -55,10 +85,15 @@ cat > "$LAUNCHER_DIR/Contents/Info.plist" <<EOF
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
   <string>1.0</string>
-  <key>BoardClipSourceDirectory</key>
+${ICON_KEY}  <key>BoardClipSourceDirectory</key>
   <string>$APP_DIR_XML</string>
 </dict>
 </plist>
 EOF
+
+# Nudge Finder / LaunchServices to drop the cached (blank) icon for this bundle.
+touch "$LAUNCHER_DIR/Contents/Info.plist" "$LAUNCHER_DIR" 2>/dev/null || true
+LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
+if [ -x "$LSREGISTER" ]; then "$LSREGISTER" -f "$LAUNCHER_DIR" >/dev/null 2>&1 || true; fi
 
 echo "Created Applications launcher: $LAUNCHER_DIR"

@@ -87,6 +87,7 @@ const EDIT_ARCHIVE_DIR = path.join(DATA_DIR, 'clipboard-edit-archive');
 const EDIT_ARCHIVE_MAX_BYTES = 100 * 1024 * 1024; // 100 MB
 const EDIT_ARCHIVE_MAX_AGE_MS = 365 * 86400 * 1000; // 1 year
 const APP_ICON_PATH = path.join(SCRIPT_DIR, 'icon.png');
+const TRAY_TEMPLATE_ICON_PATH = path.join(SCRIPT_DIR, 'iconTemplate.png');
 const DIAGNOSTICS_PATH = path.join(DATA_DIR, 'boardclip-diagnostics.jsonl');
 // History backups are the full clipboard-history.json (a few MB each), snapshotted
 // before meaningful writes. Content-addressed (lib/backup): each snapshot is a small
@@ -4424,7 +4425,13 @@ async function numpadPasteAndHide(slot) {
 
 function createTray() {
   let trayIcon;
-  if (fs.existsSync(APP_ICON_PATH)) {
+  if (process.platform === 'darwin' && fs.existsSync(TRAY_TEMPLATE_ICON_PATH)) {
+    // Menu bar: the monochrome template glyph (iconTemplate.png + @2x, from
+    // scripts/sync-icons.ps1). macOS keeps only a template's alpha channel, so
+    // the full-colour app icon - an opaque rounded square - showed as a solid
+    // white box up there.
+    trayIcon = nativeImage.createFromPath(TRAY_TEMPLATE_ICON_PATH);
+  } else if (fs.existsSync(APP_ICON_PATH)) {
     trayIcon = nativeImage.createFromPath(APP_ICON_PATH).resize({ width: 16, height: 16 });
   } else {
     trayIcon = nativeImage.createEmpty();

@@ -119,10 +119,43 @@ function Save-IcoFromPng {
   }
 }
 
+# macOS menu-bar icon: a TEMPLATE image (macOS keeps only the alpha channel and
+# paints it in the menu bar's label colour), so it must be the clipboard glyph
+# alone, black on transparent, with the clip slot and text lines cut out as
+# holes. The full-colour app icon is an opaque rounded square and renders as a
+# solid white box when used as a template. 16px + @2x, no padding.
+function Save-TrayTemplate {
+  param([int]$Size, [string]$OutputPath)
+  $surface = New-Bitmap $Size
+  $g = $surface.Graphics
+  try {
+    $s = $Size / 16.0
+    $ink = New-Brush "#000000"
+    $hole = New-Object System.Drawing.SolidBrush ([System.Drawing.Color]::Transparent)
+    # board
+    Fill-RoundRect $g $ink (2 * $s) (1.5 * $s) (12 * $s) (13.5 * $s) (2.4 * $s)
+    # clip on top
+    Fill-RoundRect $g $ink (5 * $s) (0 * $s) (6 * $s) (3.6 * $s) (1.6 * $s)
+    # holes: the clip slot + three text lines (cut through to transparent)
+    $g.CompositingMode = [System.Drawing.Drawing2D.CompositingMode]::SourceCopy
+    Fill-RoundRect $g $hole (6.6 * $s) (0.9 * $s) (2.8 * $s) (1.3 * $s) (0.6 * $s)
+    Fill-RoundRect $g $hole (4.4 * $s) (6.3 * $s) (7.2 * $s) (1.4 * $s) (0.7 * $s)
+    Fill-RoundRect $g $hole (4.4 * $s) (9.1 * $s) (7.2 * $s) (1.4 * $s) (0.7 * $s)
+    Fill-RoundRect $g $hole (4.4 * $s) (11.9 * $s) (4.8 * $s) (1.4 * $s) (0.7 * $s)
+    $g.CompositingMode = [System.Drawing.Drawing2D.CompositingMode]::SourceOver
+    $surface.Bitmap.Save($OutputPath, [System.Drawing.Imaging.ImageFormat]::Png)
+  } finally {
+    $g.Dispose()
+    $surface.Bitmap.Dispose()
+  }
+}
+
 Save-AppIcon 512 (Join-Path $Root "assets\boardclip-icon.png")
 Save-AppIcon 512 (Join-Path $Root "icon@2x.png")
 Save-AppIcon 256 (Join-Path $Root "icon.png")
 Save-AppIcon 256 (Join-Path $Root "site\favicon.png")
 Save-IcoFromPng (Join-Path $Root "icon.png") (Join-Path $Root "assets\boardclip-icon.ico")
+Save-TrayTemplate 16 (Join-Path $Root "iconTemplate.png")
+Save-TrayTemplate 32 (Join-Path $Root "iconTemplate@2x.png")
 
 Write-Host "Synced BoardClip app, installer, and site icons"

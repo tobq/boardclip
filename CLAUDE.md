@@ -106,7 +106,16 @@ Otherwise the key passes through so normal numpad typing works. Main thread call
 
 - **No click-away-to-close**: `app.dock.hide()` makes blur events unreliable on macOS. Close button (×) shown in header instead. Windows uses blur-to-hide normally.
 - **`app.dock.hide()`** hides dock icon — tray-only app
-- **Template tray icon**: `trayIcon.setTemplateImage(true)` for menu bar dark/light mode
+- **Template tray icon**: `trayIcon.setTemplateImage(true)` for menu bar dark/light mode.
+  It MUST be `iconTemplate.png` (+`@2x`): the monochrome clipboard glyph, black on transparent,
+  drawn by `scripts/sync-icons.ps1` (`Save-TrayTemplate`, same source as the app icon). macOS
+  keeps only a template's alpha channel, so the full-colour `icon.png` (an opaque rounded
+  square) rendered as a solid white box in the menu bar (fixed 2026-09-03). Never `resize()` the
+  template; `createFromPath` picks the `@2x` itself.
+- **`~/Applications/BoardClip.app` launcher** (`scripts/create-macos-launcher.sh`, rebuilt by
+  `update.sh`): Finder shows a bundle icon ONLY from an `.icns` named by `CFBundleIconFile`;
+  the script builds `Resources/icon.icns` from `icon@2x.png` with `sips` + `iconutil` and
+  `lsregister -f`s the bundle so the cached blank icon is dropped (fixed 2026-09-03).
 
 ## Native Cloud Sync
 

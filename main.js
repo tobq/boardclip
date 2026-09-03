@@ -5593,37 +5593,142 @@ function requestApproval(request) {
 
 function buildApprovalRequest(tool, args, targetItem, client) {
   const dangerTools = new Set(['delete_clip', 'edit_clip', 'copy_to_clipboard', 'paste_clip']);
-  // Read tools (list_context/list_clips/get_clip-shared/search-shared) are served
-  // locally in the helper and never reach this function - so only forwarded/gated
-  // tools need entries here.
-  const meta = {
-    add_clip: 'Add a new clip to your history',
-    edit_clip: 'Edit the text of a clip',
-    pin_clip: 'Pin / unpin a clip',
-    set_numpad: 'Assign a clip to a numpad slot',
-    assign_group: 'Change a clip\'s group',
-    create_group: 'Create a group',
-    delete_group: 'Delete a group',
-    delete_clip: 'Delete a clip from your history',
-    copy_to_clipboard: 'Put content on your system clipboard',
-    paste_clip: 'Put a clip on the clipboard and paste it',
-    read_clip: 'Read the full text of a clip you have NOT shared with AI',
-    search_all: 'Search across ALL clips, including ones not shared with AI',
-    image_path: 'Get the file path of an image clip',
-  };
-  let detail = '';
-  if (tool === 'add_clip') detail = String(args.text || '');
-  else if (tool === 'edit_clip') detail = `${args.append ? 'Append' : 'New text'}:\n${String(args.text || '')}`;
-  else if (tool === 'copy_to_clipboard') detail = args.text != null ? String(args.text) : previewForItem(targetItem);
-  else if (tool === 'search_all') detail = `Query: ${args.query || ''}`;
-  else if (tool === 'create_group' || tool === 'delete_group') detail = `Group: ${args.name || ''}`;
-  else if (targetItem) detail = previewForItem(targetItem);
+  // The prompt must say, in plain words, WHAT will happen, to WHICH clip, what
+  // the consequence is, and WHY it is asking. The clip's text is only ever a
+  // labelled preview, never the explanation (owner: "I never understand what is
+  // actually happening"). Read tools served locally in the helper never reach
+  // this function; only forwarded/gated tools need entries.
+  const a = args || {};
+  const item = targetItem || null;
+  const groups = item ? groupsOf(item) : [];
+  const shared = item ? isItemSharedWithAi(item) : false;
+  const quote = s => `\u201c${String(s || '').replace(/\s+/g, ' ').trim().slice(0, 60)}\u201d`;
+  const clipLabel = item ? (titleOf(item) ? quote(titleOf(item)) : (item.type === 'image' ? 'an image clip' : quote(String(item.text || '').split(/\r?\n/).find(l => l.trim()) || ''))) : '';
+  const facts = [];
+  let preview = null;
+  if (item) {
+    textBlobStore.hydrateTextItem(item, TEXT_DIR);
+    const text = item.type === 'image' ? '' : String(item.text || '');
+    const lines = text ? text.split(/\r?\n/).length : 0;
+    facts.push(['Clip', item.type === 'image' ? `image ${item.width || '?'}x${item.height || '?'}` : `${text.length} chars, ${lines} line${lines === 1 ? '' : 's'}`]);
+    if (item.ts) facts.push(['Captured', new Date(item.ts * 1000).toLocaleString()]);
+    facts.push(['Groups', groups.length ? groups.join(', ') : 'none']);
+    if (item.pin && typeof item.pin.number === 'number') facts.push(['Numpad', `slot ${item.pin.number}`]);
+    if (item.type !== 'image') preview = { label: 'Clip text', text };
+  }
+  let title = '';
+  let explain = '';
+  let why = '';
+  const gatedWhy = 'This action always asks, whatever group the clip is in.';
+  const sharedWhy = shared
+    ? 'The clip is in a group shared with AI; asking because you have not allowed this action for the session.'
+    : 'Asking because this clip is not in a group shared with AI.';
+  switch (tool) {
+    case 'assign_group': {
+      const name = String(a.group || '');
+      const has = groups.includes(name);
+      title = has ? `Remove clip from group ${quote(name)}` : `Add clip to group ${quote(name)}`;
+      explain = has
+        ? `The clip ${clipLabel} will be taken out of the group ${quote(name)}. Its text is not changed and nothing is deleted.`
+        : `The clip ${clipLabel} will be tagged with the group ${quote(name)}${groups.length ? ` (it is already in ${groups.join(', ')})` : ' (it currently has no group)'}. Its text is not changed and nothing is deleted.`;
+      why = sharedWhy;
+      break;
+    }
+    case 'pin_clip':
+      title = item && item.pin ? 'Unpin a clip' : 'Pin a clip';
+      explain = item && item.pin ? `The clip ${clipLabel} will be unpinned. Nothing is deleted.` : `The clip ${clipLabel} will be pinned to the top of your list. Nothing is deleted.`;
+      why = sharedWhy;
+      break;
+    case 'set_numpad': {
+      const slot = Number(a.slot);
+      title = slot ? `Assign clip to numpad slot ${slot}` : 'Clear a numpad slot';
+      explain = slot
+        ? `The clip ${clipLabel} will become numpad quick-paste slot ${slot}. Whatever occupied that slot loses it. Nothing is deleted.`
+        : `The clip ${clipLabel} will lose its numpad slot. Nothing is deleted.`;
+      why = sharedWhy;
+      break;
+    }
+    case 'delete_clip':
+      title = 'Delete a clip';
+      explain = `The clip ${clipLabel} will be removed from your history on every device. Its text stays in the local backups, so it can be recovered, but the list will no longer show it.`;
+      why = gatedWhy;
+      break;
+    case 'edit_clip': {
+      const before = item && item.type !== 'image' ? String(item.text || '') : '';
+      const next = String(a.text || '');
+      if (a.append) {
+        title = 'Append text to a clip';
+        explain = `${next.length} characters will be added to the END of the clip ${clipLabel}. Nothing already in it is removed.`;
+        preview = { label: 'Text to append', text: next };
+      } else {
+        title = "Replace a clip's text";
+        const delta = next.length - before.length;
+        explain = `The whole text of the clip ${clipLabel} will be replaced: ${before.length} characters become ${next.length} (${delta >= 0 ? '+' : ''}${delta}). The previous text is kept in the edit archive.`;
+        preview = { label: 'New text', text: next };
+      }
+      why = gatedWhy;
+      break;
+    }
+    case 'add_clip':
+      title = 'Add a new clip';
+      explain = `A new clip of ${String(a.text || '').length} characters will be added to your history${a.group ? ` in the group ${quote(a.group)}` : ''}. Nothing existing is changed.`;
+      why = 'Asking because you have not allowed clip creation for the session.';
+      preview = { label: 'New clip text', text: String(a.text || '') };
+      break;
+    case 'create_group':
+      title = `Create group ${quote(a.name)}`;
+      explain = `A new, empty group named ${quote(a.name)} will appear in your filters.`;
+      why = 'Asking because you have not allowed group changes for the session.';
+      break;
+    case 'delete_group':
+      title = `Delete group ${quote(a.name)}`;
+      explain = `The group ${quote(a.name)} will be removed. Clips stay in your history; they just lose this tag.`;
+      why = 'Asking because you have not allowed group changes for the session.';
+      break;
+    case 'copy_to_clipboard':
+      title = 'Put text on your clipboard';
+      explain = `${a.text != null ? `${String(a.text).length} characters of AI-provided text` : `The clip ${clipLabel}`} will replace whatever is on your system clipboard right now.`;
+      why = gatedWhy;
+      if (a.text != null) preview = { label: 'Text to copy', text: String(a.text) };
+      break;
+    case 'paste_clip':
+      title = 'Paste a clip into the active app';
+      explain = `The clip ${clipLabel} will be put on your clipboard and Ctrl+V sent to whichever window is focused when you allow this.`;
+      why = gatedWhy;
+      break;
+    case 'read_clip':
+      title = 'Let the AI read a private clip';
+      explain = `The full text of the clip ${clipLabel} will be sent to the AI. Nothing in your history changes.`;
+      why = 'Asking because this clip is not in a group shared with AI.';
+      break;
+    case 'search_all':
+      title = 'Search all clips, private ones included';
+      explain = `Matching clips (title and a short preview) from your ENTIRE history, including groups not shared with AI, will be sent to the AI. Nothing changes.`;
+      why = gatedWhy;
+      preview = { label: 'Query', text: String(a.query || '') };
+      break;
+    case 'image_path':
+      title = 'Reveal an image file path';
+      explain = `The AI will receive the location of this image file on disk and can open it. Nothing changes.`;
+      why = gatedWhy;
+      break;
+    default:
+      title = `Run ${tool}`;
+      explain = `The AI asked to run ${tool}.`;
+      why = 'Asking because this action is not on the free list.';
+  }
+  const clip = s => (s && s.length > 4000 ? `${s.slice(0, 4000)}\u2026` : s);
   return {
     tool,
     client: client || 'an AI assistant',
-    title: meta[tool] || `Run ${tool}`,
-    summary: meta[tool] || tool,
-    detail: detail.length > 4000 ? `${detail.slice(0, 4000)}…` : detail,
+    title,
+    summary: title,
+    explain,
+    why,
+    facts,
+    preview: preview && preview.text ? { label: preview.label, text: clip(preview.text) } : null,
+    // Kept for older modal builds still open when the app restarts.
+    detail: preview && preview.text ? clip(preview.text) : '',
     danger: dangerTools.has(tool),
   };
 }

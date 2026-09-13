@@ -1357,12 +1357,12 @@ function addCustomSyncPath(syncPath) {
   return syncPaths.addCustomSyncPath(settings, syncPath);
 }
 
-function syncAccountsWithCustom(accounts) {
+async function syncAccountsWithCustom(accounts) {
   return syncPaths.syncAccountsWithCustom(settings, accounts);
 }
 
 async function getCloudAccountsForSettings() {
-  const accounts = syncAccountsWithCustom(await getCachedCloudAccounts({ force: true }));
+  const accounts = await syncAccountsWithCustom(await getCachedCloudAccounts({ force: true }));
   const disabled = syncDisabledPathSet();
   return accounts.map(acc => ({ ...acc, enabled: !disabled.has(normalizeSyncPath(acc.path)) }));
 }
@@ -1385,7 +1385,7 @@ async function providerIdentity(syncPath) {
 // Two mount paths of ONE cloud folder (Google Drive on G: and H:) are one
 // provider: written once, watched once. The marker inside the folder decides.
 async function getEnabledSyncPaths() {
-  const accounts = syncAccountsWithCustom(await getCachedCloudAccounts());
+  const accounts = await syncAccountsWithCustom(await getCachedCloudAccounts());
   const disabled = syncDisabledPathSet();
   const enabled = accounts
     .map(acc => normalizeSyncPath(acc.path))
@@ -6170,7 +6170,7 @@ function setupIPC() {
       return;
     }
 
-    const accounts = syncAccountsWithCustom(await getCachedCloudAccounts({ force: true }));
+    const accounts = await syncAccountsWithCustom(await getCachedCloudAccounts({ force: true }));
     const disabled = syncDisabledPathSet();
     for (const acc of accounts) disabled.add(normalizeSyncPath(acc.path));
     settings.sync_disabled_paths = [...disabled];

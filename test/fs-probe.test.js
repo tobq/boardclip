@@ -92,6 +92,8 @@ const keepAlive = setInterval(() => {}, 1000);
   const fs = require('fs');
   const discovery = fs.readFileSync(path.join(__dirname, '..', 'lib', 'cloud-accounts.js'), 'utf8');
   assert.ok(!/fs\.existsSync\(/.test(discovery), 'cloud-accounts.js must probe mounts, never fs.existsSync');
+  const custom = fs.readFileSync(path.join(__dirname, '..', 'lib', 'sync-paths.js'), 'utf8');
+  assert.ok(!/fs\.existsSync\(/.test(custom), 'sync-paths.js must probe a custom folder, never fs.existsSync');
   const main = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
   assert.ok(!/fs\.mkdirSync\(dir, \{ recursive: true \}\);/.test(main), 'the sync watcher must not mkdirSync a provider path');
   assert.ok(!/if \(!fs\.existsSync\(normalized\)\) fs\.mkdirSync\(normalized/.test(main), 'setSyncPathEnabled must not stat a provider path synchronously');

@@ -31,6 +31,7 @@ const p2pDiscovery = require('./lib/p2p-discovery');
 const p2pCrypto = require('./lib/p2p-crypto');
 const syncDelta = require('./lib/sync-delta');
 const syncJournal = require('./lib/sync-journal');
+const fsProbe = require('./lib/fs-probe');
 const tailscale = require('./lib/tailscale');
 const mcpCore = require('./lib/mcp-core');
 const mcpPaths = require('./lib/mcp-paths');
@@ -1388,7 +1389,12 @@ async function getEnabledSyncPaths() {
   const disabled = syncDisabledPathSet();
   const enabled = accounts
     .map(acc => normalizeSyncPath(acc.path))
-    .filter(syncPath => syncPath && !disabled.has(syncPath));
+    .filter(syncPath => syncPath && !disabled.has(syncPath))
+    .filter(syncPath => {
+      if (syncPathHealth.usable(syncPath)) return true;
+      syncPathHealth.check(syncPath);   // background, single-flight
+      return false;
+    });
   const entries = await Promise.all(enabled.map(async syncPath => ({ path: syncPath, id: await providerIdentity(syncPath) })));
   const { primary, duplicateOf } = syncJournal.dedupeByIdentity(entries);
   syncDuplicateOf = duplicateOf;
@@ -1408,9 +1414,8 @@ async function setSyncPathEnabled(syncPath, enabled) {
   settings.sync_disabled_paths = [...disabled];
   saveSettingsFile();
   if (enabled) {
-    try {
-      if (!fs.existsSync(normalized)) fs.mkdirSync(normalized, { recursive: true });
-    } catch {}
+    // Bounded + async: this folder may sit on a mount that is not answering.
+    try { await fs.promises.mkdir(normalized, { recursive: true }); } catch {}
     await syncMerge({ force: true });
   }
 }
@@ -1534,6 +1539,17 @@ async function recoverRecentOrphanImages(items) {
 
 let syncDebounceTimer = null;
 let insideSync = false;
+// A provider that stops ANSWERING (as opposed to failing) is skipped until it
+// answers again. Without this one wedged mount holds `insideSync` for as long
+// as it stays wedged - 29 minutes on 2026-09-13 - and every pass pays its full
+// timeout. Recovery is a single-flight probe, never a retry storm.
+const syncPathHealth = fsProbe.createPathHealth({
+  onTransition: ({ path: unhealthyPath, healthy, failures, reason }) => {
+    diagnostics.record(healthy ? 'sync.provider.recovered' : 'sync.provider.unresponsive',
+      { path: unhealthyPath, failures, reason }, { forceFile: true });
+    try { updateTrayTooltip(); } catch {}
+  },
+});
 let applyingSyncState = false;
 let syncDirtyVersion = 0;
 let syncedDirtyVersion = 0;
@@ -2011,8 +2027,13 @@ function ensureSyncWatchers(syncPaths) {
   for (const syncPath of syncPaths) {
     if (syncWatchers.has(syncPath)) continue;
     const dir = syncJournal.journalRoot(syncPath);
-    try {
-      fs.mkdirSync(dir, { recursive: true });
+    // NEVER mkdirSync here: the folder lives on a cloud mount, and on a wedged
+    // one that call never returns (it runs on the main thread). Reserve the
+    // slot so the next pass does not start a second attempt, then attach the
+    // watcher once the directory is actually there.
+    syncWatchers.set(syncPath, null);
+    fs.promises.mkdir(dir, { recursive: true }).then(() => {
+      if (!syncWatchers.has(syncPath) || syncWatchers.get(syncPath)) return;
       const watcher = fs.watch(dir, { recursive: true, persistent: false }, (eventType, filename) => {
         const name = String(filename || '').replace(/\\/g, '/');
         if (ownDevice && name.startsWith(`${ownDevice}/`)) return;   // our own writes
@@ -2026,9 +2047,10 @@ function ensureSyncWatchers(syncPaths) {
       });
       syncWatchers.set(syncPath, watcher);
       diagnostics.record('sync.watch.start', { path: syncPath });
-    } catch (error) {
+    }).catch(error => {
+      syncWatchers.delete(syncPath);
       diagnostics.record('sync.watch.error', { path: syncPath, error: error && error.message }, { forceFile: true });
-    }
+    });
   }
 }
 
@@ -3247,6 +3269,7 @@ async function syncMerge(options = {}) {
           delete providerResult.remote_settings;
           delete providerResult.remote_conflicts_state;
         }
+        syncPathHealth.markSuccess(syncPath);
         providers.push(providerResult);
       } catch (error) {
         providers.push({
@@ -3260,6 +3283,7 @@ async function syncMerge(options = {}) {
           path: syncPath,
           error: error && error.message,
         }, { forceFile: true });
+        if (error && /timed out/.test(error.message || '')) syncPathHealth.markFailure(syncPath, 'read timeout');
       }
       // Other devices' journal files (small deltas) since our per-device
       // cursors. Independent of the snapshot read above: a gap in a device's
@@ -3281,6 +3305,7 @@ async function syncMerge(options = {}) {
         }
       } catch (error) {
         diagnostics.record('sync.journal.read.error', { path: syncPath, error: error && error.message }, { forceFile: true });
+        if (error && /timed out/.test(error.message || '')) syncPathHealth.markFailure(syncPath, 'journal timeout');
       }
     }
 

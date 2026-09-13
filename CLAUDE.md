@@ -176,6 +176,10 @@ Otherwise the key passes through so normal numpad typing works. Main thread call
   `sync.delta_apply`, `sync.journal.write/read`, `p2p.peer.seen/lost`; tray tooltip shows
   peers + transport + last sync + last latency; Settings lists peers and the tailnet line.
   QA: `node scripts/qa-sync-two-instances.js all` (p2p + cloud-only scenarios, measured).
+  **RULE: never touch a provider path with a synchronous fs call** (`existsSync`/`mkdirSync`/
+  `readdirSync`) and never await one without a deadline - a wedged mount blocks the main thread
+  for ever rather than erroring. Use `lib/fs-probe.js`; `syncPathHealth` in main.js decides which
+  providers a pass may touch.
 - **Editor forks were a state-apply RACE, not divergence (found 2026-09-03 right after P2P first
   paired)**: the v1 `p2pApplyState` folded remote state, then `await`ed the orphan-image scan,
   then replaced `history` with the PRE-await fold. An editor idle-save landing inside that await
@@ -761,6 +765,30 @@ Tagging is optional/archival now, not required to ship.
   killed by hand. Find them WITHOUT WMI via `NtQueryInformationProcess` parent pids (a
   powershell whose parent is cmd.exe is a kill.bat); the new kill-app.ps1 cannot leave one
   behind (Wait-Job cap + Remove-Job -Force kills the sweep's process).
+- **A wedged cloud mount BLOCKS, it does not fail (2026-09-13)**: Google DriveFS hung with `G:` in
+  an uninterruptible kernel wait, so `fs.existsSync('G:\\My Drive')` never returned - and neither
+  did `timeout 8 ls` (9.4 min, exit 124 only once the mount was freed), `tasklist`, or ANY
+  PowerShell session (it stats every drive at startup: "InitializeDefaultDrives ... failed").
+  Symptom order: the popup renders BLANK/frozen, one sync pass holds `insideSync` (29 min of
+  `sync.skip_inside_sync`, `sync.timeout.late ms=1752620` against a 12 s budget), a tray quit still
+  works, and then the app WILL NOT LAUNCH - startup blocks inside cloud discovery before any window
+  exists, and the half-started process holds the single-instance lock so every further click does
+  nothing. Diagnose WITHOUT PowerShell: `ps -W` (MSYS, no WMI) for processes + start times,
+  `netstat -ano` for the app's UDP 45454, and probe a mount only from a BACKGROUND bash task (a
+  foreground one cannot be killed - `timeout` cannot interrupt an uninterruptible wait). Remedy:
+  kill the stuck app process, then restart the cloud client by pid (DriveFS had TWO versions
+  running, 129 and 130); that frees every hung handle at once and the drive letters come back in
+  ~60 ms. FIX shipped 2026-09-13: `lib/fs-probe.js` - `probePath` gives every existence check on a
+  mount a deadline (resolves false, never throws, never outlives it), and `createPathHealth` hides
+  a provider that timed out until a SINGLE-FLIGHT probe says it is back. Single-flight is the
+  point: a hung probe owns a libuv threadpool thread for ever and there are only 4, so RETRYING a
+  wedged mount is how one drive letter kills every async read in the app. `cloud-accounts.js` now
+  probes drive letters in parallel (2 s each, mac CloudStorage + OneDrive + iCloud too - no
+  `fs.existsSync` survives there), `getEnabledSyncPaths` filters on health and kicks a background
+  re-check, a `timed out` provider or journal read marks the path unresponsive
+  (`sync.provider.unresponsive` / `sync.provider.recovered` diagnostics + tray tooltip), and the
+  watcher's `mkdirSync` is an async mkdir that reserves its slot. Tests: `test/fs-probe.test.js`
+  (note: it must hold the event loop open, since probePath unrefs its timer).
 - **Orphan-draft recovery was DEAD from the `-<seq>` filename change until 2026-09-01**: `EDIT_DRAFT_RE` only matched legacy `boardclip-edit-<12hex>-<ts>.txt`, but sessions write `...-<ts>-<seq>.txt`, so `recoverOrphanedEdits` skipped every in-flight draft (15 lingered since July, never retired). Fixed + guarded by `test/edit-draft-recovery.test.js` (reads the regex + generator out of main.js). Idle-commit had covered the gap in practice. Recovery now also SKIPS a draft whose text already sits inside a longer clip (an older prefix of a note edited after the crash) so the first restart doesn't resurrect stale duplicates - only genuinely unsaved text comes back as a new clip.
 - **Popup-open / save hot path (2026-09-02, ~10k items, 7.7MB history) - measured, don't regress:**
   the 1-2s "freeze on open" was FOUR stacked costs, none of them the file write (15ms) or

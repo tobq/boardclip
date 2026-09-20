@@ -6554,10 +6554,22 @@ function resumeShortcutsAfterRecording() {
 nativeTheme.on('updated', notifyColorSchemeChanged);
 
 // --- Single instance lock ---
+let quitReason = '';
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
+  // requestSingleInstanceLock() has already signalled the primary (its
+  // 'second-instance' handler shows the popup), so this process is done.
+  // app.quit() is NOT enough here: called before 'ready' it does not stop the
+  // unconditional whenReady() startup below, so a second launch (Start Menu
+  // double-click, the Startup VBS racing a manual start, a probe) booted a
+  // FULL duplicate - tray, hooks, clipboard polling, sync - against the live
+  // data dir and stayed up (2026-09-20: app.start pid 16452 ran beside the
+  // primary for 3+ min until killed). app.exit() ends the process now; the
+  // 'exit' handler still records app.exit {reason:'second-instance'} and
+  // removePidFile() is pid-guarded so the primary's pid file is untouched.
   logSafe('Another instance is already running. Quitting.');
-  app.quit();
+  quitReason = 'second-instance';
+  app.exit(0);
 }
 // boardclip.pid lets kill.bat / kill.sh stop THIS checkout's app with plain
 // Get-Process / kill, no WMI: on 2026-09-07 a machine-wide memory crunch wedged
@@ -6638,7 +6650,6 @@ app.whenReady().then(() => {
 // Quit unless the app says how it is leaving. Every exit path records
 // `app.quit` with its reason; a death with no `app.quit` line after the last
 // heartbeat is therefore an external kill or a native crash, never a quit.
-let quitReason = '';
 app.on('before-quit', () => {
   app.isQuitting = true;
   if (!quitReason) quitReason = 'quit';

@@ -106,4 +106,21 @@ assert.ok(between(mainJs, 'function relaunchAfterUpdate() {', 'function develope
     'backup snapshots run on a worker thread');
 }
 
+// A rejected single-instance lock must END the process, not app.quit() it:
+// before 'ready' app.quit() does not stop the unconditional whenReady()
+// startup, so a second launch booted a full duplicate against the live data
+// dir (2026-09-20). The popup must also never be compositor-occluded on
+// Windows (the blurred-empty-shell bug of the same day).
+{
+  const lock = between(mainJs, 'const gotLock = app.requestSingleInstanceLock();', 'const PID_FILE');
+  assert.ok(lock.includes('app.exit(0);'), 'a rejected instance must app.exit() immediately');
+  assert.ok(!lock.includes('app.quit();'), 'app.quit() before ready does not stop startup - use app.exit()');
+  assert.ok(mainJs.indexOf("let quitReason = '';") < mainJs.indexOf('const gotLock ='),
+    'quitReason must be declared before the lock branch assigns it (TDZ)');
+  assert.ok(mainJs.includes("appendSwitch('disable-features', 'CalculateNativeWinOcclusion')"),
+    'the popup must not be subject to Chromium native window occlusion on Windows');
+  const popup = between(mainJs, 'function createPopup()', 'configureMacPopupWindow(win);');
+  assert.ok(popup.includes('backgroundThrottling: false'), 'the hidden popup renderer must not be throttled');
+}
+
 console.log('popup lifecycle tests passed');

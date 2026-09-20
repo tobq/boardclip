@@ -273,6 +273,10 @@ const autoUpdater = createAutoUpdater({
   onReload: reloadRendererAfterUpdate,
   onRelaunch: relaunchAfterUpdate,
   onBuildInfoChanged: refreshBuildInfo,
+  // Every apply outcome lands in the diagnostics file. A pull that succeeds
+  // and a relaunch that does not is the one state nobody notices otherwise
+  // (the tray tooltip shows the DISK build, which already reads as updated).
+  onEvent: (event) => diagnostics.record(`update.${event.type}`, event, { forceFile: true }),
   getUpdateMode: developerUpdateMode,
 });
 

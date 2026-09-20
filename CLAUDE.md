@@ -685,6 +685,35 @@ Desktop app distribution has TWO consistent paths, both driven by `main`:
   shows `<sha>-dirty`). Also: `update.bat`'s own `npm install` can rewrite the tracked
   `package-lock.json` and re-block the NEXT update — restore it (`git checkout -- package-lock.json`;
   node_modules is unaffected) so the checkout stays clean.
+  **GOTCHA #2 (2026-09-03 -> 2026-09-20, every auto-update silently half-applied):** the
+  lockfile-restore comment above was written as `::` lines INSIDE the `if defined NEED_INSTALL
+  ( ... )` block. cmd does not treat `::` as a comment inside a `( )` block - the line is parsed,
+  the `)` in `(node_modules is already installed).` closed the block early and the script died
+  with `. was unexpected at this time.` (exit 255) AFTER `git pull` and BEFORE `start.bat`. The
+  updater then (a) swallowed the error (only `manual` checks logged) and (b) on the next poll
+  compared `latest` against the ON-DISK HEAD, which the pull had already moved, so it reported
+  "current" while the process still ran the old commit. Five pulls in the install's reflog
+  (Sep 7 x3, Sep 13 x2) relaunched nothing; the app ran stale code until a human restarted it.
+  Fixed: `rem` in the block (`test/auto-update.test.js` #4 scans every .bat/.cmd for `::` at
+  paren depth > 0), `check()` compares against the RUNNING commit (`currentCommit`) so a
+  half-applied update retries the relaunch, and every apply outcome is recorded as
+  `update.applied` / `update.apply_failed {from,to,disk_head,code,message}` (forceFile). An
+  `update.apply_failed` line, or disk HEAD != the `build` in `app.start`, = stale process.
+  Diagnose a suspected stale install with `git -C <install> reflog --date=iso` vs the running
+  process StartTime: a `pull --ff-only` newer than the process with no `app.quit
+  {reason:update-relaunch}` after it is exactly this.
+- **Popup renders but paints NOTHING on Windows (2026-09-20, ~40h uptime): Chromium native
+  window occlusion.** The popup is `show:false` + hidden on every blur, the pattern
+  `CalculateNativeWinOcclusion` mishandles: it stops compositing the "occluded" window and never
+  re-attaches the content layer on the next show. Renderer JS keeps running (diagnostics showed
+  full `renderer.list.rerender rendered=30`, no `renderer.error`, no `render-process-gone`,
+  window at the right bounds and not cloaked) but nothing reaches the screen; with
+  `backgroundMaterial:'acrylic'` over a `#00000000` background an unpainted window reads as a
+  BLURRED EMPTY SHELL, not a blank box. Reloading the page re-renders into the same dead surface.
+  Fix (`18c0467`): `app.commandLine.appendSwitch('disable-features',
+  'CalculateNativeWinOcclusion')` on win32 before ready + `backgroundThrottling:false` on the
+  popup; `app.start.win_occlusion` reports `disabled`. A restart clears the bad compositor state
+  on its own; the switch is what stops the recurrence.
 - **Installer downloads** (`.exe`/`.dmg`): `release-binaries.yml` now runs on
   every push to `main` that touches app code (`paths-ignore: site/**`, docs) and
   republishes a single rolling **`latest`** GitHub release (`make_latest: true`)

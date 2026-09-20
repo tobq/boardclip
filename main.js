@@ -75,6 +75,26 @@ for (const method of ['log', 'warn', 'error']) {
   };
 }
 
+let occlusionSwitchState = 'default';
+// Chromium's native window-occlusion calculation must stay OFF for a tray
+// popup. The popup is created show:false and then hidden on every blur, so
+// Chromium repeatedly decides the window is occluded and stops compositing it;
+// when it is shown again the web content layer is never re-attached. JS still
+// runs (the renderer keeps logging a full list render) but nothing paints, and
+// because the Windows popup is backgroundMaterial:'acrylic' over a fully
+// transparent backgroundColor, "nothing painted" reads as a blurred empty
+// shell rather than a blank box. Diagnosed 2026-09-20 after ~40h uptime: DOM
+// rendered 30 rows, no renderer error, no crash, correct window geometry, and
+// two manual reloads re-rendered into an invisible surface.
+if (process.platform === 'win32') {
+  try {
+    app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
+    occlusionSwitchState = 'disabled';
+  } catch (error) {
+    occlusionSwitchState = `error: ${error && error.message}`;
+  }
+}
+
 app.setName('BoardClip');
 
 // --- Paths ---
@@ -560,6 +580,7 @@ function runtimeDiagnosticSnapshot() {
     diagnostics_enabled: diagnostics.isEnabled(),
     console: consoleState,
     crash_reporter: crashReporterState,
+    win_occlusion: occlusionSwitchState,
     ppid: process.ppid,
   };
 }
@@ -4042,6 +4063,10 @@ function createPopup() {
       preload: path.join(SCRIPT_DIR, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
+      // The popup spends nearly all of its life hidden. Throttling its timers
+      // and compositing buys nothing for a window that must paint instantly on
+      // Win+V, and it compounds the occlusion problem the switch above fixes.
+      backgroundThrottling: false,
     },
   });
 

@@ -50,6 +50,12 @@ async function main() {
     handleRequest: async (reqPath, payload) => {
       seen.push({ reqPath, payload });
       if (payload.tool === 'boom') throw new Error('explode');
+      if (payload.tool === 'conflict') {
+        const err = new Error('revision_conflict:stale_revision');
+        err.code = 'stale_revision';
+        err.details = { id: 'x', currentRev: 'abc' };
+        throw err;
+      }
       return { echoed: payload.tool, path: reqPath };
     },
   });
@@ -65,6 +71,13 @@ async function main() {
   await assert.rejects(
     controlClient.request('action', '/action', { tool: 'boom' }, { discovery }),
     err => /explode/.test(err.message)
+  );
+
+  // A structured error keeps its code + details across the channel.
+  await assert.rejects(
+    controlClient.request('action', '/action', { tool: 'conflict' }, { discovery }),
+    err => err.message === 'revision_conflict:stale_revision' && err.code === 'stale_revision'
+      && err.details && err.details.currentRev === 'abc'
   );
 
   // Wrong secret is rejected as unauthorized (handler never runs).

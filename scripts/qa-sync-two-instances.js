@@ -79,7 +79,7 @@ async function driveLiveChange(a, b, cdpPort) {
     await cdp.send('Runtime.enable');
     const id = textItem(a.seedText, 0).id;
     const startedAt = Date.now();
-    const r = await cdp.send('Runtime.evaluate', { expression: `window.api.pin(${JSON.stringify(id)}).then(() => 'pinned')`, awaitPromise: true, returnByValue: true });
+    const r = await cdp.send('Runtime.evaluate', { expression: `window.api.getHistory().then((h) => window.api.pin(${JSON.stringify(id)}, (h.find((x) => x.id === ${JSON.stringify(id)}) || {}).rev)).then(() => 'pinned')`, awaitPromise: true, returnByValue: true });
     if (r.exceptionDetails) return { error: 'pin failed: ' + (r.exceptionDetails.text || '') };
     let arrivedAt = null;
     while (Date.now() - startedAt < 20000) {

@@ -14,15 +14,15 @@ contextBridge.exposeInMainWorld('api', {
   numpadPasteAndHide: (slot) => ipcRenderer.invoke('numpad-paste-and-hide', slot),
   hidePopup: () => ipcRenderer.invoke('hide-popup'),
   copy: (text) => ipcRenderer.invoke('copy', text),
-  deleteItem: (id) => ipcRenderer.invoke('delete-item', id),
-  deleteItems: (ids) => ipcRenderer.invoke('delete-items', ids),
+  deleteItem: (id, rev) => ipcRenderer.invoke('delete-item', id, rev),
+  deleteItems: (targets) => ipcRenderer.invoke('delete-items', targets), // [{ id, rev }]
   restoreItems: (snaps) => ipcRenderer.invoke('restore-items', snaps),
-  groupAssignMany: (ids, group, shouldHave) => ipcRenderer.invoke('group-assign-many', ids, group, shouldHave),
+  groupAssignMany: (targets, group, shouldHave) => ipcRenderer.invoke('group-assign-many', targets, group, shouldHave), // [{ id, rev }]
   pasteMany: (ids) => ipcRenderer.invoke('paste-many', ids),
   startUnify: (ids) => ipcRenderer.invoke('start-unify', ids),
   deleteAll: () => ipcRenderer.invoke('delete-all'),
-  pin: (id) => ipcRenderer.invoke('pin', id),
-  numpadAssign: (id, slot) => ipcRenderer.invoke('numpad-assign', id, slot),
+  pin: (id, rev) => ipcRenderer.invoke('pin', id, rev),
+  numpadAssign: (id, slot, rev) => ipcRenderer.invoke('numpad-assign', id, slot, rev),
   numpadUnassign: (slot) => ipcRenderer.invoke('numpad-unassign', slot),
   saveSettings: (settings) => ipcRenderer.invoke('save-settings', settings),
   setShowShortcut: (shortcut) => ipcRenderer.invoke('set-show-shortcut', shortcut),
@@ -32,7 +32,7 @@ contextBridge.exposeInMainWorld('api', {
   resolveShowShortcut: (shortcut) => ipcRenderer.invoke('resolve-show-shortcut', shortcut),
   groupCreate: (name) => ipcRenderer.invoke('group-create', name),
   groupDelete: (name) => ipcRenderer.invoke('group-delete', name),
-  groupAssign: (id, group) => ipcRenderer.invoke('group-assign', id, group),
+  groupAssign: (id, group, rev) => ipcRenderer.invoke('group-assign', id, group, rev),
   copyImagePath: (id) => ipcRenderer.invoke('copy-image-path', id),
   openEditor: (id, options) => ipcRenderer.invoke('open-editor', id, options || {}),
   newNote: (options) => ipcRenderer.invoke('new-note', options || {}),
@@ -76,7 +76,7 @@ contextBridge.exposeInMainWorld('api', {
   setMcpClientEnabled: (id, enabled) => ipcRenderer.invoke('set-mcp-client-enabled', id, enabled),
   setGroupSharedAi: (name, shared) => ipcRenderer.invoke('set-group-shared-ai', name, shared),
   revokeAiAlwaysAllow: (tool) => ipcRenderer.invoke('revoke-ai-always-allow', tool),
-  setClipTitle: (id, title) => ipcRenderer.invoke('set-clip-title', id, title),
+  setClipTitle: (id, title, rev) => ipcRenderer.invoke('set-clip-title', id, title, rev),
   setAiApprovalTimeout: (sec) => ipcRenderer.invoke('set-ai-approval-timeout', sec),
   onAiAccessChanged: (callback) => {
     const listener = () => callback();

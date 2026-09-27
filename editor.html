@@ -78,6 +78,11 @@ async function refreshTags() {
   menuState = await window.editorApi.state(id);
   editor.setTags(menuState.item, { allowAdd: true });
 }
+// Menu mutations send the rev from the state snapshot fetched when the menu
+// opened; a stale one is refused. (Text commits keep their own base-text
+// conflict handling, which forks rather than losing typed work.)
+const clipRevOf = (id) => { const it = menuState.items.find((x) => Core.itemId(x) === id); return it ? it.rev : undefined; };
+const revGuard = (run, fallback) => Core.guardRevision(run, { toast: showToast, refresh: () => refreshTags(), fallback });
 const menuAdapter = {
   menuContext: 'editor',
   itemById: (id) => menuState.items.find((it) => Core.itemId(it) === id) || null,
@@ -85,10 +90,10 @@ const menuAdapter = {
   groupNames: () => menuState.groups,
   numpadMap: () => Core.numpadMap(menuState.items),
   protectedGroups: () => new Set([menuState.aiGroup]),
-  pin: (id) => window.editorApi.pin(id),
-  toggleGroup: (id, group) => window.editorApi.groupAssign(id, group),
+  pin: (id) => revGuard(() => window.editorApi.pin(id, clipRevOf(id)), false),
+  toggleGroup: (id, group) => revGuard(() => window.editorApi.groupAssign(id, group, clipRevOf(id)), false),
   createGroup: (name) => window.editorApi.groupCreate(name),
-  numpadAssign: (id, slot) => window.editorApi.numpadAssign(id, slot),
+  numpadAssign: (id, slot) => revGuard(() => window.editorApi.numpadAssign(id, slot, clipRevOf(id)), false),
   numpadUnassign: (slot) => window.editorApi.numpadUnassign(slot),
   // The editor's title INPUT is authoritative (it rides every commit); a menu
   // rename would be reverted by the next commit if it only touched the clip.
@@ -96,7 +101,7 @@ const menuAdapter = {
   setClipTitle: (_id, title) => { if (editor) { editor.setTitle(title); editor.commit(); } },
   // Delete closes the window; main suppresses the close-commit so the draft
   // can't resurrect the clip.
-  deleteClips: async () => { await window.editorApi.deleteSelf(); return []; },
+  deleteClips: async (ids) => revGuard(async () => { await window.editorApi.deleteSelf(clipRevOf((ids && ids[0]) || menuClipId)); return []; }, []),
   // Commit-on-add for the tag strip's + on a new note: force-commit the draft
   // through the ONE existing write path, then re-query the fresh clip id.
   ensureClipId: async () => {

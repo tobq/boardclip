@@ -319,6 +319,10 @@ listEl.addEventListener('scroll', () => {
 // The app drives the SAME Core.createClipController the website demo uses; the
 // adapter maps each action to the exact window.api call the app already made, so
 // behavior is preserved and the dispatch can no longer drift from the demo.
+// Every clip mutation sends the rev of the item this popup rendered; main
+// refuses it if the clip changed since (another device, window or AI edit).
+const clipRevOf = (id) => { const it = itemById(id); return it ? it.rev : undefined; };
+const revGuard = (run, fallback) => Core.guardRevision(run, { toast: showToast, refresh: () => refresh({ force: true }), fallback });
 const appAdapter = {
   itemById: (id) => itemById(id),
   numpadMap: () => numpadMap(),
@@ -335,10 +339,10 @@ const appAdapter = {
   },
   clearFilters: () => clearSearchAndFilters(),
   focusSearch: () => searchEl.focus(),
-  pin: (id) => window.api.pin(id),
-  numpadAssign: (id, slot) => window.api.numpadAssign(id, slot),
+  pin: (id) => revGuard(() => window.api.pin(id, clipRevOf(id)), false),
+  numpadAssign: (id, slot) => revGuard(() => window.api.numpadAssign(id, slot, clipRevOf(id)), false),
   numpadUnassign: (slot) => window.api.numpadUnassign(slot),
-  toggleGroup: (id, group) => window.api.groupAssign(id, group), // applyGroupAssign toggles
+  toggleGroup: (id, group) => revGuard(() => window.api.groupAssign(id, group, clipRevOf(id)), false), // applyGroupAssign toggles
   createGroup: async (name) => { await window.api.groupCreate(name); await refreshGroups({ render: false }); },
   deleteGroup: async (group) => {
     // Drop any group:/-group: token for the deleted group from the query.
@@ -352,7 +356,7 @@ const appAdapter = {
     await window.api.groupDelete(group);
     await refreshGroups({ render: false });
   },
-  deleteClip: (id) => window.api.deleteItem(id),
+  deleteClip: (id) => revGuard(() => window.api.deleteItem(id, clipRevOf(id)), false),
   clearUnpinned: () => window.api.deleteAll(),
   setGroupSharedAi: (group) => window.api.setGroupSharedAi(group, !aiSharedGroups.has(group)),
   // Always the id-based path: window.api.copy() only takes a string, so it
@@ -361,7 +365,7 @@ const appAdapter = {
   copyNumpadSlot: (id) => { const it = itemById(id); if (!it) return; return window.api.paste(id); },
   activateClip: (id) => window.api.pasteAndHide(id),
   editClip: (id, _itemEl, options) => window.api.openEditor(id, { ...(query ? { find: query, regex: regexOn } : {}), ...(options || {}) }),
-  setClipTitle: (id, title) => window.api.setClipTitle(id, title),
+  setClipTitle: (id, title) => revGuard(() => window.api.setClipTitle(id, title, clipRevOf(id)), false),
   openImage: (item, options) => window.api.openImage(itemId(item), options || {}),
   openImageExternal: (item) => window.api.openImageExternal(itemId(item)),
   saveImage: async (item) => { const d = await window.api.copyImagePath(itemId(item)); return d && d.path ? 'Path copied' : null; },
@@ -382,9 +386,9 @@ const appAdapter = {
     }
     Core.applySelectionUI({ listEl, barEl: document.getElementById('selectionBar'), state });
   },
-  deleteClips: (ids) => window.api.deleteItems(ids),        // returns restorable snapshots
+  deleteClips: (ids) => revGuard(() => window.api.deleteItems(Core.revisionTargets(ids, clipRevOf)), []), // returns restorable snapshots
   restoreClips: (snaps) => window.api.restoreItems(snaps),  // re-adds + clears tombstones
-  groupAssignMany: (ids, group, shouldHave) => window.api.groupAssignMany(ids, group, shouldHave),
+  groupAssignMany: (ids, group, shouldHave) => revGuard(() => window.api.groupAssignMany(Core.revisionTargets(ids, clipRevOf), group, shouldHave), false),
   pasteMany: (ids) => window.api.pasteMany(ids),
   startUnify: (ids) => window.api.startUnify(ids),
   offerUndo: ({ count, undo }) => Core.showActionToast(toast, {

@@ -64,6 +64,21 @@ function errorResult(message) {
   return { content: [{ type: 'text', text: message }], isError: true };
 }
 
+// Every clip mutation carries the rev it read; the app refuses a stale one.
+const REV_NOTE = ' Requires expected_rev: the clip\'s `rev` from list_clips/search_clips/get_clip (or from your previous change\'s result). If the clip changed since you read it the change is refused - re-read it and retry. Returns the clip\'s new rev.';
+const expectedRevSchema = () => z.string().min(1).describe('The clip\'s `rev` as you last read it; the change is refused if the clip changed since.');
+
+function revisionConflictMessage(err) {
+  if (!err || !/revision_conflict:/.test(String(err.message || ''))) return null;
+  const d = err.details || {};
+  const code = err.code || String(err.message).split('revision_conflict:')[1];
+  if (code === 'stale_revision') return `Clip ${d.id} changed since you read it (your rev ${d.expectedRev}, now ${d.currentRev}), so nothing was changed. Re-read it with get_clip and retry with the new rev.`;
+  if (code === 'superseded') return `Clip ${d.id} was edited and is now clip ${d.currentId}, so nothing was changed. Re-read ${d.currentId} with get_clip and retry with its rev.`;
+  if (code === 'rev_required') return 'expected_rev is required: pass the clip\'s rev from list_clips/search_clips/get_clip.';
+  if (code === 'not_found') return `No clip with id "${d.id}" (it may have been deleted), so nothing was changed.`;
+  return `The clip changed (${code}), so nothing was changed. Re-read it and retry.`;
+}
+
 let clientLabel = 'an AI assistant';
 
 // Forward a gated action/read to the running app and shape the response (or a
@@ -73,6 +88,8 @@ async function runForward(tool, args) {
     const result = await controlClient.request('action', '/action', { tool, args, client: clientLabel });
     return jsonResult(result);
   } catch (err) {
+    const conflict = revisionConflictMessage(err);
+    if (conflict) return errorResult(conflict);
     if (err && err.code === 'app_not_running') {
       return errorResult('BoardClip is not running. Open the BoardClip app so it can show the approval prompt and perform this action.');
     }
@@ -167,29 +184,30 @@ server.registerTool('add_clip', {
 }, async ({ text, group }) => runForward('add_clip', { text, group: group || null }));
 
 server.registerTool('edit_clip', {
-  description: 'Replace (or append to) the text of an existing TEXT clip in place, keeping its pin, groups, and numpad slot. Text clips are content-addressed, so editing changes the clip id - the new id is returned in the result. Images cannot be edited. Pops an approval prompt.',
+  description: 'Replace (or append to) the text of an existing TEXT clip in place, keeping its pin, groups, and numpad slot. Text clips are content-addressed, so editing changes the clip id - the new id is returned in the result. Images cannot be edited. Pops an approval prompt.' + REV_NOTE,
   inputSchema: {
     id: z.string(),
+    expected_rev: expectedRevSchema(),
     text: z.string().min(1),
     title: z.string().optional().describe('Optional new title/name for the clip.'),
     append: z.boolean().optional().describe('Append text to the existing content (newline-joined) instead of replacing it.'),
   },
-}, async ({ id, text, title, append }) => runForward('edit_clip', { id, text, title: title != null ? title : null, append: !!append }));
+}, async ({ id, expected_rev, text, title, append }) => runForward('edit_clip', { id, expected_rev, text, title: title != null ? title : null, append: !!append }));
 
 server.registerTool('pin_clip', {
-  description: 'Toggle the pin (star) on a clip by id.',
-  inputSchema: { id: z.string() },
-}, async ({ id }) => runForward('pin_clip', { id }));
+  description: 'Toggle the pin (star) on a clip by id.' + REV_NOTE,
+  inputSchema: { id: z.string(), expected_rev: expectedRevSchema() },
+}, async ({ id, expected_rev }) => runForward('pin_clip', { id, expected_rev }));
 
 server.registerTool('set_numpad', {
-  description: 'Assign a clip to a numpad quick-paste slot (1-9).',
-  inputSchema: { id: z.string(), slot: z.number().int().min(1).max(9) },
-}, async ({ id, slot }) => runForward('set_numpad', { id, slot }));
+  description: 'Assign a clip to a numpad quick-paste slot (1-9).' + REV_NOTE,
+  inputSchema: { id: z.string(), expected_rev: expectedRevSchema(), slot: z.number().int().min(1).max(9) },
+}, async ({ id, expected_rev, slot }) => runForward('set_numpad', { id, expected_rev, slot }));
 
 server.registerTool('assign_group', {
-  description: 'Toggle a clip\'s membership in a group (adds if absent, removes if present).',
-  inputSchema: { id: z.string(), group: z.string().min(1) },
-}, async ({ id, group }) => runForward('assign_group', { id, group }));
+  description: 'Toggle a clip\'s membership in a group (adds if absent, removes if present).' + REV_NOTE,
+  inputSchema: { id: z.string(), expected_rev: expectedRevSchema(), group: z.string().min(1) },
+}, async ({ id, expected_rev, group }) => runForward('assign_group', { id, expected_rev, group }));
 
 server.registerTool('create_group', {
   description: 'Create a new group.',
@@ -202,9 +220,9 @@ server.registerTool('delete_group', {
 }, async ({ name }) => runForward('delete_group', { name }));
 
 server.registerTool('delete_clip', {
-  description: 'Delete a clip from history. Always pops an approval prompt.',
-  inputSchema: { id: z.string() },
-}, async ({ id }) => runForward('delete_clip', { id }));
+  description: 'Delete a clip from history. Always pops an approval prompt.' + REV_NOTE,
+  inputSchema: { id: z.string(), expected_rev: expectedRevSchema() },
+}, async ({ id, expected_rev }) => runForward('delete_clip', { id, expected_rev }));
 
 server.registerTool('copy_to_clipboard', {
   description: 'Put a clip (by id) or literal text onto the user\'s system clipboard. Always pops an approval prompt.',

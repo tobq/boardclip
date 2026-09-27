@@ -1,4 +1,5 @@
 'use strict';
+const model = require('../lib/clipboard-model');
 
 // End-to-end smoke test of the real stdio MCP helper (mcp/boardclip-mcp.js):
 // spawn it, speak MCP JSON-RPC over stdin/stdout, and assert it boots, lists
@@ -130,12 +131,23 @@ async function main() {
   assert.ok(/not running/i.test(toolText(priv)), 'app_not_running surfaced');
 
   // delete_clip (gated) with no app -> app_not_running error, nothing deleted.
-  const del = await rpc.call('tools/call', { name: 'delete_clip', arguments: { id: ctx.sharedId } });
+  // Every clip-mutating tool requires expected_rev in its schema.
+  for (const name of ['edit_clip', 'delete_clip', 'pin_clip', 'set_numpad', 'assign_group']) {
+    const tool = tools.result.tools.find(t => t.name === name);
+    assert.ok(tool.inputSchema.required.includes('expected_rev'), `${name} requires expected_rev`);
+  }
+  // get_clip returns the rev to send back.
+  assert.strictEqual(sharedData.rev, model.clipRevision({ id: ctx.sharedId, type: 'text', text: 'shared hello world', ts: 3, pin: { groups: ['AI'] } }));
+  // A mutation without expected_rev is rejected before anything is forwarded.
+  const noRev = await rpc.call('tools/call', { name: 'delete_clip', arguments: { id: ctx.sharedId } });
+  assert.ok(noRev.error || (noRev.result && noRev.result.isError), 'delete_clip without expected_rev is refused');
+
+  const del = await rpc.call('tools/call', { name: 'delete_clip', arguments: { id: ctx.sharedId, expected_rev: sharedData.rev } });
   assert.strictEqual(del.result.isError, true);
   assert.ok(/not running/i.test(toolText(del)));
 
   // edit_clip (gated) with no app -> app_not_running error, nothing changed.
-  const edit = await rpc.call('tools/call', { name: 'edit_clip', arguments: { id: ctx.sharedId, text: 'edited body' } });
+  const edit = await rpc.call('tools/call', { name: 'edit_clip', arguments: { id: ctx.sharedId, expected_rev: sharedData.rev, text: 'edited body' } });
   assert.strictEqual(edit.result.isError, true, 'edit is gated (forwarded to app)');
   assert.ok(/not running/i.test(toolText(edit)));
 

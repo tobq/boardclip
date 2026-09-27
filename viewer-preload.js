@@ -15,13 +15,13 @@ contextBridge.exposeInMainWorld('viewerApi', {
   },
   // Light snapshot (items/groups/numpad map) for the shared clip menu.
   state: () => ipcRenderer.invoke('clip-window-state', clipId),
-  pin: (id) => ipcRenderer.invoke('pin', id),
+  pin: (id, rev) => ipcRenderer.invoke('pin', id, rev),
   groupCreate: (name) => ipcRenderer.invoke('group-create', name),
-  groupAssign: (id, group) => ipcRenderer.invoke('group-assign', id, group),
-  numpadAssign: (id, slot) => ipcRenderer.invoke('numpad-assign', id, slot),
+  groupAssign: (id, group, rev) => ipcRenderer.invoke('group-assign', id, group, rev),
+  numpadAssign: (id, slot, rev) => ipcRenderer.invoke('numpad-assign', id, slot, rev),
   numpadUnassign: (slot) => ipcRenderer.invoke('numpad-unassign', slot),
-  setClipTitle: (id, title) => ipcRenderer.invoke('set-clip-title', id, title),
-  deleteItems: (ids) => ipcRenderer.invoke('delete-items', ids),
+  setClipTitle: (id, title, rev) => ipcRenderer.invoke('set-clip-title', id, title, rev),
+  deleteItems: (targets) => ipcRenderer.invoke('delete-items', targets), // [{ id, rev }]
   copyImagePath: (id) => ipcRenderer.invoke('copy-image-path', id),
   openImageExternal: (id) => ipcRenderer.invoke('open-image-external', id),
   close: () => ipcRenderer.send('viewer-close'),

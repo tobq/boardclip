@@ -167,4 +167,15 @@ const history = [
   assert.strictEqual(core.resolveForRead(history, settings, 'txt:nope').reason, 'not_found');
 }
 
+// --- rev on every view (shared, metadata-only, full text) ---
+{
+  const set = core.sharedGroupSet(settings);
+  for (const item of history) {
+    assert.strictEqual(core.clipView(item, { sharedSet: set }).rev, model.clipRevision(item), 'clipView carries rev');
+  }
+  assert.strictEqual(core.clipView(history[2], { sharedSet: set }).shared, false);
+  assert.ok(core.clipView(history[2], { sharedSet: set }).rev, 'metadata-only view still carries rev');
+  assert.strictEqual(core.fullTextResult(history[0], set).rev, model.clipRevision(history[0]));
+}
+
 console.log('mcp-core tests passed');

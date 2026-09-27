@@ -35,12 +35,12 @@ contextBridge.exposeInMainWorld('editorApi', {
   // committed edit (content-addressed), so the menu asks for the CURRENT id.
   currentId: () => ipcRenderer.invoke('editor-current-id', sessionId),
   state: (id) => ipcRenderer.invoke('clip-window-state', id),
-  pin: (id) => ipcRenderer.invoke('pin', id),
+  pin: (id, rev) => ipcRenderer.invoke('pin', id, rev),
   groupCreate: (name) => ipcRenderer.invoke('group-create', name),
-  groupAssign: (id, group) => ipcRenderer.invoke('group-assign', id, group),
-  numpadAssign: (id, slot) => ipcRenderer.invoke('numpad-assign', id, slot),
+  groupAssign: (id, group, rev) => ipcRenderer.invoke('group-assign', id, group, rev),
+  numpadAssign: (id, slot, rev) => ipcRenderer.invoke('numpad-assign', id, slot, rev),
   numpadUnassign: (slot) => ipcRenderer.invoke('numpad-unassign', slot),
-  deleteSelf: () => ipcRenderer.invoke('editor-delete-clip', sessionId),
+  deleteSelf: (rev) => ipcRenderer.invoke('editor-delete-clip', sessionId, rev),
   getColorScheme: () => ipcRenderer.invoke('get-color-scheme'),
   onColorSchemeChanged: (callback) => {
     const listener = (_, scheme) => callback(scheme);

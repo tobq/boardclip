@@ -57,6 +57,9 @@ async function refreshState() {
 // The SAME shared controller the popup uses drives the menu dispatch (pin/
 // group/numpad/rename/delete/save/open-external), against an adapter backed by
 // the viewer IPC. context 'viewer' swaps "Open image" for "Open externally".
+// Mutations send the rev of the clip this window shows; a stale one is refused.
+const clipRevOf = (id) => { const it = state.items.find((x) => Core.itemId(x) === id); return it ? it.rev : undefined; };
+const revGuard = (run, fallback) => Core.guardRevision(run, { toast: showToast, refresh: () => refreshState(), fallback });
 const adapter = {
   menuContext: 'viewer',
   itemById: (id) => state.items.find((it) => Core.itemId(it) === id) || null,
@@ -64,14 +67,18 @@ const adapter = {
   groupNames: () => state.groups,
   numpadMap: () => Core.numpadMap(state.items),
   protectedGroups: () => new Set([state.aiGroup]),
-  pin: (id) => window.viewerApi.pin(id),
-  toggleGroup: (id, group) => window.viewerApi.groupAssign(id, group),
+  pin: (id) => revGuard(() => window.viewerApi.pin(id, clipRevOf(id)), false),
+  toggleGroup: (id, group) => revGuard(() => window.viewerApi.groupAssign(id, group, clipRevOf(id)), false),
   createGroup: (name) => window.viewerApi.groupCreate(name),
-  numpadAssign: (id, slot) => window.viewerApi.numpadAssign(id, slot),
+  numpadAssign: (id, slot) => revGuard(() => window.viewerApi.numpadAssign(id, slot, clipRevOf(id)), false),
   numpadUnassign: (slot) => window.viewerApi.numpadUnassign(slot),
-  setClipTitle: (id, title) => window.viewerApi.setClipTitle(id, title),
+  setClipTitle: (id, title) => revGuard(() => window.viewerApi.setClipTitle(id, title, clipRevOf(id)), false),
   // Delete closes the window (the popup shows the Undo toast on its side).
-  deleteClips: async (ids) => { await window.viewerApi.deleteItems(ids); window.viewerApi.close(); return []; },
+  deleteClips: async (ids) => {
+    const done = await revGuard(async () => { await window.viewerApi.deleteItems(Core.revisionTargets(ids, clipRevOf)); return true; }, false);
+    if (done) window.viewerApi.close();
+    return [];
+  },
   openImageExternal: (item) => window.viewerApi.openImageExternal(Core.itemId(item)),
   saveImage: async (item) => { const d = await window.viewerApi.copyImagePath(Core.itemId(item)); return d && d.path ? 'Path copied' : null; },
   toast: (msg) => showToast(msg),

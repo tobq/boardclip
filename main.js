@@ -18,6 +18,7 @@ const getCloudAccounts = require('./lib/cloud-accounts');
 const blobStore = require('./lib/blob-store');
 const backupStore = require('./lib/backup');
 const clipboardModel = require('./lib/clipboard-model');
+const clipRevisionCheck = require('./lib/clip-revision');
 const clipboardCapture = require('./lib/clipboard-capture');
 const textBlobStore = require('./lib/text-blob-store');
 const clipBlobStore = require('./lib/clip-blob-store');
@@ -897,7 +898,7 @@ function applyExternalTextEdit({ id, originalText, originalTitle, sourceGroups, 
       source: 'editor',
     });
   }
-  for (const tombstoneId of result.tombstoneIds || []) addTombstone(tombstoneId);
+  for (const tombstoneId of result.tombstoneIds || []) addTombstone(tombstoneId, null);
   for (const supersede of result.supersedes || []) addSupersede(supersede);
   if ((result.tombstoneIds && result.tombstoneIds.length) || (result.supersedes && result.supersedes.length)) saveSettingsFile();
   saveHistory();
@@ -975,7 +976,7 @@ function removeItemImage(item) {
 function deleteHistoryIndex(index, { tombstone = true } = {}) {
   if (index < 0 || index >= history.length) return null;
   const item = history[index];
-  if (tombstone) addTombstone(itemKey(item));
+  if (tombstone) addTombstone(itemKey(item), item);
   removeItemImage(item);
   clipBlobStore.removeUnreferencedBlobs(item, history, BLOB_DIRS);
   history.splice(index, 1);
@@ -1058,12 +1059,19 @@ function tombstoneIds(list) {
   return clipboardModel.tombstoneIds(list);
 }
 
-function addTombstone(id) {
+// `deletedItem` is REQUIRED: the tombstone records the rev + mutation clock of
+// the exact copy deleted, so a later sync can tell that version (stays deleted,
+// even under clock skew) from a copy edited or re-added elsewhere (survives).
+// Pass null only for an edit's superseded old id - lineage governs that one.
+function addTombstone(id, deletedItem) {
   if (!id) return;
-  settings.tombstones = normalizeTombstones([
-    ...(settings.tombstones || []),
-    { id, deletedAt: Date.now() },
-  ]);
+  if (deletedItem === undefined) throw new Error('addTombstone: pass the deleted item (null only for a superseded edit id)');
+  const record = { id, deletedAt: Date.now() };
+  if (deletedItem) {
+    record.rev = clipboardModel.clipRevision(deletedItem);
+    record.revClock = clipboardModel.itemMutationClock(deletedItem);
+  }
+  settings.tombstones = normalizeTombstones([...(settings.tombstones || []), record]);
 }
 
 function addSupersede(record) {
@@ -4934,6 +4942,7 @@ function clipWindowState(id) {
     title: h.title,
     image: h.image,
     pin: clonePin(h.pin),
+    rev: clipboardModel.clipRevision(h),
     ts: h.ts,
     text: h.type === 'image' ? '' : String(h.textPreview || h.text || '').replace(/\s+/g, ' ').slice(0, 120),
   }));
@@ -5175,7 +5184,7 @@ function applyUnify(session) {
       if (session.unionGroups.length) touchPinGroups(item);
       if (session.pinned && !item.pin) item.pin = {};
       saveHistory();
-      if (session.numberSlot != null) applyNumpadAssign(itemKey(item), session.numberSlot);
+      if (session.numberSlot != null) applyNumpadAssign(itemKey(item), session.numberSlot, clipboardModel.clipRevision(item));
     }
   } else {
     saveHistory();
@@ -5234,10 +5243,29 @@ function recoverOrphanedEdits() {
 // IPC handlers also use - no duplication.
 // ===========================================================================
 
-// ---- Reusable mutation primitives (shared by IPC + MCP) ----
-function applyPinToggle(id) {
+// ---- Optimistic concurrency (lib/clip-revision) ----
+// Every clip-scoped mutation carries the rev of the version its caller read and
+// is refused with a RevisionConflict if the clip changed since. The primitives
+// below check it FIRST, so IPC, MCP and internal callers all go through it.
+const MCP_REV_GUARDED_TOOLS = new Set(['edit_clip', 'pin_clip', 'set_numpad', 'assign_group', 'delete_clip']);
+function assertClipRevision(id, rev) {
+  return clipRevisionCheck.assertRevision(history, id, rev, { supersedes: settings.supersedes });
+}
+function assertClipRevisions(targets) {
+  return clipRevisionCheck.assertRevisions(history, targets, { supersedes: settings.supersedes });
+}
+// Renderers get each item stamped with its rev (computed, never persisted).
+function historyForRenderer() {
+  return history.map(item => ({ ...item, rev: clipboardModel.clipRevision(item) }));
+}
+function mcpMutationResult(id, ok) {
   const item = findHistoryItem(id);
-  if (!item) return false;
+  return { ok: !!ok, id, rev: item ? clipboardModel.clipRevision(item) : null };
+}
+
+// ---- Reusable mutation primitives (shared by IPC + MCP) ----
+function applyPinToggle(id, rev) {
+  const item = assertClipRevision(id, rev);
   if (!item.pin) {
     item.pin = {};
   } else if (typeof item.pin.number === 'number') {
@@ -5253,9 +5281,9 @@ function applyPinToggle(id) {
   return true;
 }
 
-function applyNumpadAssign(id, slot) {
-  const item = findHistoryItem(id);
-  if (typeof slot !== 'number' || slot < 1 || slot > 9 || !item) return false;
+function applyNumpadAssign(id, slot, rev) {
+  if (typeof slot !== 'number' || slot < 1 || slot > 9) return false;
+  const item = assertClipRevision(id, rev);
   const now = Date.now();
   for (const h of history) {
     if (hasNumpadSlot(h, slot)) {
@@ -5304,9 +5332,9 @@ function applyGroupDelete(name) {
 }
 
 // Toggle membership in a group. Multi-group: an item can belong to many.
-function applyGroupAssign(id, group) {
-  const item = findHistoryItem(id);
-  if (!item || !group) return false;
+function applyGroupAssign(id, group, rev) {
+  if (!group) return false;
+  const item = assertClipRevision(id, rev);
   if (!settings.groups || !settings.groups.includes(group)) applyGroupCreate(group);
   const pin = ensurePin(item);
   if (!pin.groups) pin.groups = [];
@@ -5322,10 +5350,9 @@ function applyGroupAssign(id, group) {
   return true;
 }
 
-function applyDeleteItem(id) {
-  const index = findHistoryIndex(id);
-  if (index < 0) return false;
-  deleteHistoryIndex(index);
+function applyDeleteItem(id, rev) {
+  assertClipRevision(id, rev);
+  deleteHistoryIndex(findHistoryIndex(id));
   saveSettingsFile();
   saveHistory();
   return true;
@@ -5339,10 +5366,11 @@ function cloneHistoryItem(item) {
 // Undo toast). Returns snapshots so the Undo can restore them. Deliberately
 // RETAINS the underlying text/image blobs (no removeItemImage / blob prune) so a
 // restore always has its content; content-addressed files dedupe on re-add.
-function applyDeleteItems(ids) {
+function applyDeleteItems(targets) {
   const snapshots = [];
   let changed = false;
-  for (const id of (Array.isArray(ids) ? ids : [])) {
+  // targets: [{ id, rev }]. All-or-nothing: every rev is checked before anything is removed.
+  for (const { id } of assertClipRevisions(targets)) {
     const index = findHistoryIndex(id);
     if (index < 0) continue;
     const item = history[index];
@@ -5350,7 +5378,7 @@ function applyDeleteItems(ids) {
     // delete would silently strip the clip's formatting.
     if (item.type !== 'image') clipBlobStore.hydrateItem(item, BLOB_DIRS);
     snapshots.push(cloneHistoryItem(item));
-    addTombstone(itemKey(item));
+    addTombstone(itemKey(item), item);
     history.splice(index, 1);
     changed = true;
   }
@@ -5399,13 +5427,14 @@ function setItemGroupMembership(item, group, shouldHave) {
 
 // Bulk add/remove a group across many clips in one save (smart tri-state toggle
 // decided in the shared controller). Reuses the single-item group bookkeeping.
-function applyGroupAssignMany(ids, group, shouldHave) {
+function applyGroupAssignMany(targets, group, shouldHave) {
   if (!group) return false;
+  // targets: [{ id, rev }]. All-or-nothing: checked before the group is even created.
+  const resolved = assertClipRevisions(targets);
   if (!settings.groups || !settings.groups.includes(group)) applyGroupCreate(group);
   let changed = false;
-  for (const id of (Array.isArray(ids) ? ids : [])) {
-    const item = findHistoryItem(id);
-    if (item && setItemGroupMembership(item, group, !!shouldHave)) changed = true;
+  for (const { item } of resolved) {
+    if (setItemGroupMembership(item, group, !!shouldHave)) changed = true;
   }
   if (changed) saveHistory();
   return changed;
@@ -5413,9 +5442,8 @@ function applyGroupAssignMany(ids, group, shouldHave) {
 
 // Name a clip (text OR image). Reuses the model's title helper so the name +
 // sync-merge metadata (titleUpdatedAt) match the editor's title-edit path.
-function applyClipTitle(id, title) {
-  const item = findHistoryItem(id);
-  if (!item) return false;
+function applyClipTitle(id, title, rev) {
+  const item = assertClipRevision(id, rev);
   clipboardModel.setTitleMetadata(item, title);
   saveHistory();
   return true;
@@ -5848,6 +5876,10 @@ async function mcpHandleRequest(reqPath, payload, ctx = {}) {
   if (!settings.ai_access_enabled) throw new Error('ai_access_disabled');
   const targetId = args.id || null;
   const targetItem = targetId ? findHistoryItem(targetId) : null;
+  // Refuse a stale/missing rev BEFORE asking the human to approve a change that
+  // would be refused anyway. mcpExecute's primitives check it again after the
+  // (possibly long) approval, since the clip can change while the prompt is open.
+  if (MCP_REV_GUARDED_TOOLS.has(tool)) assertClipRevision(args.id, args.expected_rev);
 
   let decision = 'auto';
   if (mcpNeedsApproval(tool, targetItem)) {
@@ -5891,8 +5923,7 @@ function mcpExecute(tool, args) {
     case 'add_clip':
       return { ok: applyAddText(args.text, args.group || null) };
     case 'edit_clip': {
-      const item = findHistoryItem(args.id);
-      if (!item) throw new Error('not_found');
+      const item = assertClipRevision(args.id, args.expected_rev);
       if (item.type === 'image') throw new Error('not_a_text_clip');
       // append newline-joins onto the hydrated body; otherwise replace. Metadata
       // (pin/groups/numpad/title) is preserved by applyTextEditToItem.
@@ -5901,20 +5932,20 @@ function mcpExecute(tool, args) {
         newTitle: args.title != null ? String(args.title) : undefined,
       });
       const saved = result && result.item ? result.item : item;
-      return { ok: !!(result && result.changed), reason: result && result.reason, id: itemKey(saved) };
+      return { ok: !!(result && result.changed), reason: result && result.reason, id: itemKey(saved), rev: clipboardModel.clipRevision(saved) };
     }
     case 'pin_clip':
-      return { ok: applyPinToggle(args.id) };
+      return mcpMutationResult(args.id, applyPinToggle(args.id, args.expected_rev));
     case 'set_numpad':
-      return { ok: applyNumpadAssign(args.id, args.slot) };
+      return mcpMutationResult(args.id, applyNumpadAssign(args.id, args.slot, args.expected_rev));
     case 'assign_group':
-      return { ok: applyGroupAssign(args.id, args.group) };
+      return mcpMutationResult(args.id, applyGroupAssign(args.id, args.group, args.expected_rev));
     case 'create_group':
       return { ok: applyGroupCreate(args.name) };
     case 'delete_group':
       return { ok: applyGroupDelete(args.name) };
     case 'delete_clip':
-      return { ok: applyDeleteItem(args.id) };
+      return { ok: applyDeleteItem(args.id, args.expected_rev), id: args.id };
     case 'copy_to_clipboard': {
       if (args.text != null) { clipboard.writeText(String(args.text)); return { ok: true }; }
       const item = findHistoryItem(args.id);
@@ -5933,14 +5964,14 @@ function mcpExecute(tool, args) {
 
 // --- IPC handlers ---
 function setupIPC() {
-  ipcMain.handle('get-history', () => history);
+  ipcMain.handle('get-history', () => historyForRenderer());
   // The renderer passes the revision it already holds; when nothing changed we
   // answer with the revision alone instead of cloning ~10k items (7.7MB) across
   // IPC on every popup open (0.5-2.3s per open, measured 2026-09-02).
   ipcMain.handle('get-history-state', (_, knownRevision) => (
     knownRevision === dataRevision
       ? { revision: dataRevision, unchanged: true }
-      : { revision: dataRevision, items: history }
+      : { revision: dataRevision, items: historyForRenderer() }
   ));
 
   ipcMain.handle('get-settings', () => ({
@@ -5990,16 +6021,16 @@ function setupIPC() {
 
   ipcMain.handle('copy', (_, text) => clipboard.writeText(text || ''));
 
-  ipcMain.handle('delete-item', (_, id) => applyDeleteItem(id));
+  ipcMain.handle('delete-item', (_, id, rev) => applyDeleteItem(id, rev));
 
-  ipcMain.handle('set-clip-title', (_, id, title) => applyClipTitle(id, title));
+  ipcMain.handle('set-clip-title', (_, id, title, rev) => applyClipTitle(id, title, rev));
 
   ipcMain.handle('delete-all', () => {
     const kept = [];
     for (const item of history) {
       if (isPinned(item)) kept.push(item);
       else {
-        addTombstone(itemKey(item));
+        addTombstone(itemKey(item), item);
         removeItemImage(item);
       }
     }
@@ -6013,9 +6044,9 @@ function setupIPC() {
   //   - unpinned        → star it (pin = {})
   //   - starred+numbered → remove the number, keep starred
   //   - starred (any)   → fully unpin (pin = null, clears groups too)
-  ipcMain.handle('pin', (_, id) => applyPinToggle(id));
+  ipcMain.handle('pin', (_, id, rev) => applyPinToggle(id, rev));
 
-  ipcMain.handle('numpad-assign', (_, id, slot) => applyNumpadAssign(id, slot));
+  ipcMain.handle('numpad-assign', (_, id, slot, rev) => applyNumpadAssign(id, slot, rev));
 
   ipcMain.handle('numpad-unassign', (_, slot) => {
     if (typeof slot !== 'number' || slot < 1 || slot > 9) return;
@@ -6074,7 +6105,7 @@ function setupIPC() {
 
   ipcMain.handle('group-delete', (_, name) => applyGroupDelete(name));
 
-  ipcMain.handle('group-assign', (_, id, group) => applyGroupAssign(id, group));
+  ipcMain.handle('group-assign', (_, id, group, rev) => applyGroupAssign(id, group, rev));
 
   ipcMain.handle('copy-image-path', (_, id) => {
     const item = findHistoryItem(id);
@@ -6143,9 +6174,9 @@ function setupIPC() {
   ipcMain.handle('open-conflict', (_, id) => openConflictWindow(id));
 
   // Multi-select bulk operations.
-  ipcMain.handle('delete-items', (_, ids) => applyDeleteItems(ids));
+  ipcMain.handle('delete-items', (_, targets) => applyDeleteItems(targets));
   ipcMain.handle('restore-items', (_, snaps) => applyRestoreItems(snaps));
-  ipcMain.handle('group-assign-many', (_, ids, group, shouldHave) => applyGroupAssignMany(ids, group, shouldHave));
+  ipcMain.handle('group-assign-many', (_, targets, group, shouldHave) => applyGroupAssignMany(targets, group, shouldHave));
   ipcMain.handle('paste-many', (_, ids) => pasteMany(ids));
   ipcMain.handle('start-unify', (_, ids) => startUnify(ids));
   ipcMain.handle('unify-step', (_, sessionId, payload) => unifyStep(sessionId, payload));
@@ -6183,11 +6214,12 @@ function setupIPC() {
   });
   // Deleting the clip out from under an open editor: suppress the close-commit
   // (it would resurrect the clip from the draft) and close the window.
-  ipcMain.handle('editor-delete-clip', (_, sessionId) => {
+  ipcMain.handle('editor-delete-clip', (_, sessionId, rev) => {
     const session = editSessions.get(sessionId);
     if (!session || !session.currentId) return false;
+    // Rev-checked FIRST: a stale delete throws and leaves the editor open and committing.
+    const snapshots = applyDeleteItems([{ id: session.currentId, rev }]);
     session.suppressCommit = true;
-    const snapshots = applyDeleteItems([session.currentId]);
     if (session.win && !session.win.isDestroyed()) { try { session.win.close(); } catch {} }
     return snapshots.length > 0;
   });

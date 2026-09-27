@@ -1043,6 +1043,31 @@
   // Shared "action toast": the transient toast with an Undo button, reused by the
   // app and demo for delete-with-undo. Manipulates the consumer's existing
   // .toast element (theme-scoped) so there's no second toast implementation.
+  // Clip mutations carry the rev they read; main refuses a stale one with a
+  // "revision_conflict:<code>" error (lib/clip-revision). Electron wraps it
+  // ("Error invoking remote method ...: Error: revision_conflict:..."), so
+  // match the marker anywhere in the message.
+  function revisionConflictCode(err) {
+    const m = /revision_conflict:([a-z_]+)/.exec(String((err && err.message) || err || ''));
+    return m ? m[1] : null;
+  }
+  function revisionTargets(ids, revOf) {
+    return (Array.isArray(ids) ? ids : []).map((id) => ({ id, rev: revOf(id) }));
+  }
+  const REVISION_CONFLICT_MESSAGE = 'This clip changed elsewhere \u2014 refreshed';
+  // Run a mutation; on a revision conflict tell the user, reload, and resolve
+  // to `fallback` so the calling flow ends quietly. Other errors propagate.
+  async function guardRevision(run, { toast, refresh, fallback } = {}) {
+    try {
+      return await run();
+    } catch (err) {
+      if (!revisionConflictCode(err)) throw err;
+      if (toast) toast(REVISION_CONFLICT_MESSAGE);
+      if (refresh) { try { await refresh(); } catch {} }
+      return fallback;
+    }
+  }
+
   function showActionToast(toastEl, opts) {
     if (!toastEl) return;
     const o = opts || {};
@@ -2979,6 +3004,9 @@
     createMenu,
     installSubmenuAutoflip,
     showActionToast,
+    revisionConflictCode,
+    revisionTargets,
+    guardRevision,
     applySelectionUI,
     renderPopupShell,
     renderSettingsBody,

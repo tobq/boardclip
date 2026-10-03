@@ -125,15 +125,21 @@ const EDIT_ARCHIVE_MAX_AGE_MS = 365 * 86400 * 1000; // 1 year
 const APP_ICON_PATH = path.join(SCRIPT_DIR, 'icon.png');
 const TRAY_TEMPLATE_ICON_PATH = path.join(SCRIPT_DIR, 'iconTemplate.png');
 const DIAGNOSTICS_PATH = path.join(DATA_DIR, 'boardclip-diagnostics.jsonl');
+// Every clip a sync merge removed from local history or brought back over its
+// tombstone (lib/clipboard-model mergeHistories report). Rare events, so a small
+// cap keeps months: the main log held ~1.7 days, too short for the 2026-09-29
+// loss to be read back.
+const SYNC_FORENSICS_PATH = path.join(DATA_DIR, 'sync-forensics.jsonl');
 // History backups are the full clipboard-history.json (a few MB each), snapshotted
 // before meaningful writes. Content-addressed (lib/backup): each snapshot is a small
 // manifest of item hashes into a shared object pool, so an edit to one note costs one
-// object + a manifest, not a full ~4-5MB copy. Retention = 48h OR ~512MB OR 2000
+// object + a manifest, not a full ~4-5MB copy. Retention = 7 days OR ~1GB OR 2000
 // snapshots, whichever bites first — a loss event survives a multi-hour investigation
 // (the old 100-file / ~7h cap pruned the evidence mid-incident on 2026-07-06) without
-// disk runaway. Dedup makes 512MB hold far more history than the old 2GB of full copies.
-const HISTORY_BACKUP_MAX_AGE_MS = 48 * 60 * 60 * 1000;
-const HISTORY_BACKUP_MAX_BYTES = 512 * 1024 * 1024;
+// disk runaway. Dedup makes 1GB hold far more history than the old 2GB of full copies.
+// 48h was too short on 2026-10-03: a note lost on 29 Sep predated every snapshot.
+const HISTORY_BACKUP_MAX_AGE_MS = 7 * 86400 * 1000;
+const HISTORY_BACKUP_MAX_BYTES = 1024 * 1024 * 1024;
 const HISTORY_BACKUP_MAX_MANIFESTS = 2000;
 const HISTORY_BACKUP_MIN_INTERVAL_MS = 60 * 1000;
 const IMAGE_ORPHAN_RECOVERY_WINDOW_MS = 30 * 60 * 1000;
@@ -536,6 +542,7 @@ const diagnostics = new Diagnostics({
   maxFileBytes: 64 * 1024 * 1024,
   maxEvents: 5000,
 });
+const syncForensics = new Diagnostics({ filePath: SYNC_FORENSICS_PATH, maxFileBytes: 16 * 1024 * 1024, maxEvents: 500 });
 let dataRevision = 0;
 // Assigned once the sync change feed loads (below); saves that happen during
 // module init (fresh-install identity) simply skip the feed until then.
@@ -1115,8 +1122,34 @@ function mergeItems(localItem, remoteItem) {
   return clipboardModel.mergeItems(localItem, remoteItem, settings.group_tombstones);
 }
 
+// The ONE merge every sync path goes through, so the forensics log sees them all.
+const forensicsBlockedSeen = new Set();
 function mergeHistories(local, remote) {
-  return clipboardModel.mergeHistories(local, remote, settings);
+  const report = [];
+  const merged = clipboardModel.mergeHistories(local, remote, settings, report);
+  for (const entry of report) {
+    // A blocked drop repeats on every pass until the cause is fixed: log it once.
+    if (entry.event === 'drop_blocked') {
+      if (forensicsBlockedSeen.has(entry.id)) continue;
+      forensicsBlockedSeen.add(entry.id);
+    }
+    const item = entry.item || {};
+    const details = {
+      id: entry.id,
+      reason: entry.reason,
+      survivor: entry.survivor,
+      head: entry.head,
+      deleted_at: entry.deletedAt,
+      text_len: (item.text || '').length,
+      titled: !!titleOf(item),
+      groups: groupsOf(item).length,
+      pinned: isPinned(item),
+      clock: clipboardModel.itemMutationClock(item),
+    };
+    syncForensics.record(`sync.merge.${entry.event}`, details, { forceFile: true });
+    if (entry.event === 'drop_blocked') diagnostics.record('sync.lineage_drop_blocked', details, { forceFile: true });
+  }
+  return merged;
 }
 
 function mergeGroups(local, remote) {
@@ -5088,9 +5121,28 @@ function startUnify(ids) {
     step: 0,
     win: null,
   };
+  if (skipIdenticalUnifySteps(session)) {
+    applyUnify(session);
+    return { ok: true, done: true };
+  }
   unifySessions.set(session.id, session);
   openUnifyWindow(session);
   return { ok: true };
+}
+
+// A step whose text matches the accumulator has nothing to decide (applyUnify
+// unions the metadata anyway), so it folds silently instead of showing two
+// identical panes. A differing title still gets its step.
+function skipIdenticalUnifySteps(session) {
+  const lf = (text) => String(text || '').replace(/\r\n?/g, '\n');
+  while (session.step < session.total) {
+    const next = session.remaining[session.step];
+    const titlesAgree = !next.title || !session.acc.title || next.title === session.acc.title;
+    if (!titlesAgree || lf(next.text) !== lf(session.acc.text)) break;
+    session.acc = { ...session.acc, title: session.acc.title || next.title, text: next.text };
+    session.step += 1;
+  }
+  return session.step >= session.total;
 }
 
 function openUnifyWindow(session) {
@@ -5145,7 +5197,7 @@ function unifyStep(sessionId, resolution) {
     groups: session.acc.groups,
   };
   session.step += 1;
-  if (session.step >= session.total) {
+  if (skipIdenticalUnifySteps(session)) {
     applyUnify(session);
     unifySessions.delete(session.id);
     // Close the window from HERE: the renderer's editorApi.close() arrives

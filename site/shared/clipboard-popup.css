@@ -457,16 +457,30 @@ mark { background: var(--mark-bg); color: var(--mark-fg); border-radius: 2px; pa
 /* Glass: CM canvases go transparent like the editor's, scrim provides the tint. */
 :root[data-surface="glass"] .bc-merge-host .CodeMirror,
 .bc-popup[data-surface="glass"] .bc-merge-host .CodeMirror { background: transparent; }
-.bc-reconcile-actions { flex-shrink: 0; display: flex; justify-content: flex-end; gap: var(--sp-3); padding: var(--sp-4); background: var(--surface); }
-.bc-reconcile-actions button { border: none; border-radius: var(--r-2); background: var(--surface2); color: var(--text); font-size: var(--fs-2); padding: var(--sp-3) var(--sp-4); cursor: pointer; transition: var(--dur) var(--ease); }
+.bc-merge-note { flex-shrink: 0; display: flex; align-items: center; gap: var(--sp-3); padding: var(--sp-2) var(--sp-5); background: var(--accent-bg); color: var(--text); font-size: var(--fs-2); border-bottom: 1px solid var(--line); }
+.bc-merge-note[hidden] { display: none; }
+.bc-merge-note button { flex-shrink: 0; white-space: nowrap; border: none; background: transparent; color: var(--accent); font: inherit; font-weight: 600; cursor: pointer; padding: 0; }
+/* Footer: Accept current hard left, Accept incoming hard right, Keep both +
+   primary centred with a wide gutter on each side so the whole-side picks are
+   never mistaken for the merge. When that row does not fit (JS adds
+   .bc-actions-stacked), each accept moves under its own pane (same column
+   widths as the pane heads) and the centre group gets its own row. */
+.bc-reconcile-actions { flex-shrink: 0; display: grid; grid-template-columns: 1fr auto 1fr; grid-template-areas: "left mid right"; align-items: center; column-gap: calc(var(--sp-12) * 2); row-gap: var(--sp-4); padding: var(--sp-4); background: var(--surface); border-top: 1px solid var(--line); }
+.bc-act-left { grid-area: left; justify-self: start; }
+.bc-act-mid { grid-area: mid; display: flex; gap: var(--sp-3); }
+.bc-act-right { grid-area: right; justify-self: end; }
+.bc-reconcile-actions.bc-actions-stacked { column-gap: 0; padding-left: 0; padding-right: 0; grid-template-areas: "left . right" "mid mid mid"; }
+.bc-reconcile-actions.bc-actions-stacked.bc-heads-2 { grid-template-columns: 47% 6% 47%; }
+.bc-reconcile-actions.bc-actions-stacked.bc-heads-3 { grid-template-columns: 31% 3.5% 31% 3.5% 31%; grid-template-areas: "left . . . right" "mid mid mid mid mid"; }
+.bc-actions-stacked .bc-act-left, .bc-actions-stacked .bc-act-right, .bc-actions-stacked .bc-act-mid { justify-self: center; }
+.bc-reconcile-actions button { border: none; border-radius: var(--r-2); background: var(--surface2); color: var(--text); font-size: var(--fs-2); font-family: inherit; padding: var(--sp-3) var(--sp-4); cursor: pointer; transition: var(--dur) var(--ease); white-space: nowrap; }
 .bc-reconcile-actions button:hover { background: var(--menu-hover); }
 .bc-reconcile-actions button.primary { background: var(--accent); color: var(--active-fg); min-width: 10.5em; text-align: center; }
-/* The primary label changes on a Unify's last step; a fixed width keeps the
-   other buttons from sliding under a cursor that is about to click. */
+/* The primary label changes on a Unify's last step; a fixed width keeps it
+   from reflowing under a cursor that is about to click. */
 .bc-reconcile-actions button.primary:hover { background: var(--accent-hover); }
-@media (max-width: 760px) {
-  .bc-reconcile-actions { flex-wrap: wrap; }
-}
+.bc-reconcile-actions button.primary:disabled,
+.bc-reconcile-actions button.primary:disabled:hover { background: var(--accent); opacity: .45; cursor: not-allowed; }
 
 /* --- Multi-select: checked-row tint + slim contextual toolbar --- */
 /* `.selected` is the keyboard cursor (var(--surface2), defined above); a checked

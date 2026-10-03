@@ -16,6 +16,23 @@
 - **Groups**: group names live in `settings.groups`; item membership lives in `item.pin.groups`.
 - **Tombstones**: deleted items and groups are retained for 30 days in settings so sync cannot resurrect removals from stale providers.
 - **Version-guarded delete tombstones (2026-07-14)**: because ids are content hashes, a bare tombstone would clobber a *legitimate re-copy/edit of the same content after a delete* (the cross-device "surprise" — you delete, re-copy the same text, next sync drops your fresh copy because the tombstone still syncs from the other device). `mergeHistories` now uses `tombstoneMap` (id → `deletedAt`) not a plain id-Set, and drops an item **only if `itemMutationClock(item) <= deletedAt`**. A copy touched AFTER the delete (newer capture `ts`/`updatedAt`, pin, title, or `tsUpdatedAt`) beats the tombstone and survives; a stale pre-delete copy on a lagging provider still stays deleted (resurrection guard intact). Convergent + idempotent — the tombstone stays in settings and ages out at 30 days without re-dropping the live item. Guard is on the **plain-delete branch only** (`!targetKey`); the supersede/edit-lineage branch is untouched. Tests in `test/clipboard-model.test.js` (re-add-after-delete survives, stale copy stays deleted, pin-touch-after-delete survives).
+- **Edit-lineage cycles + broken chains (found 2026-10-03, fixed in `liveSupersedeLinks`/`deletedAfterEdit`)**:
+  typing a change and taking it back inside one editor session (A->B->A, each step an idle commit)
+  records both A->B and B->A. The old `supersedeMap` resolved the live head to ITSELF and its own older
+  edit tombstone then dropped it in `mergeHistories` (`targetKey && deleted.has(targetKey)`, version
+  guard skipped) on the next sync pass, the only local copy included. Second hole: a stale copy whose
+  chain ends at an id that exists nowhere and was never tombstoned bypassed its OWN tombstone, so copies
+  the user explicitly deleted came back. Incident: "forge launch plan" head of 29 Sep vanished, the 3 and
+  7 Sep versions (deleted that same evening) resurrected, the next edit started from 7 Sep. Fix: a link
+  whose `from` has a NEWER link into it is dropped (A is live again); a tombstone with `rev` or >5 s after
+  the link is a real delete and runs `tombstoneSuppresses` even inside a lineage. Defence in depth: the
+  LINEAGE TRIPWIRE at the end of `mergeHistories` keeps any local clip a merge would drop unless its own
+  (or its lineage head's) tombstone is an explicit delete or a newer version of the same note survives
+  (`lineageFamilies`); it reports `drop_blocked` (diagnostics `sync.lineage_drop_blocked`). The optional
+  `report` array (main.js passes it in its single `mergeHistories` wrapper) feeds `sync-forensics.jsonl`.
+  Audit tools: replay
+  `mergeHistories` on the edit-archive text with snapshot settings; list A<->B pairs across
+  `settings.supersedes` + the oldest `clipboard-backups` snapshot's settings.
 - **Content-addressed images**: filenames are md5 hash of PNG content (`{hash}.png`), naturally deduplicates.
 
 ## Clipboard Operations
@@ -236,9 +253,9 @@ build could re-trigger the race.
   (stale-provider race repro + `applyTextEdit` supersedes emission); `foldRemoteState`
   merges settings BEFORE history so the lineage is available to `mergeHistories`.
 - **Forensics kit**: `clipboard-backups/` (content-addressed history snapshots, see
-  Backup subsystem below; 48h/512MB/2000-manifest retention),
+  Backup subsystem below; 7d/1GB/2000-manifest retention),
   `clipboard-edit-archive/` (raw editor buffers, 1yr/100MB — this is what recovered the
-  lost paragraph), `boardclip-diagnostics.jsonl` (64MB cap), plus cloud providers'
+  lost paragraph), `boardclip-diagnostics.jsonl` (64MB cap = only ~1.7 days at current volume), `sync-forensics.jsonl` (16MB, months: every clip a merge removed from local history / revived / was blocked from dropping), plus cloud providers'
   own version history. During any incident, copy relevant backups OUT of the retention
   dirs immediately — pruning runs on every save and destroyed evidence mid-investigation.
   To read a content-addressed snapshot: `backupStore.readSnapshot(dir, manifestPath)`
@@ -260,7 +277,7 @@ build could re-trigger the race.
   object + a manifest, not a full ~4.5MB history copy (verified on the real 5670-item
   history: 1 edit = 1 new object). Everything stays plain-text JSON (greppable in an
   incident). Reuses `lib/blob-store` (atomic write/dirs) + `lib/retention` (planRetention).
-- **Retention** = `backupStore.pruneBackups(dir, {maxAgeMs:48h, maxBytes:512MB,
+- **Retention** = `backupStore.pruneBackups(dir, {maxAgeMs:7d, maxBytes:1GB,
   maxManifests:2000, now})`: evict manifests by age+count, then mark-sweep GC any pool
   object no surviving manifest references, then drop oldest manifests until under the byte
   cap. Legacy full `{stamp}-{reason}-{hash12}.json` snapshots are still read (`readSnapshot`
@@ -540,13 +557,21 @@ clear-all). All popup CSS + theme variables live in `site/shared/clipboard-popup
 - **Merge seeds**: `base.text` when the record has one (true 3-way) → else
   Current (2-pane: unify + baseless conflicts). `Core.unionMergeText` (shared
   regions once + both sides of every change; built on `diffLineHunks`/
-  `lcsSegments`, the in-house pure diff) backs "Keep both". **Unify's
-  "Merge & continue" MERGES before saving (2026-09-03)**: `mergeLosslessPending`
-  pulls every pending chunk that cannot lose Result text (`losslessChange`:
-  insertion, grown line, appended lines); only a chunk that would REPLACE
-  Result text stays pending and triggers the "still pending" confirm. Before
-  this the button just saved as-is and warned, which read as "merge did
-  nothing" (owner hit it unifying nine versions of one note).
+  `lcsSegments`, the in-house pure diff) backs "Keep both". **Smart merge (2026-10-03,
+  owner-specified)**: ONE `autoMergeNonConflicting` backs both the toolbar merge-all and
+  Unify's "Merge & continue" (which merges, then saves). 2-pane chunks go through
+  `smartMergeChunk` LINE BY LINE (a diff chunk often lumps a lacked line with an
+  addition): incoming additions + rewords/grown lines (`similarLine`, `losslessChange`)
+  are taken, lines incoming merely lacks are KEPT (declined - a stale copy looks exactly
+  like that, never delete silently), unrelated lines colliding = conflict (red, chip).
+  While a conflict is left, Unify's primary is DISABLED with a tooltip (gutter arrow =
+  take incoming, x = keep yours, Alt+B = both) - no "save anyway" confirm. 3-pane keeps
+  the base-driven rule. Identical unify steps (CRLF-only, same title) fold silently in
+  main (`skipIdenticalUnifySteps`, all-identical = no window); a whitespace-only step
+  shows the `.bc-merge-note` ("only differences are whitespace") and saves the newer
+  text verbatim. Footer = ONE row (Accept current hard left | Keep both + primary
+  centred, 48px gutters | Accept incoming hard right); when it does not fit, JS adds
+  `.bc-actions-stacked` and each accept moves under its own pane (heads' column widths).
   The last step's label is `Merge & finish` (same shape as `Merge & continue`) and the
   primary button has a fixed `min-width`: a shorter last-step label once slid "Accept
   current" under a cursor aimed at "Accept incoming" and dropped the newest clip's tail

@@ -98,6 +98,19 @@ const ui = require('../site/shared/clipboard-ui-core');
 //    and indentation must NOT defeat the diff (the all-green-panes bug: clips of
 //    the same text copied from different sources matched zero lines).
 {
+  // smartMergeChunk: what the automatic merge ("Merge & continue", the toolbar
+  // merge-all) does with a 2-way chunk, line by line. Adds and rewords are
+  // taken; lines Incoming only lacks are kept (a stale copy looks exactly like
+  // that); only unrelated lines colliding are left for a person.
+  const smart = (a, b) => ui.smartMergeChunk(a, b);
+  assert.deepStrictEqual(smart('', 'new paragraph'), { verdict: 'apply', text: 'new paragraph' }, 'insertion is taken');
+  assert.strictEqual(smart('ship the beta friday', 'ship the beta on monday').text, 'ship the beta on monday', 'a reworded line is taken');
+  assert.strictEqual(smart('coder friends: alex, dan', 'coder friends: alex, dan, tanin\nhamza+angela').verdict, 'apply', 'a grown block is taken');
+  assert.deepStrictEqual(smart('tobi lutke - recording screen\nencode office', ''), { verdict: 'keep', text: null }, 'incoming merely lacking lines never deletes them');
+  assert.deepStrictEqual(smart('qa KEEPME line\nqa spacer\n', 'qa spacer\nqa incoming BETA\n'), { verdict: 'apply', text: 'qa KEEPME line\nqa spacer\nqa incoming BETA\n' },
+    'a lacked line and an addition in one chunk merge as a union');
+  assert.strictEqual(smart('use typesafe.ai launch as a reference', 'deep research into the launch of Jev and Instinct').verdict, 'conflict', 'unrelated replacement is a decision');
+  assert.strictEqual(smart('kept line\nonly in result', 'kept line, reworded').verdict, 'conflict', 'a line with no counterpart is a decision');
   // losslessChange: what "Merge & continue" may pull into a Unify Result on its
   // own - insertions and grown lines yes, rewordings no.
   assert.strictEqual(ui.losslessChange('', 'new paragraph'), true, 'pure insertion is lossless');

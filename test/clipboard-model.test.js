@@ -859,6 +859,105 @@ function text(text, extra = {}) {
 }
 
 {
+  // Regression for the 2026-09-29 loss: an editor session that takes a change
+  // back (v1 -> v2 -> v1 -> v2, each step an idle commit) records v1->v2 AND
+  // v2->v1. That cycle resolved the live head to itself and its older edit
+  // tombstone dropped it on the next merge, local copy included.
+  const base = Date.now() - 60000;
+  const history = [text('note v0', { ts: base / 1000, updatedAt: base, pin: { groups: ['todo'], updatedAt: base }, pinUpdatedAt: base })];
+  const tombstones = [];
+  let supersedes = [];
+  const steps = ['note v1', 'note v2', 'note v1', 'note v2'];
+  const staleCopies = [];
+  steps.forEach((next, i) => {
+    const current = history[0];
+    staleCopies.push({ ...current, pin: current.pin && { ...current.pin } });
+    const now = base + (i + 1) * 1000;
+    const result = model.applyTextEdit(history, { id: current.id, originalText: current.text, newText: next, now });
+    assert.strictEqual(result.reason, 'updated');
+    for (const id of result.tombstoneIds) tombstones.push({ id, deletedAt: now });
+    supersedes = model.normalizeSupersedes([...supersedes, ...result.supersedes]);
+  });
+  const head = history[0];
+  assert.strictEqual(head.text, 'note v2');
+  const settings = { tombstones, supersedes };
+  assert.strictEqual(model.supersedeMap(supersedes).get(head.id), undefined, 'the live head is superseded by nothing');
+
+  const alone = model.mergeHistories(history, [], settings);
+  assert.deepStrictEqual(alone.map(i => i.text), ['note v2'], 'a merge must not drop the only copy of the head');
+
+  const withStale = model.mergeHistories(history, staleCopies, settings);
+  assert.deepStrictEqual(withStale.map(i => i.text), ['note v2'], 'every older version folds into the head');
+  assert.deepStrictEqual(model.groupsOf(withStale[0]), ['todo']);
+}
+
+{
+  // A stale copy whose lineage chain is broken (its target exists nowhere and
+  // was never tombstoned) used to bypass its own tombstone. That brought back
+  // two stale copies the user had explicitly deleted (2026-09-29 21:30).
+  const now = Date.now();
+  const editedAt = now - 20 * 86400000;
+  const stale = text('stale copy', { ts: (editedAt - 1000) / 1000, updatedAt: editedAt - 1000 });
+  const missingTarget = 'txt:' + '1'.repeat(64);
+  const link = { from: stale.id, to: missingTarget, updatedAt: editedAt };
+  const editMarker = { id: stale.id, deletedAt: editedAt };
+  const userDelete = { id: stale.id, deletedAt: now - 60000, rev: model.clipRevision(stale), revClock: model.itemMutationClock(stale) };
+
+  const lostTarget = model.mergeHistories([], [stale], { tombstones: [editMarker], supersedes: [link] });
+  assert.deepStrictEqual(lostTarget.map(i => i.text), ['stale copy'], 'target lost everywhere: the old version is still kept');
+
+  const deleted = model.mergeHistories([], [stale], { tombstones: [editMarker, userDelete], supersedes: [link] });
+  assert.deepStrictEqual(deleted, [], 'an explicit delete after the edit keeps the stale copy deleted');
+
+  const legacyDelete = { id: stale.id, deletedAt: now - 60000 };
+  assert.deepStrictEqual(model.mergeHistories([], [stale], { tombstones: [legacyDelete], supersedes: [link] }), [],
+    'a pre-rev delete well after the edit counts too');
+
+  const touchedLater = { ...stale, updatedAt: now };
+  assert.deepStrictEqual(model.mergeHistories([], [touchedLater], { tombstones: [userDelete], supersedes: [link] }).map(i => i.text),
+    ['stale copy'], 'a copy changed after the delete still beats it');
+}
+
+{
+  // Lineage tripwire: whatever rule drops it, a merge must not lose the only
+  // version of a note the user never deleted. A same-ms A->B->A pair is the
+  // one cycle the link filter cannot order, so it reaches the old drop path.
+  const now = Date.now() - 1000;
+  const a = text('note text A', { ts: (now - 5000) / 1000, updatedAt: now - 5000 });
+  const b = 'txt:' + '2'.repeat(64);
+  const settings = {
+    tombstones: [{ id: a.id, deletedAt: now }, { id: b, deletedAt: now }],
+    supersedes: [{ from: a.id, to: b, updatedAt: now }, { from: b, to: a.id, updatedAt: now }],
+  };
+  const report = [];
+  const merged = model.mergeHistories([a], [], settings, report);
+  assert.deepStrictEqual(merged.map(i => i.text), ['note text A'], 'the only version of the note is kept');
+  assert.deepStrictEqual(report.map(r => r.event), ['drop_blocked']);
+
+  // An explicit delete still removes it, and is reported as one.
+  const deletedReport = [];
+  const userDeleted = { ...settings, tombstones: [{ id: a.id, deletedAt: now + 500, rev: model.clipRevision(a), revClock: model.itemMutationClock(a) }] };
+  assert.deepStrictEqual(model.mergeHistories([a], [], userDeleted, deletedReport), []);
+  assert.deepStrictEqual(deletedReport.map(r => [r.event, r.reason]), [['dropped', 'deleted']]);
+}
+
+{
+  // The report: a stale local copy folded into a newer version is 'superseded';
+  // a remote copy that beats its own tombstone is 'revived'.
+  const now = Date.now();
+  const oldItem = text('old body', { ts: (now - 9000) / 1000, updatedAt: now - 9000 });
+  const newItem = text('new body', { ts: now / 1000, updatedAt: now });
+  const recopied = text('recopied', { ts: now / 1000, updatedAt: now });
+  const report = [];
+  model.mergeHistories([oldItem], [newItem, recopied], {
+    tombstones: [{ id: oldItem.id, deletedAt: now - 5000 }, { id: recopied.id, deletedAt: now - 60000 }],
+    supersedes: [{ from: oldItem.id, to: newItem.id, updatedAt: now - 5000 }],
+  }, report);
+  assert.deepStrictEqual(report.map(r => [r.event, r.reason || '', r.id === recopied.id]).sort(),
+    [['dropped', 'superseded', false], ['revived', '', true]]);
+}
+
+{
   // --- Rich clipboard payloads (html + rtf) ---------------------------------
   // A clip captured from a rich source keeps its formatting so re-pasting into
   // Gmail/Docs/Word is not silently downgraded to plain text.

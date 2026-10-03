@@ -2484,6 +2484,46 @@
     if (!right) return false;
     return leftLines.every((line) => right.includes(line));
   }
+  // Same line, reworded? At least half the words shared (or one contains the
+  // other), so "ship the beta friday" ~ "ship the beta on monday".
+  function similarLine(a, b) {
+    const words = (s) => new Set(String(s).toLowerCase().match(/[\p{L}\p{N}]+/gu) || []);
+    const wa = words(a);
+    const wb = words(b);
+    if (!wa.size || !wb.size) return String(a).trim() === String(b).trim();
+    let shared = 0;
+    for (const w of wa) if (wb.has(w)) shared += 1;
+    return shared / Math.max(wa.size, wb.size) >= 0.5 || String(a).includes(String(b)) || String(b).includes(String(a));
+  }
+  // The automatic merge of one 2-way chunk (Result side vs Incoming side, no
+  // common base to consult), decided line by line - a diff chunk often lumps a
+  // line Incoming lacks together with an Incoming addition:
+  //   Incoming adds lines        -> taken
+  //   Incoming lacks lines       -> kept (a stale copy missing lines looks
+  //                                 exactly like this; never delete silently)
+  //   Incoming rewords/grows one -> taken (every Result line has a counterpart)
+  //   unrelated lines collide    -> 'conflict', a person has to pick
+  // Returns { verdict: 'apply' | 'keep' | 'conflict', text } where `text` is the
+  // merged chunk for 'apply' ('keep' = Result already is the answer).
+  function smartMergeChunk(resultText, incomingText) {
+    const norm = (s) => s.replace(/\s+/g, ' ').trim();
+    const content = (lines) => lines.map(norm).filter(Boolean);
+    let changed = false;
+    const out = [];
+    for (const seg of diffLineHunks(resultText, incomingText)) {
+      if (seg.type === 'same') { out.push(...seg.leftLines); continue; }
+      const mine = content(seg.leftLines);
+      const theirs = content(seg.rightLines);
+      if (!theirs.length) { out.push(...seg.leftLines); continue; }
+      const taken = !mine.length
+        || losslessChange(seg.leftLines.join('\n'), seg.rightLines.join('\n'))
+        || mine.every((line) => theirs.some((other) => similarLine(line, other)));
+      if (!taken) return { verdict: 'conflict', text: null };
+      out.push(...seg.rightLines);
+      changed = true;
+    }
+    return changed ? { verdict: 'apply', text: out.join('\n') } : { verdict: 'keep', text: null };
+  }
   // IntelliJ-style merge built on the vendored CodeMirror 5 merge addon
   // (site/shared/vendor/cm5, loaded by BOTH editor.html and the demo).
   //
@@ -2549,13 +2589,16 @@
         <span class="bc-title-opts" data-x="titleopts"></span>
       </div>
       <div class="bc-merge-heads ${threeWay ? 'bc-heads-3' : 'bc-heads-2'}">${headsHtml}</div>
+      <div class="bc-merge-note" data-x="note" hidden></div>
       <div class="bc-merge-host" data-x="host"></div>
-      <div class="bc-reconcile-actions">
-        <button type="button" data-x="left">Accept current</button>
-        <button type="button" data-x="right">Accept incoming</button>
-        <button type="button" data-x="both">Keep both</button>
-        ${record.unify ? '' : '<button type="button" data-x="remove">Remove conflict</button>'}
-        <button type="button" class="primary" data-x="save">${escapeHtml(record.saveLabel || 'Save merged')}</button>
+      <div class="bc-reconcile-actions ${threeWay ? 'bc-heads-3' : 'bc-heads-2'}" data-x="actions">
+        <span class="bc-act-left"><button type="button" data-x="left">Accept current</button></span>
+        <span class="bc-act-mid">
+          <button type="button" data-x="both">Keep both</button>
+          ${record.unify ? '' : '<button type="button" data-x="remove">Remove conflict</button>'}
+          <button type="button" class="primary" data-x="save">${escapeHtml(record.saveLabel || 'Save merged')}</button>
+        </span>
+        <span class="bc-act-right"><button type="button" data-x="right">Accept incoming</button></span>
       </div>`;
     const q = (name) => root.querySelector(`[data-x="${name}"]`);
     const dialogs = createDialogs(root);
@@ -2621,8 +2664,16 @@
           if (ignoreWs && wsEqualChunk(dv, chunk)) { out.quiet.push({ dv, chunk }); continue; }
           out.changes += 1;
           out.activeBySide[dv.type].push(chunk);
-          if (declinedKeys.has(keyOf(dv.type, chunk))) out.declined += 1;
-          else out.pending.push({ side: dv.type, dv, chunk });
+          if (declinedKeys.has(keyOf(dv.type, chunk))) { out.declined += 1; continue; }
+          const p = { side: dv.type, dv, chunk };
+          if (!threeWay) {
+            const r = chunkRanges(dv, chunk);
+            const smart = smartMergeChunk(dv.edit.getRange(r.editStart, r.editEnd), dv.orig.getRange(r.origStart, r.origEnd));
+            p.verdict = smart.verdict;
+            p.mergedText = smart.text;
+            if (p.verdict === 'conflict') out.conflicts.push({ from: chunk.editFrom, to: Math.max(chunk.editTo, chunk.editFrom + 1) });
+          }
+          out.pending.push(p);
         }
       }
       if (threeWay) {
@@ -2662,6 +2713,24 @@
       if (pj) pj.onclick = () => { const p = survey().pending[0]; if (p) scrollToLine(p.chunk.editFrom); };
       const cj = q('confjump');
       if (cj) cj.onclick = () => { const c = survey().conflicts[0]; if (c) scrollToLine(c.from); };
+      // A Unify step only saves what the Smart merge can settle on its own.
+      if (record.unify) {
+        const n = info.conflicts.length;
+        q('save').disabled = n > 0;
+        q('save').title = n
+          ? `${n} conflict${n === 1 ? '' : 's'} left: use the arrow in the gap to take incoming, the x to keep yours, Alt+B to keep both, or edit Result`
+          : 'Takes the incoming additions and rewordings, keeps lines that incoming lacks, then saves';
+      }
+      // Two panes with no markers read as "nothing happened". When the only
+      // differences are whitespace the view is hiding, say so explicitly.
+      const note = q('note');
+      const result = currentText();
+      const wsHidden = !info.changes && ignoreWs && (result !== rightText || (threeWay && result !== leftText));
+      note.hidden = !wsHidden;
+      if (wsHidden) {
+        note.innerHTML = 'Same text on both sides: the only differences are whitespace, hidden while Ignore whitespace is on. <button type="button" data-x="showws">Show them</button>';
+        q('showws').onclick = () => q('ws').click();
+      }
       // Line paint: quiet chunks lose the green chunk background on both panes;
       // declined chunks dim their text; conflict regions tint red.
       clearLineClasses();
@@ -2737,34 +2806,35 @@
       if (dv.bcRedraw) dv.bcRedraw();
       updateStatus();
     }
-    function mergeAllNonConflicting() {
-      if (!mv) return;
-      const info = survey();
-      const inConflict = (c) => info.conflicts.some((reg) => c.editFrom <= reg.to && reg.from <= c.editTo);
-      const safe = info.pending.filter((p) => !inConflict(p.chunk))
-        .sort((a, b) => b.chunk.editFrom - a.chunk.editFrom); // bottom-up keeps earlier coords valid
-      for (const p of safe) applyChunk(p.side, p.chunk);
-      forceRecompute();
-      updateStatus(); // deterministic: recompute done, so the count reflects reality now
-    }
-    // What "Merge & continue" does before saving a Unify step: pull in every
-    // pending chunk that cannot lose Result text (insertions, grown lines,
-    // appended paragraphs). A chunk that would REPLACE Result text stays pending
-    // and is surfaced by the save confirm - that one needs a human decision.
-    function mergeLosslessPending() {
+    // ONE automatic merge, used by the toolbar button AND by "Merge & continue"
+    // before a Unify step saves. 3-pane: every pending chunk outside a conflict
+    // region (the base says which side changed). 2-pane: smartMergeChunk
+    // decides - its merged text replaces the chunk, a block Incoming merely
+    // lacks is kept (declined, so it stops counting as pending), real conflicts
+    // stay pending and red for a person. Writing a merged chunk re-chunks the
+    // diff (kept lines become their own chunk), so it repeats until stable.
+    function autoMergeNonConflicting() {
       if (!mv) return 0;
-      const info = survey();
-      const inConflict = (c) => info.conflicts.some((reg) => c.editFrom <= reg.to && reg.from <= c.editTo);
-      const chunkTexts = (p) => {
-        const r = chunkRanges(p.dv, p.chunk);
-        return { left: p.dv.edit.getRange(r.editStart, r.editEnd), right: p.dv.orig.getRange(r.origStart, r.origEnd) };
-      };
-      const safe = info.pending
-        .filter((p) => !inConflict(p.chunk) && (() => { const tx = chunkTexts(p); return losslessChange(tx.left, tx.right); })())
-        .sort((a, b) => b.chunk.editFrom - a.chunk.editFrom);
-      for (const p of safe) applyChunk(p.side, p.chunk);
-      if (safe.length) { forceRecompute(); updateStatus(); }
-      return safe.length;
+      let total = 0;
+      for (let pass = 0; pass < 4; pass += 1) {
+        const info = survey();
+        const inConflict = (c) => info.conflicts.some((reg) => c.editFrom <= reg.to && reg.from <= c.editTo);
+        const open = info.pending.filter((p) => !inConflict(p.chunk));
+        for (const p of open) if (p.verdict === 'keep') declinedKeys.add(keyOf(p.dv.type, p.chunk));
+        const take = open.filter((p) => threeWay || p.verdict === 'apply')
+          .sort((a, b) => b.chunk.editFrom - a.chunk.editFrom); // bottom-up keeps earlier coords valid
+        for (const p of take) {
+          if (threeWay) { applyChunk(p.side, p.chunk); continue; }
+          const r = chunkRanges(p.dv, p.chunk);
+          mv.editor().replaceRange(p.mergedText, r.editStart, r.editEnd);
+        }
+        for (const dv of [mv.left, mv.right]) if (dv && dv.bcRedraw) dv.bcRedraw();
+        forceRecompute();
+        total += take.length;
+        if (!take.length) break;
+      }
+      updateStatus(); // deterministic: recompute done, so the count reflects reality now
+      return total;
     }
     // Ignore-whitespace, the diff-viewer way: normalize blank-line RUNS (and
     // trailing whitespace) so regions that differ only in blank spacing become
@@ -2839,21 +2909,27 @@
     const removeBtn = q('remove');
     if (removeBtn) removeBtn.onclick = () => resolve('remove');
     q('save').onclick = async () => {
-      // Unify's primary button says "Merge & continue", so it MERGES first:
-      // every lossless pending chunk is pulled into Result. Only chunks that
-      // would replace Result text are left for the confirm below (the button
-      // used to save as-is and warn, which read as "merge did nothing").
-      if (record.unify) mergeLosslessPending();
+      if (record.unify && mv) {
+        // Nothing but (hidden) whitespace differs: keep the newer clip verbatim
+        // rather than the whitespace-normalized Result.
+        if (!survey().changes) { resolve('save', { text: rawRight }); return; }
+        // "Merge & continue" MERGES first (the button used to save as-is and
+        // warn, which read as "merge did nothing"); anything still open is a
+        // conflict, which disables the button instead of saving.
+        autoMergeNonConflicting();
+        const open = survey().pending;
+        if (open.length) { updateStatus(); scrollToLine(open[0].chunk.editFrom); return; }
+        resolve('save');
+        return;
+      }
       // Unhandled = real changes neither merged nor dismissed (Result starts as
       // Current, so an unpulled incoming replacement = potential loss).
       const pending = mv ? survey().pending.length : 0;
       if (pending > 0) {
         const ok = await dialogs.confirm({
           title: `${pending} change${pending === 1 ? '' : 's'} still pending`,
-          message: record.unify
-            ? 'It would replace text in Result, so it was not merged automatically. Merge it with the arrow, Keep both to append it, or save Result as it is.'
-            : 'Save anyway with the current Result?',
-          okLabel: record.unify ? 'Save as is' : 'Save',
+          message: 'Save anyway with the current Result?',
+          okLabel: 'Save',
         });
         if (!ok) return;
       }
@@ -2861,7 +2937,7 @@
     };
     q('prevchg').onclick = () => jumpChange(-1);
     q('nextchg').onclick = () => jumpChange(1);
-    q('mergeall').onclick = () => mergeAllNonConflicting();
+    q('mergeall').onclick = () => autoMergeNonConflicting();
     q('ws').classList.toggle('active', ignoreWs);
     q('ws').onclick = () => {
       if (!mv) return;
@@ -2873,6 +2949,24 @@
     root.addEventListener('keydown', (event) => {
       if (event.key === 'Escape' && !dialogs.isOpen()) { event.preventDefault(); if (o.onClose) o.onClose(); }
     });
+    // One row (Accept current | Keep both + primary | Accept incoming) while it
+    // fits; narrower, each accept button moves under its own pane and the
+    // primary group gets its own centred row. Measured once in the row layout:
+    // the side columns are equal (1fr), so the wider side sets both.
+    const actions = q('actions');
+    let rowNeed = 0;
+    const fitActions = () => {
+      if (!rowNeed && !actions.classList.contains('bc-actions-stacked')) {
+        const w = (sel) => actions.querySelector(sel).getBoundingClientRect().width;
+        const cs = getComputedStyle(actions);
+        if (w('.bc-act-mid') > 0) {
+          rowNeed = 2 * Math.max(w('.bc-act-left'), w('.bc-act-right')) + w('.bc-act-mid')
+            + 2 * (parseFloat(cs.columnGap) || 0) + (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0);
+        }
+      }
+      if (rowNeed) actions.classList.toggle('bc-actions-stacked', actions.clientWidth < rowNeed);
+    };
+    if (typeof ResizeObserver !== 'undefined') new ResizeObserver(fitActions).observe(actions);
     return { el: root, getValue: value };
   }
   function sortItems(items) {
@@ -3031,6 +3125,7 @@
     diffLineHunks,
     unionMergeText,
     losslessChange,
+    smartMergeChunk,
     createReconciliationView,
     sortItems,
     touchItem,

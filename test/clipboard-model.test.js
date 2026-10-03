@@ -919,6 +919,20 @@ function text(text, extra = {}) {
 }
 
 {
+  // Copying text that matches an OLDER version of an edited note: the fresh
+  // copy is newer than the edit, so the lineage must not fold it into the
+  // edited note (it used to vanish from history on the next sync pass).
+  const now = Date.now();
+  const editedAt = now - 3600000;
+  const edited = text('edited note v2', { ts: editedAt / 1000, updatedAt: editedAt });
+  const recopied = text('original wording v1', { ts: now / 1000, updatedAt: now });
+  const staleCopy = { ...recopied, ts: (editedAt - 5000) / 1000, updatedAt: editedAt - 5000 };
+  const settings = { tombstones: [{ id: recopied.id, deletedAt: editedAt }], supersedes: [{ from: recopied.id, to: edited.id, updatedAt: editedAt }] };
+  assert.deepStrictEqual(model.mergeHistories([recopied, edited], [], settings).map(i => i.text).sort(), ['edited note v2', 'original wording v1'], 'a fresh re-copy survives');
+  assert.deepStrictEqual(model.mergeHistories([edited], [staleCopy], settings).map(i => i.text), ['edited note v2'], 'a pre-edit copy still folds into the edit');
+}
+
+{
   // Lineage tripwire: whatever rule drops it, a merge must not lose the only
   // version of a note the user never deleted. A same-ms A->B->A pair is the
   // one cycle the link filter cannot order, so it reaches the old drop path.

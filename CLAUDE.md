@@ -25,7 +25,10 @@
   the user explicitly deleted came back. Incident: "forge launch plan" head of 29 Sep vanished, the 3 and
   7 Sep versions (deleted that same evening) resurrected, the next edit started from 7 Sep. Fix: a link
   whose `from` has a NEWER link into it is dropped (A is live again); a tombstone with `rev` or >5 s after
-  the link is a real delete and runs `tombstoneSuppresses` even inside a lineage. Defence in depth: the
+  the link is a real delete and runs `tombstoneSuppresses` even inside a lineage. A copy whose own
+  mutation clock is >5 s NEWER than its outgoing link (that old text copied again, or pinned/titled after
+  the edit) is "reborn": no lineage, so it is not folded into the edited note (it used to vanish from
+  history on the next sync pass); its tombstone's version guard decides instead. Defence in depth: the
   LINEAGE TRIPWIRE at the end of `mergeHistories` keeps any local clip a merge would drop unless its own
   (or its lineage head's) tombstone is an explicit delete or a newer version of the same note survives
   (`lineageFamilies`); it reports `drop_blocked` (diagnostics `sync.lineage_drop_blocked`). The optional

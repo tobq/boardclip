@@ -1123,16 +1123,19 @@ function mergeItems(localItem, remoteItem) {
 }
 
 // The ONE merge every sync path goes through, so the forensics log sees them all.
-const forensicsBlockedSeen = new Set();
+// One sync pass can fold the same clip more than once (per provider, rebase
+// re-fold) and a blocked drop repeats every pass until its cause is fixed, so
+// each event+clip is logged at most once an hour.
+const forensicsLastLogged = new Map();
+const FORENSICS_REPEAT_MS = 60 * 60 * 1000;
 function mergeHistories(local, remote) {
   const report = [];
   const merged = clipboardModel.mergeHistories(local, remote, settings, report);
+  const now = Date.now();
   for (const entry of report) {
-    // A blocked drop repeats on every pass until the cause is fixed: log it once.
-    if (entry.event === 'drop_blocked') {
-      if (forensicsBlockedSeen.has(entry.id)) continue;
-      forensicsBlockedSeen.add(entry.id);
-    }
+    const key = `${entry.event}:${entry.reason || ''}:${entry.id}`;
+    if (now - (forensicsLastLogged.get(key) || 0) < FORENSICS_REPEAT_MS) continue;
+    forensicsLastLogged.set(key, now);
     const item = entry.item || {};
     const details = {
       id: entry.id,

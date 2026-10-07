@@ -12,26 +12,12 @@
 <script src="site/shared/vendor/cm5/diff-match-patch.js"></script>
 <script src="site/shared/vendor/cm5/merge.js"></script>
 <link rel="stylesheet" href="site/shared/clipboard-popup.css">
+<link rel="stylesheet" href="site/shared/clipboard-window.css">
 <style>
-  /* Editor window shell only; the editor itself + theme vars come from the
-     shared clipboard-popup.css + Core.createEditor (single source with demo). */
-  * { margin:0; padding:0; box-sizing:border-box; }
-  html, body { height:100%; overflow:hidden; }
-  body { font-family:system-ui,'Segoe UI',sans-serif; background:var(--bg); color:var(--text); }
-  /* Frosted glass, same as the popup: the OS blurs behind a transparent window;
-     this scrim just tints for legibility. */
-  :root[data-surface="glass"] body { background:transparent; }
-  :root[data-surface="glass"] body::before {
-    content:""; position:fixed; inset:0; z-index:-1; background:var(--glass-tint);
-    backdrop-filter:var(--glass-blur); -webkit-backdrop-filter:var(--glass-blur);
-  }
-  @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
-    :root[data-surface="glass"] body { background:var(--surface); }
-    :root[data-surface="glass"] body::before { display:none; }
-  }
+  /* Editor window shell only; the editor itself + tokens come from the shared
+     clipboard-popup.css + Core.createEditor (single source with the demo), the
+     window base (reset, font, background, glass scrim) from clipboard-window.css. */
   #editorHost { height:100%; }
-  ::-webkit-scrollbar { width:10px; }
-  ::-webkit-scrollbar-thumb { background:var(--line-strong); border-radius:5px; }
 </style></head><body>
 <div id="editorHost"></div>
 <div class="toast" id="toast">Copied</div>

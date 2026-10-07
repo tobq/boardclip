@@ -4695,6 +4695,13 @@ async function numpadPasteAndHide(slot) {
 }
 
 function createTray() {
+  // A throwaway QA instance (BOARDCLIP_ISOLATED=1) puts no icon in the tray: it
+  // would sit beside the live app's, look the same, and its Quit would end a QA
+  // run (every tray call already checks `if (!tray)`).
+  if (process.env.BOARDCLIP_ISOLATED === '1') {
+    diagnostics.record('tray.create', { isolated: true, created: false });
+    return;
+  }
   let trayIcon;
   if (process.platform === 'darwin' && fs.existsSync(TRAY_TEMPLATE_ICON_PATH)) {
     // Menu bar: the monochrome template glyph (iconTemplate.png + @2x, from
@@ -7023,7 +7030,9 @@ app.whenReady().then(() => {
   registerShortcuts();
   startDiagnosticsMonitor();
   startP2PSync();
-  autoUpdater.start();
+  // A throwaway QA instance never self-updates: from a clean dev checkout its
+  // updater would git pull that checkout and relaunch ~90 s in.
+  if (process.env.BOARDCLIP_ISOLATED !== '1') autoUpdater.start();
 
   // AI Access: if enabled, bring up the control channel + idempotently repair the
   // MCP registration in every detected client (also refreshes the discovery file

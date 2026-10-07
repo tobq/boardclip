@@ -1,16 +1,26 @@
 /* ============================================================
-   BoardClip design tokens — the single source of truth for the
+   BoardClip design tokens - the single source of truth for the
    whole product (app popup, editor, conflict view, AI-approval
    modal, and the marketing site). Imported first by
    clipboard-popup.css (@import) and by site/styles.css so every
    surface renders from ONE palette/scale and cannot drift.
 
    Three tiers:
-     (a) PRIMITIVES on :root         — raw, theme-independent scales
-     (b) SEMANTIC on [data-theme]    — the names components reference
-     (c) VARIANT overrides           — data-surface/-accent/-density/
+     (a) PRIMITIVES + ROLES on :root - raw scales plus the role
+                                       tokens components size with
+                                       (type, weight, control height,
+                                       radius, gutter, bar height)
+     (b) SEMANTIC on [data-theme]    - the colour names components
+                                       reference
+     (c) VARIANT overrides           - data-surface/-accent/-density/
                                        -corners/-borders swap a small,
-                                       disjoint set of semantic tokens
+                                       disjoint set of tokens
+   Components size text, controls and corners with the ROLE tokens
+   (--fs-meta/--fs-ui/--fs-text, --fw-*, --lh-*, --ctl-*, --r-ctl/
+   --r-chip/--r-panel, --gutter); the raw --sp-* and --r-1..4 scales
+   stay for spacing and inset corners. Density and corners remap the
+   role tokens directly (a role token resolved on :root would not see
+   a .bc-popup variant override of the primitive it points at).
    Cascade (later wins on equal specificity):
      primitives -> theme -> surface -> accent -> density -> corners/borders
    All variant attributes ride on the SAME element that carries
@@ -18,7 +28,7 @@
    on the demo window), mirrored in every selector below.
    ============================================================ */
 
-/* (a) PRIMITIVES — raw scales, identical in every theme */
+/* (a) PRIMITIVES - raw scales, identical in every theme */
 :root {
   /* Graphite ramp (cool-tinted neutral), dark -> light */
   --g-950: #0b0d10;
@@ -34,6 +44,7 @@
   --g-200: #cdd2d8;
   --g-100: #e6e8eb;
   --g-050: #f4f5f7;
+  --white: #ffffff;
 
   /* Brand accent (cool blue) + audition accents */
   --blue-600: #2563eb;
@@ -43,131 +54,166 @@
   --teal-500: #14b8a6;
   --teal-400: #2dd4bf;
 
-  /* Functional status colours — never used as the brand accent */
+  /* Functional status colours - never used as the brand accent.
+     500 = dark theme, 600 = light theme. */
   --green-500: #34d399;
+  --green-600: #059669;
   --amber-500: #f59e0b;
+  --amber-600: #d97706;
   --red-500: #f87171;
+  --red-600: #dc2626;
 
   /* Spacing scale (4/8-based) */
   --sp-1: 2px;  --sp-2: 4px;  --sp-3: 6px;  --sp-4: 8px;   --sp-5: 10px;
   --sp-6: 12px; --sp-7: 14px; --sp-8: 16px; --sp-10: 20px; --sp-12: 24px;
+  /* Left/right padding of every bar and content area, in every window */
+  --gutter: 14px;
+  --bar-h: 32px;
 
-  /* Radius scale */
+  /* Radius scale + roles: controls, chips, floating surfaces */
   --r-1: 4px; --r-2: 6px; --r-3: 8px; --r-4: 10px; --r-pill: 999px;
+  --r-ctl: 6px; --r-chip: 999px; --r-panel: 8px;
 
-  /* Type scale */
-  --fs-1: 10px; --fs-2: 11px; --fs-3: 12px; --fs-4: 13px; --fs-5: 14px; --fs-6: 18px;
-  --lh-tight: 1.3; --lh-body: 1.5;
+  /* Type roles. meta = row meta, chips, overlines, foot/status text, counts;
+     ui = every label, menu item, button, input value, clip title/preview,
+     dialog body; text = anything you type into (search, editor, find, title,
+     merge panes); display = site hero only. Nothing smaller than 11px. */
+  --fs-meta: 11px; --fs-ui: 12px; --fs-text: 13px; --fs-display: 18px;
+  --lh-ui: 1.35; --lh-text: 1.5;
+  /* Two weights only */
+  --fw-regular: 400; --fw-strong: 600;
+  --font-sans: system-ui, "Segoe UI", -apple-system, sans-serif;
+  --font-mono: "Cascadia Code", "Consolas", ui-monospace, monospace;
 
-  /* Icon sizes (Material Symbols) */
+  /* Control heights: chips/keys/foot buttons, icon buttons/menu rows,
+     inputs/segmented/.btn. Height + horizontal padding, no vertical padding. */
+  --ctl-sm: 20px; --ctl-md: 24px; --ctl-lg: 28px;
+
+  /* Icon sizes (Material Symbols): md in a --ctl-md box, sm in a --ctl-sm box */
   --icon-sm: 14px; --icon-md: 16px; --icon-lg: 18px;
 
-  /* Motion */
+  /* Motion: the one duration + curve for every state transition */
   --dur: 130ms;
   --ease: cubic-bezier(.2, .7, .2, 1);
 
-  /* Fonts + glass blur (theme-independent) */
-  --font-mono: "Cascadia Code", "Consolas", ui-monospace, monospace;
+  /* Glass blur (theme-independent) */
   --glass-blur: blur(14px) saturate(1.3);
 }
 
-/* Theme-agnostic derived vars (reference semantic tokens set below) */
+/* Theme-agnostic derived vars (reference semantic tokens set below, so they
+   resolve per element, accent and theme variants included) */
 :root[data-theme], .bc-popup[data-theme] {
-  --list-scrollbar-width: thin;
-  --list-scrollbar-size: 8px;
-  --list-scrollbar-thumb: var(--line-strong);
-  --list-scrollbar-thumb-hover: var(--text-dim);
-  --list-scrollbar-border: 2px solid var(--surface);
+  /* The one scrollbar: an inset thumb (2px transparent border + padding-box
+     clip in the shared rule), so it works on any surface, glass included. */
+  --scrollbar-size: 8px;
+  --scrollbar-thumb: var(--line-strong);
+  --scrollbar-thumb-hover: var(--text-dim);
+  /* The one keyboard focus ring (box-shadow: no outline, no layout shift) */
+  --focus-ring: 0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent);
+  /* Resting fill of a .btn: a tint of the text colour, so it reads on any
+     surface (popup, settings, an opaque dialog, glass). */
+  --ctl-fill: color-mix(in srgb, var(--text) 9%, transparent);
+  --ctl-fill-hover: color-mix(in srgb, var(--text) 15%, transparent);
+  /* Alias kept for site/styles.css (.demo-foot) until the site moves to
+     --line-faint (phase 9). */
+  --line-soft: var(--line-faint);
 }
 
-/* (b) SEMANTIC — the ONLY names components reference. Keep names
-   stable across the redesign; only the mapped VALUES change. */
+/* (b) SEMANTIC - the ONLY colour names components reference. Keep names
+   stable across the redesign; only the mapped VALUES change.
+   Lines: --line = section/bar/pane dividers, --line-faint = list row
+   separators, --menu-edge = the 1px ring of floating surfaces. --line-strong
+   is a fill (scrollbar thumb, switch track), never a 1px line.
+   Hovers: --hover on in-surface transparent things, --menu-hover in menus. */
 :root[data-theme="dark"], .bc-popup[data-theme="dark"] {
   color-scheme: dark;
   --bg: var(--g-950);
   --surface: var(--g-850);
   --surface2: var(--g-800);
   --input: var(--g-900);
-  --menu: var(--g-800);                   /* floating menus/dialogs — stays OPAQUE under glass */
-  --menu-hover: var(--g-700);             /* menu-item hover — a step lighter than --menu so it reads */
+  --menu: var(--g-800);                   /* floating menus/dialogs - stays OPAQUE under glass */
+  --menu-hover: var(--g-700);             /* menu-item hover - a step lighter than --menu so it reads */
   --menu-edge: rgba(255, 255, 255, .15);  /* soft 1px ring so menus separate from the backdrop */
   --text: var(--g-100);
   --text-dim: var(--g-400);
   --line: var(--g-750);
   --line-strong: var(--g-700);
-  --line-soft: var(--g-900);
+  --line-faint: var(--g-900);
   --hover: color-mix(in srgb, var(--g-100) 6%, transparent);
-  --hover-strong: var(--g-800);
   --accent: var(--blue-500);
   --accent-hover: var(--blue-400);
   --accent-bg: color-mix(in srgb, var(--accent) 16%, transparent);
   --accent-bg-strong: color-mix(in srgb, var(--accent) 26%, transparent);
   --active-fg: var(--g-950);              /* dark ink on blue = 5.7:1, beats white */
   --shadow: rgba(0, 0, 0, .5);
+  --scrim: rgba(0, 0, 0, .5);             /* backdrop behind a modal dialog */
   --green: var(--green-500);
   --green-bg: color-mix(in srgb, var(--green) 16%, transparent);
   --red: var(--red-500);
   --red-bg: color-mix(in srgb, var(--red) 14%, transparent);
+  --danger-fg: var(--g-950);              /* ink on --red (a danger button); accent variants never touch it */
   --pin: var(--amber-500);
   --mark-bg: color-mix(in srgb, var(--accent) 22%, transparent);
+  --mark-bg-current: color-mix(in srgb, var(--accent) 50%, transparent);
   --mark-fg: var(--blue-300);
   --glass-tint: rgba(15, 18, 22, .62);
-  --glass-border: color-mix(in srgb, var(--g-100) 10%, transparent);
 }
 :root[data-theme="light"], .bc-popup[data-theme="light"] {
   color-scheme: light;
   --bg: var(--g-050);
-  --surface: #ffffff;
+  --surface: var(--white);
   --surface2: var(--g-050);
-  --input: #ffffff;
-  --menu: #ffffff;                        /* floating menus/dialogs — stays OPAQUE under glass */
-  --menu-hover: var(--g-100);             /* menu-item hover — light grey on the white menu */
+  --input: color-mix(in srgb, var(--g-900) 6%, var(--white)); /* a fill that reads on white without a border */
+  --menu: var(--white);                   /* floating menus/dialogs - stays OPAQUE under glass */
+  --menu-hover: var(--g-100);             /* menu-item hover - light grey on the white menu */
   --menu-edge: rgba(24, 27, 31, .16);     /* soft 1px ring (dark, since white is invisible on white) */
   --text: var(--g-900);
   --text-dim: var(--g-500);
   --line: var(--g-100);
   --line-strong: var(--g-200);
-  --line-soft: color-mix(in srgb, var(--g-900) 8%, transparent); /* was invisible on white */
+  --line-faint: color-mix(in srgb, var(--g-900) 8%, transparent); /* was invisible on white */
   --hover: color-mix(in srgb, var(--g-900) 5%, transparent);
-  --hover-strong: var(--g-100);
   --accent: var(--blue-600);
   --accent-hover: var(--blue-500);
   --accent-bg: color-mix(in srgb, var(--accent) 12%, transparent);
   --accent-bg-strong: color-mix(in srgb, var(--accent) 20%, transparent);
-  --active-fg: #ffffff;                   /* white on blue-600 = 5.1:1, beats black */
+  --active-fg: var(--white);              /* white on blue-600 = 5.1:1, beats black */
   --shadow: rgba(24, 24, 27, .14);
-  --green: #059669;
+  --scrim: rgba(15, 18, 22, .28);
+  --green: var(--green-600);
   --green-bg: color-mix(in srgb, var(--green) 16%, transparent);
-  --red: #dc2626;
+  --red: var(--red-600);
   --red-bg: color-mix(in srgb, var(--red) 12%, transparent);
-  --pin: #d97706;
+  --danger-fg: var(--white);              /* white on red-600 = 4.8:1 */
+  --pin: var(--amber-600);
   --mark-bg: color-mix(in srgb, var(--accent) 16%, transparent);
+  --mark-bg-current: color-mix(in srgb, var(--accent) 40%, transparent);
   --mark-fg: var(--blue-600);
   --glass-tint: rgba(255, 255, 255, .5);
-  --glass-border: color-mix(in srgb, var(--g-900) 12%, transparent);
 }
 
-/* (c) VARIANT OVERRIDES — small, disjoint sets, authored after the
+/* (c) VARIANT OVERRIDES - small, disjoint sets, authored after the
    theme blocks so they win by source order at equal specificity. */
 
 /* Surface: glass makes card surfaces translucent so the OS acrylic/
    vibrancy backdrop shows through. color-mix can't read the token it
    is redefining, so these are authored per-theme (higher specificity
    than the plain theme block, so they also win cleanly). "solid" is a
-   no-op that exists so the switcher can force glass off. */
+   no-op that exists so the switcher can force glass off. A field stays
+   a step stronger than --surface so it reads without a border. */
 :root[data-theme="dark"][data-surface="glass"], .bc-popup[data-theme="dark"][data-surface="glass"] {
   --surface: color-mix(in srgb, var(--g-850) 58%, transparent);
   --surface2: color-mix(in srgb, var(--g-800) 58%, transparent);
   --input: color-mix(in srgb, var(--g-900) 62%, transparent);
 }
 :root[data-theme="light"][data-surface="glass"], .bc-popup[data-theme="light"][data-surface="glass"] {
-  --surface: color-mix(in srgb, #ffffff 54%, transparent);   /* whiter + more translucent so the blur shows */
-  --surface2: color-mix(in srgb, #ffffff 72%, transparent);  /* WHITE, not grey — brighter frost for hover/selected */
-  --input: color-mix(in srgb, #ffffff 72%, transparent);
+  --surface: color-mix(in srgb, var(--white) 54%, transparent);   /* whiter + more translucent so the blur shows */
+  --surface2: color-mix(in srgb, var(--white) 72%, transparent);  /* WHITE, not grey - brighter frost for hover/selected */
+  --input: color-mix(in srgb, var(--white) 86%, transparent);
 }
 
-/* Accent: blue is the default (no block). accent-bg / mark-bg re-derive
-   automatically because they are color-mix over --accent. */
+/* Accent: blue is the default (no block). accent-bg / mark-bg / focus ring
+   re-derive automatically because they are color-mix over --accent. */
 :root[data-accent="teal"], .bc-popup[data-accent="teal"] {
   --accent: var(--teal-500);
   --accent-hover: var(--teal-400);
@@ -180,20 +226,27 @@
   --mark-fg: var(--g-100);
 }
 
-/* Density: compact shrinks the spacing + type scale values only. */
+/* Density: compact tightens spacing, the gutter and control heights. The type
+   roles stay put (meta 11 / ui 12 / text 13 are already one step apart, so a
+   smaller ui or text would merge with its neighbour), and every spacing and
+   control step stays distinct. ui-tokens.test.js checks both under each
+   density. */
 :root[data-density="compact"], .bc-popup[data-density="compact"] {
-  --sp-4: 6px; --sp-5: 8px; --sp-6: 10px; --sp-7: 12px; --sp-8: 12px;
-  --fs-3: 11px; --fs-4: 12px; --fs-5: 13px;
+  --sp-3: 5px; --sp-4: 6px; --sp-5: 8px; --sp-6: 10px; --sp-7: 12px; --sp-8: 14px;
+  --gutter: 12px;
+  --ctl-sm: 18px; --ctl-md: 22px; --ctl-lg: 26px;
 }
 
-/* Corners: sharp tightens the radius scale. */
+/* Corners: sharp tightens the radius scale and the control/panel roles
+   (chips stay pills). */
 :root[data-corners="sharp"], .bc-popup[data-corners="sharp"] {
   --r-1: 2px; --r-2: 3px; --r-3: 4px; --r-4: 4px;
+  --r-ctl: 3px; --r-panel: 4px;
 }
 
-/* Borders: borderless dissolves divider lines (keeps a faint strong line). */
+/* Borders: borderless dissolves divider lines (keeps a faint strong fill). */
 :root[data-borders="borderless"], .bc-popup[data-borders="borderless"] {
   --line: transparent;
-  --line-soft: transparent;
+  --line-faint: transparent;
   --line-strong: color-mix(in srgb, var(--text) 8%, transparent);
 }

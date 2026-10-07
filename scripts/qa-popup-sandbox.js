@@ -1,91 +1,23 @@
 'use strict';
 
 // Sandbox QA for the keep-your-place list + image preview zoom, against the
-// REAL popup renderer: a throwaway instance (temp BOARDCLIP_DATA_DIR +
-// BOARDCLIP_ISOLATED=1 + its own --user-data-dir, cloud providers pre-disabled,
-// p2p/AI off) seeded with ~500 clips (texts + tiny/wide/tall/legacy images),
-// driven over raw CDP. The popup stays HIDDEN (nothing appears on the desktop)
-// and the system clipboard is never touched. A hidden page renders no frames,
-// so scroll events and rAF never fire on their own: the script dispatches
-// scroll events itself and calls rerenderList() directly.
+// REAL popup renderer: a throwaway instance from scripts/lib/qa-sandbox.js
+// (temp data + profile, BOARDCLIP_ISOLATED=1, cloud providers pre-disabled,
+// p2p/AI off, cloaked never-focused windows, in-memory clipboard) seeded with
+// ~500 clips (texts + tiny/wide/tall/legacy images), driven over raw CDP. The
+// popup is never opened (nothing appears on the desktop) and the system
+// clipboard is never touched. A hidden page renders no frames, so scroll events
+// and rAF never fire on their own: the script dispatches scroll events itself
+// and calls rerenderList() directly.
 //
-// Usage: node scripts/qa-popup-sandbox.js        (QA_SHOTS=<dir> is not used: hidden)
+// Usage: node scripts/qa-popup-sandbox.js        (QA_PERF=1: owner-scale keystroke timing only)
 
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
-const zlib = require('zlib');
-const { spawn, execSync } = require('child_process');
-const getCloudAccounts = require('../lib/cloud-accounts');
+const qa = require('./lib/qa-sandbox');
 
-const ROOT = path.join(__dirname, '..');
-const PORT = 18433;
-const results = [];
-const check = (name, ok, detail) => {
-  results.push({ name, ok: !!ok });
-  console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail != null ? `  (${String(detail).slice(0, 160)})` : ''}`);
-};
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-function connectCdp(wsUrl) {
-  return new Promise((resolve, reject) => {
-    const ws = new WebSocket(wsUrl);
-    let seq = 0;
-    const pending = new Map();
-    ws.onopen = () => resolve({
-      send(method, params) {
-        return new Promise((res, rej) => {
-          const id = ++seq;
-          pending.set(id, { res, rej });
-          ws.send(JSON.stringify({ id, method, params: params || {} }));
-        });
-      },
-      close: () => { try { ws.close(); } catch {} },
-    });
-    ws.onerror = () => reject(new Error(`ws error ${wsUrl}`));
-    ws.onmessage = (m) => {
-      let msg;
-      try { msg = JSON.parse(m.data); } catch { return; }
-      if (msg.id && pending.has(msg.id)) {
-        const p = pending.get(msg.id);
-        pending.delete(msg.id);
-        if (msg.error) p.rej(new Error(msg.error.message)); else p.res(msg.result);
-      }
-    };
-  });
-}
-async function evalIn(cdp, expression) {
-  const r = await cdp.send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
-  if (r.exceptionDetails) throw new Error(`eval failed: ${r.exceptionDetails.text} ${(r.exceptionDetails.exception || {}).description || ''}`.slice(0, 600));
-  return r.result ? r.result.value : undefined;
-}
-async function waitFor(fn, label, timeoutMs = 30000, stepMs = 300) {
-  const until = Date.now() + timeoutMs;
-  while (Date.now() < until) {
-    try { const v = await fn(); if (v) return v; } catch {}
-    await sleep(stepMs);
-  }
-  throw new Error(`timeout waiting for ${label}`);
-}
-
-// Minimal solid-colour PNG (RGB, 8-bit) for the seeded image clips.
-function pngBuffer(w, h, rgb) {
-  const chunk = (type, data) => {
-    const len = Buffer.alloc(4); len.writeUInt32BE(data.length);
-    const td = Buffer.concat([Buffer.from(type, 'ascii'), data]);
-    const crc = Buffer.alloc(4); crc.writeUInt32BE(zlib.crc32(td) >>> 0);
-    return Buffer.concat([len, td, crc]);
-  };
-  const ihdr = Buffer.alloc(13);
-  ihdr.writeUInt32BE(w, 0); ihdr.writeUInt32BE(h, 4);
-  ihdr[8] = 8; ihdr[9] = 2; ihdr[10] = 0; ihdr[11] = 0; ihdr[12] = 0;
-  const stride = w * 3 + 1;
-  const raw = Buffer.alloc(stride * h);
-  for (let y = 0; y < h; y += 1) {
-    for (let x = 0; x < w; x += 1) { const o = y * stride + 1 + x * 3; raw[o] = rgb[0]; raw[o + 1] = rgb[1]; raw[o + 2] = rgb[2]; }
-  }
-  return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', ihdr), chunk('IDAT', zlib.deflateSync(raw)), chunk('IEND', Buffer.alloc(0))]);
-}
+const { check, summary } = qa.createChecks();
+const sleep = qa.sleep;
 
 const IMAGES = {
   wide: { w: 1600, h: 400, rgb: [40, 120, 200] },
@@ -98,24 +30,9 @@ const N = 500;
 const PERF = process.env.QA_PERF === "1";
 
 async function main() {
-  const stamp = Date.now();
-  const dataDir = path.join(os.tmpdir(), `bc-qa-list-${stamp}`);
-  const userDataDir = path.join(os.tmpdir(), `bc-qa-list-ud-${stamp}`);
-  fs.mkdirSync(path.join(dataDir, 'clipboard-images'), { recursive: true });
-  fs.mkdirSync(userDataDir, { recursive: true });
-  const accounts = await getCloudAccounts().catch(() => []);
-  fs.writeFileSync(path.join(dataDir, 'clipboard-settings.json'), JSON.stringify({
-    sync_disabled_paths: accounts.map((a) => a.path),
-    p2p_enabled: false,
-    ai_access_enabled: false,
-    diagnostics_enabled: PERF, // perf mode: the renderer logs every refresh/rebuild with ms
-    theme_mode: 'dark',
-    max_age_days: 365,
-    max_size_gb: 5,
-  }, null, 2));
-
   // Seed: clip i is i minutes old; every 25th is an image cycling the kinds.
-  for (const [name, spec] of Object.entries(IMAGES)) fs.writeFileSync(path.join(dataDir, 'clipboard-images', `qa-${name}.png`), pngBuffer(spec.w, spec.h, spec.rgb));
+  const images = {};
+  for (const [name, spec] of Object.entries(IMAGES)) images[`qa-${name}.png`] = qa.png(spec.w, spec.h, () => spec.rgb);
   const kinds = Object.keys(IMAGES);
   const now = Math.floor(Date.now() / 1000);
   const seed = [];
@@ -126,7 +43,7 @@ async function main() {
       const spec = IMAGES[kind];
       // Images are content-addressed by file: give each row its own copy.
       const file = `qa-${kind}-${i}.png`;
-      fs.copyFileSync(path.join(dataDir, 'clipboard-images', `qa-${kind}.png`), path.join(dataDir, 'clipboard-images', file));
+      images[file] = images[`qa-${kind}.png`];
       seed.push(spec.noDims ? { type: 'image', image: file, ts } : { type: 'image', image: file, ts, width: spec.w, height: spec.h });
     } else {
       const extra = i % 7 === 0 ? `\nsecond line for ${i}\nthird line` : '';
@@ -145,29 +62,27 @@ async function main() {
     const para = words(400);
     seed.push({ type: 'text', text: `huge clip ${para.repeat(Math.ceil(31e6 / para.length))}`.slice(0, 31e6), ts: now - 90 }); // recent: ranks among the visible rows, like the owner's
   }
-  fs.writeFileSync(path.join(dataDir, 'clipboard-history.json'), JSON.stringify(seed));
-  console.log(`sandbox data: ${dataDir} (${seed.length} clips, ${(seed.reduce((s, it) => s + (it.text || '').length, 0) / 1e6).toFixed(1)} MB text, providers pre-disabled: ${accounts.length})`);
-
-  const electronBin = path.join(ROOT, 'node_modules', 'electron', 'dist', process.platform === 'win32' ? 'electron.exe' : 'electron');
-  const log = fs.openSync(path.join(dataDir, 'app.log'), 'a');
-  const child = spawn(electronBin, ['.', `--user-data-dir=${userDataDir}`, `--remote-debugging-port=${PORT}`], {
-    cwd: ROOT,
-    env: { ...process.env, BOARDCLIP_DATA_DIR: dataDir, BOARDCLIP_ISOLATED: '1' },
-    detached: true,
-    windowsHide: true,
-    stdio: ['ignore', log, log],
+  const sb = await qa.launch({
+    name: 'popup',
+    settings: {
+      diagnostics_enabled: PERF, // perf mode: the renderer logs every refresh/rebuild with ms
+      max_age_days: 365,
+      max_size_gb: 5,
+    },
+    history: seed,
+    images,
   });
-  child.unref();
-  console.log(`sandbox app pid ${child.pid}`);
+  console.log(`sandbox data: ${sb.dataDir} (${seed.length} clips, ${(seed.reduce((s, it) => s + (it.text || '').length, 0) / 1e6).toFixed(1)} MB text, providers pre-disabled: ${sb.settings.sync_disabled_paths.length})`);
+  console.log(`sandbox app pid ${sb.pid}`);
 
   let cdp = null;
+  let cleanup = null;
   try {
-    const target = await waitFor(async () => (await (await fetch(`http://127.0.0.1:${PORT}/json/list`)).json()).find((t) => t.type === 'page' && /index\.html/.test(t.url)), 'popup target');
-    cdp = await connectCdp(target.webSocketDebuggerUrl);
-    await waitFor(() => evalIn(cdp, `typeof clipList !== 'undefined' && clipList.ids().length >= ${N - 5}`), 'popup rendered seeded clips');
+    cdp = await sb.popup();
+    await qa.waitFor(() => cdp.eval(`typeof clipList !== 'undefined' && clipList.ids().length >= ${N - 5}`), 'popup rendered seeded clips');
 
     // In-page helpers (the popup's top-level bindings are global lexicals).
-    await evalIn(cdp, `(() => {
+    await cdp.eval(`(() => {
       const L = () => document.getElementById('list');
       window.__qa = {
         idOf: (i) => { const it = items.find((x) => (x.text || '').startsWith('qa clip mk' + i + ' ')); return it ? it.id : null; },
@@ -190,8 +105,8 @@ async function main() {
       // Per-keystroke cost in the real popup: type a query one character at a
       // time (each = the rerender a keystroke triggers), then clear, then a
       // forced history refresh (what every capture / popup focus costs).
-      await waitFor(() => evalIn(cdp, `clipList.ids().length >= 13900`), 'big history loaded', 60000);
-      const perf = await evalIn(cdp, `(async () => {
+      await qa.waitFor(() => cdp.eval(`clipList.ids().length >= 13900`), 'big history loaded', 60000);
+      const perf = await cdp.eval(`(async () => {
         const typed = [];
         for (const word of ['forge launch', 'editor']) {
           for (let k = 1; k <= word.length; k += 1) typed.push(__qa.query(word.slice(0, k)));
@@ -256,7 +171,7 @@ async function main() {
       console.log(`      a FULL reload (fresh popup only): ${perf.refreshMs.toFixed(0)} ms wall, longest block ${perf.fullBlock.toFixed(0)} ms`);
       console.log(`      keystroke parts: ${Object.entries(perf.parts).map(([k, v]) => `${k} ${v.toFixed(1)} ms`).join(', ')}`);
       check('keystroke rerender p90 under 50 ms at owner scale', perf.p90 < 50, `p90 ${perf.p90.toFixed(1)} ms`);
-      const diag = path.join(dataDir, 'boardclip-diagnostics.jsonl');
+      const diag = path.join(sb.dataDir, 'boardclip-diagnostics.jsonl');
       if (fs.existsSync(diag)) {
         for (const line of fs.readFileSync(diag, 'utf8').split('\n')) {
           if (/"renderer\.(history\.refresh|indexes\.rebuild|settings\.refresh_groups)"|"history\.save/.test(line)) console.log('      diag', line.slice(0, 230));
@@ -269,7 +184,7 @@ async function main() {
     // 1. Initial render: windowed, newest first, no pill.
     // The sandbox's poller captures whatever is on the system clipboard at start
     // (read only), so "newest first" is checked by timestamp, not by mk0.
-    const init = await evalIn(cdp, `(() => {
+    const init = await cdp.eval(`(() => {
       const ts = clipList.ids().slice(0, 40).map((id) => items.find((x) => x.id === id).ts);
       return { rows: __qa.rows(), first: ts.every((t, i) => i === 0 || ts[i - 1] >= t) && clipList.ids().slice(0, 2).includes(__qa.idOf(0)), pill: __qa.pill(), h: document.getElementById('list').clientHeight };
     })()`);
@@ -277,7 +192,7 @@ async function main() {
     check('Newest pill hidden at the top', !init.pill.show, JSON.stringify(init.pill));
 
     // 2. Scroll deep, then a background rebuild keeps the exact place.
-    const deep = await evalIn(cdp, `(async () => {
+    const deep = await cdp.eval(`(async () => {
       __qa.scrollBy(9000);
       const a = __qa.top();
       await refresh({ force: true });
@@ -288,7 +203,7 @@ async function main() {
     check('Newest pill shows once scrolled away', deep.pill.show && /Newest/.test(deep.pill.label), JSON.stringify(deep.pill));
 
     // 3. A newer clip arriving above keeps the place and lights the pill dot.
-    const arrive = await evalIn(cdp, `(() => {
+    const arrive = await cdp.eval(`(() => {
       const a = __qa.top();
       const fresh = { id: 'txt:qa-fresh', type: 'text', text: 'qa fresh arrival', ts: Math.floor(Date.now() / 1000) + 5 };
       items = [fresh, ...items];
@@ -300,13 +215,13 @@ async function main() {
     check('new clip above: pill dot', arrive.pill.show && arrive.pill.dot && arrive.first === 'txt:qa-fresh', JSON.stringify(arrive.pill));
 
     // 4. The pill jumps to the newest and clears the dot.
-    const jump = await evalIn(cdp, `(() => { document.getElementById('listNewest').click(); return { scroll: document.getElementById('list').scrollTop, win: __qa.win(), pill: __qa.pill(), top: __qa.top().id }; })()`);
+    const jump = await cdp.eval(`(() => { document.getElementById('listNewest').click(); return { scroll: document.getElementById('list').scrollTop, win: __qa.win(), pill: __qa.pill(), top: __qa.top().id }; })()`);
     check('pill click -> top, window reset, dot cleared', jump.scroll === 0 && jump.win.start === 0 && !jump.pill.show && jump.top === 'txt:qa-fresh', JSON.stringify(jump));
-    await evalIn(cdp, `(async () => { items = items.filter((x) => x.id !== 'txt:qa-fresh'); dataRevision = -1; await refresh({ force: true }); return true; })()`);
+    await cdp.eval(`(async () => { items = items.filter((x) => x.id !== 'txt:qa-fresh'); dataRevision = -1; await refresh({ force: true }); return true; })()`);
 
     // 5. Search for a deep clip, then clear: it stays at its spot, in full
     //    history, with a small DOM window.
-    const clr = await evalIn(cdp, `(() => {
+    const clr = await cdp.eval(`(() => {
       const id = __qa.idOf(400);
       const qms = __qa.query('mk400');
       const inSearch = { first: clipList.ids()[0] === id, off: __qa.off(id), count: clipList.ids().length };
@@ -325,7 +240,7 @@ async function main() {
 
     // 6. Facet refine (time-ordered): kept if still matching; else the nearest
     //    clip in time takes the same spot.
-    const facet = await evalIn(cdp, `(() => {
+    const facet = await cdp.eval(`(() => {
       const id = __qa.idOf(400);
       __qa.scrollBy(37);
       const before = __qa.top();
@@ -347,11 +262,11 @@ async function main() {
     check('facet refine keeps a still-matching clip (+-1px)', facet.kept.off != null && Math.abs(facet.kept.off - facet.before.off) <= 1, JSON.stringify(facet.kept));
     check('dropped clip -> nearest in time at the same spot (or the end of a short list)', facet.nearest.expected && facet.nearest.off != null
       && (Math.abs(facet.nearest.off - facet.before.off) <= 1 || (facet.nearest.atEnd && facet.nearest.off > facet.before.off)), JSON.stringify(facet.nearest));
-    await evalIn(cdp, `(__qa.clear(), true)`);
+    await cdp.eval(`(__qa.clear(), true)`);
 
     // 7. Best-match refine with a cursor: the cursor (on screen) survives a
     //    refine that keeps it, and goes when the refine drops it.
-    const cur = await evalIn(cdp, `(() => {
+    const cur = await cdp.eval(`(() => {
       __qa.query('odd lorem');
       __qa.key('ArrowDown'); __qa.key('ArrowDown'); __qa.key('ArrowDown');
       const id = __qa.focused();
@@ -366,7 +281,7 @@ async function main() {
     check('cursor dropped when the refine excludes it (Best -> top)', cur.dropped.focus === null && cur.dropped.top === 0, JSON.stringify(cur.dropped));
 
     // 8. Clear with a cursor: cursor and spot both kept in full history.
-    const curClr = await evalIn(cdp, `(() => {
+    const curClr = await cdp.eval(`(() => {
       __qa.query('mk3');
       __qa.key('ArrowDown'); __qa.key('ArrowDown');
       const id = __qa.focused();
@@ -377,21 +292,21 @@ async function main() {
     check('clear keeps a cursor and its spot (+-1px)', curClr.focus === curClr.id && curClr.after != null && Math.abs(curClr.after - curClr.off) <= 1, JSON.stringify(curClr));
 
     // 9. Reopen: resetPopupState puts the list back at the newest.
-    const reopen = await evalIn(cdp, `(() => { resetPopupState(); return { scroll: document.getElementById('list').scrollTop, win: __qa.win(), focus: __qa.focused(), first: clipList.ids()[0] === __qa.idOf(0) }; })()`);
+    const reopen = await cdp.eval(`(() => { resetPopupState(); return { scroll: document.getElementById('list').scrollTop, win: __qa.win(), focus: __qa.focused(), first: clipList.ids()[0] === __qa.idOf(0) }; })()`);
     check('reopen starts at the newest', reopen.scroll === 0 && reopen.win.start === 0 && reopen.focus === null, JSON.stringify(reopen));
 
     // 10. Ctrl+wheel (TRUSTED input via CDP) over an image row: previews grow
     //     x1.15, the point under the pointer stays put, the PAGE does not zoom.
-    await evalIn(cdp, `(() => { __qa.query('is:image'); return true; })()`);
-    const pt = await evalIn(cdp, `(() => {
+    await cdp.eval(`(() => { __qa.query('is:image'); return true; })()`);
+    const pt = await cdp.eval(`(() => {
       const img = document.querySelector('#list > .item img[width]');
       const r = img.closest('.item').getBoundingClientRect();
       return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height * 0.6), id: img.closest('.item').dataset.id, dpr: window.devicePixelRatio, h: __qa.clipH() };
     })()`);
-    const pointBefore = await evalIn(cdp, `(() => { const el = document.querySelector('#list > [data-id="' + CSS.escape(${JSON.stringify(pt.id)}) + '"]'); const r = el.getBoundingClientRect(); return (${pt.y} - r.top) / r.height; })()`);
+    const pointBefore = await cdp.eval(`(() => { const el = document.querySelector('#list > [data-id="' + CSS.escape(${JSON.stringify(pt.id)}) + '"]'); const r = el.getBoundingClientRect(); return (${pt.y} - r.top) / r.height; })()`);
     await cdp.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: pt.x, y: pt.y, deltaX: 0, deltaY: -100, modifiers: 2 });
     await sleep(250);
-    const wheel = await evalIn(cdp, `(() => { const el = document.querySelector('#list > [data-id="' + CSS.escape(${JSON.stringify(pt.id)}) + '"]'); const r = el.getBoundingClientRect(); return { h: __qa.clipH(), frac: (${pt.y} - r.top) / r.height, dpr: window.devicePixelRatio, toast: document.getElementById('toast').textContent }; })()`);
+    const wheel = await cdp.eval(`(() => { const el = document.querySelector('#list > [data-id="' + CSS.escape(${JSON.stringify(pt.id)}) + '"]'); const r = el.getBoundingClientRect(); return { h: __qa.clipH(), frac: (${pt.y} - r.top) / r.height, dpr: window.devicePixelRatio, toast: document.getElementById('toast').textContent }; })()`);
     check('Ctrl+wheel resizes previews x1.15', wheel.h === '69px', `${pt.h} -> ${wheel.h}`);
     check('Ctrl+wheel keeps the row under the pointer', Math.abs(wheel.frac - pointBefore) < 0.02, `frac ${pointBefore.toFixed(3)} -> ${wheel.frac.toFixed(3)}`);
     check('Ctrl+wheel never zooms the page', wheel.dpr === pt.dpr, `dpr ${pt.dpr} -> ${wheel.dpr}`);
@@ -401,10 +316,10 @@ async function main() {
     const keyEv = (type, key, code, vk) => cdp.send('Input.dispatchKeyEvent', { type, key, code, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk, modifiers: 2 });
     await keyEv('rawKeyDown', '=', 'Equal', 187); await keyEv('keyUp', '=', 'Equal', 187);
     await sleep(150);
-    const kin = await evalIn(cdp, `({ h: __qa.clipH(), dpr: window.devicePixelRatio })`);
+    const kin = await cdp.eval(`({ h: __qa.clipH(), dpr: window.devicePixelRatio })`);
     await keyEv('rawKeyDown', '0', 'Digit0', 48); await keyEv('keyUp', '0', 'Digit0', 48);
     await sleep(150);
-    const kreset = await evalIn(cdp, `({ h: __qa.clipH(), dpr: window.devicePixelRatio })`);
+    const kreset = await cdp.eval(`({ h: __qa.clipH(), dpr: window.devicePixelRatio })`);
     check('Ctrl+= grows previews x1.25', kin.h === `${+(69 * 1.25).toFixed(2)}px`, kin.h);
     check('Ctrl+0 resets to 60px', kreset.h === '60px', kreset.h);
     check('zoom keys never zoom the page', kin.dpr === pt.dpr && kreset.dpr === pt.dpr, `${kin.dpr} / ${kreset.dpr}`);
@@ -412,7 +327,7 @@ async function main() {
     // 12. Sizing rules at 300px and 600px: ratio kept, never wider than the row,
     //     never taller than the list, never past real size; legacy clips sized.
     for (const px of [300, 600]) {
-      const sz = await evalIn(cdp, `(async () => {
+      const sz = await cdp.eval(`(async () => {
         imageZoom.set(${px}, { silent: true, save: false });
         await Promise.all([...document.querySelectorAll('#list > .item img')].map((im) => im.decode().catch(() => {})));
         const listH = document.getElementById('list').clientHeight;
@@ -435,7 +350,7 @@ async function main() {
     }
 
     // 13. Settings row: live input, debounced save, reset, main clamps.
-    const settingsRes = await evalIn(cdp, `(async () => {
+    const settingsRes = await cdp.eval(`(async () => {
       await openSettings();
       const input = document.getElementById('imagePreviewHeight');
       input.value = '150'; input.dispatchEvent(new Event('input'));
@@ -457,7 +372,7 @@ async function main() {
 
     // 14. Editor footer (shared createEditor, mounted in-page): Copy -> "On
     //     clipboard"; a stop shows the notice, then the Copy button returns.
-    const ed = await evalIn(cdp, `(async () => {
+    const ed = await cdp.eval(`(async () => {
       const host = document.createElement('div');
       host.style.cssText = 'position:fixed;left:-9999px;top:0;width:520px;height:300px';
       document.body.appendChild(host);
@@ -484,7 +399,7 @@ async function main() {
     //     the host's native file drag; a REAL startDrag is deliberately not
     //     fired here: with no mouse button held, Windows would "drop" the file
     //     onto whatever window is under the user's cursor. The spy stands in.
-    const drag = await evalIn(cdp, `(() => {
+    const drag = await cdp.eval(`(() => {
       __qa.clear();
       resetPopupState();
       const real = appAdapter.dragImages;
@@ -514,7 +429,7 @@ async function main() {
 
     // 16. Viewer drag-out (shared createImageViewer mounted in-page): fit size
     //     drags out, zoomed in pans, Alt+drag drags out, the handle always does.
-    const viewer = await evalIn(cdp, `(async () => {
+    const viewer = await cdp.eval(`(async () => {
       const host = document.createElement('div');
       host.style.cssText = 'position:fixed;left:-9999px;top:0;width:500px;height:400px;display:flex;flex-direction:column';
       document.body.appendChild(host);
@@ -549,14 +464,14 @@ async function main() {
 
     // 17. Navigation guard (LAST: a failure would replace the popup page): a
     //     renderer navigation, as a file dropped on the window triggers, is refused.
-    await evalIn(cdp, `(location.href = 'file:///C:/Windows/win.ini', true)`).catch(() => {});
+    await cdp.eval(`(location.href = 'file:///C:/Windows/win.ini', true)`).catch(() => {});
     await sleep(1500);
-    const still = await evalIn(cdp, `({ href: location.href, list: !!document.getElementById('list') })`).catch((e) => ({ error: e.message }));
+    const still = await cdp.eval(`({ href: location.href, list: !!document.getElementById('list') })`).catch((e) => ({ error: e.message }));
     check('a BoardClip window never navigates away (dropped files)', still && /index\.html/.test(still.href || '') && still.list, JSON.stringify(still));
 
     // Renderer exceptions land in the diagnostics file (Core.installRendererErrorReporting).
     await sleep(500);
-    const diagFile = path.join(dataDir, 'boardclip-diagnostics.jsonl');
+    const diagFile = path.join(sb.dataDir, 'boardclip-diagnostics.jsonl');
     const diagLines = fs.existsSync(diagFile) ? fs.readFileSync(diagFile, 'utf8').split('\n') : [];
     const errs = diagLines.filter((l) => l.includes('renderer.error'));
     check('no renderer errors recorded', errs.length === 0, errs[0]);
@@ -566,23 +481,12 @@ async function main() {
       check('popup parks (cloaked) instead of hiding, so it opens without the Windows show animation', !pf, pf && pf.slice(0, 160));
     }
   } finally {
-    if (cdp) cdp.close();
-    try { process.kill(child.pid); } catch {}
-    try {
-      execSync(`wmic process where "name='electron.exe' and commandline like '%%${userDataDir.replace(/\\/g, '\\\\')}%%'" call terminate`, { stdio: 'ignore', timeout: 15000 });
-    } catch {}
-    await sleep(1500);
-    try { fs.rmSync(dataDir, { recursive: true, force: true }); } catch {}
-    try { fs.rmSync(userDataDir, { recursive: true, force: true }); } catch {}
-    // The sandbox wrote this checkout's boardclip.pid; drop it only if it is ours.
-    try {
-      const pidFile = path.join(ROOT, 'boardclip.pid');
-      if (JSON.parse(fs.readFileSync(pidFile, 'utf8')).pid === child.pid) fs.unlinkSync(pidFile);
-    } catch {}
+    // Stops ONLY this sandbox's processes (matched by its own dir), removes its
+    // dir and this checkout's boardclip.pid if the sandbox wrote it, and fails
+    // the run on a safety problem (dir left, window not cloaked).
+    cleanup = await sb.finish();
   }
-  const failed = results.filter((r) => !r.ok);
-  console.log(`\n${results.length - failed.length}/${results.length} checks passed`);
-  if (failed.length) { console.log('FAILED:', failed.map((f) => f.name).join(' | ')); process.exit(1); }
+  if (summary().failed || !cleanup.ok) process.exit(1);
 }
 
 main().catch((err) => { console.error('qa error:', err.message); process.exit(1); });

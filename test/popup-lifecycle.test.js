@@ -149,6 +149,8 @@ assert.ok(between(mainJs, 'function relaunchAfterUpdate() {', 'function develope
   const isolated = reg.indexOf("process.env.BOARDCLIP_ISOLATED === '1'");
   assert.ok(isolated >= 0, 'registerShortcuts returns early for an isolated QA instance');
   assert.ok(!/install\(|globalShortcut\.register|getMacosHotkey/.test(reg.slice(0, isolated)), 'nothing is registered before the isolated check');
+  assert.ok(mainJs.includes("if (process.env.BOARDCLIP_ISOLATED !== '1') autoUpdater.start();"),
+    'an isolated QA instance never starts the auto-updater (it would git pull the dev checkout)');
 }
 
 console.log('popup lifecycle tests passed');

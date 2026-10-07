@@ -22,10 +22,16 @@ const siteCss = read('site/styles.css');
 const mainJs = read('main.js');
 const approvalHtml = read('mcp-approval.html');
 
-// 1) The token layer exists and defines one primitive from each scale, plus the
-//    semantic --accent mapping. popup.css imports it as its very first rule.
+// 1) The token layer exists and defines one primitive from each scale plus the
+//    ROLE tokens components size with. popup.css imports it as its very first rule.
 {
-  for (const t of ['--g-950:', '--blue-500:', '--teal-500:', '--sp-4:', '--r-2:', '--fs-3:', '--dur:', '--icon-md:']) {
+  for (const t of [
+    '--g-950:', '--blue-500:', '--teal-500:', '--white:', '--green-600:', '--red-600:', '--amber-600:',
+    '--sp-4:', '--r-2:', '--dur:', '--ease:', '--icon-md:',
+    '--fs-meta:', '--fs-ui:', '--fs-text:', '--fs-display:', '--lh-ui:', '--lh-text:', '--fw-regular:', '--fw-strong:',
+    '--font-sans:', '--font-mono:', '--ctl-sm:', '--ctl-md:', '--ctl-lg:', '--r-ctl:', '--r-chip:', '--r-panel:',
+    '--gutter:', '--bar-h:', '--focus-ring:', '--scrim:', '--line-faint:', '--mark-bg-current:', '--danger-fg:',
+  ]) {
     assert.ok(tokensCss.includes(t), `clipboard-tokens.css should define ${t}`);
   }
   assert.ok(/^@import url\("clipboard-tokens\.css"\)/m.test(popupCss), 'clipboard-popup.css must @import clipboard-tokens.css first');
@@ -76,11 +82,13 @@ const approvalHtml = read('mcp-approval.html');
   assert.ok(ui.renderSettingsBody().includes('id="appearanceVariants"'), 'settings body should host the appearance switcher');
 }
 
-// 5) The approval modal no longer carries its own palette; it consumes the
-//    shared token sheet instead (so it can never drift from the app).
+// 5) The approval modal no longer carries its own palette or icon spec; it links
+//    the shared sheet (tokens via its @import, .mi, .overline, focus ring) and
+//    the window base sheet, so it can never drift from the app.
 {
   assert.ok(!/--bg:\s*#0c0c0c/.test(approvalHtml), 'mcp-approval.html still embeds a duplicated palette');
-  assert.ok(/clipboard-tokens\.css/.test(approvalHtml), 'mcp-approval.html must link the shared token sheet');
+  assert.ok(/href="site\/shared\/clipboard-popup\.css"/.test(approvalHtml), 'mcp-approval.html must link the shared clipboard-popup.css (tokens + .mi)');
+  assert.ok(!/font-family:\s*'Material Symbols/.test(approvalHtml), 'mcp-approval.html must use the shared .mi rule, not its own icon font-family');
 }
 
 // 6) Native glass is centralized in one helper and spread into the popup window,
@@ -136,15 +144,289 @@ const approvalHtml = read('mcp-approval.html');
 
 // 10) The tag remove control is an icon BUTTON: it must stay keyboard-focusable
 //     WITHOUT `font: inherit` clobbering the Material Symbols ligature (that
-//     renders the literal word "close"), and the accent ring is focus-only.
+//     renders the literal word "close"), and its focus ring is the ONE shared
+//     :focus-visible ring (no bespoke outline, nothing on hover).
 {
   const gtagRule = popupCss.split('\n').find((line) => line.trim().startsWith('.filter-tag .gtag-x {')) || '';
   assert.ok(gtagRule, 'popup.css must style .filter-tag .gtag-x');
   assert.ok(!/font:\s*inherit/.test(gtagRule), '.filter-tag .gtag-x must not set font: inherit (it overrides the .mi icon font)');
-  assert.ok(!/\.filter-tag \.gtag-x:hover,\s*\.filter-tag \.gtag-x:focus-visible \{[^}]*outline:/.test(popupCss),
-    'the accent outline must be focus-visible only, never on hover');
-  assert.ok(/\.filter-tag \.gtag-x:focus-visible \{[^}]*outline: 1px solid var\(--accent\)/.test(popupCss),
-    'focus-visible on the remove button must draw the accent ring');
+  assert.ok(!/gtag-x[^{]*\{[^}]*outline:/.test(popupCss), 'the tag remove button must not draw its own outline (the shared focus ring covers it)');
 }
 
-console.log('ui-tokens.test.js: all token/variant/glass guards passed');
+// ---------------------------------------------------------------------------
+// Design canon (UI overhaul phase 1): one type scale, two weights, one focus
+// ring, one icon spec, one scrollbar, one button family, one floating surface,
+// one window base sheet. These fail the build when a component forks again.
+// ---------------------------------------------------------------------------
+const windowCss = read('site/shared/clipboard-window.css');
+const editorHtml = read('editor.html');
+const viewerHtml = read('viewer.html');
+const styleBlocks = (html) => [...html.matchAll(/<style>([\s\S]*?)<\/style>/g)].map((m) => m[1]).join('\n');
+const windows = [['index.html', appHtml], ['editor.html', editorHtml], ['viewer.html', viewerHtml], ['mcp-approval.html', approvalHtml]];
+// Every stylesheet the canon governs: the shared sheets + each window's own <style>.
+const sheets = [
+  ['clipboard-popup.css', popupCss], ['clipboard-window.css', windowCss],
+  ...windows.map(([name, html]) => [`${name} <style>`, styleBlocks(html)]),
+];
+const stripComments = (css) => css.replace(/\/\*[\s\S]*?\*\//g, '');
+const decls = (css, prop) => [...stripComments(css).matchAll(new RegExp(`(?:^|[;{\\s])${prop}\\s*:\\s*([^;}]+)`, 'g'))].map((m) => m[1].trim());
+// Naive rule splitter (no nested blocks other than @media/@supports, which it
+// flattens): [{ sel, body }] for every `selector { body }`.
+const rules = (css) => [...stripComments(css).matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((m) => ({ sel: m[1].trim(), body: m[2] }));
+
+// 11) Type: only the role tokens. No raw px sizes, no retired --fs-1..6 scale,
+//     icon glyphs sized with the --icon-* tokens.
+{
+  assert.ok(!/--fs-[1-6]\s*:/.test(tokensCss), 'the retired --fs-1..6 scale must not be defined (use --fs-meta/--fs-ui/--fs-text/--fs-display)');
+  for (const [name, css] of [...sheets, ['clipboard-ui-core.js', coreSrc]]) {
+    assert.ok(!/var\(--fs-[1-6]\)/.test(css), `${name} still uses the retired --fs-1..6 scale`);
+  }
+  for (const [name, css] of sheets) {
+    for (const value of decls(css, 'font-size')) {
+      assert.ok(/^var\(--(fs-(meta|ui|text|display)|icon-(sm|md|lg))\)$/.test(value),
+        `${name}: font-size "${value}" must be a role token (--fs-meta/ui/text/display or --icon-*)`);
+    }
+    for (const value of decls(css, 'line-height')) {
+      // 1 = icon/glyph boxes; normal = the search highlight mirror, which must
+      // match the <input> it sits under.
+      assert.ok(/^(var\(--lh-(ui|text)\)|1|normal)$/.test(value), `${name}: line-height "${value}" must be --lh-ui / --lh-text`);
+    }
+  }
+  assert.strictEqual(decls(popupCss, 'line-height').filter((v) => v === 'normal').length, 1, 'only the search highlight mirror may use line-height: normal');
+}
+
+// 12) Two weights only, always through the tokens.
+{
+  assert.ok(/--fw-regular:\s*400;/.test(tokensCss) && /--fw-strong:\s*600;/.test(tokensCss), 'weights are 400 and 600');
+  for (const [name, css] of sheets) {
+    for (const value of decls(css, 'font-weight')) {
+      assert.ok(/^var\(--fw-(regular|strong)\)$/.test(value), `${name}: font-weight "${value}" must be var(--fw-regular) or var(--fw-strong)`);
+    }
+  }
+}
+
+// 13) Icons: Material Symbols Rounded, the SAME variable font URL in every
+//     window, axes pinned ONCE on .mi (FILL via --icon-fill, a state signal
+//     only), and every close is the Material glyph, never a text "x".
+{
+  const FONT = 'https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&display=swap';
+  for (const [name, html] of [...windows, ['site/index.html', siteHtml]]) {
+    const urls = [...html.matchAll(/https:\/\/fonts\.googleapis\.com\/css2\?family=Material[^"]*/g)].map((m) => m[0]);
+    assert.deepStrictEqual(urls, [FONT], `${name} must load the one full-axis Material Symbols Rounded URL`);
+  }
+  const fvs = sheets.flatMap(([name, css]) => decls(css, 'font-variation-settings').map((v) => [name, v]));
+  assert.strictEqual(fvs.length, 1, `font-variation-settings must be declared once (on .mi); found ${JSON.stringify(fvs)}`);
+  assert.ok(/^\.mi \{[^}]*font-variation-settings: "FILL" var\(--icon-fill, 0\), "wght" 400, "GRAD" 0, "opsz" 20;/m.test(popupCss), '.mi must pin the axes (FILL via --icon-fill, wght 400, GRAD 0, opsz 20)');
+  assert.ok(/\.mi\.filled \{ --icon-fill: 1; \}/.test(popupCss), '.mi.filled must only flip --icon-fill');
+  assert.ok(!/&times;/.test(coreSrc), 'clipboard-ui-core.js still renders a text "x" close glyph (use <span class="mi">close</span>)');
+  assert.ok(!rules(popupCss).some((r) => /(^|,)\s*\.close-btn\s*(,|$)/.test(r.sel)), '.close-btn is a hook only (no font overrides)');
+  assert.ok(!/class="mi filled">settings</.test(coreSrc), 'the settings gear must be outlined (FILL is a state signal only)');
+}
+
+// 14) ONE keyboard focus ring (box-shadow via --focus-ring, no outline, so no
+//     layout shift); nothing else draws an outline.
+{
+  assert.ok(/:focus-visible \{\s*outline: none; box-shadow: var\(--focus-ring\);\s*\}/.test(popupCss), 'popup.css must define the one :focus-visible ring');
+  for (const [name, css] of sheets) {
+    for (const value of decls(css, 'outline')) assert.strictEqual(value, 'none', `${name}: outline "${value}" (use the shared --focus-ring)`);
+  }
+}
+
+// 15) ONE scrollbar: the shared rule in clipboard-popup.css (app windows and
+//     the demo); no window keeps a copy, and nothing sets the standard
+//     scrollbar-* properties that would silently disable it in Chromium.
+{
+  const thumbRules = rules(popupCss).filter((r) => /::-webkit-scrollbar-thumb(?!:)/.test(r.sel));
+  assert.strictEqual(thumbRules.length, 1, 'exactly one ::-webkit-scrollbar-thumb rule (the shared one)');
+  assert.ok(/background-clip:\s*padding-box/.test(thumbRules[0].body) && /border:\s*2px solid transparent/.test(thumbRules[0].body),
+    'the shared thumb must be inset with a transparent border + padding-box clip (works on any surface)');
+  for (const [name, css] of [['clipboard-window.css', windowCss], ...windows.map(([n, h]) => [n, styleBlocks(h)])]) {
+    assert.ok(!/::-webkit-scrollbar/.test(css), `${name} defines its own scrollbar (the shared rule in clipboard-popup.css owns it)`);
+  }
+  for (const r of rules(popupCss).filter((x) => /::-webkit-scrollbar/.test(x.sel) && !/^:is\(:root\[data-theme\], \.bc-popup\) ::-webkit-scrollbar/.test(x.sel))) {
+    assert.ok(/^\s*(width:\s*10px;|display:\s*none;)\s*$/.test(r.body), `only width-only / hide overrides of the shared scrollbar are allowed: ${r.sel}`);
+  }
+  // The standard scrollbar-* properties switch the shared ::-webkit-scrollbar
+  // styling OFF in Chromium 121+. Allowed: the non-WebKit fallback block, and
+  // `scrollbar-width: none` on an element whose ::-webkit-scrollbar is hidden too.
+  const fallbackAt = '@supports not selector(::-webkit-scrollbar)';
+  const withoutFallback = (css) => {
+    const at = css.indexOf(fallbackAt);
+    if (at < 0) return css;
+    let i = css.indexOf('{', at);
+    for (let depth = 0; i < css.length; i += 1) {
+      if (css[i] === '{') depth += 1;
+      else if (css[i] === '}' && (depth -= 1) === 0) break;
+    }
+    return css.slice(0, at) + css.slice(i + 1);
+  };
+  assert.ok(/scrollbar-width:\s*thin/.test(stripComments(popupCss).slice(stripComments(popupCss).indexOf(fallbackAt))), 'popup.css keeps the thin-scrollbar fallback for engines without ::-webkit-scrollbar');
+  for (const [name, css] of [...sheets, ['site/styles.css', siteCss]]) {
+    const own = withoutFallback(stripComments(css));
+    assert.ok(!decls(own, 'scrollbar-color').length, `${name} sets scrollbar-color (it disables the shared scrollbar in Chromium)`);
+    for (const r of rules(own).filter((x) => decls(x.body, 'scrollbar-width').length)) {
+      assert.deepStrictEqual(decls(r.body, 'scrollbar-width'), ['none'], `${name}: ${r.sel} sets scrollbar-width (only "none", to hide a bar)`);
+      for (const sel of r.sel.split(/,\s*/)) {
+        assert.ok(rules(own).some((h) => h.sel.split(/,\s*/).includes(`${sel}::-webkit-scrollbar`) && /display:\s*none/.test(h.body)),
+          `${name}: ${sel} hides its bar with scrollbar-width: none but has no ${sel}::-webkit-scrollbar { display: none }`);
+      }
+    }
+  }
+  assert.ok(!/--list-scrollbar-/.test(popupCss + tokensCss), 'the --list-scrollbar-* tokens were renamed --scrollbar-*');
+}
+
+// 16) ONE button family + dialog semantics: .btn (default / primary / danger /
+//     quiet / sm), no green confirm, destructive confirms are red, clip text in a
+//     mono preview while the dialog body stays sans.
+{
+  for (const sel of ['.btn {', '.btn.primary {', '.btn.danger {', '.btn.quiet {', '.btn.sm {']) assert.ok(popupCss.includes(sel), `popup.css must define ${sel}`);
+  for (const [name, src] of [['clipboard-popup.css', popupCss], ['clipboard-ui-core.js', coreSrc], ['index.html', appHtml], ['site/index.html', siteHtml], ['site/styles.css', siteCss]]) {
+    assert.ok(!/btn-confirm|btn-cancel/.test(src), `${name} still uses the retired .btn-confirm/.btn-cancel family`);
+  }
+  assert.ok(!rules(popupCss).some((r) => /\.dialog p\b/.test(r.sel) && /font-family/.test(r.body)), 'dialog body copy is sans (mono only in .dialog-preview)');
+  assert.ok(/\.dialog-preview \{[^}]*font-family: var\(--font-mono\)/.test(popupCss), '.dialog-preview carries clip text in mono');
+  assert.ok(/classList\.toggle\('danger', !!o\.danger\)/.test(coreSrc), 'createDialogs.confirm must honour {danger}');
+  assert.ok(/title: `Delete group[^\n]*danger: true/.test(coreSrc), 'group delete must confirm with {danger:true}');
+  assert.ok(/title: 'Clear all unpinned items\?'[^\n]*danger: true/.test(coreSrc), 'clear all must confirm with {danger:true}');
+  assert.ok(!/already assigned[^\n]*danger/.test(coreSrc), 'numpad replace is not destructive (no danger confirm)');
+  assert.ok(/class="btn danger settings-clear"/.test(coreSrc), 'Settings "Clear All" is the shared .btn.danger');
+  // Text on red uses --danger-fg (per theme), never the accent's ink: an accent
+  // variant (Mono, Custom) redefines --active-fg for ITS fill, not for red.
+  assert.ok(/\.btn\.danger \{[^}]*color: var\(--danger-fg\)/.test(popupCss), '.btn.danger text is var(--danger-fg)');
+  assert.ok(/\.primary\.danger \{[^}]*color:\s*var\(--danger-fg\)/.test(approvalHtml), 'the approval danger button text is var(--danger-fg)');
+  assert.strictEqual((tokensCss.match(/--danger-fg:/g) || []).length, 2, '--danger-fg is defined once per theme and never by an accent variant');
+}
+
+// 17) ONE floating surface (menus, suggest, help, dialog, toast, Newest pill) at
+//     --r-panel; the toast is neutral (no status-colour pill).
+{
+  const floating = rules(popupCss).find((r) => /\.numpad-picker,\s*\.tag-submenu,\s*\.bc-menu$/.test(r.sel));
+  assert.ok(floating, 'the shared floating-surface rule must exist');
+  for (const cls of ['.dialog', '.toast', '.search-suggest', '.list-newest']) assert.ok(floating.sel.split(/,\s*/).includes(cls), `${cls} must ride the shared floating-surface rule`);
+  assert.ok(/border-radius:\s*var\(--r-panel\)/.test(floating.body), 'floating surfaces use --r-panel');
+  for (const r of rules(popupCss).filter((x) => /(^|,\s*)\.toast(\.show)?\s*$/.test(x.sel))) {
+    assert.ok(!/--green|--r-pill|underline/.test(r.body), `the toast must be a neutral floating surface (${r.sel})`);
+  }
+  assert.ok(!/text-decoration:\s*underline/.test(rules(popupCss).filter((r) => /toast-action/.test(r.sel)).map((r) => r.body).join('')), 'the toast action is an accent text button, not an underline');
+  // The hidden toast is only transparent, still over the last row: its action
+  // may take the pointer only while the toast is shown.
+  for (const r of rules(popupCss).filter((x) => /toast-action/.test(x.sel) && /pointer-events:\s*auto/.test(x.body))) {
+    assert.ok(r.sel.split(/,\s*/).every((sel) => /^\.toast\.show \.toast-action/.test(sel)), `${r.sel}: only a SHOWN toast's action takes the pointer`);
+  }
+  assert.ok(rules(popupCss).some((r) => r.sel === '.toast.show .toast-action' && /pointer-events:\s*auto/.test(r.body)), 'the shown toast action opts back into the pointer');
+}
+
+// 18) Borders: a control has a fill OR a border, never both. The shared control
+//     classes carry no border at all, and the only 1px lines are --line /
+//     --line-faint dividers (+ the --menu-edge ring of floating surfaces).
+{
+  const controls = ['.btn', '.icon-btn', '.filter-tag', '.seg', '.seg-btn', '.search-row', '.setting-row input', '.prompt-input', '.shortcut-btn',
+    '.bc-note-title', '.bc-find-input', '.sync-account', '.settings-action-card', '.setting-row code', '.bc-chip', '.list-newest', '.switch',
+    '.toast', '.dialog', '.toast-action', '.np-btn', '.gp-btn', '.bc-menu-item'];
+  for (const r of rules(popupCss)) {
+    const hit = r.sel.split(/,\s*/).some((sel) => controls.some((c) => sel === c || sel.startsWith(c + '.') || sel.startsWith(c + ':')));
+    if (!hit || /::-webkit-scrollbar/.test(r.sel)) continue;
+    for (const value of decls(r.body, 'border')) assert.ok(/^(none|0)$/.test(value), `${r.sel} draws a border (${value}); a control has a fill OR a border`);
+    assert.ok(!/border-(color|width|style)\s*:/.test(r.body), `${r.sel} sets a border colour/width/style`);
+  }
+  for (const [name, css] of sheets) {
+    for (const m of stripComments(css).matchAll(/1px (solid|dashed|dotted) ([^;}]+)/g)) {
+      assert.ok(m[1] === 'solid' && /^var\(--line(-faint)?\)$/.test(m[2].trim()), `${name}: 1px line "${m[0]}" (only var(--line) / var(--line-faint) dividers)`);
+    }
+  }
+  assert.ok(!/--glass-border|--hover-strong/.test(tokensCss + popupCss), '--glass-border and --hover-strong were deleted');
+}
+
+// 19) Colours come from tokens: no raw hex/rgba in the shared component sheet or
+//     the window sheets, and the light theme references primitives.
+{
+  for (const [name, css] of sheets) {
+    assert.ok(!/#[0-9a-f]{3,8}\b|rgba?\(/i.test(stripComments(css)), `${name} hard-codes a colour (use a token)`);
+  }
+  const semantic = tokensCss.slice(tokensCss.indexOf('/* (b) SEMANTIC'));
+  assert.ok(!/#[0-9a-f]{3,8}\b/i.test(stripComments(semantic)), 'semantic/variant tiers must reference primitives, not raw hex');
+}
+
+// 20) ONE window base sheet (reset, font, background, glass scrim) linked by
+//     every app window; no window keeps its own copy. The demo does NOT load it.
+{
+  assert.ok(/font-family:\s*var\(--font-sans\)/.test(windowCss), 'clipboard-window.css sets the body font via --font-sans');
+  assert.ok(/body::before/.test(windowCss), 'clipboard-window.css owns the glass scrim');
+  for (const [name, html] of windows) {
+    assert.ok(html.includes('href="site/shared/clipboard-window.css"'), `${name} must link the window base sheet`);
+    const own = styleBlocks(html);
+    assert.ok(!rules(own).some((r) => /(^|,\s*)(html|body)\s*(,|$)/.test(r.sel) && /font-family/.test(r.body)), `${name} redeclares the body font (clipboard-window.css owns it)`);
+    assert.ok(!/system-ui/.test(own), `${name} spells out the UI font stack (use var(--font-sans))`);
+    assert.ok(!/body::before|glass-tint/.test(own), `${name} redeclares the glass scrim (clipboard-window.css owns it)`);
+    assert.ok(!/^\s*\*\s*\{/m.test(own), `${name} redeclares the reset (clipboard-window.css owns it)`);
+  }
+  assert.ok(!siteHtml.includes('clipboard-window.css'), 'the website demo must not load the window base sheet (it would reset the marketing page)');
+}
+
+// 22) Spacing snaps to the --sp-* scale (or --gutter): no raw px padding /
+//     margin / gap. The list empty state's 60px is the one open exception until
+//     the empty-state redesign replaces it.
+{
+  for (const [name, css] of sheets) {
+    for (const prop of ['padding', 'padding-[a-z]+', 'margin', 'margin-[a-z]+', 'gap', 'row-gap', 'column-gap']) {
+      for (const value of decls(css, prop)) {
+        if (name === 'clipboard-popup.css' && value === '60px 0') continue;
+        assert.ok(!/(^|[\s(])-?\d+(\.\d+)?px/.test(value), `${name}: ${prop} "${value}" must use the --sp-* scale`);
+      }
+    }
+  }
+}
+
+// 21) Motion: ONE duration + curve for every state transition, named properties
+//     only (never `all`, which also animates layout). The approval countdown
+//     meter (a 1 s linear tick, not a state change) is the one exception.
+{
+  for (const [name, css] of sheets) {
+    for (const value of decls(css, 'transition')) {
+      if (name === 'mcp-approval.html <style>' && value === 'width 1s linear') continue;
+      for (const part of value.split(/,\s*/)) {
+        assert.ok(/^[a-z-]+ var\(--dur\) var\(--ease\)$/.test(part) && !/^all /.test(part),
+          `${name}: transition "${part}" must be "<property> var(--dur) var(--ease)"`);
+      }
+    }
+  }
+}
+
+// 23) Row states: hover = the --hover overlay, the keyboard cursor (the row
+//     Enter pastes) = --accent-bg; never --surface2 / --bg (light --surface2 IS
+//     the list colour, so hover and the cursor vanished). The pin / multi-select
+//     edge is ONE .item::before overlay, never a layout-shifting border.
+{
+  const rowRules = rules(popupCss).filter((r) => r.sel.split(/,\s*/).some((sel) => /^\.item(\.[a-z-]+)*(:hover)?$/.test(sel)));
+  for (const r of rowRules) {
+    for (const v of decls(r.body, 'background')) assert.ok(!/--surface2|--bg\b/.test(v), `${r.sel}: row state background "${v}" (use --hover / --accent-bg)`);
+    assert.ok(!/border-left/.test(r.body), `${r.sel}: a row edge is the shared .item::before overlay, never a border`);
+  }
+  assert.ok(rowRules.some((r) => r.sel === '.item:hover' && /background: var\(--hover\)/.test(r.body)), 'row hover is the --hover overlay');
+  assert.ok(rowRules.some((r) => r.sel === '.item.selected' && /background: var\(--accent-bg\)/.test(r.body)), 'the keyboard cursor row is --accent-bg');
+  const edges = rules(popupCss).filter((r) => /\.item[^,]*::before/.test(r.sel));
+  assert.ok(edges.length === 1 && edges[0].sel === '.item::before' && /var\(--row-edge, transparent\)/.test(edges[0].body), 'ONE .item::before edge driven by --row-edge');
+  assert.ok(/\.item\.has-pin \{ --row-edge: var\(--pin\); \}/.test(popupCss) && /\.item\.multi-selected \{[^}]*--row-edge: var\(--accent\)/.test(popupCss), 'pin and multi-select set --row-edge');
+}
+
+// 24) Density keeps every step distinct: under each density the type roles
+//     ascend from 11px (meta < ui < text), and so do the --sp-* and control
+//     scales (a merged step silently erases a hierarchy).
+{
+  const pxTokens = (css) => Object.fromEntries([...stripComments(css).matchAll(/(--(?:fs-(?:meta|ui|text)|sp-\d+|ctl-(?:sm|md|lg))):\s*(\d+(?:\.\d+)?)px/g)].map((m) => [m[1], Number(m[2])]));
+  const base = pxTokens(tokensCss.slice(0, tokensCss.indexOf('/* (b) SEMANTIC')));
+  const compact = rules(tokensCss).find((r) => /data-density="compact"/.test(r.sel));
+  assert.ok(compact, 'the compact density block exists');
+  for (const [density, t] of [['normal', base], ['compact', { ...base, ...pxTokens(compact.body) }]]) {
+    const ascending = (names) => names.every((n, i) => typeof t[n] === 'number' && (i === 0 || t[names[i - 1]] < t[n]));
+    const show = (names) => names.map((n) => `${n}=${t[n]}`).join(' ');
+    const type = ['--fs-meta', '--fs-ui', '--fs-text'];
+    assert.ok(ascending(type) && t['--fs-meta'] >= 11, `${density}: type roles must ascend from 11px (${show(type)})`);
+    const sp = Object.keys(t).filter((k) => /^--sp-\d+$/.test(k)).sort((a, b) => Number(a.slice(5)) - Number(b.slice(5)));
+    assert.ok(sp.length >= 8 && ascending(sp), `${density}: the --sp-* scale must strictly ascend (${show(sp)})`);
+    const ctl = ['--ctl-sm', '--ctl-md', '--ctl-lg'];
+    assert.ok(ascending(ctl), `${density}: control heights must ascend (${show(ctl)})`);
+  }
+}
+
+console.log('ui-tokens.test.js: all token/variant/glass/canon guards passed');

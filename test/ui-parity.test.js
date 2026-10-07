@@ -79,6 +79,8 @@ const siteCss = read('site/styles.css');
   const popupSelectors = [
     'filter-tag', 'numpad-picker', 'np-btn', 'ai-client-row', 'sync-account',
     'settings-footer', 'shortcut-btn', 'np-slot', 'group-slot',
+    // the shared canon primitives (one button family, one dialog, one overline)
+    'btn', 'dialog', 'overline',
   ];
   const declares = (css, sel) => new RegExp(`(^|[\\s,])\\.${sel}\\s*[,{]`, 'm').test(css);
   for (const sel of popupSelectors) {
@@ -294,7 +296,7 @@ const siteCss = read('site/styles.css');
   assert.ok(/\.numpad-picker,\s*\.tag-submenu,\s*\.bc-menu\s*\{/.test(popupCss),
     'clipboard-popup.css must define the single shared floating-surface rule (.numpad-picker, .tag-submenu, .bc-menu)');
   const surfaceForks = (popupCss.match(/box-shadow:[^;]*var\(--menu-edge\)/g) || []).length;
-  assert.ok(surfaceForks <= 2, `menu surfaces re-forked their shadows (${surfaceForks} menu-edge shadows; expected the shared floating-surface rule + .dialog only)`);
+  assert.strictEqual(surfaceForks, 1, `floating surfaces re-forked their shadows (${surfaceForks} menu-edge shadows; dialogs, the toast and the Newest pill ride the ONE shared rule too)`);
   const order = (html) => [...html.matchAll(/data-n="(\d)"/g)].map((m) => Number(m[1]));
   const expected = [7, 8, 9, 4, 5, 6, 1, 2, 3];
   assert.deepStrictEqual(order(ui.renderItemPicker({ id: 'x', type: 'text', text: 'a' }, { items: [], groups: [] })), expected,

@@ -384,7 +384,7 @@
   function builtinFilterIconHtml(filter, options) {
     const iconMode = options && options.iconMode || 'material';
     if (!filter) return '';
-    if (filter.icon === 'numpad') return '#';
+    if (filter.icon === 'numpad') return iconMode === 'unicode' ? '#' : '<span class="mi">tag</span>';
     if (filter.icon === 'star') {
       if (iconMode === 'unicode') return '&#9734;';
       return '<span class="mi">star</span>';
@@ -561,8 +561,8 @@
           <span class="count" id="${esc(ids.count)}"></span>
           ${opts.showSyncButton === false ? '' : `<button class="icon-btn accent" id="${esc(ids.syncHeaderBtn)}" type="button" title="Sync now" aria-label="Sync now"><span class="mi">sync</span></button>`}
           ${headerActionsHtml}
-          <button class="icon-btn accent" id="${esc(ids.settingsBtn)}" type="button" title="Settings" aria-label="Settings" aria-expanded="false" aria-controls="${esc(ids.settingsView)}"><span class="mi filled">settings</span></button>
-          <button class="icon-btn close-btn${closeCls}" id="${esc(ids.closeBtn)}" type="button" title="Close (Esc)">&times;</button>
+          <button class="icon-btn accent" id="${esc(ids.settingsBtn)}" type="button" title="Settings" aria-label="Settings" aria-expanded="false" aria-controls="${esc(ids.settingsView)}"><span class="mi">settings</span></button>
+          <button class="icon-btn close-btn${closeCls}" id="${esc(ids.closeBtn)}" type="button" title="Close (Esc)" aria-label="Close"><span class="mi">close</span></button>
         </header>
         <div class="search-row">
           <input class="search" id="${esc(ids.search)}" type="text" placeholder="Search..." autocomplete="off" spellcheck="false">
@@ -587,7 +587,7 @@
         <button class="icon-btn" id="${esc(ids.settingsBack)}" type="button" title="Back" aria-label="Back"><span class="mi">arrow_back</span></button>
         <h2>Settings</h2>
         ${settingsNoteHtml}
-        <button class="icon-btn close-btn${closeCls}" id="${esc(ids.settingsCloseBtn)}" type="button" title="Close (Esc)">&times;</button>
+        <button class="icon-btn close-btn${closeCls}" id="${esc(ids.settingsCloseBtn)}" type="button" title="Close (Esc)" aria-label="Close"><span class="mi">close</span></button>
       </div>
       <div class="settings-body">
         ${settingsBodyHtml}
@@ -1111,21 +1111,25 @@
     const msg = document.createElement('span');
     msg.textContent = o.message || '';
     toastEl.appendChild(msg);
+    // Hiding also drops the action button, so a hidden toast never keeps a
+    // focusable (Enter would undo again) or clickable Undo around.
+    const hide = () => {
+      if (toastEl._actionTimer) clearTimeout(toastEl._actionTimer);
+      toastEl._actionTimer = null;
+      toastEl.classList.remove('show');
+      toastEl.textContent = o.resetText || 'Copied';
+    };
     if (o.actionLabel && typeof o.onAction === 'function') {
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'toast-action';
       btn.textContent = o.actionLabel;
-      btn.addEventListener('click', () => {
-        toastEl.classList.remove('show');
-        if (toastEl._actionTimer) clearTimeout(toastEl._actionTimer);
-        o.onAction();
-      });
+      btn.addEventListener('click', () => { hide(); o.onAction(); });
       toastEl.appendChild(btn);
     }
     toastEl.classList.add('show');
     if (toastEl._actionTimer) clearTimeout(toastEl._actionTimer);
-    toastEl._actionTimer = setTimeout(() => { toastEl.classList.remove('show'); toastEl.textContent = o.resetText || 'Copied'; }, o.timeout || 5000);
+    toastEl._actionTimer = setTimeout(hide, o.timeout || 5000);
   }
   // Paint the current selection state onto an already-rendered list + drive the
   // slim selection bar. Shared by both consumers so the class names + bar markup
@@ -1207,9 +1211,9 @@
       <h3>Sync</h3>
       <div class="sync-row">
         <div class="sync-list" id="syncAccounts"></div>
-        <button class="sync-btn" id="syncNow" title="Sync now"><span class="mi sm mid">sync</span></button>
+        <button class="icon-btn sync-btn" id="syncNow" type="button" title="Sync now"><span class="mi sm mid">sync</span></button>
       </div>
-      <button class="settings-secondary sync-add-folder" id="addSyncFolder" type="button"><span class="mi sm mid">create_new_folder</span> Add sync folder</button>
+      <button class="btn settings-secondary sync-add-folder" id="addSyncFolder" type="button"><span class="mi sm mid">create_new_folder</span> Add sync folder</button>
       <div class="sync-status" id="syncStatus"></div>
       <label class="setting-row switch-row" for="p2pEnabled">
         <span>Local network fast sync</span>
@@ -1232,7 +1236,7 @@
             </span>
           </div>
         </div>
-        <button class="settings-icon-btn" id="updateNow" title="Check for updates"><span class="mi sm mid">system_update_alt</span></button>
+        <button class="icon-btn settings-icon-btn" id="updateNow" type="button" title="Check for updates"><span class="mi sm mid">system_update_alt</span></button>
       </div>
       <div class="settings-status" id="updateStatus"></div>
     </div>
@@ -1257,7 +1261,7 @@
         <div class="ai-hint">AI assistants can read clips in groups you share, and act with your approval. Drop clips into the <b>AI</b> group (or share any group below) to expose them.</div>
         <div class="ai-subhead">Installed in</div>
         <div id="aiClients"></div>
-        <button class="settings-secondary hidden" id="aiMoreClients" type="button"></button>
+        <button class="btn settings-secondary hidden" id="aiMoreClients" type="button"></button>
         <div id="aiClientsMore" class="hidden"></div>
         <div class="ai-subhead hidden" id="aiAlwaysHead">Always allowed actions</div>
         <div id="aiAlwaysAllow"></div>
@@ -1271,12 +1275,12 @@
     <div class="settings-section">
       <h3>Groups</h3>
       <div id="groupSlots"></div>
-      <button class="add-group-btn" id="addGroupBtn"><span class="mi sm mid">add</span> New Group</button>
+      <button class="btn add-group-btn" id="addGroupBtn" type="button"><span class="mi sm mid">add</span> New Group</button>
     </div>
     <div class="settings-footer">
       <div class="settings-footer-actions">
-        <button class="settings-clear" id="clearAll">Clear All</button>
-        <button class="settings-secondary" id="copyDiagnostics">Copy Diagnostics</button>
+        <button class="btn danger settings-clear" id="clearAll" type="button">Clear All</button>
+        <button class="btn settings-secondary" id="copyDiagnostics" type="button">Copy Diagnostics</button>
       </div>
       <div class="build-info" id="buildInfo"></div>
     </div>
@@ -1399,8 +1403,10 @@
       root.appendChild(overlay);
       return overlay;
     };
-    const confirmEl = make('<div class="dialog"><h3 data-x="title"></h3><p data-x="msg"></p><div class="dialog-btns"><button class="btn-cancel" data-x="no"></button><button class="btn-confirm" data-x="yes"></button></div></div>');
-    const promptEl = make('<div class="dialog"><h3 data-x="title"></h3><input class="prompt-input" type="text" autocomplete="off" spellcheck="false" data-x="input"><div class="dialog-btns"><button class="btn-cancel" data-x="no"></button><button class="btn-confirm" data-x="yes"></button></div></div>');
+    // Buttons are the shared .btn set: Cancel is the default button, the
+    // confirm is .primary, or .danger when the caller passes {danger:true}.
+    const confirmEl = make('<div class="dialog"><h3 data-x="title"></h3><p data-x="msg"></p><div class="dialog-preview" data-x="preview"></div><div class="dialog-btns"><button type="button" class="btn" data-x="no"></button><button type="button" class="btn primary" data-x="yes"></button></div></div>');
+    const promptEl = make('<div class="dialog"><h3 data-x="title"></h3><input class="prompt-input" type="text" autocomplete="off" spellcheck="false" data-x="input"><div class="dialog-btns"><button type="button" class="btn" data-x="no"></button><button type="button" class="btn primary" data-x="yes"></button></div></div>');
     const q = (parent, name) => parent.querySelector(`[data-x="${name}"]`);
     let activeCancel = null;
     function run(overlay, setup, getValue) {
@@ -1432,12 +1438,18 @@
         activeCancel = onNo;
       });
     }
+    // opts: { title, message (sans body copy), preview (clip text, shown in a
+    // mono block), okLabel, cancelLabel, danger (destructive: red confirm) }.
     function confirm(opts) {
       const o = opts || {};
       return run(confirmEl, () => {
         q(confirmEl, 'title').textContent = o.title || '';
         q(confirmEl, 'msg').textContent = o.message || '';
-        q(confirmEl, 'yes').textContent = o.okLabel || 'OK';
+        q(confirmEl, 'preview').textContent = o.preview || '';
+        const yes = q(confirmEl, 'yes');
+        yes.textContent = o.okLabel || 'OK';
+        yes.classList.toggle('danger', !!o.danger);
+        yes.classList.toggle('primary', !o.danger);
         q(confirmEl, 'no').textContent = o.cancelLabel || 'Cancel';
       }, (cancelled) => !cancelled);
     }
@@ -1950,7 +1962,7 @@
 
     async function deleteGroup(group) {
       if (!group || protectedHas(group)) return;
-      const ok = await dialogs.confirm({ title: `Delete group "${group}"?`, message: 'Items will be ungrouped but not deleted.', okLabel: 'Delete' });
+      const ok = await dialogs.confirm({ title: `Delete group "${group}"?`, message: 'Items will be ungrouped but not deleted.', okLabel: 'Delete', danger: true });
       if (!ok) return;
       await a.deleteGroup(group);
       refresh();
@@ -1960,7 +1972,7 @@
       if (slot in nmap && nmap[slot] !== id) {
         const existing = a.itemById(nmap[slot]);
         const preview = existing ? (existing.type === 'image' ? '[image]' : String(existing.text || '').replace(/\s+/g, ' ').slice(0, 80)) : '';
-        const ok = await dialogs.confirm({ title: `Numpad ${slot} already assigned:`, message: preview, okLabel: 'Replace' });
+        const ok = await dialogs.confirm({ title: `Numpad ${slot} already assigned:`, preview, okLabel: 'Replace' });
         if (!ok) return;
       }
       await a.numpadAssign(id, slot);
@@ -1974,7 +1986,7 @@
       refresh();
     }
     async function clearAll() {
-      const ok = await dialogs.confirm({ title: 'Clear all unpinned items?', message: 'Pinned items will be kept.', okLabel: 'Clear' });
+      const ok = await dialogs.confirm({ title: 'Clear all unpinned items?', message: 'Pinned items will be kept.', okLabel: 'Clear', danger: true });
       if (!ok) return;
       await a.clearUnpinned();
       refresh();
@@ -2588,7 +2600,7 @@
           <button class="icon-btn" type="button" data-x="find" title="Find (Ctrl+F)"><span class="mi">search</span></button>
           <button class="icon-btn" type="button" data-x="revert" title="Revert to original"><span class="mi">undo</span></button>
           ${o.onMenu ? '<button class="icon-btn" type="button" data-x="menu" title="More actions" aria-label="More actions"><span class="mi">more_horiz</span></button>' : ''}
-          <button class="icon-btn close-btn" type="button" data-x="close" title="Close (Esc)">&times;</button>
+          <button class="icon-btn close-btn" type="button" data-x="close" title="Close (Esc)" aria-label="Close"><span class="mi">close</span></button>
         </div>
       </div>
       <div class="bc-title-row" hidden>
@@ -2681,7 +2693,7 @@
       } else {
         clipEl.className = 'bc-editor-clip';
         clipEl.removeAttribute('title');
-        clipEl.innerHTML = '<button class="bc-editor-copy" type="button" data-x="copy" title="Copy this note. While it stays on the clipboard, your edits keep it up to date."><span class="mi sm">content_copy</span>Copy</button>';
+        clipEl.innerHTML = '<button class="btn quiet sm bc-editor-copy" type="button" data-x="copy" title="Copy this note. While it stays on the clipboard, your edits keep it up to date."><span class="mi sm">content_copy</span>Copy</button>';
       }
     }
     if (clipEl) {
@@ -2829,7 +2841,9 @@
     q('findprev').onclick = () => step(-1);
     q('findnext').onclick = () => step(1);
     q('findclose').onclick = closeFind;
-    q('find').onclick = openFind;
+    // Not `onclick = openFind`: the click event would arrive as the query and
+    // fill the field with "[object MouseEvent]".
+    q('find').onclick = () => openFind();
     // Opt-in clip menu (the app's editor window wires the shared clip menu here;
     // the demo's in-page editor overlay has no clip context so no button).
     const menuBtn = q('menu');
@@ -2888,7 +2902,7 @@
         <div class="bc-editor-bar-actions">
           ${o.onDragOut ? '<span class="icon-btn bc-drag-handle" data-x="drag" draggable="true" role="button" title="Drag the image into another app or a folder" aria-label="Drag the image out"><span class="mi">drag_indicator</span></span>' : ''}
           <button class="icon-btn" type="button" data-x="menu" title="More actions" aria-label="More actions"><span class="mi">more_horiz</span></button>
-          <button class="icon-btn close-btn" type="button" data-x="close" title="Close (Esc)">&times;</button>
+          <button class="icon-btn close-btn" type="button" data-x="close" title="Close (Esc)" aria-label="Close"><span class="mi">close</span></button>
         </div>
       </div>
       <div class="bc-viewer-stage" data-x="stage"><img class="bc-viewer-img" data-x="img" alt="clip image" draggable="false"></div>
@@ -3205,7 +3219,7 @@
           <button class="icon-btn" type="button" data-x="nextchg" title="Next change (Alt+Down)"><span class="mi">keyboard_arrow_down</span></button>
           <button class="icon-btn" type="button" data-x="mergeall" title="Merge all non-conflicting"><span class="mi">call_merge</span></button>
           <button class="icon-btn" type="button" data-x="ws" title="Ignore whitespace differences"><span class="mi">space_bar</span></button>
-          <button class="icon-btn close-btn" type="button" data-x="close" title="Close (Esc)">&times;</button>
+          <button class="icon-btn close-btn" type="button" data-x="close" title="Close (Esc)" aria-label="Close"><span class="mi">close</span></button>
         </div>
       </div>
       <div class="bc-merge-title">
@@ -3216,13 +3230,13 @@
       <div class="bc-merge-note" data-x="note" hidden></div>
       <div class="bc-merge-host" data-x="host"></div>
       <div class="bc-reconcile-actions ${threeWay ? 'bc-heads-3' : 'bc-heads-2'}" data-x="actions">
-        <span class="bc-act-left"><button type="button" data-x="left">Accept current</button></span>
+        <span class="bc-act-left"><button type="button" class="btn" data-x="left">Accept current</button></span>
         <span class="bc-act-mid">
-          <button type="button" data-x="both">Keep both</button>
-          ${record.unify ? '' : '<button type="button" data-x="remove">Remove conflict</button>'}
-          <button type="button" class="primary" data-x="save">${escapeHtml(record.saveLabel || 'Save merged')}</button>
+          <button type="button" class="btn" data-x="both">Keep both</button>
+          ${record.unify ? '' : '<button type="button" class="btn" data-x="remove">Remove conflict</button>'}
+          <button type="button" class="btn primary" data-x="save">${escapeHtml(record.saveLabel || 'Save merged')}</button>
         </span>
-        <span class="bc-act-right"><button type="button" data-x="right">Accept incoming</button></span>
+        <span class="bc-act-right"><button type="button" class="btn" data-x="right">Accept incoming</button></span>
       </div>`;
     const q = (name) => root.querySelector(`[data-x="${name}"]`);
     const dialogs = createDialogs(root);

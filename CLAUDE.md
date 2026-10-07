@@ -813,6 +813,10 @@ Desktop app distribution has TWO consistent paths, both driven by `main`:
   Diagnose a suspected stale install with `git -C <install> reflog --date=iso` vs the running
   process StartTime: a `pull --ff-only` newer than the process with no `app.quit
   {reason:update-relaunch}` after it is exactly this.
+- **Popup open animation OFF on Windows (2026-10-07)**: Windows 11 scales+fades a window in; on the
+  acrylic popup the backdrop is drawn full size at once while the content scales in, so every open showed
+  a flickering rim. `lib/windows-dwm.js` sets DWMWA_TRANSITIONS_FORCEDISABLED on the popup at creation
+  (logged as `popup.transitions {ok, hr}`, forceFile). Popup only; editor/viewer keep normal animations.
 - **Popup renders but paints NOTHING on Windows (2026-09-20, ~40h uptime): Chromium native
   window occlusion.** The popup is `show:false` + hidden on every blur, the pattern
   `CalculateNativeWinOcclusion` mishandles: it stops compositing the "occluded" window and never

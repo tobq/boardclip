@@ -557,8 +557,13 @@ async function main() {
     // Renderer exceptions land in the diagnostics file (Core.installRendererErrorReporting).
     await sleep(500);
     const diagFile = path.join(dataDir, 'boardclip-diagnostics.jsonl');
-    const errs = fs.existsSync(diagFile) ? fs.readFileSync(diagFile, 'utf8').split('\n').filter((l) => l.includes('renderer.error')) : [];
+    const diagLines = fs.existsSync(diagFile) ? fs.readFileSync(diagFile, 'utf8').split('\n') : [];
+    const errs = diagLines.filter((l) => l.includes('renderer.error'));
     check('no renderer errors recorded', errs.length === 0, errs[0]);
+    if (process.platform === 'win32') {
+      const tr = diagLines.find((l) => l.includes('"popup.transitions"'));
+      check('popup opens without the Windows scale+fade animation (DWM transitions off)', tr && tr.includes('"ok":true'), tr && tr.slice(0, 160));
+    }
   } finally {
     if (cdp) cdp.close();
     try { process.kill(child.pid); } catch {}

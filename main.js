@@ -46,6 +46,7 @@ const { Worker } = require('worker_threads');
 const conflictModel = require('./lib/conflict-model');
 const { ControlServer } = require('./lib/control-server');
 const windowsConsole = require('./lib/windows-console');
+const windowsDwm = require('./lib/windows-dwm');
 
 function guardBrokenPipe(stream) {
   try {
@@ -4137,6 +4138,9 @@ function createPopup() {
   });
 
   configureMacPopupWindow(win);
+  // Appear instantly: no Windows scale+fade open animation (on the acrylic
+  // popup it showed as a flickering rim every open). No-op off Windows.
+  diagnostics.record('popup.transitions', windowsDwm.disableWindowTransitions(win), { forceFile: true });
   win.loadFile(path.join(SCRIPT_DIR, 'index.html'));
   // Ctrl/Cmd+= / - / 0 size the image previews, never the popup page. Claimed
   // HERE, before the app menu: on macOS the default menu's zoom roles are key

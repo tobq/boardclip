@@ -57,11 +57,36 @@
       pinned: isPinnedItem(item),
       ts: Number(item.ts) || 0, // Unix SECONDS
       len: isImage ? 0 : body.length,
-      lines: isImage || !body ? 0 : body.split(/\r\n|\r|\n/).length,
-      words: isImage || !body.trim() ? 0 : body.trim().split(/\s+/).length,
-      url: !isImage && URL_BODY_RE.test(body.trim()),
+      // lines / words / url: computed on first use (docLines/docWords/docUrl).
+      // Only the lines:/words:/is:multiline/is:url facets read them, and working
+      // them out splits every body - a quarter-second per keystroke on a 70 MB
+      // history when it was done here.
       rich: !isImage && !!(item.html || item.htmlRef || item.htmlHash || item.rtf || item.rtfRef || item.rtfHash),
     };
+  }
+  function docLines(doc) {
+    if (doc.lines === undefined) {
+      const s = doc.type === 'image' ? '' : doc.body;
+      let n = s ? 1 : 0;
+      for (let i = 0; i < s.length; i += 1) {
+        const c = s.charCodeAt(i);
+        if (c === 10) n += 1;
+        else if (c === 13) { n += 1; if (s.charCodeAt(i + 1) === 10) i += 1; }
+      }
+      doc.lines = n;
+    }
+    return doc.lines;
+  }
+  function docWords(doc) {
+    if (doc.words === undefined) {
+      const s = doc.type === 'image' ? '' : doc.body.trim();
+      doc.words = s ? s.split(/\s+/).length : 0;
+    }
+    return doc.words;
+  }
+  function docUrl(doc) {
+    if (doc.url === undefined) doc.url = doc.type !== 'image' && URL_BODY_RE.test(doc.body.trim());
+    return doc.url;
   }
 
   // Combined free-text haystack (title + body + groups + a type keyword) — matches the old
@@ -285,10 +310,34 @@
   }
 
   // ── matching ──
+  // test(text, isLower): isLower says the text is ALREADY lowercased (the
+  // precomputed haystack), so a plain term never lowercases it again.
   function makeTermMatcher(value, regex) {
-    if (regex) { try { const re = new RegExp(value, 'i'); return (t) => re.test(String(t || '')); } catch { return () => false; } }
+    if (regex) {
+      let re = null;
+      try { re = new RegExp(value, 'i'); } catch {}
+      return { regex: true, lower: '', test: (t) => !!re && re.test(String(t || '')) };
+    }
     const lower = String(value).toLowerCase();
-    return (t) => String(t || '').toLowerCase().includes(lower);
+    return { regex: false, lower, test: (t, isLower) => (isLower ? String(t || '') : String(t || '').toLowerCase()).includes(lower) };
+  }
+  // One matcher per content term, built once per query (not once per clip).
+  function compileContent(parsed, regex) {
+    return parsed.content.map((c) => makeTermMatcher(c.value, regex));
+  }
+  // Where lowercase `v` first occurs in the clip's BODY, read from the lowercased
+  // combined haystack ([title, body, type, groups...].join(' ')) instead of
+  // lowercasing the body again: a 31 MB clip made every keystroke pay for that.
+  // Falls back to the body itself when the haystack does not line up.
+  function bodyIndexOf(doc, hayLower, v) {
+    const body = doc.body;
+    if (!body) return -1;
+    const start = doc.title.length + 1;
+    if (hayLower != null && hayLower.length >= start + body.length && hayLower.charCodeAt(start - 1) === 32) {
+      const idx = hayLower.indexOf(v, start);
+      return idx >= 0 && idx + v.length <= start + body.length ? idx - start : -1;
+    }
+    return body.toLowerCase().indexOf(v);
   }
   function lenSatisfies(len, cond) {
     switch (cond.op) {
@@ -300,15 +349,23 @@
       default: return len === cond.n;
     }
   }
-  // Strict AND filter. `opts`: { regex, now, searchText? (precomputed combined haystack) }.
+  // Strict AND filter. `opts`: { regex, now, searchText? (precomputed combined
+  // haystack, LOWERCASED), matchers? (compileContent of this query) }.
   function matchDoc(doc, parsed, opts) {
     if (!doc) return false;
     const o = opts || {};
-    const regex = !!o.regex;
-    const any = o.searchText != null ? o.searchText : docSearchText(doc);
-    for (const c of parsed.content) {
-      const hay = c.scope === 'title' ? doc.title : c.scope === 'body' ? doc.body : any;
-      const hit = makeTermMatcher(c.value, regex)(hay);
+    const matchers = o.matchers || compileContent(parsed, !!o.regex);
+    let any = o.searchText;
+    for (let k = 0; k < parsed.content.length; k += 1) {
+      const c = parsed.content[k];
+      const m = matchers[k];
+      let hit;
+      if (c.scope === 'title') hit = m.test(doc.title, false);
+      else if (c.scope === 'body') hit = m.regex ? m.test(doc.body, false) : bodyIndexOf(doc, any, m.lower) >= 0;
+      else {
+        if (any == null) any = docSearchText(doc).toLowerCase();
+        hit = m.test(any, true);
+      }
       if (c.neg ? hit : !hit) return false;
     }
     for (const g of parsed.groups) if (!docInGroup(doc, g)) return false;
@@ -320,8 +377,8 @@
     if (parsed.since != null) { const b = resolveTimeMs(parsed.since, o.now); if (b != null && doc.ts * 1000 < b) return false; }
     if (parsed.before != null) { const b = resolveTimeMs(parsed.before, o.now); if (b != null && doc.ts * 1000 > b) return false; }
     if (parsed.len && !lenSatisfies(doc.len, parsed.len)) return false;
-    if (parsed.lines && !lenSatisfies(doc.lines || 0, parsed.lines)) return false;
-    if (parsed.words && !lenSatisfies(doc.words || 0, parsed.words)) return false;
+    if (parsed.lines && !lenSatisfies(docLines(doc), parsed.lines)) return false;
+    if (parsed.words && !lenSatisfies(docWords(doc), parsed.words)) return false;
     if (parsed.id && !doc.id.toLowerCase().includes(String(parsed.id).toLowerCase())) return false;
     return true;
   }
@@ -330,8 +387,8 @@
     if (v === 'image') return doc.type === 'image';
     if (v === 'text') return doc.type === 'text';
     if (v === 'numpad') return doc.numpad != null;
-    if (v === 'url') return !!doc.url;
-    if (v === 'multiline') return (doc.lines || 0) > 1;
+    if (v === 'url') return docUrl(doc);
+    if (v === 'multiline') return docLines(doc) > 1;
     if (v === 'rich') return !!doc.rich;
     return false;
   }
@@ -348,8 +405,9 @@
     const o = opts || {};
     const regex = !!o.regex;
     let score = 0;
+    // opts.hay: the clip's lowercased combined haystack; body positions come
+    // from it (bodyIndexOf) instead of lowercasing the whole body per keystroke.
     const titleLower = doc.title.toLowerCase();
-    const bodyLower = doc.body.toLowerCase();
     for (const c of parsed.content) {
       if (c.neg) continue; // negatives don't add signal
       const v = normalizedPhrase(c.value);
@@ -364,7 +422,7 @@
         else if (!regex) { const fm = fuzzyMatch(v, doc.title); if (fm && fm.score >= fuzzyFloor(v.length)) score += 10 + Math.min(14, fm.score / 6); }
       }
       if (wantBody && doc.body) {
-        const idx = bodyLower.indexOf(v);
+        const idx = bodyIndexOf(doc, o.hay, v);
         if (idx >= 0) { score += 12; score += Math.max(0, 6 - idx / 200); } // earlier = a touch better
         // multi-word phrase already covered by includes; word tokens add a little
         if (/\s/.test(v) && idx >= 0) score += 6;
@@ -399,11 +457,16 @@
     const hasContent = parsed.content.length > 0;
     const mode = rankMode(parsed, o.sortMode);
     const scored = [];
+    // One options object and one compiled matcher set for the whole pass.
+    const matchOpts = { regex: o.regex, now, searchText: undefined, matchers: compileContent(parsed, !!o.regex) };
+    const relOpts = { ...o, hay: undefined };
     for (let i = 0; i < docs.length; i++) {
       const doc = docs[i];
       if (!doc) continue;
-      if (!matchDoc(doc, parsed, { regex: o.regex, now, searchText: hay ? hay[i] : undefined })) continue;
-      const rel = mode === 'best' && hasContent ? relevanceScore(doc, parsed, o) : 0;
+      matchOpts.searchText = hay ? hay[i] : undefined;
+      if (!matchDoc(doc, parsed, matchOpts)) continue;
+      relOpts.hay = matchOpts.searchText;
+      const rel = mode === 'best' && hasContent ? relevanceScore(doc, parsed, relOpts) : 0;
       scored.push({ i, total: rel + recencyScore(doc, now), ts: doc.ts });
     }
     if (mode === 'best') scored.sort((a, b) => b.total - a.total || b.ts - a.ts);

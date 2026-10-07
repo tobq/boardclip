@@ -61,7 +61,9 @@ let sortMode = null;
 let controller = null;
 let dataRevision = -1;
 let diagnosticsEnabled = false;
-let searchTexts = [], searchTextLower = [];
+// Per history revision (rebuildItemIndexes), never per keystroke: the search
+// docs + lowercased haystacks for Core.filterItemIndexes.
+let searchDocs = [], searchTextLower = [];
 let itemLookup = new Map(), groupCounts = new Map(), builtinCounts = {}, numpadIdMap = {};
 
 document.getElementById('newNoteBtn').addEventListener('click', () => {
@@ -157,8 +159,9 @@ function showToast(msg) { toast.textContent = msg||'Copied'; toast.classList.add
 
 function rebuildItemIndexes() {
   const startedAt = performance.now();
-  searchTexts = [];
+  searchDocs = [];
   searchTextLower = [];
+  let searchTextBytes = 0;
   itemLookup = new Map();
   groupCounts = new Map();
   builtinCounts = { __pinned__: 0, __numbered__: 0, __images__: 0 };
@@ -176,11 +179,12 @@ function rebuildItemIndexes() {
     }
     groupsOf(item).forEach((group) => groupCounts.set(group, (groupCounts.get(group) || 0) + 1));
     const searchText = Core.itemSearchText(item);
-    searchTexts.push(searchText);
+    searchTextBytes += searchText.length;
     searchTextLower.push(searchText.toLowerCase());
+    searchDocs.push(Core.search.clipToDoc(item));
   });
   recordRendererPerf('indexes.rebuild', startedAt, {
-    search_text_bytes: searchTexts.reduce((sum, text) => sum + text.length, 0),
+    search_text_bytes: searchTextBytes,
     groups: groupCounts.size,
     numbered: builtinCounts.__numbered__ || 0,
     images: builtinCounts.__images__ || 0,
@@ -205,7 +209,7 @@ function renderGroupFilters() {
 // the resolveListAnchor rules): typing, clearing, a sort flip, a new clip.
 function applyFilter() {
   const startedAt = performance.now();
-  filtered = Core.filterItemIndexes(items, { query, regex: regexOn, searchTexts, searchTextLower, sortMode });
+  filtered = Core.filterItemIndexes(items, { query, regex: regexOn, docs: searchDocs, searchTextLower, sortMode });
   const rows = filtered;
   const rowItems = items;
   clipList.update({

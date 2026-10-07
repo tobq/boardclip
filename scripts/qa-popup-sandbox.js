@@ -95,6 +95,7 @@ const IMAGES = {
   legacy: { w: 640, h: 480, rgb: [120, 60, 160], noDims: true },
 };
 const N = 500;
+const PERF = process.env.QA_PERF === "1";
 
 async function main() {
   const stamp = Date.now();
@@ -131,8 +132,20 @@ async function main() {
       seed.push({ type: 'text', text: `qa clip mk${i} ${i % 2 ? 'odd' : 'even'} lorem ipsum ${i}${extra}`, ts });
     }
   }
+  // QA_PERF=1: a history the size of the owner's (~14k clips, ~70 MB of text,
+  // one 31 MB clip), synthetic so no real data is copied, then ONLY the
+  // per-keystroke timing section runs.
+  if (PERF) {
+    const vocab = 'forge launch plan notes sync release editor popup search clip image draft review meeting audio deploy budget design api token query result window agent model'.split(' ');
+    let rnd = 7;
+    const next = () => { rnd = (rnd * 1103515245 + 12345) & 0x7fffffff; return rnd; };
+    const words = (n) => { let out = ''; for (let k = 0; k < n; k += 1) out += vocab[next() % vocab.length] + (k % 13 === 12 ? '\n' : ' '); return out; };
+    for (let i = 0; i < 13400; i += 1) seed.push({ type: 'text', text: `filler ${i} ${words(20 + (next() % 500))}`, ts: now - (N + i) * 60 });
+    const para = words(400);
+    seed.push({ type: 'text', text: `huge clip ${para.repeat(Math.ceil(31e6 / para.length))}`.slice(0, 31e6), ts: now - (N + 13400) * 60 });
+  }
   fs.writeFileSync(path.join(dataDir, 'clipboard-history.json'), JSON.stringify(seed));
-  console.log(`sandbox data: ${dataDir} (${N} clips, providers pre-disabled: ${accounts.length})`);
+  console.log(`sandbox data: ${dataDir} (${seed.length} clips, ${(seed.reduce((s, it) => s + (it.text || '').length, 0) / 1e6).toFixed(1)} MB text, providers pre-disabled: ${accounts.length})`);
 
   const electronBin = path.join(ROOT, 'node_modules', 'electron', 'dist', process.platform === 'win32' ? 'electron.exe' : 'electron');
   const log = fs.openSync(path.join(dataDir, 'app.log'), 'a');
@@ -171,6 +184,48 @@ async function main() {
       };
       return true;
     })()`);
+
+    if (PERF) {
+      // Per-keystroke cost in the real popup: type a query one character at a
+      // time (each = the rerender a keystroke triggers), then clear, then a
+      // forced history refresh (what every capture / popup focus costs).
+      await waitFor(() => evalIn(cdp, `clipList.ids().length >= 13900`), 'big history loaded', 60000);
+      const perf = await evalIn(cdp, `(async () => {
+        const typed = [];
+        for (const word of ['forge launch', 'editor']) {
+          for (let k = 1; k <= word.length; k += 1) typed.push(__qa.query(word.slice(0, k)));
+          typed.push(__qa.clear());
+        }
+        const filterOnly = [];
+        for (const q of ['f', 'forge', 'forge launch', 'group:x', 'lines:>3']) {
+          const t = performance.now();
+          Core.filterItemIndexes(items, { query: q, docs: searchDocs, searchTextLower });
+          filterOnly.push([q, +(performance.now() - t).toFixed(1)]);
+        }
+        // Where a keystroke's time goes (query 'forge').
+        searchEl.value = 'forge'; query = 'forge'; controller.onQueryChange();
+        const parts = {};
+        let t = performance.now(); renderGroupFilters(); parts.filterBar = performance.now() - t;
+        t = performance.now(); filtered = Core.filterItemIndexes(items, { query, docs: searchDocs, searchTextLower, sortMode }); parts.search = performance.now() - t;
+        t = performance.now(); applyFilter(); parts.applyFilter = performance.now() - t;
+        t = performance.now(); updateCount(); updateSortButton(); parts.countSort = performance.now() - t;
+        t = performance.now(); document.body.getBoundingClientRect(); parts.layout = performance.now() - t;
+        __qa.clear();
+        console.log(JSON.stringify(parts));
+        const r0 = performance.now();
+        dataRevision = -1;
+        await refresh({ force: true });
+        const refreshMs = performance.now() - r0;
+        const s = [...typed].sort((a, b) => a - b);
+        return { parts, n: typed.length, p50: s[Math.floor(s.length / 2)], p90: s[Math.floor(s.length * 0.9)], max: s[s.length - 1], filterOnly, refreshMs, items: items.length };
+      })()`);
+      console.log(`      keystroke rerender over ${perf.items} clips: p50 ${perf.p50.toFixed(1)} ms, p90 ${perf.p90.toFixed(1)} ms, max ${perf.max.toFixed(1)} ms (${perf.n} keystrokes)`);
+      console.log(`      search only: ${perf.filterOnly.map(([q, ms]) => `"${q}" ${ms} ms`).join(', ')}`);
+      console.log(`      forced history refresh (IPC + indexes + rerender): ${perf.refreshMs.toFixed(0)} ms`);
+      console.log(`      keystroke parts: ${Object.entries(perf.parts).map(([k, v]) => `${k} ${v.toFixed(1)} ms`).join(', ')}`);
+      check('keystroke rerender p90 under 50 ms at owner scale', perf.p90 < 50, `p90 ${perf.p90.toFixed(1)} ms`);
+      return;
+    }
 
     // 1. Initial render: windowed, newest first, no pill.
     // The sandbox's poller captures whatever is on the system clipboard at start

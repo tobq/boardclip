@@ -2,6 +2,8 @@
 // Unit tests for the shared search engine (site/shared/clip-search.js).
 const assert = require('assert');
 const S = require('../site/shared/clip-search');
+const fs = require('fs');
+const path = require('path');
 
 function textItem(text, extra = {}) {
   return { type: 'text', text, ts: extra.ts || 1000, id: 'txt:' + (extra.id || text.slice(0, 8)), pin: extra.pin || null, title: extra.title };
@@ -203,6 +205,37 @@ const idsOf = (items, parsed, opts) => S.filterRankIndexes(items, parsed, opts).
 {
   assert.ok(S.lexQuery('t:hi').some((s) => s.kind === 'prefix' && s.text === 't:'), 't: is a recognized prefix');
   assert.ok(S.lexQuery('g:work').some((s) => s.kind === 'prefix' && s.text === 'g:'), 'g: is a recognized prefix');
+}
+
+// Per-keystroke speed (2026-10-07: 430-840 ms per keystroke on a 70 MB history).
+// The fast paths must give the SAME answers as the slow ones: a precomputed
+// lowercase haystack is never lowercased again, body positions come from it,
+// and lines/words/url are computed lazily, once per doc.
+{
+  const ui = require('../site/shared/clipboard-ui-core');
+  const items = [
+    { id: 'txt:1', type: 'text', title: 'Forge Plan', text: 'Ship the LAUNCH notes\nline two\nline three', ts: 100 },
+    { id: 'txt:2', type: 'text', title: '', text: 'nothing about it', ts: 90 },
+    { id: 'txt:3', type: 'text', title: 'launch', text: 'body mentions forge once', ts: 80 },
+    { id: 'txt:4', type: 'text', text: 'https://boardclip.app/download', ts: 70 },
+    { id: 'img:a.png', type: 'image', image: 'a.png', title: 'launch shot', ts: 60 },
+  ];
+  const hay = items.map((it) => ui.itemSearchText(it).toLowerCase());
+  const docs = items.map(S.clipToDoc);
+  const ids = (q, withHay) => S.filterRankIndexes(items, S.parseQuery(q), withHay ? { docs, searchTextLower: hay } : {}).map((i) => items[i].id);
+  for (const q of ['launch', 'forge', 'text:launch', 'body:forge', 'title:launch', '-launch', 'LAUNCH NOTES', 'lines:>2', 'words:<4', 'is:url', 'is:multiline', 'forge launch']) {
+    assert.deepStrictEqual(ids(q, true), ids(q, false), `fast path == slow path for "${q}"`);
+  }
+  assert.deepStrictEqual(ids('body:launch', true), ['txt:1'], 'body: scope reads the body region of the haystack, not the title');
+  assert.deepStrictEqual(ids('lines:>2', true), ['txt:1'], 'lines computed lazily');
+  assert.deepStrictEqual(ids('is:url', true), ['txt:4'], 'is:url computed lazily');
+  assert.strictEqual(S.clipToDoc(items[0]).lines, undefined, 'clipToDoc no longer splits every body up front');
+  // Matchers are compiled once per query; an already-lowercase haystack is used as is.
+  const m = S.matchDoc(docs[0], S.parseQuery('launch'), { searchText: 'forge plan ship the launch notes', matchers: undefined });
+  assert.strictEqual(m, true);
+  const app = fs.readFileSync(path.join(__dirname, '../index.html'), 'utf8');
+  assert.ok(/filterItemIndexes\(items, \{[^}]*docs: searchDocs/.test(app), 'the popup passes its cached search docs (built per history revision, not per keystroke)');
+  assert.ok(/function rebuildItemIndexes\(\)[\s\S]{0,1500}searchDocs\.push\(Core\.search\.clipToDoc\(item\)\)/.test(app), 'search docs are built in rebuildItemIndexes');
 }
 
 console.log('clip-search.test.js: all assertions passed');

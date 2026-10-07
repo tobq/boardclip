@@ -479,6 +479,18 @@ clear-all). All popup CSS + theme variables live in `site/shared/clipboard-popup
   (`7d`/`24h`/`30d`) · `len:>N` · `id:` · `sort:new|best`. `item.ts` is Unix SECONDS.
   Unknown `word:val` → stripped to `val` as free text + recorded in `parsed.unknown` for a
   hint. URL/Windows-path values (`http://`, `C:\`) are left verbatim.
+- **Per-keystroke search speed (fixed 2026-10-07, measured on the owner's 13.9k clips / 70.8 MB, one
+  31 MB clip): 430-840 ms -> ~25 ms per keystroke** (search 5-18 ms, list rebuild ~13 ms). Three costs
+  were the old 400 ms: (1) `filterItemIndexes` was called without `docs`, so every keystroke rebuilt
+  `clipToDoc` for every clip, which split every body for lines/words (~250 ms); (2) the term matcher
+  lowercased the ALREADY-lowercase `searchTextLower` haystack again (70 MB per keystroke); (3)
+  `relevanceScore` lowercased each matched body. Rules: the popup builds `searchDocs` +
+  `searchTextLower` once per history revision in `rebuildItemIndexes`; matchers are compiled once per
+  query (`compileContent`); body positions come from the lowercase haystack (`bodyIndexOf`); doc
+  `lines`/`words`/`url` are lazy (`docLines`/`docWords`/`docUrl`). Measure with
+  `QA_PERF=1 node scripts/qa-popup-sandbox.js` (synthetic owner-scale history, prints p50/p90 per
+  keystroke). The renderer logs `renderer.list.rerender` with `ms` when diagnostics are on - compare
+  those before guessing.
 - **Short + long alias for EVERY prefix** — ONE `PREFIX_ALIASES` map in clip-search.js
   feeds parse + `lexQuery` (highlight) + `suggestQuery` (autocomplete): `t`=title, `b`=text/
   body, `g`=group, `n`=num, `s`=since (also `after`), `bf`=before, `l`=len, `o`=sort, plus

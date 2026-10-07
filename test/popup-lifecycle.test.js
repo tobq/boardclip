@@ -81,8 +81,18 @@ assert.ok(between(mainJs, 'function relaunchAfterUpdate() {', 'function develope
 {
   const indexHtml = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
   const preloadJs = fs.readFileSync(path.join(__dirname, '..', 'preload.js'), 'utf8');
-  assert.ok(/ipcMain\.handle\('get-history-state', \(_, knownRevision\)/.test(mainJs),
+  assert.ok(/ipcMain\.handle\('get-history-state', \(event, knownRevision\)/.test(mainJs),
     'get-history-state must take the renderer\'s known revision and short-circuit when unchanged');
+  // 2026-10-07: a CHANGED history is sent as a delta (lib/history-feed.js), never
+  // the whole 70 MB again - each full refresh froze typing for ~1 s.
+  assert.ok(/historyFeed\.stateFor\(sender\.id, knownRevision, dataRevision, historyForRenderer\(\)\)/.test(mainJs),
+    'a changed history must go through the per-renderer delta feed');
+  assert.ok(indexHtml.includes('items = Core.applyHistoryDelta(items, state);'), 'the popup applies deltas');
+  // Typing never waits for the search: the rebuild runs after the next paint.
+  assert.ok(/function scheduleRerenderList\(\)[\s\S]{0,400}requestAnimationFrame\([\s\S]{0,200}rerenderTimer = setTimeout\(/.test(indexHtml),
+    'the list rebuild must be scheduled after the next paint (rAF then a task), never between a keystroke and its echo');
+  assert.ok(/window\.addEventListener\('focus', \(\) => \{[\s\S]{0,300}refreshGroupsAndList\(\{ force: false \}\)/.test(indexHtml),
+    'a popup focus must not force a rebuild of an unchanged history');
   assert.ok(mainJs.includes('{ revision: dataRevision, unchanged: true }'),
     'unchanged history must answer without cloning the items');
   assert.ok(preloadJs.includes("getHistoryState: (knownRevision) => ipcRenderer.invoke('get-history-state', knownRevision)"),

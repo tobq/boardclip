@@ -157,11 +157,25 @@ function itemId(item) { return Core.itemId(item); }
 function itemById(id) { return itemLookup.get(id) || items.find(it => itemId(it) === id); }
 function showToast(msg) { toast.textContent = msg||'Copied'; toast.classList.add('show'); clearTimeout(toastTimer); toastTimer = setTimeout(()=>toast.classList.remove('show'),1200); }
 
+// Per-clip search data, keyed by the item OBJECT: a history delta keeps
+// unchanged clips' objects, so only new or changed clips are lowercased and
+// re-docced (a full rebuild lowercased all 70 MB, ~300 ms, on every refresh).
+let searchIndexCache = new WeakMap();
+function searchIndexFor(item) {
+  let entry = searchIndexCache.get(item);
+  if (!entry) {
+    const searchText = Core.itemSearchText(item);
+    entry = { hay: searchText.toLowerCase(), doc: Core.search.clipToDoc(item), bytes: searchText.length };
+    searchIndexCache.set(item, entry);
+  }
+  return entry;
+}
 function rebuildItemIndexes() {
   const startedAt = performance.now();
   searchDocs = [];
   searchTextLower = [];
   let searchTextBytes = 0;
+  let indexed = 0;
   itemLookup = new Map();
   groupCounts = new Map();
   builtinCounts = { __pinned__: 0, __numbered__: 0, __images__: 0 };
@@ -178,13 +192,16 @@ function rebuildItemIndexes() {
       numpadIdMap[slot] = id;
     }
     groupsOf(item).forEach((group) => groupCounts.set(group, (groupCounts.get(group) || 0) + 1));
-    const searchText = Core.itemSearchText(item);
-    searchTextBytes += searchText.length;
-    searchTextLower.push(searchText.toLowerCase());
-    searchDocs.push(Core.search.clipToDoc(item));
+    if (!searchIndexCache.has(item)) indexed += 1;
+    const entry = searchIndexFor(item);
+    searchTextBytes += entry.bytes;
+    searchTextLower.push(entry.hay);
+    searchDocs.push(entry.doc);
   });
+  filterBarKey = ''; // counts may have changed
   recordRendererPerf('indexes.rebuild', startedAt, {
     search_text_bytes: searchTextBytes,
+    indexed,
     groups: groupCounts.size,
     numbered: builtinCounts.__numbered__ || 0,
     images: builtinCounts.__images__ || 0,
@@ -197,10 +214,17 @@ function numpadMap() {
 }
 
 // --- Group filter tags ---
+// The bar depends on the facet tokens, whether there is any query text, the
+// groups and the counts - NOT on the free text being typed, so typing a word
+// no longer rebuilds it on every letter (~13 ms each on a 25-group bar).
+let filterBarKey = '';
 function renderGroupFilters() {
   const startedAt = performance.now();
   const el = document.getElementById('groupFilters');
   const fs = facetState();
+  const key = JSON.stringify([[...fs.active].sort(), [...fs.excluded].sort(), !!query, groups]);
+  if (key === filterBarKey) return;
+  filterBarKey = key;
   el.innerHTML = Core.renderFilterBar({ items, groups, activeFilters: fs.active, excludedFilters: fs.excluded, query, builtinCounts, groupCounts });
   recordRendererPerf('filters.render_bar', startedAt, { groups: groups.length }, 40);
 }
@@ -209,6 +233,8 @@ function renderGroupFilters() {
 // the resolveListAnchor rules): typing, clearing, a sort flip, a new clip.
 function applyFilter() {
   const startedAt = performance.now();
+  const firstTerm = parsedQuery().content.find(c => !c.neg && c.scope !== 'title');
+  previewTerm = firstTerm ? String(firstTerm.value).trim().toLowerCase() || null : null;
   filtered = Core.filterItemIndexes(items, { query, regex: regexOn, docs: searchDocs, searchTextLower, sortMode });
   const rows = filtered;
   const rowItems = items;
@@ -224,12 +250,11 @@ function applyFilter() {
 function renderedCount() { const w = clipList.window(); return w.end - w.start; }
 
 let rerenderFrame = null;
+let rerenderTimer = null;
 function rerenderList() {
   const startedAt = performance.now();
-  if (rerenderFrame) {
-    cancelAnimationFrame(rerenderFrame);
-    rerenderFrame = null;
-  }
+  if (rerenderFrame) { cancelAnimationFrame(rerenderFrame); rerenderFrame = null; }
+  if (rerenderTimer) { clearTimeout(rerenderTimer); rerenderTimer = null; }
   renderGroupFilters();
   applyFilter();
   updateCount();
@@ -237,11 +262,15 @@ function rerenderList() {
   recordRendererPerf('list.rerender', startedAt, { rendered: renderedCount() }, 90);
 }
 
+// Typing never waits for the search: the rebuild runs just AFTER the next
+// paint (rAF, then a task), so the typed character is on screen first and the
+// list follows a frame later. Keystrokes inside that window coalesce into one
+// rebuild of the latest query.
 function scheduleRerenderList() {
-  if (rerenderFrame) return;
+  if (rerenderFrame || rerenderTimer) return;
   rerenderFrame = requestAnimationFrame(() => {
     rerenderFrame = null;
-    rerenderList();
+    rerenderTimer = setTimeout(() => { rerenderTimer = null; rerenderList(); }, 0);
   });
 }
 
@@ -254,6 +283,13 @@ function scheduleRelativeTimeRefresh() {
   }
 }
 
+// Where the first search term sits in clip ri's body, read from its lowercase
+// haystack (no scan of the body itself); null lets the preview search instead.
+let previewTerm = null;
+function previewMatchIndex(ri) {
+  if (!previewTerm || regexOn || !searchDocs[ri]) return null;
+  return Core.search.bodyIndexOf(searchDocs[ri], searchTextLower[ri], previewTerm);
+}
 function buildItem(it, ri, nmap) {
   const id = itemId(it);
   const el = document.createElement('div');
@@ -264,7 +300,7 @@ function buildItem(it, ri, nmap) {
   const sel = controller ? controller.selection() : null;
   el.innerHTML = Core.renderClipItem(it, {
     imageSrc: item => `clip-img:///${esc(item.image)}`,
-    previewText: item => Core.collapsedPreviewText(item.text || '', query, regexOn),
+    previewText: item => Core.collapsedPreviewText(item.text || '', query, regexOn, { matchIndex: previewMatchIndex(ri) }),
     highlight: text => Core.highlight(text, query, regexOn),
     highlightTitle: text => Core.highlight(text, query, regexOn),
     selected: !!(sel && sel.focusId === id),
@@ -1326,12 +1362,13 @@ async function refresh({force = false} = {}) {
     const state = window.api.getHistoryState ? await window.api.getHistoryState(dataRevision) : {revision: Date.now(), items: await window.api.getHistory()};
     const changed = !state.unchanged && state.revision !== dataRevision;
     if (changed) {
+      // A delta (only the changed clips + the order) once we hold a snapshot.
+      items = Core.applyHistoryDelta(items, state);
       dataRevision = state.revision;
-      items = state.items || [];
       rebuildItemIndexes();
     }
     if (changed || force) rerenderList();
-    recordRendererPerf('history.refresh', startedAt, { changed, force, revision: state.revision }, 100);
+    recordRendererPerf('history.refresh', startedAt, { changed, force, revision: state.revision, delta: !!state.delta, sent_items: state.items ? state.items.length : 0 }, 100);
   } catch {}
 }
 
@@ -1345,7 +1382,9 @@ if (window.api.onHistoryChanged) {
 
 // --- Focus/blur integration ---
 window.addEventListener('focus', () => {
-  refreshGroupsAndList();
+  // Not forced: an unchanged history needs no rebuild (it cost ~60 ms on every
+  // popup show, right when typing starts).
+  refreshGroupsAndList({ force: false });
   setTimeout(() => searchEl.focus(), 50);
 });
 window.addEventListener('blur', () => {

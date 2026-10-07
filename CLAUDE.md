@@ -491,6 +491,18 @@ clear-all). All popup CSS + theme variables live in `site/shared/clipboard-popup
   `QA_PERF=1 node scripts/qa-popup-sandbox.js` (synthetic owner-scale history, prints p50/p90 per
   keystroke). The renderer logs `renderer.list.rerender` with `ms` when diagnostics are on - compare
   those before guessing.
+- **Loads never block typing (2026-10-07, "it still hangs")**: the real hang was `history.refresh` at
+  ~1 s (re-cloning all 70 MB over IPC + re-lowercasing it) on EVERY capture / sync merge / settings
+  save, all on the popup's only thread. Now: `get-history-state` answers through `lib/history-feed.js`
+  (per-renderer snapshot of id -> stamp; a request carrying the revision it was last sent gets only the
+  changed clips + the id order, anything else a full snapshot) and `Core.applyHistoryDelta` keeps
+  unchanged clip OBJECTS, so `searchIndexFor` (WeakMap item -> {hay, doc}) re-indexes only new/changed
+  clips. Previews take the match position from the haystack (`collapsedPreviewText` `matchIndex`;
+  never flatten/lowercase a whole body: a visible 31 MB clip cost ~300 ms/keystroke). The filter bar
+  re-renders only when facets/groups/counts change, focus refreshes are not forced, and
+  `scheduleRerenderList` runs the rebuild AFTER the next paint so a typed character always shows
+  first. Measure blocking with a `longtask` PerformanceObserver, not wall time (main saving the file
+  runs off the popup thread): a background change now blocks the popup 0 ms (was ~1 s).
 - **Short + long alias for EVERY prefix** — ONE `PREFIX_ALIASES` map in clip-search.js
   feeds parse + `lexQuery` (highlight) + `suggestQuery` (autocomplete): `t`=title, `b`=text/
   body, `g`=group, `n`=num, `s`=since (also `after`), `bf`=before, `l`=len, `o`=sort, plus

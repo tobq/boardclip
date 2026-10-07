@@ -15,6 +15,7 @@ const winClipboard = require('./lib/windows-clipboard');
 const { createQuickPaster } = require('./lib/quick-paste');
 const { createClipboardFollower } = require('./lib/clipboard-follow');
 const { dragFileNames } = require('./lib/drag-files');
+const { createHistoryFeed } = require('./lib/history-feed');
 const getBuildInfo = require('./lib/build-info');
 const getCloudAccounts = require('./lib/cloud-accounts');
 const blobStore = require('./lib/blob-store');
@@ -5419,6 +5420,8 @@ function assertClipRevisions(targets) {
   return clipRevisionCheck.assertRevisions(history, targets, { supersedes: settings.supersedes });
 }
 // Renderers get each item stamped with its rev (computed, never persisted).
+const historyFeed = createHistoryFeed();
+const historyFeedSenders = new Set();
 function historyForRenderer() {
   return history.map(item => ({ ...item, rev: clipboardModel.clipRevision(item) }));
 }
@@ -6132,11 +6135,17 @@ function setupIPC() {
   // The renderer passes the revision it already holds; when nothing changed we
   // answer with the revision alone instead of cloning ~10k items (7.7MB) across
   // IPC on every popup open (0.5-2.3s per open, measured 2026-09-02).
-  ipcMain.handle('get-history-state', (_, knownRevision) => (
-    knownRevision === dataRevision
-      ? { revision: dataRevision, unchanged: true }
-      : { revision: dataRevision, items: historyForRenderer() }
-  ));
+  // Deltas, not the whole history, once a renderer holds a snapshot
+  // (lib/history-feed.js): the popup's refresh used to block typing ~1 s.
+  ipcMain.handle('get-history-state', (event, knownRevision) => {
+    if (knownRevision === dataRevision) return { revision: dataRevision, unchanged: true };
+    const sender = event.sender;
+    if (!historyFeedSenders.has(sender.id)) {
+      historyFeedSenders.add(sender.id);
+      sender.once('destroyed', () => { historyFeedSenders.delete(sender.id); historyFeed.forget(sender.id); });
+    }
+    return historyFeed.stateFor(sender.id, knownRevision, dataRevision, historyForRenderer());
+  });
 
   ipcMain.handle('get-settings', () => ({
     ...rendererSettingsView(),

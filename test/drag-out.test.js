@@ -73,7 +73,7 @@ function fakeEvent({ rowId, onControl = false }) {
   c.onDragstart(ev);
   assert.strictEqual(ev.dataTransfer.data['text/plain'], 'second', 'a text row drags its text');
   assert.strictEqual(ev.dataTransfer.data['text/html'], '<b>second</b>', '...and its HTML when it has one');
-  assert.strictEqual(ev.dataTransfer.effectAllowed, 'copy');
+  assert.strictEqual(ev.dataTransfer.effectAllowed, 'all', 'text drags allow copy AND move: a composer asking for move must not refuse the drop');
   assert.strictEqual(ev.prevented, false, 'a text drag stays a native page drag');
 
   ev = fakeEvent({ rowId: 'i2' });

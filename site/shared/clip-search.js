@@ -697,7 +697,7 @@
     clipToDoc, docSearchText, normalizeTagName, tagMatchesFilter, docInGroup,
     tokenizeQuery, quoteToken, parseQuery, serializeQuery, applyFacet, facetState,
     anyFilterActive, isEmptyQuery, resolveTimeMs,
-    matchDoc, relevanceScore, recencyScore, rankMode, filterRankIndexes,
+    matchDoc, relevanceScore, recencyScore, rankMode, filterRankIndexes, bodyIndexOf,
     fuzzyMatch, fuzzyFloor,
     lexQuery, suggestQuery,
     BUILTIN_TO_IS, IS_TO_BUILTIN, IS_VALUES, RECOGNIZED_PREFIXES, NON_FILTER_SCHEMES,

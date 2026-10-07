@@ -603,16 +603,37 @@
         return match ? match.index : -1;
       } catch { return -1; }
     }
-    return String(text || '').toLowerCase().indexOf(queryText.toLowerCase());
+    // Case-insensitive search of the text as is (no lowercased copy of a
+    // possibly huge body).
+    const match = new RegExp(queryText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i').exec(String(text || ''));
+    return match ? match.index : -1;
   }
-  function collapsedPreviewText(text, query, regex) {
-    const singleLine = String(text || '').replace(/\r?\n/g, ' ');
-    if (singleLine.length <= COLLAPSED_PREVIEW_CHARS) return singleLine;
-    const matchIndex = queryMatchIndex(singleLine, query, regex);
+  // One-line preview window around the first match. Only the window is ever
+  // flattened: flattening (and lowercasing) the WHOLE text cost ~300 ms per
+  // keystroke whenever a 31 MB clip was among the visible rows. opts.matchIndex
+  // (where the match sits in `text`, e.g. from the search haystack) skips the
+  // search; without it a case-insensitive search of the raw text is used.
+  function collapsedPreviewText(text, query, regex, opts) {
+    const raw = String(text || '');
+    if (raw.length <= COLLAPSED_PREVIEW_CHARS) return raw.replace(/\r?\n/g, ' ');
+    const known = opts && Number.isFinite(opts.matchIndex) ? opts.matchIndex : null;
+    const matchIndex = known != null ? known : queryMatchIndex(raw, query, regex);
     const center = matchIndex >= 0 ? Math.max(0, matchIndex - SEARCH_PREVIEW_CONTEXT) : 0;
-    const start = Math.min(center, Math.max(0, singleLine.length - COLLAPSED_PREVIEW_CHARS));
-    const end = Math.min(singleLine.length, start + COLLAPSED_PREVIEW_CHARS);
-    return `${start > 0 ? '...' : ''}${singleLine.slice(start, end)}${end < singleLine.length ? '...' : ''}`;
+    const start = Math.min(center, Math.max(0, raw.length - COLLAPSED_PREVIEW_CHARS));
+    const end = Math.min(raw.length, start + COLLAPSED_PREVIEW_CHARS);
+    return `${start > 0 ? '...' : ''}${raw.slice(start, end).replace(/\r?\n/g, ' ')}${end < raw.length ? '...' : ''}`;
+  }
+  // Apply a history-feed delta (main's lib/history-feed.js) to the items a
+  // renderer holds: unchanged clips keep their objects (so per-clip caches keyed
+  // by them stay valid), changed ones are replaced, the order is main's.
+  function applyHistoryDelta(items, state) {
+    if (!state || !state.delta) return (state && state.items) || items || [];
+    const byId = new Map();
+    for (const item of items || []) byId.set(itemId(item), item);
+    for (const item of state.items || []) byId.set(itemId(item), item);
+    const out = [];
+    for (const id of state.order || []) { const item = byId.get(id); if (item) out.push(item); }
+    return out;
   }
   function highlight(text, query, regex) {
     const raw = String(text || '');
@@ -2385,7 +2406,9 @@
       if (!dt) return false;
       dt.setData('text/plain', items.map((it) => String(it.text || '')).join('\n'));
       if (items.length === 1 && typeof items[0].html === 'string' && items[0].html) dt.setData('text/html', items[0].html);
-      dt.effectAllowed = 'copy';
+      // effectAllowed stays at its default ("all"): a text drop target that
+      // asks for "move" (rich-text composers often do) must not be refused.
+      // BoardClip ignores the result either way - nothing is ever removed.
       return true;
     }
     // Ctrl+wheel resizes image previews (never the page); hosts bind this on
@@ -3698,6 +3721,7 @@
     renderSettingsBody,
     queryMatchIndex,
     collapsedPreviewText,
+    applyHistoryDelta,
     highlight,
     resolveTheme,
     applyTheme,

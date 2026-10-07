@@ -108,6 +108,7 @@ async function main() {
     sync_disabled_paths: accounts.map((a) => a.path),
     p2p_enabled: false,
     ai_access_enabled: false,
+    diagnostics_enabled: PERF, // perf mode: the renderer logs every refresh/rebuild with ms
     theme_mode: 'dark',
     max_age_days: 365,
     max_size_gb: 5,
@@ -142,7 +143,7 @@ async function main() {
     const words = (n) => { let out = ''; for (let k = 0; k < n; k += 1) out += vocab[next() % vocab.length] + (k % 13 === 12 ? '\n' : ' '); return out; };
     for (let i = 0; i < 13400; i += 1) seed.push({ type: 'text', text: `filler ${i} ${words(20 + (next() % 500))}`, ts: now - (N + i) * 60 });
     const para = words(400);
-    seed.push({ type: 'text', text: `huge clip ${para.repeat(Math.ceil(31e6 / para.length))}`.slice(0, 31e6), ts: now - (N + 13400) * 60 });
+    seed.push({ type: 'text', text: `huge clip ${para.repeat(Math.ceil(31e6 / para.length))}`.slice(0, 31e6), ts: now - 90 }); // recent: ranks among the visible rows, like the owner's
   }
   fs.writeFileSync(path.join(dataDir, 'clipboard-history.json'), JSON.stringify(seed));
   console.log(`sandbox data: ${dataDir} (${seed.length} clips, ${(seed.reduce((s, it) => s + (it.text || '').length, 0) / 1e6).toFixed(1)} MB text, providers pre-disabled: ${accounts.length})`);
@@ -212,18 +213,56 @@ async function main() {
         t = performance.now(); document.body.getBoundingClientRect(); parts.layout = performance.now() - t;
         __qa.clear();
         console.log(JSON.stringify(parts));
+        // A background change through main (a pin): the popup's refresh must be
+        // a small delta, not the whole history again.
+        // Measured as the popup thread's LONG TASKS (what blocks typing), not
+        // wall time: main saving the file runs off this thread.
+        const longTasks = [];
+        const taskLog = [];
+        const lto = new PerformanceObserver((list) => { for (const e of list.getEntries()) { longTasks.push(e.duration); taskLog.push([Math.round(e.startTime), Math.round(e.duration)]); } });
+        lto.observe({ type: 'longtask', buffered: false });
+        const target = items[5];
+        await new Promise((r) => setTimeout(r, 300));
+        const before = dataRevision;
+        const d0 = performance.now();
+        const t0Mark = Math.round(d0);
+        await window.api.pin(target.id, target.rev);
+        const pinReturned = Math.round(performance.now());
+        while (dataRevision === before && performance.now() - d0 < 5000) await new Promise((r) => setTimeout(r, 10));
+        const deltaMs = performance.now() - d0;
+        await new Promise((r) => setTimeout(r, 200));
+        const appliedAt = Math.round(d0 + deltaMs);
+        const tasksRel = taskLog.splice(0).map(([st, du]) => [st - t0Mark, du]);
+        longTasks.splice(0);
+        // Only tasks that START once the change is under way count (the typing
+        // loop above is itself one long synchronous task and ends just before).
+        const deltaBlock = Math.max(0, ...tasksRel.filter(([st]) => st >= 0).map(([, du]) => du));
+        const pinned = !!(items.find((x) => x.id === target.id) || {}).pin;
+        await window.api.pin(target.id, (items.find((x) => x.id === target.id) || {}).rev);
         const r0 = performance.now();
         dataRevision = -1;
         await refresh({ force: true });
         const refreshMs = performance.now() - r0;
+        await new Promise((r) => setTimeout(r, 200));
+        const fullBlock = Math.max(0, ...longTasks.splice(0));
+        lto.disconnect();
         const s = [...typed].sort((a, b) => a - b);
-        return { parts, n: typed.length, p50: s[Math.floor(s.length / 2)], p90: s[Math.floor(s.length * 0.9)], max: s[s.length - 1], filterOnly, refreshMs, items: items.length };
+        return { parts, n: typed.length, p50: s[Math.floor(s.length / 2)], p90: s[Math.floor(s.length * 0.9)], max: s[s.length - 1], filterOnly, refreshMs, deltaMs, deltaBlock, fullBlock, tasksRel, pinReturnedRel: pinReturned - t0Mark, appliedRel: appliedAt - t0Mark, pinned, items: items.length };
       })()`);
       console.log(`      keystroke rerender over ${perf.items} clips: p50 ${perf.p50.toFixed(1)} ms, p90 ${perf.p90.toFixed(1)} ms, max ${perf.max.toFixed(1)} ms (${perf.n} keystrokes)`);
       console.log(`      search only: ${perf.filterOnly.map(([q, ms]) => `"${q}" ${ms} ms`).join(', ')}`);
-      console.log(`      forced history refresh (IPC + indexes + rerender): ${perf.refreshMs.toFixed(0)} ms`);
+      console.log(`      background change (pin): applied after ${perf.deltaMs.toFixed(0)} ms wall (main saves the file meanwhile), popup thread blocked at most ${perf.deltaBlock.toFixed(0)} ms (pinned: ${perf.pinned})`);
+      console.log(`      long tasks [start rel. to pin, ms]: ${JSON.stringify(perf.tasksRel)}; pin IPC returned +${perf.pinReturnedRel} ms, delta applied +${perf.appliedRel} ms`);
+      console.log(`      a FULL reload (fresh popup only): ${perf.refreshMs.toFixed(0)} ms wall, longest block ${perf.fullBlock.toFixed(0)} ms`);
       console.log(`      keystroke parts: ${Object.entries(perf.parts).map(([k, v]) => `${k} ${v.toFixed(1)} ms`).join(', ')}`);
       check('keystroke rerender p90 under 50 ms at owner scale', perf.p90 < 50, `p90 ${perf.p90.toFixed(1)} ms`);
+      const diag = path.join(dataDir, 'boardclip-diagnostics.jsonl');
+      if (fs.existsSync(diag)) {
+        for (const line of fs.readFileSync(diag, 'utf8').split('\n')) {
+          if (/"renderer\.(history\.refresh|indexes\.rebuild|settings\.refresh_groups)"|"history\.save/.test(line)) console.log('      diag', line.slice(0, 230));
+        }
+      }
+      check('a background change blocks the popup thread < 50 ms (was ~1 s)', perf.pinned && perf.deltaBlock < 50, `longest block ${perf.deltaBlock.toFixed(0)} ms`);
       return;
     }
 

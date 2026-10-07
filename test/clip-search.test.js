@@ -235,7 +235,9 @@ const idsOf = (items, parsed, opts) => S.filterRankIndexes(items, parsed, opts).
   assert.strictEqual(m, true);
   const app = fs.readFileSync(path.join(__dirname, '../index.html'), 'utf8');
   assert.ok(/filterItemIndexes\(items, \{[^}]*docs: searchDocs/.test(app), 'the popup passes its cached search docs (built per history revision, not per keystroke)');
-  assert.ok(/function rebuildItemIndexes\(\)[\s\S]{0,1500}searchDocs\.push\(Core\.search\.clipToDoc\(item\)\)/.test(app), 'search docs are built in rebuildItemIndexes');
+  assert.ok(/function searchIndexFor\(item\)[\s\S]{0,400}searchIndexCache\.get\(item\)[\s\S]{0,400}Core\.search\.clipToDoc\(item\)/.test(app),
+    'search docs + haystacks are cached per clip object (only new/changed clips are indexed on a refresh)');
+  assert.ok(/function rebuildItemIndexes\(\)[\s\S]{0,1500}searchDocs\.push\(entry\.doc\)/.test(app), 'rebuildItemIndexes reads the per-clip cache');
 }
 
 console.log('clip-search.test.js: all assertions passed');

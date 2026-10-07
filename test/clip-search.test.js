@@ -240,4 +240,47 @@ const idsOf = (items, parsed, opts) => S.filterRankIndexes(items, parsed, opts).
   assert.ok(/function rebuildItemIndexes\(\)[\s\S]{0,1500}searchDocs\.push\(entry\.doc\)/.test(app), 'rebuildItemIndexes reads the per-clip cache');
 }
 
+// Search options panel facets: single-valued tokens (since/before/len/lines/words)
+// replace and toggle through the SAME applyFacet the chip bar uses; their state
+// reads back through facetTokenState; the panel's toggle lights from optionFacetsActive.
+{
+  let q = S.applyFacet('invoice', { kind: 'since', value: '24h' }, 'include');
+  assert.strictEqual(q, 'invoice since:24h', 'a date chip adds its token');
+  q = S.applyFacet(q, { kind: 'since', value: '7d' }, 'include');
+  assert.strictEqual(q, 'invoice since:7d', 'another date chip REPLACES the single-valued token');
+  assert.strictEqual(S.applyFacet(q, { kind: 'since', value: '7D' }, 'include'), 'invoice', 'the same chip again clears it (case-insensitive)');
+  q = S.applyFacet('x', { kind: 'len', value: '>500' }, 'include');
+  assert.strictEqual(q, 'x len:>500');
+  assert.strictEqual(S.applyFacet(q, { kind: 'len', value: '<80' }, 'include'), 'x len:<80', 'a size chip replaces the len bound');
+  assert.strictEqual(S.applyFacet(q, { kind: 'len', value: '>500' }, 'include'), 'x', 'the same bound again clears it');
+  assert.strictEqual(S.applyFacet('x', { kind: 'lines', value: '>10' }, 'exclude'), 'x lines:>10', 'single-valued facets have no exclude: they just toggle');
+  // is: facets keep include/exclude (right-click), like the chip bar.
+  q = S.applyFacet('x', { kind: 'is', value: 'url' }, 'exclude');
+  assert.strictEqual(q, 'x -is:url');
+  const p = S.parseQuery('note since:7d len:>500 -is:url group:Work before:2026-01-31');
+  assert.strictEqual(S.facetTokenState(p, { kind: 'since', value: '7d' }), 'include');
+  assert.strictEqual(S.facetTokenState(p, { kind: 'since', value: '24h' }), null);
+  assert.strictEqual(S.facetTokenState(p, { kind: 'before' }), 'include', 'a valueless probe asks whether the facet is set at all');
+  assert.strictEqual(S.facetTokenState(p, { kind: 'len', value: '>500' }), 'include');
+  assert.strictEqual(S.facetTokenState(p, { kind: 'is', value: 'url' }), 'exclude');
+  assert.strictEqual(S.facetTokenState(p, { kind: 'builtin', value: '__images__' }), null);
+  assert.strictEqual(S.facetTokenState(p, { kind: 'group', value: 'Work' }), 'include', 'group state reads like the chip bar');
+  assert.ok(S.optionFacetsActive(p), 'a panel-owned filter lights the options toggle');
+  assert.ok(!S.optionFacetsActive(S.parseQuery('note group:Work num:2 is:pinned')), 'chip-bar-only filters do not light it');
+  assert.ok(!S.optionFacetsActive(S.parseQuery('is:image')), 'the chip bar\'s Images filter does not light it either');
+  for (const opt of S.OPTION_FACETS.flatMap((row) => row.options)) {
+    assert.ok(!(opt.token.kind === 'is' && S.IS_TO_BUILTIN[opt.token.value]), `${opt.label}: is:${opt.token.value} belongs to the chip bar, not the options panel`);
+  }
+  assert.ok(S.optionFacetsActive(S.parseQuery('before:7d')) && S.optionFacetsActive(S.parseQuery('lines:>3')));
+  // Every option is a real grammar token: its text parses back to the same state.
+  for (const row of S.OPTION_FACETS) {
+    for (const opt of row.options) {
+      if (opt.prompt) { assert.ok(S.RECOGNIZED_PREFIXES.has(opt.prompt.replace(':', '')), `${opt.label}: ${opt.prompt} is a recognised prefix`); continue; }
+      const text = S.facetTokenText(opt.token);
+      assert.strictEqual(S.facetTokenState(S.parseQuery(text), opt.token), 'include', `${opt.label}: "${text}" parses back to its own chip`);
+      assert.strictEqual(S.applyFacet('', opt.token, 'include'), text, `${opt.label}: the chip writes "${text}"`);
+    }
+  }
+}
+
 console.log('clip-search.test.js: all assertions passed');

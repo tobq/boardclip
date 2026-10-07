@@ -3,7 +3,6 @@
 <script>
   document.documentElement.dataset.theme = matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
 </script>
-<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="site/shared/clipboard-popup.css">
 <link rel="stylesheet" href="site/shared/clipboard-window.css">
 <style>
@@ -121,6 +120,11 @@ if (window.api.getSettings) window.api.getSettings().then(s => {
   if (s.theme_mode) setThemeMode(s.theme_mode);
   applyAppearance(s);
   if (s.image_preview_height != null) imageZoom.load(s.image_preview_height);
+  searchBox.setOptionsHeight(s.options_panel_height);
+  // The saved regex toggle applies from the first open (it used to wait for Settings).
+  regexOn = !!s.regex_search;
+  regexBtn.classList.toggle('active', regexOn);
+  searchBox.refresh();
 }).catch(() => {});
 if (window.api.onSurfaceChanged) window.api.onSurfaceChanged((style) => document.documentElement.setAttribute('data-surface', style === 'solid' ? 'solid' : 'glass'));
 
@@ -304,8 +308,9 @@ function updateCount() {
   countEl.textContent = Core.itemCountLabel(total, visible, { query });
 }
 
+// The clear / sort / regex / options buttons slide in and out with the field's
+// state (Core.attachSearchBox owns that); the app only keeps their titles.
 function updateClearControls() {
-  searchClear.classList.toggle('show', !!query);
   searchClear.title = Core.hasActiveFilters({ query }) ? 'Clear search and filters' : 'Clear search';
 }
 
@@ -347,6 +352,7 @@ const appAdapter = {
   },
   clearFilters: () => clearSearchAndFilters(),
   focusSearch: () => searchEl.focus(),
+  closeSearchOptions: () => searchBox.closeOptions(),
   pin: (id) => revGuard(() => window.api.pin(id, clipRevOf(id)), false),
   numpadAssign: (id, slot) => revGuard(() => window.api.numpadAssign(id, slot, clipRevOf(id)), false),
   numpadUnassign: (slot) => window.api.numpadUnassign(slot),
@@ -442,6 +448,7 @@ window.resetPopupState = function() {
   document.getElementById('settingsView')?.classList.remove('show');
   document.getElementById('mainView')?.classList.remove('hidden');
   document.body.style.pointerEvents = '';
+  searchBox.closeOptions({ instant: true }); // every open starts with the options panel shut
   window.focusSearch();
 };
 
@@ -487,6 +494,8 @@ const searchBox = Core.attachSearchBox(searchEl, {
   getRegex: () => regexOn,
   getGroups: () => groups,
   onChange: onQueryChanged,
+  // The options panel's height: per machine (dragged on its bottom edge).
+  saveOptionsHeight: (px) => window.api.saveSettings({ options_panel_height: px }),
 });
 searchEl.addEventListener('input', e => onQueryChanged(e.target.value));
 searchClear.addEventListener('click', () => { clearSearchAndFilters(); searchEl.focus(); if (searchBox) searchBox.refresh(); });
@@ -504,14 +513,8 @@ regexBtn.addEventListener('click', () => {
 const sortBtn = document.getElementById('sortBtn');
 function effectiveSort() { return sortMode || 'best'; }
 function updateSortButton() {
-  const show = !!query.trim();
-  sortBtn.classList.toggle('show', show);
-  if (!show) return;
-  const mode = effectiveSort();
-  sortBtn.classList.toggle('active', mode === 'new');
-  sortBtn.title = mode === 'best' ? 'Sorted by best match — click for newest' : 'Sorted by newest — click for best match';
-  sortBtn.setAttribute('aria-label', sortBtn.title);
-  sortBtn.querySelector('.mi').textContent = mode === 'best' ? 'sort' : 'schedule';
+  if (!query.trim()) return; // hidden without a query (Core.attachSearchBox)
+  Core.paintSortButton(sortBtn, effectiveSort());
 }
 sortBtn.addEventListener('click', () => {
   sortMode = effectiveSort() === 'best' ? 'new' : 'best';
@@ -532,6 +535,8 @@ document.getElementById('settingsCloseBtn').addEventListener('click', () => wind
 document.getElementById('closeBtn').addEventListener('click', () => window.api.hidePopup());
 document.getElementById('settingsBtn').addEventListener('click', openSettings);
 document.getElementById('settingsBack').addEventListener('click', closeSettings);
+Core.attachWindowDrag(document.querySelector('#mainView .sticky'), { onClick: () => searchEl.focus(), move: window.api.windowDrag });
+Core.attachWindowDrag(document.querySelector('#settingsView .settings-hdr'), { move: window.api.windowDrag });
 
 let shortcutRecording = null;
 let manualSyncInFlight = false;
@@ -1062,6 +1067,7 @@ async function openSettings() {
   };
   regexOn = s.regex_search || false;
   regexBtn.classList.toggle('active', regexOn);
+  searchBox.refresh();
   const bytes = s.storage_bytes || 0;
   const mb = (bytes / 1048576).toFixed(1);
   document.getElementById('usage').textContent = `Current: ${s.item_count} items, ${mb} MB`;

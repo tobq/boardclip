@@ -1171,7 +1171,7 @@ function mergeGroups(local, remote) {
 }
 
 // Settings the save-settings IPC may write without touching history or sync.
-const LOCAL_ONLY_SETTING_KEYS = new Set(['image_preview_height']);
+const LOCAL_ONLY_SETTING_KEYS = new Set(['image_preview_height', 'options_panel_height']);
 
 function remoteSettingsPayload() {
   const remoteSave = {
@@ -1200,8 +1200,10 @@ function remoteSettingsPayload() {
   delete remoteSave.ui_density;
   delete remoteSave.ui_corners;
   delete remoteSave.ui_borders;
-  // Image preview height suits THIS machine's screen and popup size.
+  // Image preview height and the search options panel height suit THIS
+  // machine's screen and popup size.
   delete remoteSave.image_preview_height;
+  delete remoteSave.options_panel_height;
   // AI Access: per-machine, never synced. (groups_shared_with_ai DOES sync - it
   // is user curation that should travel between machines.)
   delete remoteSave.mcp_secret;
@@ -4124,6 +4126,11 @@ function createPopup() {
     show: false,
     skipTaskbar: true,
     resizable: true,
+    // macOS only: a press on the popup while another app is active reaches the
+    // page. The popup never blur-hides there, so an open-but-inactive popup is
+    // its normal state, and the header drag (Core.attachWindowDrag, plain page
+    // events) must work on the first press like the AppKit drag region did.
+    acceptFirstMouse: true,
     ...popupSurfaceOptions(),
     icon: APP_ICON_PATH,
     webPreferences: {
@@ -4393,6 +4400,7 @@ let popupParked = false;
 const POPUP_SLIDE_PX = 10;
 const POPUP_SLIDE_MS = 130;
 let popupSlideTimer = null;
+let popupSlideTarget = null; // { x, y } while the open slide runs
 // isVisible() too, so an OS-level hide (macOS Cmd+H, no 'hide' event) can never
 // leave the toggle believing the popup is still open.
 function isPopupOpen() {
@@ -4425,28 +4433,61 @@ function waitForPopupFrame(capMs = 120) {
 function stopPopupSlide() {
   if (popupSlideTimer) clearTimeout(popupSlideTimer);
   popupSlideTimer = null;
+  popupSlideTarget = null;
+}
+// A header drag that starts mid-slide: finish the slide at its resting place
+// first, so the drag moves from there and the two never alternate setPosition.
+function settlePopupSlide() {
+  const target = popupSlideTarget;
+  if (!popupSlideTimer || !target) return;
+  stopPopupSlide();
+  if (win && !win.isDestroyed()) win.setPosition(target.x, target.y);
 }
 // The open animation moves the WHOLE window (glass + content together): a CSS
 // animation cannot touch the OS-drawn glass, and a window fade (setOpacity)
 // makes the window layered, which drops the acrylic.
 function slidePopupInto(x, y) {
   stopPopupSlide();
+  popupSlideTarget = { x, y };
   const startedAt = Date.now();
   const step = () => {
     popupSlideTimer = null;
-    if (!isPopupOpen()) return;
+    if (!isPopupOpen()) { popupSlideTarget = null; return; }
     const t = Math.min(1, (Date.now() - startedAt) / POPUP_SLIDE_MS);
     const eased = 1 - Math.pow(1 - t, 3);
     win.setPosition(x, Math.round(y + POPUP_SLIDE_PX * (1 - eased)));
     if (t < 1) popupSlideTimer = setTimeout(step, 8);
+    else popupSlideTarget = null;
   };
   step();
 }
 // Shared by every close path (park or real hide).
+// Header drags in flight (window-drag IPC): window -> its bounds at the press.
+const windowDragStarts = new WeakMap();
+const WINDOW_DRAG_KEEP_VISIBLE_PX = 48;
+// Where a header drag may put a window: the press bounds moved by the pointer's
+// delta, kept within the virtual desktop with at least a strip of the window
+// on it (a renderer can never park a window off every screen), size unchanged.
+function windowDragBounds(start, dx, dy) {
+  const displays = screen.getAllDisplays();
+  const left = Math.min(...displays.map((d) => d.bounds.x));
+  const top = Math.min(...displays.map((d) => d.bounds.y));
+  const right = Math.max(...displays.map((d) => d.bounds.x + d.bounds.width));
+  const bottom = Math.max(...displays.map((d) => d.bounds.y + d.bounds.height));
+  const keep = Math.min(WINDOW_DRAG_KEEP_VISIBLE_PX, start.width, start.height);
+  const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+  return {
+    x: clamp(start.x + dx, left - start.width + keep, right - keep),
+    y: clamp(start.y + dy, top, bottom - keep),
+    width: start.width,
+    height: start.height,
+  };
+}
 function onPopupClosed() {
   if (windowsHook) windowsHook.setPopupVisible(false);
   stopClickAwayWatcher();
   if (!win || win.isDestroyed()) return;
+  windowDragStarts.delete(win); // a drag cut short by the close never resumes on the next open
   // Clear any open modals/state in renderer
   win.webContents.executeJavaScript(`
     window.resetPopupState?.();
@@ -6337,6 +6378,31 @@ function setupIPC() {
 
   ipcMain.handle('hide-popup', () => hidePopup());
 
+  // Header drag (Core.attachWindowDrag, replacing -webkit-app-region: drag): the
+  // renderer reports the pointer's screen delta since the press and the SENDER's
+  // window moves from its bounds at the press. setBounds keeps the start size, so
+  // a fractional display scale cannot creep the window size on every move (as
+  // setPosition can on Windows). screenX/Y and bounds are both DIP on Windows and
+  // macOS. A drag is a session move: the popup still opens at its anchor. Only the
+  // three phases are accepted and the target is clamped (windowDragBounds).
+  ipcMain.on('window-drag', (event, phase, dx, dy) => {
+    if (phase !== 'start' && phase !== 'move' && phase !== 'end') return;
+    const w = BrowserWindow.fromWebContents(event.sender);
+    if (!w || w.isDestroyed()) return;
+    if (phase === 'start') {
+      if (w === win) settlePopupSlide(); // a drag never fights the open slide
+      windowDragStarts.set(w, w.getBounds());
+      return;
+    }
+    const start = windowDragStarts.get(w);
+    if (!start) return;
+    if (phase === 'end') { windowDragStarts.delete(w); return; }
+    const x = Math.round(Number(dx));
+    const y = Math.round(Number(dy));
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+    w.setBounds(windowDragBounds(start, x, y));
+  });
+
   ipcMain.handle('copy', (_, text) => clipboard.writeText(text || ''));
 
   ipcMain.handle('delete-item', (_, id, rev) => applyDeleteItem(id, rev));
@@ -6403,6 +6469,11 @@ function setupIPC() {
     if (body.image_preview_height !== undefined) {
       const px = Math.round(Number(body.image_preview_height));
       if (Number.isFinite(px)) settings.image_preview_height = Math.min(600, Math.max(40, px));
+    }
+    // 0 = the default share of the popup; the renderer also caps it at 70 % of the window.
+    if (body.options_panel_height !== undefined) {
+      const px = Math.round(Number(body.options_panel_height));
+      if (Number.isFinite(px)) settings.options_panel_height = px <= 0 ? 0 : Math.min(2000, Math.max(80, px));
     }
     if (body.update_mode !== undefined && !app.isPackaged && ['production', 'development'].includes(body.update_mode)) settings.update_mode = body.update_mode;
     if (body.p2p_pinned_peers !== undefined) {

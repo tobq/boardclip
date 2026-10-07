@@ -1,448 +1,314 @@
 @import url("shared/clipboard-tokens.css");
 
+/* boardclip.app: the marketing page around the live demo. It renders from the
+   SAME token layer as the app (clipboard-tokens.css, plus the shared .btn /
+   .seg / .overline / focus ring from clipboard-popup.css): data-theme on <html>
+   follows the system theme, and the semantic tier (--bg, --surface, --text,
+   --text-dim, --line, --accent) is the whole palette. Type uses the role tokens
+   (display for the one heading, text for prose, ui for labels, meta for
+   captions) and the two weights. Page rules target classes only, so nothing
+   leaks into the demo popup, which must render exactly like the app. */
+
 :root {
-  color-scheme: dark;
-  /* Marketing page chrome maps onto the shared graphite primitives (from
-     clipboard-tokens.css) so the site and the app speak one visual language.
-     The demo popup themes itself independently via .bc-popup[data-theme]. */
-  --page: var(--g-900);
-  --card: var(--g-850);
-  --foreground: var(--g-100);
-  --muted-page: var(--g-400);
-  --border-page: var(--g-750);
-  --border-strong: var(--g-700);
-  --primary: var(--blue-500);
-  --primary-hover: var(--blue-400);
-  --primary-foreground: var(--g-950);
-  --topbar-bg: transparent;
-  --badge-bg: var(--g-800);
-  --tabs-bg: var(--g-850);
-  --command-bg: var(--g-950);
-  --command-border: var(--g-750);
-  --command-button-bg: var(--g-800);
-  --command-button-border: var(--g-700);
-  --command-button-hover: var(--g-700);
-  --demo-shadow: rgba(0, 0, 0, .5);
-  --hint-bg: var(--g-100);
-  --hint-foreground: var(--g-950);
-  --hint-shadow: rgba(0, 0, 0, .4);
-  --radius: var(--r-3);
-  /* Page-chrome aliases (a few rules outside the demo popup reference these). */
-  --ink: var(--foreground);
-  --muted: var(--muted-page);
-  --accent: var(--blue-500);
+  --site-w: 1080px;              /* content column */
+  --site-pad: var(--sp-12);      /* page edge */
+  --demo-w: 460px;               /* the app popup's default size */
+  --demo-h: 520px;
+  --section-gap: calc(var(--sp-12) * 3);
 }
 
-* { box-sizing: border-box; }
-html { scroll-behavior: smooth; }
+*, *::before, *::after { box-sizing: border-box; }
 [hidden] { display: none !important; }
+@media (prefers-reduced-motion: no-preference) {
+  html { scroll-behavior: smooth; }
+}
 body {
   margin: 0;
-  font-family: "Segoe UI", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
-  color: var(--ink);
-  background: var(--page);
-  overflow-x: hidden;
+  font-family: var(--font-sans);
+  font-size: var(--fs-text);
+  font-weight: var(--fw-regular);
+  line-height: var(--lh-text);
+  color: var(--text);
+  background: var(--bg);
 }
 
-a { color: inherit; text-decoration: none; }
-button, input { font: inherit; }
+.wrap {
+  width: min(var(--site-w), calc(100% - 2 * var(--site-pad)));
+  margin-inline: auto;
+}
 
+/* ---------- Top bar ---------- */
 .topbar {
-  position: sticky;
-  top: 0;
-  z-index: 10;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  min-height: 58px;
-  padding: 10px max(18px, calc((100vw - 1120px) / 2));
-  background: transparent;
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
+  gap: var(--sp-8);
+  min-height: calc(var(--sp-12) * 2);
+}
+.brand, .nav a, .foot a {
+  color: inherit;
+  text-decoration: none;
 }
 .brand {
-  font-size: 15px;
-  font-weight: 800;
-  letter-spacing: -.01em;
-}
-nav { display: flex; align-items: center; gap: 10px; }
-nav a:not(.github-button) {
-  color: var(--muted-page);
-  font-size: 13px;
-}
-nav a:not(.github-button):hover { color: var(--foreground); }
-.github-button {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  min-height: 34px;
-  padding: 0 12px;
-  color: var(--primary-foreground);
-  background: var(--primary);
-  border: 0;
-  border-radius: var(--radius);
-  font-size: 13px;
-  font-weight: 700;
+  gap: var(--sp-4);
+  height: var(--ctl-lg);
+  border-radius: var(--r-ctl);
+  font-weight: var(--fw-strong);
 }
-.github-button:hover { background: var(--primary-hover); }
-.github-button svg { width: 16px; height: 16px; fill: currentColor; }
+.brand img { display: block; }
+.nav { display: flex; align-items: center; gap: var(--sp-2); }
+.nav a {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-3);
+  height: var(--ctl-lg);
+  padding: 0 var(--sp-4);
+  border-radius: var(--r-ctl);
+  color: var(--text-dim);
+  font-size: var(--fs-ui);
+  transition: color var(--dur) var(--ease);
+}
+.nav a:hover { color: var(--text); }
+.nav svg { display: block; fill: currentColor; }
 
-main {
-  width: min(1120px, calc(100% - 40px));
-  margin: 0 auto;
-}
+/* ---------- Hero: what it is + download, beside the live demo ---------- */
 .hero {
   display: grid;
-  grid-template-columns: minmax(360px, .9fr) minmax(500px, 1.1fr);
-  gap: 56px;
-  align-items: center;
-  padding: 64px 0 54px;
+  grid-template-columns: minmax(0, 1fr) var(--demo-w);
+  gap: var(--sp-12) calc(var(--sp-12) * 2);
+  align-items: start;
+  padding-block: calc(var(--sp-12) * 2) var(--section-gap);
 }
-.hero-copy { min-width: 0; }
-h1 {
+.hero-copy { min-width: 0; max-width: 480px; }
+.hero h1 {
   margin: 0;
-  max-width: 560px;
-  color: var(--foreground);
-  font-size: clamp(42px, 4.8vw, 64px);
-  font-weight: 760;
-  line-height: .98;
-  letter-spacing: -.04em;
+  font-size: var(--fs-display);
+  font-weight: var(--fw-strong);
+  line-height: var(--lh-ui);
 }
 .lede {
-  max-width: 570px;
-  margin: 18px 0 0;
-  color: var(--muted-page);
-  font-size: clamp(17px, 2vw, 21px);
-  line-height: 1.48;
+  margin: var(--sp-4) 0 0;
+  color: var(--text-dim);
+}
+.dim { color: var(--text-dim); }
+
+/* Shortcut chips: sans, a fill and no border, like the app's kbd chips. */
+.keys kbd {
+  display: inline-flex;
+  align-items: center;
+  height: var(--ctl-sm);
+  padding: 0 var(--sp-3);
+  border-radius: var(--r-1);
+  background: var(--ctl-fill);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--fs-ui);
+  line-height: 1;
+  white-space: nowrap;
+}
+.keys code, .spec code, .try {
+  font-family: var(--font-mono);
+  font-size: var(--fs-ui);
+  color: var(--text);
 }
 
-.install-card {
-  margin-top: 28px;
-  background: var(--card);
-  border-radius: var(--radius);
-  padding: 16px;
+/* The four keys, as one two-column grid (key | what it does), so every row
+   lines up on the widest key. */
+.keys {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: var(--sp-4) var(--sp-8);
+  align-items: baseline;
+  margin: var(--sp-12) 0 0;
+  padding: var(--sp-8) 0;
+  border-block: 1px solid var(--line);
 }
-.download-card {
-  background: color-mix(in srgb, var(--card), var(--foreground) 4%);
-}
-.download-card h2 { font-size: 24px; line-height: 1.12; }
-.method-tabs {
-  display: inline-flex;
-  padding: 3px;
-  background: var(--tabs-bg);
-  border-radius: var(--radius);
-  flex-shrink: 0;
-}
-.method-tab {
-  height: 28px;
-  padding: 0 10px;
-  color: var(--muted-page);
-  background: transparent;
-  border: 0;
-  border-radius: 6px;
-  cursor: pointer;
-  font-size: 12px;
-}
-.method-tab.active {
-  color: var(--primary-foreground);
-  background: var(--primary);
-  font-weight: 800;
-}
-.install-mode-panel {
-  margin-top: 14px;
-}
-.cli-head {
+.keys > div { display: contents; }
+.keys dt { display: flex; gap: var(--sp-1); }
+.keys dd { margin: 0; }
+.keys dd .dim { display: block; }
+
+/* Download: one primary button, the install method as the shared .seg. */
+.get { margin-top: var(--sp-12); }
+.get-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 14px;
+  flex-wrap: wrap;
+  gap: var(--sp-4) var(--sp-8);
 }
-.download-actions {
-  display: grid;
-  margin-top: 14px;
-  gap: 8px;
+.get-title, .get-sub {
+  margin: 0;
+  font-size: var(--fs-text);
+  font-weight: var(--fw-strong);
+  line-height: var(--lh-ui);
 }
-.download-button {
-  display: inline-flex;
+.get-panel { margin-top: var(--sp-6); }
+.get-row {
+  display: flex;
   align-items: center;
-  justify-content: center;
-  min-height: 40px;
-  padding: 0 14px;
-  color: var(--primary-foreground);
-  background: var(--primary);
-  border-radius: var(--radius);
-  flex-shrink: 0;
-  font-size: 13px;
-  font-weight: 800;
+  flex-wrap: wrap;
+  gap: var(--sp-4) var(--sp-6);
 }
-.download-button:hover { background: var(--primary-hover); }
-.download-options {
+.get-row a { text-decoration: none; }
+.get-builds {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 8px;
+  gap: var(--sp-2);
+  margin-top: var(--sp-5);
+  margin-left: calc(-1 * var(--sp-3)); /* the quiet buttons' text lines up with the column */
 }
-.download-options button {
-  min-height: 26px;
-  padding: 0 8px;
-  color: var(--muted-page);
-  background: color-mix(in srgb, var(--card), var(--foreground) 5%);
-  border: 0;
-  border-radius: 6px;
-  cursor: pointer;
-  font-size: 11px;
-  font-weight: 700;
-}
-.download-options button:hover,
-.download-options button.active {
-  color: var(--primary-foreground);
-  background: var(--primary);
-}
-.install-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 14px;
-}
-.mini-label {
-  margin: 0 0 3px;
-  color: var(--muted-page);
-  font-size: 11px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: .04em;
-}
-h2 { margin: 0; color: var(--foreground); font-size: clamp(20px, 2vw, 28px); letter-spacing: -.02em; }
-.install-card h2 { font-size: 24px; line-height: 1.12; }
-.os-tabs {
-  display: inline-flex;
-  padding: 3px;
-  background: var(--tabs-bg);
-  border-radius: var(--radius);
-  flex-shrink: 0;
-}
-.os-tab {
-  height: 28px;
-  padding: 0 10px;
-  color: var(--muted-page);
-  background: transparent;
-  border: 0;
-  border-radius: 6px;
-  cursor: pointer;
-  font-size: 12px;
-}
-.os-tab.active {
-  color: var(--primary-foreground);
-  background: var(--primary);
-  font-weight: 800;
+/* The selected build reads as on (text colour + the resting fill), not accent:
+   the Download button is the one filled primary. */
+.get-builds [data-download-os].active { color: var(--text); background: var(--ctl-fill); }
+.note {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: var(--fs-ui);
+  line-height: var(--lh-ui);
 }
 .command-wrap {
   position: relative;
-  margin: 14px 0 10px;
+  margin: var(--sp-5) 0 var(--sp-4);
 }
 .command-line {
-  overflow: auto;
-  max-width: 100%;
   margin: 0;
-  padding: 13px 14px;
-  padding-right: 72px;
-  background: var(--command-bg);
-  border: 0;
-  border-radius: var(--radius);
+  padding: var(--sp-5) var(--sp-6);
+  padding-right: calc(var(--sp-12) * 2 + var(--sp-4)); /* room for Copy */
+  overflow-x: auto;
+  border-radius: var(--r-ctl);
+  background: var(--ctl-fill);
   cursor: pointer;
 }
-.command-line:focus {
-  outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent);
-  outline-offset: 2px;
+.command-line code {
+  font-family: var(--font-mono);
+  font-size: var(--fs-ui);
+  line-height: var(--lh-text);
+  color: var(--text);
 }
+.command-line:focus { outline: none; }
+.command-line:focus-visible { box-shadow: var(--focus-ring); }
 .command-copy {
   position: absolute;
-  top: 8px;
-  right: 8px;
-  z-index: 1;
-  height: 26px;
-  padding: 0 9px;
-  color: var(--g-300);
-  background: var(--command-button-bg);
-  border: 0;
-  border-radius: 6px;
-  cursor: pointer;
-  font-size: 11px;
-  font-weight: 800;
-}
-.command-copy:hover {
-  color: #fafafa;
-  background: var(--command-button-hover);
-}
-code {
-  color: #edf5ff;
-  font: 13px/1.45 "Cascadia Code", Consolas, monospace;
-}
-.note {
-  margin: 0;
-  color: var(--muted-page);
-  font-size: 12px;
-  line-height: 1.45;
+  top: var(--sp-4);
+  right: var(--sp-4);
 }
 
+/* ---------- The live demo: the app popup at its default size ---------- */
 .demo {
   min-width: 0;
-  position: relative;
+  display: grid;
+  gap: var(--sp-6);
 }
-.demo-foot-actions { display: flex; align-items: center; gap: 6px; }
-.demo-foot button,
-.demo-foot-btn {
-  min-height: 30px;
-  padding: 0 10px;
-  color: var(--text-dim);
-  background: var(--input);
-  border: 1px solid var(--line-strong);
-  border-radius: 6px;
-  cursor: pointer;
-  font-size: 12px;
-}
-.demo-foot button:hover,
-.demo-foot-btn:hover {
-  color: var(--accent);
-  border-color: var(--accent);
-}
-.demo-foot-btn { display: inline-flex; align-items: center; justify-content: center; min-width: 30px; padding: 0 8px; }
-.demo-foot-btn .mi { font-size: 16px; }
-
-/* The popup theme variables now come from the shared clipboard-popup.css via
-   the .bc-popup[data-theme] selector on the demo window, so the demo and the
-   real app render from one palette. Only the window frame lives here. */
+/* The window frame. Inside it everything comes from clipboard-popup.css; the
+   base text settings and the zero margin/padding reset mirror the app's window
+   sheet (clipboard-window.css, which the page must not load), so unstyled text
+   and elements render exactly as they do in the app. */
 .demo-window {
   position: relative;
-  height: min(620px, calc(100vh - 128px));
-  min-height: 500px;
+  width: 100%;
+  height: var(--demo-h);
   display: flex;
   flex-direction: column;
-  background: var(--surface);
-  border-radius: var(--r-4);
-  box-shadow: 0 22px 60px var(--demo-shadow), 0 0 0 1px var(--line-strong);
   overflow: hidden;
+  font-family: var(--font-sans);
+  font-size: var(--fs-ui);
+  font-weight: var(--fw-regular);
+  line-height: var(--lh-ui);
+  color: var(--text);
+  background: var(--surface);
+  border-radius: var(--r-panel);
+  box-shadow: 0 8px 24px var(--shadow), 0 0 0 1px var(--menu-edge);
 }
-/* Glass demo: --surface is translucent (from the token layer), so blurring the
-   marketing page behind the popup gives a representative frosted-glass preview. */
+:where(.demo-window, .demo-window *) { margin: 0; padding: 0; }
+/* Glass: --surface is translucent, so blurring the page behind stands in for
+   the OS acrylic / vibrancy the real window sits on. */
 .demo-window[data-surface="glass"] { backdrop-filter: var(--glass-blur); -webkit-backdrop-filter: var(--glass-blur); }
-/* Keep the popup's toast / dialogs / lightbox inside the demo window
-   (the shared CSS positions them fixed for the real Electron window). */
+/* Toast, dialogs, lightbox and editor stay inside the frame (the shared CSS
+   positions them fixed for the real window). */
 .demo-window .toast,
-.demo-window .overlay { position: absolute; }
-.demo-lightbox { cursor: zoom-out; }
-.demo-lightbox img { max-width: 86%; max-height: 78%; border-radius: 8px; box-shadow: 0 14px 44px rgba(0, 0, 0, .5); background: var(--surface); }
-/* The editor overlay is absolute within the demo window (shared bc-editor-* styles). */
+.demo-window .overlay,
 .demo-window .bc-editor-overlay { position: absolute; }
-.demo-foot {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 8px 12px;
+.demo-lightbox { cursor: zoom-out; }
+.demo-lightbox img {
+  max-width: 86%;
+  max-height: 78%;
+  border-radius: var(--r-panel);
+  box-shadow: 0 8px 24px var(--shadow);
+  background: var(--surface);
+}
+.demo-caption {
+  margin: 0;
   color: var(--text-dim);
-  border-top: 1px solid var(--line-soft);
-  font-size: 11px;
+  font-size: var(--fs-ui);
+  line-height: var(--lh-text);
 }
-.demo-guide {
-  position: fixed;
-  left: 0;
-  top: 0;
-  z-index: 20;
-  display: flex;
-  align-items: flex-start;
-  gap: 9px;
-  opacity: 0;
-  pointer-events: none;
-  transform: translate3d(0, 0, 0);
-  transition: transform 1.55s cubic-bezier(.2, .8, .2, 1), opacity .35s ease;
-}
-.demo-guide.show { opacity: 1; }
-.demo-guide-cursor {
-  width: 24px;
-  height: 32px;
-  display: block;
-  fill: #ffffff;
-  stroke: #18181b;
-  stroke-width: 2.25px;
-  stroke-linejoin: round;
-  filter: drop-shadow(0 10px 18px rgba(24, 24, 27, .22));
-}
-.demo-guide-tip {
-  margin-top: 18px;
-  padding: 7px 10px;
-  color: var(--hint-foreground);
-  background: var(--hint-bg);
-  border-radius: var(--radius);
-  box-shadow: 0 10px 24px var(--hint-shadow);
-  font-size: 12px;
-  font-weight: 650;
+
+/* Example searches: they run in the demo (a fill, no border, like a key). */
+.try {
+  display: inline-flex;
+  align-items: center;
+  height: var(--ctl-sm);
+  padding: 0 var(--sp-2);
+  border: none;
+  border-radius: var(--r-1);
+  background: var(--ctl-fill);
+  line-height: 1;
   white-space: nowrap;
+  vertical-align: baseline;
+  cursor: pointer;
+  transition: background-color var(--dur) var(--ease);
+}
+.try:hover { background: var(--ctl-fill-hover); }
+.keys code, .spec code {
+  padding: 0 var(--sp-1);
+  border-radius: var(--r-1);
+  background: var(--ctl-fill);
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .demo-guide { display: none; }
-}
-
-section {
-  padding: 64px 0;
-}
-.features h2,
-.update h2 { margin-bottom: 18px; }
-.feature-grid {
+/* ---------- What it does: a plain list, one row per capability ---------- */
+.features, .update { padding-bottom: var(--section-gap); }
+.spec {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: calc(var(--sp-12) * 2);
+  margin: var(--sp-6) 0 0;
 }
-article {
-  min-height: 120px;
-  padding: 18px;
-  background: var(--card);
-  border-radius: var(--radius);
+.spec > div {
+  padding: var(--sp-8) 0 var(--sp-10);
+  border-top: 1px solid var(--line);
 }
-article h3 { margin: 0 0 10px; color: var(--foreground); font-size: 15px; letter-spacing: -.01em; }
-article p { margin: 0; color: var(--muted-page); font-size: 14px; line-height: 1.55; }
-footer {
-  width: min(1120px, calc(100% - 40px));
-  margin: 0 auto;
+.spec dt { font-weight: var(--fw-strong); }
+.spec dd { margin: var(--sp-2) 0 0; color: var(--text-dim); max-width: 64ch; }
+.tries { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin-top: var(--sp-4); }
+.update .get { max-width: 560px; margin-top: var(--sp-6); }
+
+/* ---------- Footer ---------- */
+.foot {
   display: flex;
   justify-content: space-between;
-  gap: 18px;
-  padding: 24px 0 38px;
-  color: var(--muted-page);
-  font-size: 13px;
+  flex-wrap: wrap;
+  gap: var(--sp-4) var(--sp-8);
+  padding: var(--sp-12) 0 calc(var(--sp-12) * 2);
+  border-top: 1px solid var(--line);
+  color: var(--text-dim);
+  font-size: var(--fs-ui);
 }
-footer a { color: var(--foreground); }
+.foot a { color: var(--text); border-radius: var(--r-1); }
+.foot a:hover { text-decoration: underline; }
 
-@media (max-width: 980px) {
-  .hero {
-    grid-template-columns: 1fr;
-    gap: 30px;
-    padding-top: 38px;
-  }
-  .demo-window {
-    height: 620px;
-  }
-  .feature-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+/* ---------- Narrow screens ---------- */
+@media (max-width: 960px) {
+  .hero { grid-template-columns: minmax(0, 1fr); padding-top: var(--sp-12); }
+  .hero-copy { max-width: 560px; }
+  .demo { max-width: var(--demo-w); }
 }
-
 @media (max-width: 640px) {
-  main,
-  footer { width: min(100% - 24px, 1240px); }
-  .topbar { padding-inline: 12px; }
-  nav a:not(.github-button) { display: none; }
-  .hero { gap: 18px; }
-  h1 { font-size: 46px; }
-  .download-button { width: 100%; }
-  .download-options { justify-content: flex-start; }
-  .install-head,
-  .cli-head { flex-direction: column; align-items: stretch; }
-  .method-tabs { width: 100%; }
-  .method-tab { flex: 1; }
-  .os-tabs { width: 100%; }
-  .os-tab { flex: 1; }
-  .demo-window { min-height: 560px; height: 72vh; }
-  .feature-grid { grid-template-columns: 1fr; }
-  .command-line { white-space: pre-wrap; word-break: break-word; }
-  .demo-foot span { display: none; }
+  :root { --site-pad: var(--sp-8); --demo-h: 480px; --section-gap: calc(var(--sp-12) * 2); }
+  .nav a[href="#features"] { display: none; }
+  .spec { grid-template-columns: minmax(0, 1fr); }
+  .get-row a { width: 100%; }
+  .command-line code { white-space: pre-wrap; overflow-wrap: anywhere; }
 }

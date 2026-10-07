@@ -205,14 +205,26 @@ const rules = (css) => [...stripComments(css).matchAll(/([^{}]+)\{([^{}]*)\}/g)]
   }
 }
 
-// 13) Icons: Material Symbols Rounded, the SAME variable font URL in every
-//     window, axes pinned ONCE on .mi (FILL via --icon-fill, a state signal
-//     only), and every close is the Material glyph, never a text "x".
+// 13) Icons: Material Symbols Rounded, SELF-HOSTED (site/shared/vendor/fonts),
+//     declared by ONE @font-face in clipboard-popup.css (the sheet every window
+//     and the website load) with font-display: block, so nothing waits on
+//     Google Fonts and a reload never flashes ligature words. Axes pinned ONCE
+//     on .mi (FILL via --icon-fill, a state signal only), and every close is
+//     the Material glyph, never a text "x".
 {
-  const FONT = 'https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&display=swap';
   for (const [name, html] of [...windows, ['site/index.html', siteHtml]]) {
-    const urls = [...html.matchAll(/https:\/\/fonts\.googleapis\.com\/css2\?family=Material[^"]*/g)].map((m) => m[0]);
-    assert.deepStrictEqual(urls, [FONT], `${name} must load the one full-axis Material Symbols Rounded URL`);
+    assert.ok(!/fonts\.googleapis\.com|fonts\.gstatic\.com/.test(html), `${name} loads a font from Google Fonts (the icon font is vendored)`);
+    assert.ok(/<link rel="stylesheet" href="[^"]*shared\/clipboard-popup\.css">/.test(html), `${name} must load clipboard-popup.css (it declares the icon font)`);
+  }
+  const faces = [...stripComments(popupCss).matchAll(/@font-face\s*\{([^}]*)\}/g)].map((m) => m[1]);
+  assert.strictEqual(faces.length, 1, 'clipboard-popup.css declares exactly one @font-face (the icon font)');
+  assert.ok(/font-family:\s*"Material Symbols Rounded"/.test(faces[0]) && /font-display:\s*block/.test(faces[0]), 'the icon @font-face is Material Symbols Rounded with font-display: block');
+  const src = /url\("([^"]+)"\)\s*format\("woff2"\)/.exec(faces[0]);
+  assert.ok(src && src[1] === 'vendor/fonts/material-symbols-rounded.woff2', 'the icon font is the vendored woff2, relative to the shared sheet');
+  const woff2 = fs.readFileSync(path.join(root, 'site', 'shared', src[1]));
+  assert.strictEqual(woff2.subarray(0, 4).toString('latin1'), 'wOF2', 'the vendored icon font is a woff2');
+  for (const [name, css] of [['site/styles.css', siteCss], ...sheets.filter(([n]) => n !== 'clipboard-popup.css')]) {
+    assert.ok(!/@font-face|googleapis/.test(stripComments(css)), `${name} declares its own font (the icon font is declared once, in clipboard-popup.css)`);
   }
   const fvs = sheets.flatMap(([name, css]) => decls(css, 'font-variation-settings').map((v) => [name, v]));
   assert.strictEqual(fvs.length, 1, `font-variation-settings must be declared once (on .mi); found ${JSON.stringify(fvs)}`);
@@ -297,7 +309,7 @@ const rules = (css) => [...stripComments(css).matchAll(/([^{}]+)\{([^{}]*)\}/g)]
   assert.strictEqual((tokensCss.match(/--danger-fg:/g) || []).length, 2, '--danger-fg is defined once per theme and never by an accent variant');
 }
 
-// 17) ONE floating surface (menus, suggest, help, dialog, toast, Newest pill) at
+// 17) ONE floating surface (menus, suggest, dialog, toast, Newest pill) at
 //     --r-panel; the toast is neutral (no status-colour pill).
 {
   const floating = rules(popupCss).find((r) => /\.numpad-picker,\s*\.tag-submenu,\s*\.bc-menu$/.test(r.sel));

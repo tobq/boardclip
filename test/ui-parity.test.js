@@ -387,4 +387,88 @@ const siteCss = read('site/styles.css');
   assert.ok(coreSrc.includes('function resolveListAnchor('), 'anchor policy lives in the shared core');
 }
 
+// 14) Popup header, search field, options panel (UI overhaul B): ONE shared
+//     window-drag helper on the popup header and the settings header (a click
+//     focuses the search, a press-and-move past 4 px moves the window; the demo
+//     has no move), never -webkit-app-region: drag there (it swallowed clicks and
+//     double-click maximised); the field is flat with its buttons on the ONE
+//     reveal primitive; the "?" hover popover is gone, replaced by the "tune"
+//     options panel the shared attachSearchBox owns (Esc closes it first, every
+//     popup open starts with it shut, its height is a per-machine setting).
+{
+  const coreSrc = read('site/shared/clipboard-ui-core.js');
+  const mainJs = read('main.js');
+  const preload = read('preload.js');
+  const model = require('../lib/clipboard-model');
+  const stripComments = (css) => css.replace(/\/\*[\s\S]*?\*\//g, '');
+  const rules = (css) => [...stripComments(css).matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((m) => ({ sel: m[1].trim(), body: m[2] }));
+  assert.ok(typeof ui.attachWindowDrag === 'function', 'core must export attachWindowDrag');
+  for (const [name, html] of [['index.html', appHtml], ['site/index.html', siteHtml]]) {
+    assert.ok(/Core\.attachWindowDrag\([^\n]*\.sticky/.test(html), `${name} must attach the shared window drag to the popup header (.sticky)`);
+    assert.ok(/Core\.attachWindowDrag\([^\n]*\.settings-hdr/.test(html), `${name} must attach the shared window drag to the settings header`);
+    assert.ok(/closeSearchOptions:\s*\(\)\s*=>/.test(html), `${name} adapter must let Esc close the options panel (closeSearchOptions)`);
+    assert.ok(!/(searchClear|clearSearch|sortBtn|demoSortBtn)\.classList\.toggle\(\s*["']show["']/.test(html), `${name} toggles a search button itself; the shared reveal (attachSearchBox) owns their visibility`);
+    assert.ok(/Core\.paintSortButton\(/.test(html) && !/Sorted by/.test(html), `${name} paints the sort toggle through the shared Core.paintSortButton, never its own copy`);
+  }
+  assert.ok(/Core\.attachWindowDrag\([^\n]*move:\s*window\.api\.windowDrag/.test(appHtml), 'the app header drag moves the window through window.api.windowDrag');
+  assert.ok(!/attachWindowDrag\([^\n]*move:/.test(siteHtml), 'the demo header drag has no move (a page cannot move its window)');
+  assert.ok(typeof ui.paintSortButton === 'function' && !/Sorted by[^\n]*—/.test(coreSrc), 'the shared sort toggle copy has no em dash');
+  assert.ok(/windowDrag:\s*\(phase, dx, dy\)\s*=>\s*ipcRenderer\.send\('window-drag'/.test(preload), 'preload exposes windowDrag over the window-drag channel');
+  assert.ok(/ipcMain\.on\('window-drag'[\s\S]{0,400}BrowserWindow\.fromWebContents\(event\.sender\)[\s\S]{0,800}setBounds\(windowDragBounds\(start, x, y\)\)/.test(mainJs),
+    'main moves the SENDER window from its bounds at the press');
+  assert.ok(/ipcMain\.on\('window-drag', \(event, phase, dx, dy\) => \{\s*if \(phase !== 'start' && phase !== 'move' && phase !== 'end'\) return;/.test(mainJs), 'window-drag accepts only its three phases');
+  assert.ok(/function windowDragBounds\(start, dx, dy\) \{[\s\S]{0,900}width: start\.width,\s*height: start\.height/.test(mainJs), 'a drag keeps the start size and clamps the target to the desktop (windowDragBounds)');
+  assert.ok(/if \(phase === 'start'\) \{\s*if \(w === win\) settlePopupSlide\(\);/.test(mainJs), 'a drag that starts mid-slide settles the open slide first');
+  assert.ok(/function onPopupClosed\(\) \{[\s\S]{0,300}windowDragStarts\.delete\(win\)/.test(mainJs), 'closing the popup drops a drag cut short');
+  const createPopupSrc = mainJs.slice(mainJs.indexOf('function createPopup('), mainJs.indexOf('function createPopup(') + 1500);
+  assert.ok(/acceptFirstMouse: true/.test(createPopupSrc), 'macOS: the popup header drags on the first press of an inactive popup (acceptFirstMouse)');
+  for (const r of rules(popupCss)) {
+    if (r.sel.split(/,\s*/).some((sel) => /^\.(sticky|settings-hdr)\b/.test(sel))) {
+      assert.ok(!/app-region/.test(r.body), `${r.sel}: the popup and settings headers drag through Core.attachWindowDrag, never -webkit-app-region`);
+    }
+  }
+  // Flat field: no fill, no border, a hairline underline that turns accent on focus.
+  const searchRow = rules(popupCss).find((r) => r.sel === '.search-row');
+  assert.ok(searchRow && /background:\s*transparent/.test(searchRow.body) && /border:\s*none/.test(searchRow.body) && /box-shadow:\s*inset 0 -1px 0 var\(--line\)/.test(searchRow.body),
+    'the search field is flat: no fill, no border, a --line hairline underline');
+  assert.ok(rules(popupCss).some((r) => r.sel === '.search-row:focus-within' && /box-shadow:\s*inset 0 -1px 0 var\(--accent\)/.test(r.body)), 'the search underline turns accent while focused');
+  // ONE reveal primitive (grid 0fr -> 1fr width track with both belts).
+  const revealTracks = rules(popupCss).filter((r) => /grid-template-columns:\s*0fr/.test(r.body));
+  assert.deepStrictEqual(revealTracks.map((r) => r.sel), ['.bc-reveal'], 'ONE reveal primitive (.bc-reveal) owns the 0fr width track');
+  assert.ok(rules(popupCss).some((r) => r.sel === '.bc-reveal > *' && /min-width:\s*0/.test(r.body)), 'reveal belt 1: min-width: 0 on the track child');
+  assert.ok(rules(popupCss).some((r) => r.sel.startsWith('.bc-reveal-inner') && /padding:\s*0/.test(r.body)), 'reveal belt 2: a padding-less inner wrapper');
+  assert.ok(rules(popupCss).some((r) => r.sel === '.bc-reveal-inner > :first-child' && /margin-inline-start:\s*var\(--reveal-gap/.test(r.body))
+    && searchRow && /gap:\s*0/.test(searchRow.body), 'a closed reveal takes 0 px: the space before it is --reveal-gap inside the track, the search row has no flex gap');
+  const shell = ui.renderPopupShell({});
+  for (const name of ['clear', 'sort', 'tools']) assert.ok(shell.includes(`class="bc-reveal" data-reveal="${name}"`), `the ${name} search buttons ride the shared reveal`);
+  assert.ok(/id="searchOptsBtn"[^>]*aria-controls="searchOpts"/.test(shell) && shell.includes('<span class="mi">tune</span>'), 'the options toggle is the tune icon controlling the panel');
+  assert.ok(/class="search-opts" id="searchOpts" aria-hidden="true" inert/.test(shell), 'the options panel renders closed (aria-hidden + inert)');
+  assert.ok(/id="searchClear"[^>]*tabindex="-1"/.test(shell), 'the clear button stays out of the Tab order');
+  // The syntax reference is SYNTAX_HELP, rendered in the panel; the hover popover is gone.
+  for (const h of ui.search.SYNTAX_HELP) assert.ok(shell.includes(`<code>${ui.escapeHtml(h.token)}</code>`), `the options panel must list ${h.token}`);
+  for (const opt of ui.search.OPTION_FACETS.flatMap((row) => row.options)) assert.ok(shell.includes(`>${ui.escapeHtml(opt.label)}</button>`), `the options panel must offer ${opt.label}`);
+  for (const [name, text] of [['clipboard-ui-core.js', coreSrc], ['clipboard-popup.css', popupCss], ['index.html', appHtml], ['site/index.html', siteHtml], ['renderPopupShell', shell]]) {
+    assert.ok(!/attachSearchHelp|renderSearchHelp|search-help|help-btn|searchHelpBtn/.test(text), `${name} still carries the removed "?" search help popover`);
+  }
+  // Esc closes the panel before anything else; every popup open starts with it shut.
+  assert.ok(/event\.key === 'Escape'\) \{\s*\n\s*if \(a\.closeSearchOptions && a\.closeSearchOptions\(\)\) return;/.test(coreSrc), 'controller: Esc closes the options panel first');
+  assert.ok(/window\.resetPopupState = function\(\) \{[\s\S]{0,600}searchBox\.closeOptions\(\{ instant: true \}\)/.test(appHtml), 'resetPopupState closes the options panel');
+  // The panel height: per machine, like image_preview_height (never synced, clamped, a local-only save).
+  assert.strictEqual(model.DEFAULT_SETTINGS.options_panel_height, 0, 'options_panel_height defaults to 0 (= the default share)');
+  assert.ok(/LOCAL_ONLY_SETTING_KEYS = new Set\(\[[^\]]*'options_panel_height'/.test(mainJs), 'options_panel_height is a local-only save');
+  assert.ok(mainJs.includes('delete remoteSave.options_panel_height;'), 'options_panel_height must stay out of synced settings');
+  assert.ok(/body\.options_panel_height[\s\S]{0,240}Math\.min\(2000, Math\.max\(80, px\)\)/.test(mainJs), 'save-settings clamps options_panel_height');
+  assert.ok(/saveOptionsHeight:\s*\(px\)\s*=>\s*window\.api\.saveSettings\(\{ options_panel_height: px \}\)/.test(appHtml), 'the app saves the panel height as options_panel_height');
+  assert.ok(/searchBox\.setOptionsHeight\(s\.options_panel_height\)/.test(appHtml), 'the app restores the saved panel height');
+  assert.ok(/saveOptionsHeight:[^\n]*localStorage/.test(siteHtml), 'the demo keeps the panel height in localStorage');
+  // The scroll fade (Forge's useScrollFade): a fade only on an edge with hidden content.
+  const sizes = ui.FADE_PRESETS.box;
+  assert.deepStrictEqual(ui.resolveFadeVars({ scrollTop: 0, clientHeight: 100, scrollHeight: 100 }, sizes), { top: 0, bottom: 0 }, 'no overflow, no fade');
+  assert.deepStrictEqual(ui.resolveFadeVars({ scrollTop: 0, clientHeight: 100, scrollHeight: 300 }, sizes), { top: 0, bottom: 24 }, 'at the top: bottom fade only');
+  assert.deepStrictEqual(ui.resolveFadeVars({ scrollTop: 50, clientHeight: 100, scrollHeight: 300 }, sizes), { top: 24, bottom: 24 }, 'mid-scroll: both edges');
+  assert.deepStrictEqual(ui.resolveFadeVars({ scrollTop: 200, clientHeight: 100, scrollHeight: 300 }, sizes), { top: 24, bottom: 0 }, 'at the end: top fade only');
+  assert.ok(rules(popupCss).some((r) => r.sel === '.bc-scroll-fade' && /mask-image:/.test(r.body) && /var\(--fade-top\)/.test(r.body) && /var\(--fade-bottom\)/.test(r.body)), 'the ONE .bc-scroll-fade mask');
+  assert.ok(/@property --fade-top/.test(popupCss) && /@property --fade-bottom/.test(popupCss), 'the fade edges are @property-registered so they animate');
+}
+
 console.log('ui-parity.test.js: all parity guards passed');

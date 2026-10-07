@@ -537,7 +537,8 @@
       searchClear: 'searchClear',
       regexBtn: 'regexBtn',
       sortBtn: 'sortBtn',
-      searchHelpBtn: 'searchHelpBtn',
+      searchOptsBtn: 'searchOptsBtn',
+      searchOpts: 'searchOpts',
       groupFilters: 'groupFilters',
       selectionBar: 'selectionBar',
       list: 'list',
@@ -565,12 +566,18 @@
           <button class="icon-btn close-btn${closeCls}" id="${esc(ids.closeBtn)}" type="button" title="Close (Esc)" aria-label="Close"><span class="mi">close</span></button>
         </header>
         <div class="search-row">
-          <input class="search" id="${esc(ids.search)}" type="text" placeholder="Search..." autocomplete="off" spellcheck="false">
-          <div class="search-btns">
-            <button class="icon-btn search-clear" id="${esc(ids.searchClear)}" type="button" title="Clear search" aria-label="Clear search"><span class="mi">close</span></button>
-            <button class="icon-btn sort-btn" id="${esc(ids.sortBtn)}" type="button" title="Sort results" aria-label="Sort results"><span class="mi">sort</span></button>
+          <div class="search-field"><input class="search" id="${esc(ids.search)}" type="text" placeholder="Click here to search..." aria-label="Search clips" autocomplete="off" spellcheck="false"></div>
+          <span class="bc-reveal" data-reveal="clear"><span class="bc-reveal-inner"><button class="icon-btn search-clear" id="${esc(ids.searchClear)}" type="button" tabindex="-1" title="Clear search" aria-label="Clear search"><span class="mi">close</span></button></span></span>
+          <span class="bc-reveal" data-reveal="sort"><span class="bc-reveal-inner"><button class="icon-btn sort-btn" id="${esc(ids.sortBtn)}" type="button" title="Sort results" aria-label="Sort results"><span class="mi">sort</span></button></span></span>
+          <span class="bc-reveal" data-reveal="tools"><span class="bc-reveal-inner">
             <button class="icon-btn rx-btn" id="${esc(ids.regexBtn)}" type="button" title="Regex search" aria-label="Regex search">.*</button>
-            <button class="icon-btn help-btn" id="${esc(ids.searchHelpBtn)}" type="button" title="Search syntax" aria-label="Search syntax" aria-haspopup="true" aria-expanded="false"><span class="mi">help</span></button>
+            <button class="icon-btn opts-btn" id="${esc(ids.searchOptsBtn)}" type="button" title="Search options" aria-label="Search options" aria-expanded="false" aria-controls="${esc(ids.searchOpts)}"><span class="mi">tune</span></button>
+          </span></span>
+        </div>
+        <div class="search-opts" id="${esc(ids.searchOpts)}" aria-hidden="true" inert>
+          <div class="search-opts-clip">
+            <div class="search-opts-scroll" role="region" aria-label="Search options">${renderSearchOptions('')}</div>
+            <div class="search-opts-resize" role="separator" aria-orientation="horizontal" title="Drag to resize (double-click to reset)"></div>
           </div>
         </div>
         <div class="group-filters" id="${esc(ids.groupFilters)}" aria-label="Filters"></div>
@@ -830,85 +837,332 @@
         <button class="icon-btn" type="button" data-action="bulk-clear" title="Clear selection (Esc)"><span class="mi">close</span></button>
       </div>`;
   }
-  // ── Search box enhancer: live query-syntax highlighting + autocomplete ──
-  // Wraps an existing search <input> with a transparent-input-over-colored-backdrop
-  // mirror (Forge's PatternInput idiom) so prefixes/regex/quotes/unknowns are colored as
-  // you type, plus a token autocomplete dropdown (prefixes, group names, is:/sort: values,
-  // since: presets, num:). ONE implementation shared by the app popup + demo.
-  //   opts: { getRegex(): bool, getGroups(): string[], onChange(value), onEnter?() }
-  // Returns { refresh(), destroy() }. The input keeps its id/handlers; we only decorate.
-  // The "?" reference next to the search box: SYNTAX_HELP rendered as a
-  // hover/click popover (hover peeks, click pins, Escape / outside click closes).
-  function renderSearchHelp() {
-    const rows = ((Search && Search.SYNTAX_HELP) || []).map((h) =>
-      `<div class="search-help-row"><code class="sh-token">${escapeHtml(h.token)}</code><span class="sh-desc">${escapeHtml(h.desc)}</span><code class="sh-example">${escapeHtml(h.example)}</code></div>`
-    ).join('');
-    return `<div class="search-help-title">Search syntax</div>${rows}<div class="search-help-foot">Filters combine with AND. Click a filter chip to add it; right-click to exclude.</div>`;
-  }
-
-  function attachSearchHelp(buttonEl, hostEl) {
-    if (typeof document === 'undefined' || !buttonEl) return { destroy() {} };
-    const host = hostEl || buttonEl.parentElement || document.body;
-    const box = document.createElement('div');
-    box.className = 'search-help hidden';
-    box.setAttribute('role', 'dialog');
-    box.setAttribute('aria-label', 'Search syntax');
-    box.innerHTML = renderSearchHelp();
-    host.appendChild(box);
-    let pinned = false;
-    let hideTimer = null;
-    const show = () => { if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; } box.classList.remove('hidden'); buttonEl.setAttribute('aria-expanded', 'true'); };
-    const hide = () => { box.classList.add('hidden'); buttonEl.setAttribute('aria-expanded', 'false'); pinned = false; };
-    const hideSoon = () => { if (pinned) return; if (hideTimer) clearTimeout(hideTimer); hideTimer = setTimeout(() => { if (!pinned) hide(); }, 180); };
-    const onEnter = () => show();
-    const onLeave = () => hideSoon();
-    const onClick = (e) => { e.preventDefault(); e.stopPropagation(); if (pinned) { hide(); return; } pinned = true; show(); };
-    const onDocClick = (e) => { if (pinned && !box.contains(e.target) && e.target !== buttonEl && !buttonEl.contains(e.target)) hide(); };
-    const onKey = (e) => { if (e.key === 'Escape' && !box.classList.contains('hidden')) { hide(); e.stopPropagation(); } };
-    buttonEl.addEventListener('mouseenter', onEnter);
-    buttonEl.addEventListener('mouseleave', onLeave);
-    buttonEl.addEventListener('click', onClick);
-    box.addEventListener('mouseenter', onEnter);
-    box.addEventListener('mouseleave', onLeave);
-    document.addEventListener('mousedown', onDocClick);
-    document.addEventListener('keydown', onKey, true);
+  // ── Window drag on a header (one helper for every popup header) ──
+  // A press on a non-control pixel of `el` is captured: released within 4 px it
+  // is a click (opts.onClick, e.g. focus the search), dragged further it moves
+  // the window (opts.move(phase, dx, dy), phase 'start' | 'move' | 'end', dx/dy =
+  // the pointer's SCREEN delta since the press, so a window moving under the
+  // pointer never feeds back). The app's move asks main to move the sender's
+  // window; the demo passes none (a drag is a no-op). Replaces
+  // -webkit-app-region: drag, which swallowed every click and double-click
+  // maximised the window. Controls (buttons, fields, chips, menus, the options
+  // panel) are left alone.
+  const WINDOW_DRAG_IGNORE = 'button, input, textarea, select, a[href], label, [contenteditable=""], [contenteditable="true"], '
+    + '[role="button"], [role="separator"], [role="menuitem"], [data-action], [data-filter], [data-group], '
+    + '.filter-tag, .search-suggest, .search-opts, .tag-submenu, .bc-menu';
+  const WINDOW_DRAG_SLOP = 4;
+  function attachWindowDrag(el, opts) {
+    if (typeof document === 'undefined' || !el) return { destroy() {} };
+    const o = opts || {};
+    const ignoreSel = o.ignore ? `${WINDOW_DRAG_IGNORE}, ${o.ignore}` : WINDOW_DRAG_IGNORE;
+    const isControl = (target) => !!(target && target.closest && target.closest(ignoreSel));
+    let press = null;
+    let swallowClick = false;
+    const onPointerDown = (e) => {
+      if (e.button !== 0 || e.pointerType === 'touch' || isControl(e.target)) return;
+      press = { id: e.pointerId, x: e.screenX, y: e.screenY, dragging: false };
+      try { el.setPointerCapture(e.pointerId); } catch {}
+    };
+    // The page must not take focus (or start a text selection) from a header press.
+    const onMouseDown = (e) => { if (e.button === 0 && !isControl(e.target)) e.preventDefault(); };
+    const onPointerMove = (e) => {
+      if (!press || e.pointerId !== press.id) return;
+      // The button is up but its release never arrived (the window hid, capture
+      // went elsewhere): the press ends here, a hover never moves the window.
+      if ((e.buttons & 1) === 0) { finish(e, true); return; }
+      const dx = e.screenX - press.x;
+      const dy = e.screenY - press.y;
+      if (!press.dragging) {
+        if (Math.hypot(dx, dy) <= WINDOW_DRAG_SLOP) return;
+        press.dragging = true;
+        if (o.move) o.move('start', 0, 0);
+      }
+      if (o.move) o.move('move', Math.round(dx), Math.round(dy));
+    };
+    const finish = (e, cancelled) => {
+      if (!press || (e && e.pointerId !== press.id)) return;
+      const p = press;
+      press = null;
+      try { el.releasePointerCapture(p.id); } catch {}
+      if (p.dragging) {
+        if (o.move) o.move('end', 0, 0);
+        swallowClick = true; // the click that follows the release is not a click
+        setTimeout(() => { swallowClick = false; }, 0);
+      } else if (!cancelled && o.onClick) {
+        o.onClick(e);
+      }
+    };
+    const onPointerUp = (e) => finish(e, false);
+    const onPointerCancel = (e) => finish(e, true);
+    // Capture lost without a release (after a release, press is already null).
+    const onLostCapture = (e) => finish(e, true);
+    const onClickCapture = (e) => { if (swallowClick) { swallowClick = false; e.preventDefault(); e.stopPropagation(); } };
+    el.addEventListener('pointerdown', onPointerDown);
+    el.addEventListener('mousedown', onMouseDown);
+    el.addEventListener('pointermove', onPointerMove);
+    el.addEventListener('pointerup', onPointerUp);
+    el.addEventListener('pointercancel', onPointerCancel);
+    el.addEventListener('lostpointercapture', onLostCapture);
+    el.addEventListener('click', onClickCapture, true);
     return {
-      isOpen: () => !box.classList.contains('hidden'),
       destroy() {
-        buttonEl.removeEventListener('mouseenter', onEnter); buttonEl.removeEventListener('mouseleave', onLeave); buttonEl.removeEventListener('click', onClick);
-        document.removeEventListener('mousedown', onDocClick); document.removeEventListener('keydown', onKey, true);
-        box.remove();
+        el.removeEventListener('pointerdown', onPointerDown);
+        el.removeEventListener('mousedown', onMouseDown);
+        el.removeEventListener('pointermove', onPointerMove);
+        el.removeEventListener('pointerup', onPointerUp);
+        el.removeEventListener('pointercancel', onPointerCancel);
+        el.removeEventListener('lostpointercapture', onLostCapture);
+        el.removeEventListener('click', onClickCapture, true);
       },
     };
   }
 
+  // ── Scroll-edge fade (Forge's useScrollFade, one helper for every scroller) ──
+  // Sets --fade-top / --fade-bottom on `el` (the .bc-scroll-fade mask in
+  // clipboard-popup.css) to the preset size only while content is hidden past
+  // that edge, so the fade shows on the side that has more and animates out as
+  // you reach the end. Presets are Forge's tiers: pick by the class of surface.
+  const FADE_PRESETS = {
+    pane: { top: 44, bottom: 64 },
+    rail: { top: 44, bottom: 44 },
+    panel: { top: 36, bottom: 36 },
+    box: { top: 24, bottom: 24 },
+  };
+  // Pure: the fade sizes for a scroller's geometry.
+  function resolveFadeVars(m, sizes) {
+    const hiddenAbove = m.scrollTop > 2;
+    const hiddenBelow = m.scrollTop + m.clientHeight < m.scrollHeight - 2;
+    return { top: hiddenAbove ? sizes.top : 0, bottom: hiddenBelow ? sizes.bottom : 0 };
+  }
+  function attachScrollFade(el, preset) {
+    if (!el) return { refresh() {}, detach() {} };
+    const sizes = (preset && typeof preset === 'object') ? preset : (FADE_PRESETS[preset] || FADE_PRESETS.box);
+    el.classList.add('bc-scroll-fade');
+    // Write only a changed value: this runs on every scroll frame.
+    const written = {};
+    const put = (prop, value) => { if (written[prop] === value) return; written[prop] = value; el.style.setProperty(prop, value); };
+    const update = () => {
+      const v = resolveFadeVars(el, sizes);
+      put('--fade-top', `${v.top}px`);
+      put('--fade-bottom', `${v.bottom}px`);
+    };
+    // Coalesced into one frame; a hidden page produces no frames, so it updates
+    // at once there (the popup is laid out while hidden).
+    let raf = null;
+    const schedule = () => {
+      if (raf !== null) return;
+      if (typeof requestAnimationFrame !== 'function' || (typeof document !== 'undefined' && document.hidden)) { update(); return; }
+      raf = requestAnimationFrame(() => { raf = null; update(); });
+    };
+    update(); // first paint synchronous: a deferred one flashes an unmasked frame
+    el.addEventListener('scroll', schedule, { passive: true });
+    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(schedule) : null;
+    if (ro) ro.observe(el);
+    const mo = typeof MutationObserver !== 'undefined' ? new MutationObserver(schedule) : null;
+    if (mo) mo.observe(el, { childList: true, subtree: true });
+    let detached = false;
+    return {
+      refresh: () => { if (!detached) update(); },
+      detach() {
+        detached = true;
+        if (raf !== null && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(raf);
+        raf = null;
+        el.removeEventListener('scroll', schedule);
+        if (ro) ro.disconnect();
+        if (mo) mo.disconnect();
+      },
+    };
+  }
+
+  // ── Resize handle (Forge's ResizeHandle + useResizablePane, pointer events) ──
+  // One drag-to-resize along one axis: opts { axis: 'y'|'x', edge: 'bottom'|'top'|
+  // 'right'|'left' (the side the handle sits on), size() current px, min(), max(),
+  // onDrag(px) live on every move, onCommit(px) on release, onReset() on
+  // double-click, onState(dragging) }. The consumer applies and persists the size.
+  function attachResizeHandle(handle, opts) {
+    if (typeof document === 'undefined' || !handle) return { destroy() {} };
+    const o = opts || {};
+    const axis = o.axis === 'x' ? 'x' : 'y';
+    const edge = o.edge || (axis === 'x' ? 'right' : 'bottom');
+    const sign = edge === 'left' || edge === 'top' ? -1 : 1; // grow toward the cursor
+    let drag = null;
+    const pos = (e) => (axis === 'x' ? e.clientX : e.clientY);
+    const clamp = (v) => Math.round(Math.min(Number(o.max ? o.max() : Infinity), Math.max(Number(o.min ? o.min() : 0), v)));
+    const onDown = (e) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      e.stopPropagation();
+      drag = { id: e.pointerId, start: pos(e), size: Number(o.size ? o.size() : 0), latest: null };
+      try { handle.setPointerCapture(e.pointerId); } catch {}
+      document.documentElement.style.cursor = axis === 'x' ? 'col-resize' : 'row-resize';
+      if (o.onState) o.onState(true);
+    };
+    const onMove = (e) => {
+      if (!drag || e.pointerId !== drag.id) return;
+      const next = clamp(drag.size + sign * (pos(e) - drag.start));
+      if (next === drag.latest) return;
+      drag.latest = next;
+      if (o.onDrag) o.onDrag(next);
+    };
+    const onEnd = (e) => {
+      if (!drag || e.pointerId !== drag.id) return;
+      const d = drag;
+      drag = null;
+      try { handle.releasePointerCapture(d.id); } catch {}
+      document.documentElement.style.cursor = '';
+      if (o.onState) o.onState(false);
+      if (d.latest !== null && o.onCommit) o.onCommit(d.latest);
+    };
+    const onDblClick = (e) => { e.preventDefault(); if (o.onReset) o.onReset(); };
+    handle.addEventListener('pointerdown', onDown);
+    handle.addEventListener('pointermove', onMove);
+    handle.addEventListener('pointerup', onEnd);
+    handle.addEventListener('pointercancel', onEnd);
+    handle.addEventListener('dblclick', onDblClick);
+    return {
+      destroy() {
+        handle.removeEventListener('pointerdown', onDown);
+        handle.removeEventListener('pointermove', onMove);
+        handle.removeEventListener('pointerup', onEnd);
+        handle.removeEventListener('pointercancel', onEnd);
+        handle.removeEventListener('dblclick', onDblClick);
+      },
+    };
+  }
+
+  // ── Search options panel (the "tune" toggle under the search field) ──
+  // Facet rows (Core.search.OPTION_FACETS) as chips that write query tokens, then
+  // the syntax reference (Core.search.SYNTAX_HELP). The chip renderer takes the
+  // state from the query (facetTokenState) plus an optional { disabled, reason },
+  // so the availability census can grey an option out through the same markup.
+  function renderFacetOption(opt, state, extra) {
+    const x = extra || {};
+    const cls = state === 'include' ? ' active' : state === 'exclude' ? ' excluded' : '';
+    const tokenText = Search && Search.facetTokenText ? Search.facetTokenText(opt.token) : '';
+    const label = opt.prompt && state === 'include' && x.value ? `Before ${x.value}` : opt.label;
+    const title = x.reason || (opt.prompt ? (state === 'include' ? 'Remove this filter' : `Add ${opt.prompt} and type a date (2026-01-31) or 7d`) : tokenText);
+    return `<button type="button" class="filter-tag facet-opt${cls}" data-row="${escapeHtml(x.row)}" data-opt="${escapeHtml(x.index)}"`
+      + ` aria-pressed="${state === 'include' ? 'true' : 'false'}" title="${escapeHtml(title)}"${x.disabled ? ' disabled aria-disabled="true"' : ''}>${escapeHtml(label)}</button>`;
+  }
+  function renderSearchFacets(query) {
+    if (!Search || !Search.OPTION_FACETS) return '';
+    const parsed = Search.parseQuery(query || '');
+    return Search.OPTION_FACETS.map((row, r) => {
+      const chips = row.options.map((opt, i) => {
+        const probe = opt.prompt ? { kind: opt.token.kind } : opt.token;
+        return renderFacetOption(opt, Search.facetTokenState(parsed, probe), { row: r, index: i, value: opt.prompt ? parsed[opt.token.kind] : '' });
+      }).join('');
+      return `<span class="opts-facet-label">${escapeHtml(row.label)}</span><div class="opts-facet-chips" role="group" aria-label="${escapeHtml(row.label)}">${chips}</div>`;
+    }).join('');
+  }
+  function renderSearchSyntax() {
+    return ((Search && Search.SYNTAX_HELP) || []).map((h) => `<code>${escapeHtml(h.token)}</code><span>${escapeHtml(h.desc)}</span>`).join('');
+  }
+  function renderSearchOptions(query) {
+    return `<div class="opts-facets">${renderSearchFacets(query)}</div><div class="opts-syntax" aria-label="Search syntax">${renderSearchSyntax()}</div>`;
+  }
+
+  // ── Search box enhancer: live query-syntax highlighting + autocomplete ──
+  // Wraps an existing search <input> with a transparent-input-over-colored-backdrop
+  // mirror (Forge's PatternInput idiom) so prefixes/regex/quotes/unknowns are colored as
+  // you type, plus a token autocomplete dropdown (prefixes, group names, is:/sort: values,
+  // since: presets, num:). It also owns the field's chrome, for the app popup AND the
+  // demo: the placeholder ("Click here to search..." until focused), the in-field
+  // buttons on the shared reveal (clear with text, sort with a query, regex + options
+  // while focused or in use) and the options panel (the "tune" toggle).
+  //   opts: { getRegex(): bool, getGroups(): string[], onChange(value), onEnter?(),
+  //           optionsHeight?: px (0 = default), saveOptionsHeight?(px | 0),
+  //           sizeRoot?: element the panel is sized against (default: the popup) }
+  // Returns { refresh(), isSuggestOpen(), isOptionsOpen(), openOptions(),
+  //           closeOptions({ instant }) -> bool, setOptionsHeight(px), destroy() }.
+  // The input keeps its id/handlers; we only decorate.
+  const SEARCH_PLACEHOLDER_IDLE = 'Click here to search...';
+  // The Best/Recent sort toggle's look for the effective mode ('best' | 'new'),
+  // painted by both popups (attachSearchBox decides when it is shown).
+  function paintSortButton(btn, mode) {
+    if (!btn) return;
+    const recent = mode === 'new';
+    btn.classList.toggle('active', recent);
+    btn.title = recent ? 'Sorted by newest. Click for best match.' : 'Sorted by best match. Click for newest.';
+    btn.setAttribute('aria-label', btn.title);
+    const icon = btn.querySelector('.mi');
+    if (icon) icon.textContent = recent ? 'schedule' : 'sort';
+  }
+  const SEARCH_PLACEHOLDER_FOCUSED = 'Search...';
+  const OPTIONS_MIN_PX = 80;
+  const OPTIONS_DEFAULT_SHARE = 0.4;
+  const OPTIONS_MAX_SHARE = 0.7;
   function attachSearchBox(inputEl, opts) {
-    if (typeof document === 'undefined' || !inputEl) return { refresh() {}, destroy() {} };
+    if (typeof document === 'undefined' || !inputEl) return { refresh() {}, destroy() {}, closeOptions: () => false, isOptionsOpen: () => false };
     const o = opts || {};
     const getRegex = o.getRegex || (() => false);
     const getGroups = o.getGroups || (() => []);
     const row = inputEl.closest('.search-row') || inputEl.parentElement;
-    // Backdrop mirror: a div positioned under the input, carrying the SAME text metrics.
+    const field = inputEl.parentElement;
+    // Backdrop mirror: a div exactly under the input, carrying the SAME text metrics.
     const backdrop = document.createElement('div');
     backdrop.className = 'search-hl';
     backdrop.setAttribute('aria-hidden', 'true');
     inputEl.classList.add('search-live');
-    if (row && getComputedStyle(row).position === 'static') row.style.position = 'relative';
-    (row || inputEl.parentElement).insertBefore(backdrop, inputEl);
+    if (getComputedStyle(field).position === 'static') field.style.position = 'relative';
+    field.insertBefore(backdrop, inputEl);
     // Dropdown for autocomplete.
     const dropdown = document.createElement('div');
     dropdown.className = 'search-suggest hidden';
-    (row || inputEl.parentElement).appendChild(dropdown);
-    const helpBtn = (row || inputEl.parentElement || document).querySelector('.help-btn');
-    const help = attachSearchHelp(helpBtn, row || inputEl.parentElement);
+    if (row && getComputedStyle(row).position === 'static') row.style.position = 'relative';
+    (row || field).appendChild(dropdown);
+    // In-field buttons on the shared reveal + the options panel (renderPopupShell markup).
+    const revealOf = (name) => (row ? row.querySelector(`.bc-reveal[data-reveal="${name}"]`) : null);
+    const clearReveal = revealOf('clear');
+    const sortReveal = revealOf('sort');
+    const toolsReveal = revealOf('tools');
+    const optsBtn = row ? row.querySelector('.opts-btn') : null;
+    const panel = optsBtn ? document.getElementById(optsBtn.getAttribute('aria-controls')) : null;
+    const scroller = panel ? panel.querySelector('.search-opts-scroll') : null;
+    const facetsEl = panel ? panel.querySelector('.opts-facets') : null;
+    const handle = panel ? panel.querySelector('.search-opts-resize') : null;
+    const sizeRoot = o.sizeRoot || inputEl.closest('.bc-popup') || document.documentElement;
     let suggestions = [];
     let active = -1;
     let suggestOpen = false;
+    let panelOpen = false;
+    let optionsHeight = Math.max(0, Math.round(Number(o.optionsHeight) || 0)); // 0 = the default share
+    let facetsQuery = null;
 
     function paintHighlight() {
       const segs = Search && Search.lexQuery ? Search.lexQuery(inputEl.value, { regex: !!getRegex() }) : [];
       backdrop.innerHTML = segs.map((s) => `<span class="qh-${s.kind}">${escapeHtml(s.text)}</span>`).join('') || '';
       backdrop.scrollLeft = inputEl.scrollLeft;
+    }
+    // The field's chrome follows its state: placeholder, revealed buttons, the
+    // options toggle (lit while the panel is open or the query holds one of its filters).
+    function syncControls() {
+      const value = inputEl.value;
+      const focused = document.activeElement === inputEl;
+      const focusInside = !!(row && row.contains(document.activeElement));
+      inputEl.placeholder = focused ? SEARCH_PLACEHOLDER_FOCUSED : SEARCH_PLACEHOLDER_IDLE;
+      const parsed = Search && Search.parseQuery ? Search.parseQuery(value) : null;
+      const optionFilters = !!(parsed && Search.optionFacetsActive && Search.optionFacetsActive(parsed));
+      if (clearReveal) clearReveal.classList.toggle('open', value.length > 0);
+      if (sortReveal) sortReveal.classList.toggle('open', !!value.trim());
+      if (toolsReveal) toolsReveal.classList.toggle('open', focusInside || value.length > 0 || !!getRegex() || panelOpen);
+      if (optsBtn) {
+        optsBtn.classList.toggle('active', panelOpen || optionFilters);
+        optsBtn.setAttribute('aria-expanded', String(panelOpen));
+        optsBtn.title = panelOpen ? 'Hide search options' : 'Search options';
+      }
+      if (panelOpen) renderFacets();
+    }
+    function renderFacets() {
+      if (!facetsEl || facetsQuery === inputEl.value) return;
+      facetsQuery = inputEl.value;
+      // A rebuild must not drop a keyboard user's place: the focused chip's twin
+      // takes the focus back (else it falls to <body> and Tab starts over).
+      const focused = facetsEl.contains(document.activeElement) ? document.activeElement : null;
+      const place = focused && focused.dataset ? `.facet-opt[data-row="${focused.dataset.row}"][data-opt="${focused.dataset.opt}"]` : null;
+      facetsEl.innerHTML = renderSearchFacets(facetsQuery);
+      const twin = place ? facetsEl.querySelector(place) : null;
+      if (twin) twin.focus({ preventScroll: true });
     }
     function closeSuggest() { suggestOpen = false; active = -1; suggestions = []; dropdown.classList.add('hidden'); dropdown.innerHTML = ''; }
     function renderSuggest() {
@@ -926,23 +1180,152 @@
       active = -1;
       renderSuggest();
     }
+    // A programmatic change of the query (suggestion, panel chip): repaint, then
+    // hand the new value to the consumer like typed input.
+    function commitValue(next, caret) {
+      closeSuggest(); // its rows (and their replace ranges) belong to the old text
+      inputEl.value = next;
+      const at = caret == null ? next.length : caret;
+      inputEl.setSelectionRange(at, at);
+      paintHighlight();
+      syncControls();
+      if (o.onChange) o.onChange(inputEl.value);
+    }
     function applySuggestion(i) {
       const s = suggestions[i];
       if (!s) return;
       const v = inputEl.value;
-      const next = v.slice(0, s.replaceStart) + s.text + ' ' + v.slice(s.replaceEnd);
-      inputEl.value = next;
-      const caret = s.replaceStart + s.text.length + 1;
-      inputEl.setSelectionRange(caret, caret);
       closeSuggest();
-      paintHighlight();
-      if (o.onChange) o.onChange(inputEl.value);
+      commitValue(v.slice(0, s.replaceStart) + s.text + ' ' + v.slice(s.replaceEnd), s.replaceStart + s.text.length + 1);
     }
-    function refresh() { paintHighlight(); }
+    function refresh() { paintHighlight(); syncControls(); }
 
-    const onInput = () => { paintHighlight(); updateSuggest(); };
+    // ── options panel ──
+    const rootHeight = () => (sizeRoot === document.documentElement ? window.innerHeight : sizeRoot.clientHeight) || 0;
+    const maxOptionsHeight = () => Math.max(OPTIONS_MIN_PX, Math.round(rootHeight() * OPTIONS_MAX_SHARE));
+    const effectiveOptionsHeight = () => Math.min(maxOptionsHeight(), Math.max(OPTIONS_MIN_PX, optionsHeight || Math.round(rootHeight() * OPTIONS_DEFAULT_SHARE)));
+    const applyOptionsHeight = (px) => { if (panel) panel.style.setProperty('--opts-h', `${px}px`); };
+    const fade = scroller ? attachScrollFade(scroller, 'box') : null;
+    function setPanel(open, how) {
+      if (!panel) return false;
+      const was = panelOpen;
+      const active = document.activeElement;
+      const focusInPanel = !!(active && panel.contains(active));
+      panelOpen = !!open;
+      if (how && how.instant) {
+        panel.style.transition = 'none';
+        panel.classList.toggle('open', panelOpen);
+        void panel.offsetHeight; // settle the closed state before transitions return
+        panel.style.transition = '';
+      } else {
+        panel.classList.toggle('open', panelOpen);
+      }
+      panel.inert = !panelOpen;
+      panel.setAttribute('aria-hidden', String(!panelOpen));
+      if (panelOpen) {
+        closeSuggest(); // the panel opens under the field; a suggest list would cover its rows
+        facetsQuery = null;
+        applyOptionsHeight(effectiveOptionsHeight());
+        if (scroller && !was) scroller.scrollTop = 0;
+      } else if (was && (focusInPanel || !active || active === document.body)) {
+        // The panel went inert under the focus (or the focus was already lost):
+        // typing goes back to the field.
+        inputEl.focus({ preventScroll: true });
+      }
+      syncControls();
+      if (fade) fade.refresh();
+      return was !== panelOpen;
+    }
+    // Shown and open: an Esc closes it before anything else (the controller asks).
+    const panelVisible = () => panelOpen && !!panel && panel.getClientRects().length > 0;
+    const onOptsClick = (e) => { e.preventDefault(); setPanel(!panelOpen); };
+    const onPanelMousedown = (e) => {
+      // Nothing in the panel takes the focus from the field (typing continues after
+      // a click on a chip, the reference or a gap). Its scrollbar is left alone.
+      if (document.activeElement !== inputEl) return;
+      if (scroller && e.target === scroller && e.offsetX >= scroller.clientWidth) return;
+      e.preventDefault();
+    };
+    function facetFromEvent(e) {
+      const chip = e.target.closest('.facet-opt');
+      if (!chip || chip.disabled || !Search || !Search.OPTION_FACETS) return null;
+      const rowDef = Search.OPTION_FACETS[Number(chip.dataset.row)];
+      const opt = rowDef && rowDef.options[Number(chip.dataset.opt)];
+      return opt ? { chip, opt } : null;
+    }
+    function applyOption(opt, intent) {
+      const value = inputEl.value;
+      if (opt.prompt) {
+        // A prompt option either clears its facet or puts its prefix in the field
+        // for typing (the autocomplete then offers the presets).
+        if (Search.facetTokenState(Search.parseQuery(value), { kind: opt.token.kind })) {
+          commitValue(Search.applyFacet(value, { kind: opt.token.kind, value: Search.parseQuery(value)[opt.token.kind] }, 'include'));
+        } else {
+          const base = value.replace(/\s+$/, '');
+          commitValue(`${base}${base ? ' ' : ''}${opt.prompt}`);
+          inputEl.focus();
+          updateSuggest();
+        }
+        return;
+      }
+      const single = ['since', 'before', 'len', 'lines', 'words'].includes(opt.token.kind);
+      commitValue(Search.applyFacet(value, opt.token, single ? 'include' : intent));
+    }
+    const onPanelClick = (e) => {
+      const hit = facetFromEvent(e);
+      if (!hit) return;
+      e.preventDefault();
+      e.stopPropagation();
+      applyOption(hit.opt, 'include');
+    };
+    const onPanelContextmenu = (e) => {
+      const hit = facetFromEvent(e);
+      if (!hit) return;
+      e.preventDefault();
+      e.stopPropagation();
+      // Right-click excludes a multi-valued facet (is:), like the chip bar; a
+      // single-valued one (a date, a size) has no exclude, so it just toggles.
+      applyOption(hit.opt, 'exclude');
+    };
+    if (optsBtn) optsBtn.addEventListener('click', onOptsClick);
+    if (panel) {
+      panel.addEventListener('mousedown', onPanelMousedown);
+      panel.addEventListener('click', onPanelClick);
+      panel.addEventListener('contextmenu', onPanelContextmenu);
+    }
+    const resize = handle ? attachResizeHandle(handle, {
+      axis: 'y',
+      edge: 'bottom',
+      size: () => (scroller ? scroller.getBoundingClientRect().height : effectiveOptionsHeight()),
+      min: () => OPTIONS_MIN_PX,
+      // Never past the content (the panel would stop following the cursor) nor 70 % of the popup.
+      max: () => Math.max(OPTIONS_MIN_PX, Math.min(maxOptionsHeight(), scroller ? scroller.scrollHeight : Infinity)),
+      onDrag: (px) => applyOptionsHeight(px),
+      onCommit: (px) => { optionsHeight = px; if (o.saveOptionsHeight) o.saveOptionsHeight(px); },
+      onReset: () => { optionsHeight = 0; applyOptionsHeight(effectiveOptionsHeight()); if (o.saveOptionsHeight) o.saveOptionsHeight(0); },
+      onState: (dragging) => { if (panel) panel.classList.toggle('resizing', dragging); },
+    }) : null;
+    // The panel keeps its share of the popup as the window resizes.
+    const onRootResize = () => { if (panelOpen) applyOptionsHeight(effectiveOptionsHeight()); };
+    if (typeof window !== 'undefined') window.addEventListener('resize', onRootResize);
+    const rootObserver = sizeRoot !== document.documentElement && typeof ResizeObserver !== 'undefined' ? new ResizeObserver(onRootResize) : null;
+    if (rootObserver) rootObserver.observe(sizeRoot);
+
+    // In-field buttons never take the focus from the field; the clear button stays
+    // out of the Tab order (Forge's ClearButton).
+    const onRowMousedown = (e) => {
+      if (e.button === 0 && e.target.closest('.bc-reveal .icon-btn') && document.activeElement === inputEl) e.preventDefault();
+    };
+    const clearBtn = row ? row.querySelector('.search-clear') : null;
+    if (clearBtn) clearBtn.tabIndex = -1;
+    if (row) row.addEventListener('mousedown', onRowMousedown);
+
+    const onInput = () => { paintHighlight(); syncControls(); updateSuggest(); };
     const onScroll = () => { backdrop.scrollLeft = inputEl.scrollLeft; };
-    const onBlur = () => setTimeout(closeSuggest, 120); // allow a click on a suggestion
+    const onFocus = () => syncControls();
+    const onBlur = () => { syncControls(); setTimeout(closeSuggest, 120); }; // allow a click on a suggestion
+    // Focus moving between the field and its own buttons keeps them revealed.
+    const onRowFocusChange = () => setTimeout(syncControls, 0);
     const onKeyDown = (e) => {
       if (suggestOpen && suggestions.length) {
         // While the dropdown is open, capture nav keys BEFORE the document controller sees
@@ -954,24 +1337,45 @@
       }
       if (e.key === 'Enter' && o.onEnter) { o.onEnter(); }
     };
-    dropdown.addEventListener('mousedown', (e) => {
+    const onDropdownMousedown = (e) => {
       const item = e.target.closest('.search-suggest-item');
       if (item) { e.preventDefault(); applySuggestion(Number(item.dataset.i)); }
-    });
+    };
+    dropdown.addEventListener('mousedown', onDropdownMousedown);
     inputEl.addEventListener('input', onInput);
     inputEl.addEventListener('scroll', onScroll);
+    inputEl.addEventListener('focus', onFocus);
     inputEl.addEventListener('blur', onBlur);
     inputEl.addEventListener('keydown', onKeyDown, true);
+    if (row) { row.addEventListener('focusin', onRowFocusChange); row.addEventListener('focusout', onRowFocusChange); }
     paintHighlight();
+    syncControls();
     return {
       refresh,
       isSuggestOpen: () => suggestOpen,
+      isOptionsOpen: () => panelOpen,
+      openOptions: () => setPanel(true),
+      // true when it closed a shown panel (Esc consumed).
+      closeOptions: (how) => { const shown = panelVisible(); setPanel(false, how); return shown; },
+      setOptionsHeight: (px) => { optionsHeight = Math.max(0, Math.round(Number(px) || 0)); if (panelOpen) applyOptionsHeight(effectiveOptionsHeight()); },
       destroy() {
         inputEl.removeEventListener('input', onInput);
         inputEl.removeEventListener('scroll', onScroll);
+        inputEl.removeEventListener('focus', onFocus);
         inputEl.removeEventListener('blur', onBlur);
         inputEl.removeEventListener('keydown', onKeyDown, true);
-        backdrop.remove(); dropdown.remove(); help.destroy();
+        if (row) { row.removeEventListener('focusin', onRowFocusChange); row.removeEventListener('focusout', onRowFocusChange); row.removeEventListener('mousedown', onRowMousedown); }
+        if (optsBtn) optsBtn.removeEventListener('click', onOptsClick);
+        if (panel) {
+          panel.removeEventListener('mousedown', onPanelMousedown);
+          panel.removeEventListener('click', onPanelClick);
+          panel.removeEventListener('contextmenu', onPanelContextmenu);
+        }
+        if (resize) resize.destroy();
+        if (fade) fade.detach();
+        if (typeof window !== 'undefined') window.removeEventListener('resize', onRootResize);
+        if (rootObserver) rootObserver.disconnect();
+        backdrop.remove(); dropdown.remove();
         inputEl.classList.remove('search-live');
       },
     };
@@ -2109,6 +2513,14 @@
       const tag = el.tagName;
       return tag === 'INPUT' || tag === 'TEXTAREA' || el.isContentEditable;
     }
+    // A focused control (the options toggle, a panel chip, a row or bar button)
+    // answers a plain Enter / Space itself, natively: the list keys below would
+    // cancel that activation and paste a clip (or toggle a selection) instead.
+    const ACTIVATABLE_CONTROL = 'button, a[href], select, summary, [role="button"], [role="menuitem"], [role="separator"], '
+      + '[role="checkbox"], [role="switch"], [role="tab"], [role="option"]';
+    function isActivatableControl(el) {
+      return !!(el && !isTypingTarget(el) && typeof el.closest === 'function' && el.closest(ACTIVATABLE_CONTROL));
+    }
 
     // --- Bulk flows (all reuse the same single-item backend primitives, batched
     // by the adapter into one save). Delete is instant + Undo toast; no dialog.
@@ -2445,12 +2857,14 @@
       if (dialogs.isOpen() || menu.isOpen()) return; // dialogs/menu own their keys
       const mod = event.metaKey || event.ctrlKey;
       if (event.key === 'Escape') {
-        if (clearSelection()) return; // one Esc clears an active selection first
+        if (a.closeSearchOptions && a.closeSearchOptions()) return; // an open options panel goes first
+        if (clearSelection()) return; // then an active selection
         if (a.isSettingsOpen && a.isSettingsOpen()) { if (a.closeSettings) a.closeSettings(); }
         else if (a.hidePopup) a.hidePopup();
         return;
       }
       if (a.isSettingsOpen && a.isSettingsOpen()) return;
+      if ((event.key === 'Enter' || event.key === ' ' || event.key === 'Spacebar') && !mod && !event.altKey && isActivatableControl(event.target)) return;
       // Ctrl/Cmd+A & +Z: the search box is focused nearly always in the app, so
       // route by whether the field actually has text — with text the chord means
       // the FIELD (native select-all / typing undo); empty, it means the LIST.
@@ -3731,8 +4145,14 @@
     renderClipTagChips,
     renderSelectionBar,
     attachSearchBox,
-    attachSearchHelp,
-    renderSearchHelp,
+    paintSortButton,
+    attachWindowDrag,
+    attachScrollFade,
+    resolveFadeVars,
+    FADE_PRESETS,
+    attachResizeHandle,
+    renderFacetOption,
+    renderSearchOptions,
     createMenu,
     installSubmenuAutoflip,
     showActionToast,

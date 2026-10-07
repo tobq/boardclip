@@ -3,153 +3,213 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>BoardClip - fast clipboard history for desktop</title>
-  <meta name="description" content="BoardClip is a small cross-platform clipboard history tray app with search, pinning, numpad quick-paste, labels, image clips, and native cloud sync.">
+  <title>BoardClip - clipboard history for Windows and macOS</title>
+  <meta name="description" content="BoardClip is a free, open-source clipboard history app for Windows and macOS: search with filters, pins and groups, numpad quick-paste, image clips, a built-in editor, and sync between your computers without an account.">
   <link rel="canonical" href="https://boardclip.app/">
-  <link rel="icon" type="image/png" href="/favicon.png">
-  <link rel="apple-touch-icon" href="/favicon.png">
+  <link rel="icon" type="image/png" href="favicon.png">
+  <link rel="apple-touch-icon" href="favicon.png">
   <script>
-    document.documentElement.dataset.systemTheme = matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+    // The page follows the system theme through the shared token layer
+    // (:root[data-theme]); the demo popup carries its own data-theme.
+    (() => {
+      const dark = matchMedia("(prefers-color-scheme: dark)");
+      const apply = () => { document.documentElement.dataset.theme = dark.matches ? "dark" : "light"; };
+      apply();
+      dark.addEventListener("change", apply);
+    })();
   </script>
-  <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&display=swap" rel="stylesheet">
   <!-- Vendored CodeMirror 5 merge view (shared with the desktop app's editor
        window); powers the demo's unify/reconcile overlay. -->
-  <link rel="stylesheet" href="/shared/vendor/cm5/codemirror.css">
-  <link rel="stylesheet" href="/shared/vendor/cm5/merge.css">
-  <script src="/shared/vendor/cm5/codemirror.js" defer></script>
-  <script src="/shared/vendor/cm5/diff-match-patch.js" defer></script>
-  <script src="/shared/vendor/cm5/merge.js" defer></script>
-  <link rel="stylesheet" href="/shared/clipboard-popup.css">
-  <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="shared/vendor/cm5/codemirror.css">
+  <link rel="stylesheet" href="shared/vendor/cm5/merge.css">
+  <script src="shared/vendor/cm5/codemirror.js" defer></script>
+  <script src="shared/vendor/cm5/diff-match-patch.js" defer></script>
+  <script src="shared/vendor/cm5/merge.js" defer></script>
+  <link rel="stylesheet" href="shared/clipboard-popup.css">
+  <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-  <header class="topbar">
-    <a class="brand" href="/">BoardClip</a>
-    <nav>
+  <header class="topbar wrap">
+    <a class="brand" href="./" aria-label="BoardClip home">
+      <img src="favicon.png" width="20" height="20" alt="">
+      <span>BoardClip</span>
+    </a>
+    <nav class="nav" aria-label="Site">
       <a href="#features">Features</a>
       <a href="#download">Download</a>
       <a class="cli-only" href="#update" hidden>Update</a>
-      <a class="github-button" href="https://github.com/tobq/boardclip" aria-label="BoardClip on GitHub">
-        <svg viewBox="0 0 16 16" aria-hidden="true">
+      <a href="https://github.com/tobq/boardclip">
+        <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
           <path d="M8 0C3.58 0 0 3.67 0 8.2c0 3.63 2.29 6.7 5.47 7.79.4.08.55-.18.55-.39 0-.19-.01-.84-.01-1.53-2.01.38-2.53-.5-2.69-.96-.09-.24-.48-.96-.82-1.15-.28-.16-.68-.55-.01-.56.63-.01 1.08.59 1.23.84.72 1.24 1.87.89 2.33.68.07-.53.28-.89.51-1.1-1.78-.21-3.64-.91-3.64-4.04 0-.89.31-1.62.82-2.19-.08-.21-.36-1.04.08-2.16 0 0 .67-.22 2.2.84A7.37 7.37 0 0 1 8 3.99c.68 0 1.36.09 2 .28 1.53-1.06 2.2-.84 2.2-.84.44 1.12.16 1.95.08 2.16.51.57.82 1.3.82 2.19 0 3.14-1.87 3.83-3.65 4.04.29.26.54.75.54 1.52 0 1.1-.01 1.98-.01 2.25 0 .21.15.47.55.39A8.07 8.07 0 0 0 16 8.2C16 3.67 12.42 0 8 0Z"/>
         </svg>
-        GitHub
+        <span>GitHub</span>
       </a>
     </nav>
   </header>
 
   <main>
-    <section class="hero" aria-label="BoardClip installer and demo">
+    <section class="hero wrap" aria-labelledby="hero-title">
       <div class="hero-copy">
-        <h1>Clipboard history, snippets, and macros across devices.</h1>
-        <p class="lede">Search old clips, pin reusable snippets, label work in progress, save image clips, assign numpad macros, and sync through cloud storage you already use.</p>
+        <h1 id="hero-title">Clipboard history for Windows and macOS</h1>
+        <p class="lede">BoardClip keeps the text and images you copy in a small popup you can search and paste from. It is free, open source, and your history stays on your own disk.</p>
 
-        <div class="install-card download-card" id="download" aria-label="Install BoardClip">
-          <div class="install-head">
-            <div>
-              <p class="mini-label">Get BoardClip</p>
-              <h2 id="download-title">Download for your system</h2>
-            </div>
-            <div class="method-tabs" role="tablist" aria-label="Install method">
-              <button class="method-tab active" type="button" data-install-mode="installer">Installer</button>
-              <button class="method-tab" type="button" data-install-mode="cli">CLI</button>
+        <dl class="keys" aria-label="Keys">
+          <div>
+            <dt><kbd>Win</kbd><kbd>V</kbd></dt>
+            <dd>Open the popup. <span class="dim">On a Mac: <kbd>Cmd</kbd><kbd>Shift</kbd><kbd>V</kbd></span></dd>
+          </div>
+          <div>
+            <dt class="dim">Type</dt>
+            <dd>Search titles and text, or filter with <code>group:</code> <code>is:</code> <code>since:</code></dd>
+          </div>
+          <div>
+            <dt><kbd>Enter</kbd></dt>
+            <dd>Paste the selected clip into the app you were using</dd>
+          </div>
+          <div>
+            <dt><kbd>Numpad 1-9</kbd></dt>
+            <dd>Paste a numpad slot without opening the popup. <span class="dim">On a Mac: <kbd>Cmd</kbd><kbd>Option</kbd><kbd>1-9</kbd></span></dd>
+          </div>
+        </dl>
+
+        <div class="get" id="download">
+          <div class="get-head">
+            <h2 class="get-title" id="download-title">Download for Windows</h2>
+            <div class="seg" role="group" aria-label="Install method">
+              <button class="seg-btn active" type="button" data-install-mode="installer">Installer</button>
+              <button class="seg-btn" type="button" data-install-mode="cli">Command line</button>
             </div>
           </div>
 
-          <div class="install-mode-panel" data-mode-panel="installer">
-            <p class="note" id="download-note">Installer builds are published automatically from GitHub Actions.</p>
-            <div class="download-actions">
-              <a class="download-button" id="download-link" href="#">Download</a>
+          <div class="get-panel" data-mode-panel="installer">
+            <div class="get-row">
+              <a class="btn primary" id="download-link" href="https://github.com/tobq/boardclip/releases/latest">Download</a>
+              <p class="note" id="download-note">Installer builds are published from the open-source repo.</p>
             </div>
-            <div class="download-options" aria-label="Other downloads">
-              <button type="button" data-download-os="win">Windows</button>
-              <button type="button" data-download-os="mac-arm">Mac Apple Silicon</button>
-              <button type="button" data-download-os="mac-intel">Mac Intel</button>
-              <button type="button" data-download-os="linux">Linux</button>
+            <div class="get-builds" role="group" aria-label="Other builds">
+              <button class="btn quiet sm" type="button" data-download-os="win">Windows</button>
+              <button class="btn quiet sm" type="button" data-download-os="mac-arm">Mac Apple Silicon</button>
+              <button class="btn quiet sm" type="button" data-download-os="mac-intel">Mac Intel</button>
+              <button class="btn quiet sm" type="button" data-download-os="linux">Linux</button>
             </div>
           </div>
 
-          <div class="install-mode-panel" data-mode-panel="cli" hidden>
-            <div class="cli-head">
-              <h2 id="install-title">Recommended command</h2>
-              <div class="os-tabs" role="tablist" aria-label="Operating system">
-                <button class="os-tab cli-os active" type="button" data-os="mac">macOS</button>
-                <button class="os-tab cli-os" type="button" data-os="win">Windows</button>
-                <button class="os-tab cli-os" type="button" data-os="linux">Linux</button>
+          <div class="get-panel" data-mode-panel="cli" hidden>
+            <div class="get-head">
+              <h3 class="get-sub" id="install-title">Recommended command</h3>
+              <div class="seg" role="group" aria-label="Operating system">
+                <button class="seg-btn cli-os active" type="button" data-os="mac">macOS</button>
+                <button class="seg-btn cli-os" type="button" data-os="win">Windows</button>
+                <button class="seg-btn cli-os" type="button" data-os="linux">Linux</button>
               </div>
             </div>
             <div class="command-wrap">
-              <button class="command-copy" type="button" data-copy-command="install-command">Copy</button>
+              <button class="btn sm command-copy" type="button" data-copy-command="install-command">Copy</button>
               <pre class="command-line" data-copy-command="install-command" tabindex="0" title="Click to copy"><code id="install-command">curl -fsSL https://boardclip.sh/install.sh | sh</code></pre>
             </div>
-            <p class="note">Installs from the open-source repo. If BoardClip already exists, this runs the normal update flow.</p>
+            <p class="note">Installs from the open-source repo. If BoardClip is already installed, this runs the normal update.</p>
           </div>
         </div>
       </div>
 
       <div class="demo" aria-label="Interactive BoardClip demo">
-        <div class="demo-window bc-popup" id="demo-window" data-theme="dark"></div>
-        <div class="demo-guide" id="demo-guide" aria-hidden="true">
-          <svg class="demo-guide-cursor" viewBox="0 0 24 32" aria-hidden="true">
-            <path d="M3 2.5v24l6.2-6.1 4.2 8.7 4.4-2.1-4.2-8.3h8.8L3 2.5Z"/>
-          </svg>
-          <span class="demo-guide-tip">Try the live demo</span>
+        <div class="demo-window bc-popup" id="demo-window"></div>
+        <p class="demo-caption">The real popup, running in this page with sample clips. Right-click a clip for its menu, open Settings, or try a search:
+          <button class="try" type="button" data-try="invoice">invoice</button>
+          <button class="try" type="button" data-try="group:work">group:work</button>
+          <button class="try" type="button" data-try="is:image">is:image</button>
+        </p>
+      </div>
+    </section>
+
+    <section class="features wrap" id="features" aria-labelledby="features-title">
+      <h2 class="overline" id="features-title">What it does</h2>
+      <dl class="spec">
+        <div>
+          <dt>Search with filters</dt>
+          <dd>Plain words match titles and text. Filters narrow the list, and a minus in front excludes one. Regex is a click away when words are not enough.
+            <span class="tries">
+              <button class="try" type="button" data-try="group:work">group:work</button>
+              <button class="try" type="button" data-try="is:pinned">is:pinned</button>
+              <button class="try" type="button" data-try="is:image">is:image</button>
+              <button class="try" type="button" data-try="since:7d">since:7d</button>
+              <button class="try" type="button" data-try="len:>200">len:&gt;200</button>
+              <button class="try" type="button" data-try="-group:code">-group:code</button>
+            </span></dd>
         </div>
-      </div>
+        <div>
+          <dt>Numpad quick-paste</dt>
+          <dd>Give up to nine clips a numpad slot from their menu. Pressing the key pastes that clip straight into the app you are in, and whatever was on your clipboard is put back afterwards.</dd>
+        </div>
+        <div>
+          <dt>Pins, groups and titles</dt>
+          <dd>Pinned clips never expire. Groups nest with a slash, like work/api, and any clip can carry a title, so a snippet you keep reads as a note rather than a fragment.</dd>
+        </div>
+        <div>
+          <dt>Images</dt>
+          <dd>Screenshots and copied images are kept next to your text. Open one in the image viewer, or drag it out of the list into another app as a file.</dd>
+        </div>
+        <div>
+          <dt>Editor and Unify</dt>
+          <dd>Text clips open in a built-in editor that saves as you go. Select a few near-identical clips and Unify folds them into one, with a three-pane merge view for the parts that differ.</dd>
+        </div>
+        <div>
+          <dt>Sync between your computers</dt>
+          <dd>Computers on the same network, or on the same Tailscale network, sync with each other directly over an encrypted connection. A Google Drive, OneDrive or iCloud folder you already use carries changes too. There is no BoardClip account and no BoardClip server.</dd>
+        </div>
+        <div>
+          <dt>AI access, off by default</dt>
+          <dd>Turn it on and AI apps such as Claude, Cursor or VS Code can read the groups you choose to share, through an MCP server that runs on your own computer. Reading anything else, editing or deleting asks you first.</dd>
+        </div>
+        <div>
+          <dt>Windows and macOS</dt>
+          <dd>Windows, and macOS on Apple Silicon and Intel. A Linux AppImage is built from the same source. MIT licensed; your history is plain files in the app's folder.</dd>
+        </div>
+      </dl>
     </section>
 
-    <section class="features" id="features">
-      <h2>Built for busy clipboards</h2>
-      <div class="feature-grid">
-        <article>
-          <h3>Instant search</h3>
-          <p>Open at your cursor, type, press Enter, and paste without turning clipboard history into admin work.</p>
-        </article>
-        <article>
-          <h3>Numpad quick-paste</h3>
-          <p>Assign your most-used snippets to 1-9 and paste them from anywhere.</p>
-        </article>
-        <article>
-          <h3>Labels and pins</h3>
-          <p>Keep durable snippets, tag work-in-progress, and filter a large clipboard fast.</p>
-        </article>
-        <article>
-          <h3>Native cloud folders</h3>
-          <p>Sync through Google Drive, OneDrive, and iCloud where available, with local files you can inspect.</p>
-        </article>
-      </div>
-    </section>
-
-    <section class="update cli-only" id="update" hidden>
-      <h2>Update</h2>
-      <div class="install-card update-card" aria-label="Update BoardClip">
-        <div class="install-head">
-          <div>
-            <p class="mini-label">Update</p>
-            <h2 id="update-title">Recommended command</h2>
-          </div>
-          <div class="os-tabs" role="tablist" aria-label="Update operating system">
-            <button class="os-tab update-os active" type="button" data-os="mac">macOS</button>
-            <button class="os-tab update-os" type="button" data-os="win">Windows</button>
-            <button class="os-tab update-os" type="button" data-os="linux">Linux</button>
+    <section class="update wrap cli-only" id="update" hidden aria-labelledby="update-label">
+      <h2 class="overline" id="update-label">Update</h2>
+      <div class="get">
+        <div class="get-head">
+          <h3 class="get-sub" id="update-title">Recommended command</h3>
+          <div class="seg" role="group" aria-label="Update operating system">
+            <button class="seg-btn update-os active" type="button" data-os="mac">macOS</button>
+            <button class="seg-btn update-os" type="button" data-os="win">Windows</button>
+            <button class="seg-btn update-os" type="button" data-os="linux">Linux</button>
           </div>
         </div>
         <div class="command-wrap">
-          <button class="command-copy" type="button" data-copy-command="update-command">Copy</button>
+          <button class="btn sm command-copy" type="button" data-copy-command="update-command">Copy</button>
           <pre class="command-line" data-copy-command="update-command" tabindex="0" title="Click to copy"><code id="update-command">curl -fsSL https://boardclip.sh/update.sh | sh</code></pre>
         </div>
-        <p class="note">Pulls the latest source, refreshes dependencies, and relaunches the tray app.</p>
+        <p class="note">Pulls the latest source, refreshes dependencies and relaunches the tray app.</p>
       </div>
     </section>
   </main>
 
-  <footer>
-    <span>Open source. Local-first. No hosted clipboard database.</span>
+  <footer class="foot wrap">
+    <span>Open source, MIT licensed. No account, no hosted clipboard database.</span>
     <a href="https://github.com/tobq/boardclip">github.com/tobq/boardclip</a>
   </footer>
 
-  <script src="/shared/clip-search.js"></script>
-  <script src="/shared/clipboard-ui-core.js"></script>
+  <script>
+    // The example searches in the copy run in the live demo: they set the demo's
+    // search field and fire the same input event typing would.
+    document.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-try]");
+      const search = button && document.getElementById("demo-search");
+      if (!search) return;
+      search.value = button.dataset.try;
+      search.dispatchEvent(new Event("input", { bubbles: true }));
+      const demo = document.getElementById("demo-window");
+      const rect = demo.getBoundingClientRect();
+      if (rect.top < 0 || rect.bottom > window.innerHeight) demo.scrollIntoView({ block: "nearest" });
+    });
+  </script>
+
+  <script src="shared/clip-search.js"></script>
+  <script src="shared/clipboard-ui-core.js"></script>
   <script>
     const Core = window.BoardClipCore;
     const escapeHtml = Core.escapeHtml;
@@ -176,12 +236,6 @@
       settingsNote: "Demo",
       headerActionsHtml: '<button class="icon-btn accent" id="demo-new-note" type="button" title="New note" aria-label="New note"><span class="mi">edit_note</span></button>',
       settingsBodyHtml: Core.renderSettingsBody(),
-      afterListHtml: `
-        <div class="demo-foot">
-          <span>Try: "invoice", "api", "meeting", "image", "thanks"</span>
-          <button type="button" id="random-query">Shuffle search</button>
-        </div>
-      `,
     });
     // Toast + lightbox live INSIDE the demo window so they inherit the popup
     // theme variables. The confirm/prompt dialogs come from the SHARED
@@ -236,7 +290,7 @@
         url: `${releaseBase}BoardClip-Linux.AppImage`
       }
     };
-    const DEMO_SHOTS = ["/assets/demo-shot-waveform.svg", "/assets/demo-shot-dashboard.svg", "/assets/demo-shot-architecture.svg"];
+    const DEMO_SHOTS = ["assets/demo-shot-waveform.svg", "assets/demo-shot-dashboard.svg", "assets/demo-shot-architecture.svg"];
     let labels = ["work", "work/api", "work/release", "code", "code/review", "support", "ideas", "legal", "sales", "design", "finance", "ops", "personal", "release", "meeting", "writing", "bug", "social"];
     const numpadSlots = new Map([
       [0, 1],
@@ -251,24 +305,24 @@
       { text: "Yep, found the shape of it. Live prod mitigations first, then clean patch." },
       { text: "https://github.com/tobq/boardclip/issues/new" },
       { text: "Invoice #BC-2048 paid via card ending 1234" },
-      { text: "Audio visualizer reference", image: "/assets/demo-shot-waveform.svg" },
+      { text: "Audio visualizer reference", image: "assets/demo-shot-waveform.svg" },
       { text: "curl -fsSL https://boardclip.sh/install.sh | sh" },
       { text: "Meeting notes: launch site, DNS, update scripts, README polish" },
       { text: "SELECT id, content, created_at FROM clips WHERE pinned = 1;" },
       { text: "Can you send over the repro steps and expected behavior?" },
       { text: "BOARDCLIP_APP_DIR=$HOME/.local/share/boardclip" },
-      { text: "Screenshot 2026-05-17 at 13.15.png", image: "/assets/demo-shot-dashboard.svg" },
+      { text: "Screenshot 2026-05-17 at 13.15.png", image: "assets/demo-shot-dashboard.svg" },
       { text: "API key rotated; update local env before deploy" },
       { text: "OneDrive sync conflict resolved by newest updatedAt then stable id" },
       { text: "Customer reply: happy to extend the trial while we fix this" },
       { text: "Reddit draft: I built a tiny clipboard tray app because I kept losing useful snippets" },
       { text: "C:\\Users\\Tobi\\AppData\\Local\\BoardClip" },
-      { text: "Product mockup crop", image: "/assets/demo-shot-dashboard.svg" },
+      { text: "Product mockup crop", image: "assets/demo-shot-dashboard.svg" },
       { text: "Brand copy: fast clipboard memory without another cloud account" },
       { text: "Launch checklist: domain, Netlify, TLS, scripts, README" },
       { text: "macOS accessibility permissions need to be granted once" },
       { text: "Fix: Windows key release should not open Win+V after BoardClip handles it" },
-      { text: "Architecture diagram", image: "/assets/demo-shot-architecture.svg" },
+      { text: "Architecture diagram", image: "assets/demo-shot-architecture.svg" },
       { text: "Support macro: Could you try updating to the latest build and relaunching?" },
       { text: "PR summary: unify provider detection and remove duplicated sync paths" },
       { text: "npx --yes netlify-cli@latest deploy --prod --dir site" }
@@ -315,8 +369,6 @@
     const demoUsage = document.getElementById("usage");
     const demoNumpadSlots = document.getElementById("numpadSlots");
     const demoGroupSlots = document.getElementById("groupSlots");
-    const demoWindow = document.querySelector(".demo-window");
-    const demoGuide = document.getElementById("demo-guide");
     const demoToast = document.getElementById("demo-toast");
     const demoSharedGroups = new Set(["work"]);
     const aiSampleClients = [
@@ -328,11 +380,6 @@
     ];
     let demoSettingsInit = false;
     let toastTimer = 0;
-    let pointer = null;
-    let guideTimer = 0;
-    let guideRuns = 0;
-    let guideStarted = false;
-    let guideStopped = false;
 
     function detectOS() {
       const ua = navigator.userAgent.toLowerCase();
@@ -642,8 +689,9 @@
       if (delay) relativeTimeTimer = window.setTimeout(scheduleRelativeTimeRefresh, delay);
     }
 
+    // The clear / sort / regex / options buttons slide in and out with the field's
+    // state (Core.attachSearchBox owns that); the demo only keeps their titles.
     function updateClearControls() {
-      clearSearch.classList.toggle("show", Boolean(state.query));
       clearSearch.title = Core.hasActiveFilters({ query: state.query }) ? "Clear search and filters" : "Clear search";
     }
 
@@ -655,52 +703,6 @@
       controller.onQueryChange();
       updateClearControls();
       renderClips();
-    }
-
-    function targetPoint(selector) {
-      const el = document.querySelector(selector);
-      const rect = el ? el.getBoundingClientRect() : demoWindow.getBoundingClientRect();
-      return {
-        x: rect.left + rect.width * 0.5,
-        y: rect.top + rect.height * 0.5
-      };
-    }
-
-    function moveGuide(point, visible) {
-      demoGuide.style.transform = `translate3d(${Math.round(point.x)}px, ${Math.round(point.y)}px, 0)`;
-      demoGuide.classList.toggle("show", visible);
-    }
-
-    function stopGuide() {
-      guideStopped = true;
-      clearTimeout(guideTimer);
-      demoGuide.classList.remove("show");
-    }
-
-    function runGuide() {
-      if (!pointer || guideStopped || guideRuns >= 5 || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-      const targets = ["#demo-search", "[data-filter='__images__']", "#demo-settings-button", "#random-query", ".item.selected"];
-      const to = targetPoint(targets[guideRuns % targets.length]);
-      const from = {
-        x: Math.min(Math.max(pointer.x, 20), window.innerWidth - 180),
-        y: Math.min(Math.max(pointer.y, 20), window.innerHeight - 60)
-      };
-      guideRuns += 1;
-      moveGuide(from, false);
-      guideTimer = window.setTimeout(() => {
-        if (guideStopped) return;
-        moveGuide(from, true);
-        guideTimer = window.setTimeout(() => {
-          if (guideStopped) return;
-          moveGuide(to, true);
-          guideTimer = window.setTimeout(() => {
-            if (guideStopped) return;
-            demoGuide.classList.remove("show");
-            pointer = to;
-            guideTimer = window.setTimeout(runGuide, 1200);
-          }, 1900);
-        }, 180);
-      }, 120);
     }
 
     document.querySelectorAll(".cli-os").forEach((button) => {
@@ -773,6 +775,7 @@
       },
       clearFilters: () => clearSearchAndFilters(),
       focusSearch: () => search.focus(),
+      closeSearchOptions: () => demoSearchBox.closeOptions(),
       pin: (id) => { clips = Core.togglePin(clips, id); },
       numpadAssign: (id, slot) => { clips = Core.assignNumpad(clips, id, slot); },
       numpadUnassign: (slot) => {
@@ -927,12 +930,22 @@
     demoWindowEl.addEventListener("wheel", (event) => controller.onWheel(event), { passive: false });
     demoWindowEl.addEventListener("dragstart", (event) => controller.onDragstart(event));
 
-    // Live syntax highlighting + autocomplete (shared helper) — same as the app popup.
+    // Live syntax highlighting + autocomplete + the options panel (shared helper),
+    // same as the app popup. The panel height is kept per visitor in localStorage.
+    const DEMO_OPTIONS_HEIGHT_KEY = "boardclip-demo-options-height";
+    let demoOptionsHeight = 0;
+    try { demoOptionsHeight = Number(localStorage.getItem(DEMO_OPTIONS_HEIGHT_KEY)) || 0; } catch {}
     const demoSearchBox = Core.attachSearchBox(search, {
       getRegex: () => state.regex,
       getGroups: () => labels,
       onChange: (v) => { state.query = v; controller.onQueryChange(); renderClips(); },
+      optionsHeight: demoOptionsHeight,
+      saveOptionsHeight: (px) => { try { localStorage.setItem(DEMO_OPTIONS_HEIGHT_KEY, String(px)); } catch {} },
     });
+    // The popup header: a click focuses the search (as in the app); a web page
+    // cannot move its window, so a drag is a no-op here.
+    Core.attachWindowDrag(demoMainView.querySelector(".sticky"), { onClick: () => search.focus() });
+    Core.attachWindowDrag(settingsPanel.querySelector(".settings-hdr"), {});
     search.addEventListener("input", () => {
       state.query = search.value;
       controller.onQueryChange();
@@ -949,16 +962,11 @@
       renderClips();
       search.focus();
     });
-    // Best⇄Recent toggle — same behavior as the app (visible while searching).
+    // Best⇄Recent toggle: same behavior as the app (visible while searching).
     const demoSortBtn = document.getElementById("demo-sort");
     function updateDemoSortButton() {
-      const show = Boolean(state.query.trim());
-      demoSortBtn.classList.toggle("show", show);
-      if (!show) return;
-      const mode = state.sortMode || "best";
-      demoSortBtn.classList.toggle("active", mode === "new");
-      demoSortBtn.title = mode === "best" ? "Sorted by best match — click for newest" : "Sorted by newest — click for best match";
-      demoSortBtn.querySelector(".mi").textContent = mode === "best" ? "sort" : "schedule";
+      if (!state.query.trim()) return; // hidden without a query (Core.attachSearchBox)
+      Core.paintSortButton(demoSortBtn, state.sortMode || "best");
     }
     demoSortBtn.addEventListener("click", () => {
       state.sortMode = (state.sortMode || "best") === "best" ? "new" : "best";
@@ -1124,27 +1132,6 @@
     document.getElementById("demo-lightbox").addEventListener("click", closeLightbox);
 
 
-    document.getElementById("random-query").addEventListener("click", () => {
-      const queries = ["invoice", "api", "meeting", "image", "thanks", "dns", "launch", "sync", "windows"];
-      search.value = queries[Math.floor(Math.random() * queries.length)];
-      state.query = search.value;
-      if (typeof demoSearchBox !== "undefined" && demoSearchBox) demoSearchBox.refresh();
-      controller.onQueryChange();
-      renderClips();
-      search.focus();
-    });
-
-    window.addEventListener("pointermove", (event) => {
-      pointer = { x: event.clientX, y: event.clientY };
-      if (!guideStarted && !guideStopped) {
-        guideStarted = true;
-        guideTimer = window.setTimeout(runGuide, 350);
-      }
-    }, { passive: true });
-    ["pointerenter", "pointerdown", "focusin", "input", "keydown", "wheel"].forEach((eventName) => {
-      demoWindow.addEventListener(eventName, stopGuide, { once: true });
-    });
-
     const detectedOS = detectOS();
     const themeQuery = matchMedia("(prefers-color-scheme: dark)");
     let demoThemeMode = "system"; // system | light | dark — chosen via Settings > Theme
@@ -1158,21 +1145,24 @@
       demoThemeMode = btn.dataset.themeMode;
       applyDemoTheme();
     });
-    // Appearance variants playground: always-on in the demo, all axes, persisted
-    // locally. Same shared Core.createVariantSwitcher the app uses.
+    // Appearance: the demo offers exactly what the app's Settings offers without
+    // the dev flag (Surface; the other axes are audit knobs there), on the app's
+    // default (auto = glass). A stored choice is filtered to that one key.
     const DEMO_VARIANT_KEY = "boardclip-demo-variants";
-    const demoVariantDefaults = { surfaceStyle: "solid", accentVariant: "blue", uiDensity: "normal", uiCorners: "soft", uiBorders: "bordered" };
-    let demoVariants = { ...demoVariantDefaults };
-    try { demoVariants = { ...demoVariants, ...(JSON.parse(localStorage.getItem(DEMO_VARIANT_KEY) || "{}") || {}) }; } catch {}
-    Core.applyVariants(demoWindowEl, demoVariants);
+    let demoSurface = "auto";
+    try {
+      const stored = (JSON.parse(localStorage.getItem(DEMO_VARIANT_KEY) || "{}") || {}).surfaceStyle;
+      if (["auto", "glass", "solid"].includes(stored)) demoSurface = stored;
+    } catch {}
+    Core.applyVariants(demoWindowEl, { surfaceStyle: demoSurface });
     const variantHost = document.getElementById("appearanceVariants");
     if (variantHost) {
       const switcher = Core.createVariantSwitcher({
+        fields: ["surfaceStyle"],
         root: demoWindowEl,
-        initial: demoVariants,
+        initial: { surfaceStyle: demoSurface },
         onChange: (next) => {
-          demoVariants = next;
-          try { localStorage.setItem(DEMO_VARIANT_KEY, JSON.stringify(next)); } catch {}
+          try { localStorage.setItem(DEMO_VARIANT_KEY, JSON.stringify({ surfaceStyle: next.surfaceStyle })); } catch {}
         },
       });
       variantHost.appendChild(switcher.el);

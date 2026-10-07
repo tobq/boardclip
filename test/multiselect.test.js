@@ -310,5 +310,40 @@ const ui = require('../site/shared/clipboard-ui-core');
     assert.deepStrictEqual(lastOpen2, imgItem, 'Alt+Enter on focused image clip calls openImage');
   }
 
+  // A focused control (the options toggle, a panel chip, a row button) keeps its
+  // native Enter / Space activation: the list keys never paste a clip from it.
+  {
+    const activated = [];
+    const c3 = ui.createClipController({
+      itemById: (id) => ({ id, type: 'text', text: id }),
+      visibleIds: () => ['a', 'b'],
+      renderSelection: () => {},
+      render() {},
+      refresh() {},
+      activateClip: (id) => { activated.push(id); },
+    });
+    const key = (k, target) => {
+      const ev = { key: k, ctrlKey: false, metaKey: false, altKey: false, shiftKey: false, target, prevented: false,
+        preventDefault() { this.prevented = true; }, stopPropagation() {} };
+      return ev;
+    };
+    const button = { tagName: 'BUTTON', closest: (sel) => (/\bbutton\b/.test(sel) ? button : null) };
+    const field = { tagName: 'INPUT', value: '', closest: () => null };
+    let ev = key('Enter', button);
+    await c3.onKeydown(ev);
+    assert.deepStrictEqual(activated, [], 'Enter on a focused button never pastes a clip');
+    assert.strictEqual(ev.prevented, false, 'Enter on a focused button keeps its native activation');
+    c3.toggle('a');
+    ev = key(' ', button);
+    await c3.onKeydown(ev);
+    assert.strictEqual(ev.prevented, false, 'Space on a focused button keeps its native activation');
+    assert.deepStrictEqual(c3.selection().ids, ['a'], 'Space on a focused button does not toggle the selection');
+    c3.clearSelection();
+    ev = key('Enter', field);
+    await c3.onKeydown(ev);
+    assert.deepStrictEqual(activated, ['a'], 'Enter in the search field still pastes the first clip');
+    assert.strictEqual(ev.prevented, true);
+  }
+
   console.log('multiselect.test.js: all multi-select guards passed');
 })().catch((err) => { console.error(err); process.exitCode = 1; });

@@ -13,6 +13,9 @@ contextBridge.exposeInMainWorld('api', {
   pasteAndHide: (id) => ipcRenderer.invoke('paste-and-hide', id),
   numpadPasteAndHide: (slot) => ipcRenderer.invoke('numpad-paste-and-hide', slot),
   hidePopup: () => ipcRenderer.invoke('hide-popup'),
+  // Header drag (Core.attachWindowDrag): phase 'start' | 'move' | 'end', dx/dy =
+  // the pointer's screen delta since the press. Main moves THIS window.
+  windowDrag: (phase, dx, dy) => ipcRenderer.send('window-drag', phase, dx, dy),
   copy: (text) => ipcRenderer.invoke('copy', text),
   deleteItem: (id, rev) => ipcRenderer.invoke('delete-item', id, rev),
   deleteItems: (targets) => ipcRenderer.invoke('delete-items', targets), // [{ id, rev }]

@@ -22,8 +22,8 @@
 //   is:url is:multiline is:rich   body is a link / spans lines / carries HTML or RTF
 //   id:PREFIX                clip id contains PREFIX
 //   sort:new|best            explicit ranking override
-// The user-facing reference for all of this is SYNTAX_HELP (rendered by the popup's
-// "?" help box) - keep it in step with the parser.
+// The user-facing reference for all of this is SYNTAX_HELP (rendered by the search
+// options panel) - keep it in step with the parser.
 // Free text + title:/text: honour the caller's regex flag (the app's `.*` toggle); every
 // other facet is an enum/number/time spec, never a regex.
 
@@ -254,10 +254,25 @@
   }
 
   // ── chip <-> query bridge: toggle a facet in the query string (bar = source of truth) ──
-  // token: { kind:'group'|'builtin'|'num', value } ; intent: 'include'|'exclude'.
+  // token: { kind:'group'|'builtin'|'is'|'num', value } ; intent: 'include'|'exclude'.
+  // Single-valued facets ({ kind:'since'|'before'|'len'|'lines'|'words', value }) have no
+  // exclude: the chip's value replaces the token, and the same value again clears it.
+  const SINGLE_FACETS = ['since', 'before', 'len', 'lines', 'words'];
+  const BOUND_FACETS = ['len', 'lines', 'words'];
   function toggleIn(arr, v) { const i = arr.indexOf(v); if (i >= 0) { arr.splice(i, 1); return false; } arr.push(v); return true; }
   function applyFacet(query, token, intent) {
     const p = parseQuery(query);
+    if (SINGLE_FACETS.includes(token.kind)) {
+      const k = token.kind;
+      if (BOUND_FACETS.includes(k)) {
+        const bound = parseBound(String(token.value == null ? '' : token.value));
+        p[k] = bound && !(p[k] && serializeBound(p[k]) === serializeBound(bound)) ? bound : null;
+      } else {
+        const v = String(token.value == null ? '' : token.value).trim();
+        p[k] = v && String(p[k] || '').toLowerCase() !== v.toLowerCase() ? v : null;
+      }
+      return serializeQuery(p);
+    }
     const exclude = intent === 'exclude';
     let inc, ex, value;
     if (token.kind === 'group') { inc = p.groups; ex = p.negGroups; value = normalizeTagName(token.value); }
@@ -276,6 +291,25 @@
       else inc.push(value);                                // add include
     }
     return serializeQuery(p);
+  }
+
+  // One facet token's state in a parsed query: 'include' | 'exclude' | null. A
+  // single-valued token without a value ({ kind: 'before' }) asks "is that facet
+  // set at all". The options panel paints its chips from this.
+  function facetTokenState(parsed, token) {
+    const k = token.kind;
+    if (SINGLE_FACETS.includes(k)) {
+      const cur = parsed[k];
+      if (!cur) return null;
+      if (token.value == null || token.value === '') return 'include';
+      if (BOUND_FACETS.includes(k)) { const b = parseBound(String(token.value)); return b && serializeBound(cur) === serializeBound(b) ? 'include' : null; }
+      return String(cur).toLowerCase() === String(token.value).toLowerCase() ? 'include' : null;
+    }
+    let inc, ex, value;
+    if (k === 'group') { inc = parsed.groups; ex = parsed.negGroups; value = normalizeTagName(token.value); }
+    else if (k === 'num') { inc = parsed.nums; ex = parsed.negNums; value = Number(token.value); }
+    else { inc = parsed.is; ex = parsed.negIs; value = BUILTIN_TO_IS[token.value] || token.value; }
+    return inc.includes(value) ? 'include' : ex.includes(value) ? 'exclude' : null;
   }
 
   // Chip active/excluded state for the filter bar, derived straight from the query.
@@ -620,7 +654,7 @@
   // in sync with PREFIX_ALIASES; only prefixes with a distinct short form appear.
   const PREFIX_SHORT = { 'title:': 't:', 'text:': 'b:', 'group:': 'g:', 'num:': 'n:', 'since:': 's:', 'before:': 'bf:', 'len:': 'l:', 'lines:': 'ln:', 'words:': 'wd:', 'sort:': 'o:' };
 
-  // The user-facing syntax reference (the popup's "?" help box renders exactly
+  // The user-facing syntax reference (the search options panel renders exactly
   // this). ONE table, next to the parser, so help can never drift from grammar.
   const SYNTAX_HELP = [
     { token: 'word  "a phrase"', desc: 'match anywhere (title, body, groups); several words = all must match', example: 'invoice "q3 report"' },
@@ -639,6 +673,47 @@
     { token: 'sort:new  sort:best  o:', desc: 'order results by recency or relevance', example: 'o:best' },
     { token: '.*  (button)', desc: 'treat free text and title:/text: values as regular expressions', example: '\\d{3}-\\d{4}' },
   ];
+  // The search options panel's facet rows: the less-used filters, one click each.
+  // Chips write tokens through applyFacet (the query text stays the single source
+  // of truth) and paint their state from facetTokenState. `prompt` options insert
+  // their prefix for typing instead of a fixed value. ONE table: the panel and the
+  // availability census both read it. A filter the chip bar already owns (is:pinned,
+  // is:image, is:numpad = BUILTIN_TO_IS) never appears here: one filter, one place,
+  // and the panel's toggle lights only for the panel's own filters.
+  const OPTION_FACETS = [
+    { id: 'date', label: 'Date', options: [
+      { label: 'Last 24h', token: { kind: 'since', value: '24h' } },
+      { label: 'Last 7 days', token: { kind: 'since', value: '7d' } },
+      { label: 'Last 30 days', token: { kind: 'since', value: '30d' } },
+      { label: 'Before...', token: { kind: 'before' }, prompt: 'before:' },
+    ] },
+    { id: 'type', label: 'Type', options: [
+      { label: 'Text', token: { kind: 'is', value: 'text' } },
+      { label: 'Link', token: { kind: 'is', value: 'url' } },
+      { label: 'Multi-line', token: { kind: 'is', value: 'multiline' } },
+      { label: 'Rich', token: { kind: 'is', value: 'rich' } },
+    ] },
+    { id: 'size', label: 'Size', options: [
+      { label: 'Under 80 chars', token: { kind: 'len', value: '<80' } },
+      { label: 'Over 500 chars', token: { kind: 'len', value: '>500' } },
+      { label: 'Over 10 lines', token: { kind: 'lines', value: '>10' } },
+    ] },
+  ];
+  // The query text a facet token stands for (its chip tooltip).
+  function facetTokenText(token) {
+    if (SINGLE_FACETS.includes(token.kind)) return `${token.kind}:${token.value == null ? '' : token.value}`;
+    if (token.kind === 'group') return `group:${quoteToken(token.value)}`;
+    if (token.kind === 'num') return `num:${token.value}`;
+    return `is:${BUILTIN_TO_IS[token.value] || token.value}`;
+  }
+  // True while the query holds a filter the options panel owns (its toggle lights).
+  function optionFacetsActive(parsed) {
+    return OPTION_FACETS.some((row) => row.options.some((opt) => {
+      const t = SINGLE_FACETS.includes(opt.token.kind) ? { kind: opt.token.kind } : opt.token;
+      return facetTokenState(parsed, t) !== null;
+    }));
+  }
+
   function suggestQuery(text, caret, opts) {
     const o = opts || {};
     const s = String(text || '');
@@ -695,12 +770,12 @@
 
   return {
     clipToDoc, docSearchText, normalizeTagName, tagMatchesFilter, docInGroup,
-    tokenizeQuery, quoteToken, parseQuery, serializeQuery, applyFacet, facetState,
+    tokenizeQuery, quoteToken, parseQuery, serializeQuery, applyFacet, facetState, facetTokenState,
     anyFilterActive, isEmptyQuery, resolveTimeMs,
     matchDoc, relevanceScore, recencyScore, rankMode, filterRankIndexes, bodyIndexOf,
     fuzzyMatch, fuzzyFloor,
     lexQuery, suggestQuery,
     BUILTIN_TO_IS, IS_TO_BUILTIN, IS_VALUES, RECOGNIZED_PREFIXES, NON_FILTER_SCHEMES,
-    SYNTAX_HELP, PREFIX_HINTS,
+    SYNTAX_HELP, PREFIX_HINTS, OPTION_FACETS, facetTokenText, optionFacetsActive,
   };
 });

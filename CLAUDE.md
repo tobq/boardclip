@@ -231,9 +231,39 @@ Otherwise the key passes through so normal numpad typing works. Main thread call
 - **Search facets (2026-09-03)**: `len:` accepts ranges (`len:50-200`), plus `lines:`/`ln:` and
   `words:`/`wd:` with the same comparators, and `is:url` / `is:multiline` / `is:rich`. The
   user-facing reference is `SYNTAX_HELP` in clip-search.js (ONE table next to the parser),
-  rendered by the shared `attachSearchHelp` as the "?" hover/click box beside the search field
-  (both app + demo get it via `attachSearchBox`); `.search-help` rides the shared floating-surface
-  rule. Add a facet = parser + `SYNTAX_HELP` + `PREFIX_HINTS`/`PREFIX_SHORT`, nothing else.
+  rendered in the search OPTIONS PANEL (the `tune` toggle, see "Popup header" below; the "?"
+  hover popover is gone). Add a facet = parser + `SYNTAX_HELP` + `PREFIX_HINTS`/`PREFIX_SHORT`
+  (+ an `OPTION_FACETS` row if it deserves a one-click chip), nothing else.
+- **Popup header + search field + options panel (2026-10-07, UI overhaul B)**: the popup header
+  and the settings header are NOT `-webkit-app-region: drag` (it ate clicks, double-click
+  maximised): `Core.attachWindowDrag(el, {onClick, move})` captures a press on a non-control
+  pixel; release within 4 px = click (focus the search), further = `window.api.windowDrag`
+  (`window-drag` IPC, main `setBounds` of the SENDER from its bounds at the press, size kept,
+  clamped to the desktop by `windowDragBounds`, three phases only; a drag mid-open-slide settles
+  the slide first; a closed popup drops its drag start; the demo passes no move). A press whose
+  release is lost ends at the next buttonless move / lostpointercapture. macOS needs
+  `acceptFirstMouse` on the popup (it never blur-hides, so it is often inactive; unverified on a Mac). The field is flat (no fill, `--line` hairline underline, accent on focus);
+  `attachSearchBox` owns its chrome for app + demo: placeholder "Click here to search..." until
+  focused, clear / sort / regex + tune on the ONE `.bc-reveal` (grid 0fr -> 1fr width track, both
+  Forge belts) and the options panel (grid-rows fold + `inert`, facet chips from
+  `Search.OPTION_FACETS` writing tokens via `applyFacet`; a chip-bar filter (is:pinned/image/
+  numpad) is never a panel option, `SYNTAX_HELP` reference,
+  `Core.attachScrollFade` mask edges, `Core.attachResizeHandle` bottom edge). Panel height =
+  `options_panel_height` (local-only, 0 = 40 % of the popup, max 70 %); Esc closes it first
+  (`closeSearchOptions` adapter hook), `resetPopupState` shuts it. Reduced motion = `--dur: 0ms`
+  (one switch in clipboard-popup.css). A focused button / chip answers a plain Enter / Space
+  natively: the controller's list keys skip `isActivatableControl` targets (they used to paste
+  the top clip). Panel rules: any programmatic query change closes the autocomplete (its replace
+  ranges belong to the old text), opening the panel closes it, nothing in the panel takes the
+  field's focus, a chip rebuild refocuses the focused chip's twin, and a close with the focus in
+  the panel gives it back to the field. Spacing before a revealed control = `--reveal-gap`
+  (margin inside the track), never the row's flex gap. QA: `node scripts/qa-popup-header.js`
+  (56 checks: click vs drag, lost release, clamp, slide vs drag, panel resize/persist/Esc,
+  keyboard activation, autocomplete vs panel, the reveal ramp, the demo, the icon font with
+  Google Fonts blocked; CDP key presses need a `char` event for a button to activate).
+- **Icon font is vendored (D3)**: `site/shared/vendor/fonts/material-symbols-rounded.woff2`
+  (opsz 20 / wght 400 / GRAD 0 fixed, FILL 0..1), ONE `@font-face` (`font-display: block`) at the
+  top of clipboard-popup.css, which every window and the site load. No page links Google Fonts.
 - **macOS**: detects Google Drive and OneDrive from `~/Library/CloudStorage/`, plus iCloud Drive from `~/Library/Mobile Documents/com~apple~CloudDocs`.
 - **Windows**: scans Google DriveFS mount letters and labels from PSDrive descriptions, DriveFS preference cache/WAL strings, and recent DriveFS logs; also detects OneDrive environment folders and common iCloud Drive folders.
 

@@ -89,9 +89,11 @@ async function resetPopup(c) {
   await c.popup.mouse('mouseMoved', -10, -10).catch(() => {});
   await c.popup.eval(`(() => {
     if (regexBtn.classList.contains('active')) regexBtn.click();
-    window.resetPopupState();
+    // Clear the query BEFORE the reset: leaving a search keeps the clip it was on
+    // in place, so a reset first would scroll back to it after its scrollToTop.
     clearSearchAndFilters();
     controller.clearSelection();
+    window.resetPopupState();
     rerenderList();
     return true;
   })()`);
@@ -153,9 +155,33 @@ const STEPS = [
     await c.shot(c.popup, 'popup-search-regex-invalid');
   } },
   { name: 'popup-search-empty', popup: true, run: async (c) => { await setQuery(c, 'zzqx nothing matches this'); await c.shot(c.popup, 'popup-search-empty'); } },
-  { name: 'popup-search-help', popup: true, run: async (c) => {
-    await c.popup.eval(`(() => { const b = document.getElementById('searchHelpBtn'); if (!b) throw new Error('no #searchHelpBtn'); b.click(); return true; })()`);
-    await c.shot(c.popup, 'popup-search-help');
+  // The flat field: idle ("Click here to search...", no buttons) and focused
+  // ("Search...", regex + options slid in).
+  { name: 'popup-search-unfocused', popup: true, run: async (c) => {
+    await c.popup.eval(`(document.getElementById('search').blur(), true)`);
+    await c.popup.waitFor(`document.getElementById('search').placeholder === 'Click here to search...' && !document.querySelector('.bc-reveal[data-reveal="tools"]').classList.contains('open')`, 'idle field', 5000);
+    await qa.sleep(300);
+    await c.shot(c.popup, 'popup-search-unfocused');
+  } },
+  { name: 'popup-search-focused', popup: true, run: async (c) => {
+    await c.popup.eval(`(document.getElementById('search').focus(), true)`);
+    await c.popup.waitFor(`document.getElementById('search').placeholder === 'Search...' && document.querySelector('.bc-reveal[data-reveal="tools"]').classList.contains('open')`, 'focused field', 5000);
+    await qa.sleep(300);
+    await c.shot(c.popup, 'popup-search-focused');
+  } },
+  // The options panel (the tune toggle), opened by a real press, then with a
+  // facet chip applied (it writes the token into the query and lights the toggle).
+  { name: 'popup-options-panel', popup: true, run: async (c) => {
+    await c.popup.eval(`(document.getElementById('search').focus(), true)`);
+    await qa.sleep(250);
+    await c.popup.click('#searchOptsBtn');
+    await c.popup.waitFor(`document.getElementById('searchOpts').classList.contains('open') && !document.getElementById('searchOpts').inert`, 'options panel open', 5000);
+    await qa.sleep(400);
+    await c.shot(c.popup, 'popup-options-panel');
+    await c.popup.click('.facet-opt[title="is:url"]'); // Type: Link
+    await c.popup.waitFor(`document.getElementById('search').value.includes('is:url')`, 'facet applied', 5000);
+    await qa.sleep(300);
+    await c.shot(c.popup, 'popup-options-panel-facet');
     await escape(c.popup);
   } },
   { name: 'popup-multiselect', popup: true, run: async (c) => {
@@ -263,6 +289,12 @@ const STEPS = [
     await page.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
     await qa.sleep(800);
     await c.fullPage(page, 'site-mobile', 390);
+    // The narrowest phone the page supports: still no horizontal scroll.
+    await page.send('Emulation.setDeviceMetricsOverride', { width: 360, height: 800, deviceScaleFactor: 1, mobile: true });
+    await qa.sleep(600);
+    const overflow = await page.eval('document.documentElement.scrollWidth - document.documentElement.clientWidth');
+    if (overflow > 0) throw new Error(`the site scrolls sideways at 360px (${overflow}px)`);
+    await c.fullPage(page, 'site-360', 360);
   } },
 ];
 

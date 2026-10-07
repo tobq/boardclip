@@ -114,9 +114,6 @@
      surface (popup, settings, an opaque dialog, glass). */
   --ctl-fill: color-mix(in srgb, var(--text) 9%, transparent);
   --ctl-fill-hover: color-mix(in srgb, var(--text) 15%, transparent);
-  /* Alias kept for site/styles.css (.demo-foot) until the site moves to
-     --line-faint (phase 9). */
-  --line-soft: var(--line-faint);
 }
 
 /* (b) SEMANTIC - the ONLY colour names components reference. Keep names

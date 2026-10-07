@@ -601,7 +601,7 @@ function text(text, extra = {}) {
   const siteCss = fs.readFileSync(path.join(__dirname, '..', 'site', 'styles.css'), 'utf8');
   const sharedCss = fs.readFileSync(path.join(__dirname, '..', 'site', 'shared', 'clipboard-popup.css'), 'utf8');
   assert(appHtml.includes('site/shared/clipboard-popup.css'));
-  assert(siteHtml.includes('/shared/clipboard-popup.css'));
+  assert(siteHtml.includes('href="shared/clipboard-popup.css"')); // relative: renders from Netlify and from a file
   assert(appHtml.includes('Core.renderFilterBar'));
   // The settings markup now lives in the shared renderer (Core.renderSettingsBody),
   // not inline in index.html — but the app still wires its handlers.

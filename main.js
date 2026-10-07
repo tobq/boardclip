@@ -6785,6 +6785,20 @@ function setQuickPasteShortcut(shortcut) {
 }
 
 function registerShortcuts() {
+  // A throwaway QA instance (BOARDCLIP_ISOLATED=1) never takes the keyboard: its
+  // low-level hook would sit in front of the real app's, so Win+V would open the
+  // sandbox and an assigned numpad key would paste sandbox text into the user's
+  // app through the real clipboard. Windows hook, macOS hotkey and globalShortcut
+  // alike.
+  if (process.env.BOARDCLIP_ISOLATED === '1') {
+    diagnostics.record('shortcut.register', { platform: process.platform, isolated: true, show_registered: false, quick_paste_registered: false });
+    return {
+      showShortcutRegistered: false,
+      showShortcut: effectiveShowShortcut(),
+      quickPasteRegistered: false,
+      quickPasteShortcut: effectiveQuickPasteShortcut(),
+    };
+  }
   if (shortcutsSuspended) {
     return {
       showShortcutRegistered: true,

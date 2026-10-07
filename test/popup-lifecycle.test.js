@@ -133,4 +133,13 @@ assert.ok(between(mainJs, 'function relaunchAfterUpdate() {', 'function develope
   assert.ok(popup.includes('backgroundThrottling: false'), 'the hidden popup renderer must not be throttled');
 }
 
+{
+  // A QA sandbox (BOARDCLIP_ISOLATED=1) must never take the keyboard: its hook
+  // would sit in front of the live app's and steal Win+V / numpad pastes.
+  const reg = between(mainJs, 'function registerShortcuts() {', 'globalShortcut.unregisterAll();');
+  const isolated = reg.indexOf("process.env.BOARDCLIP_ISOLATED === '1'");
+  assert.ok(isolated >= 0, 'registerShortcuts returns early for an isolated QA instance');
+  assert.ok(!/install\(|globalShortcut\.register|getMacosHotkey/.test(reg.slice(0, isolated)), 'nothing is registered before the isolated check');
+}
+
 console.log('popup lifecycle tests passed');

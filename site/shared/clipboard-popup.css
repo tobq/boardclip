@@ -384,6 +384,8 @@ mark { background: var(--mark-bg); color: var(--mark-fg); border-radius: 2px; pa
 .bc-editor-hl mark.cur { background: color-mix(in srgb, var(--accent) 55%, transparent); }
 .bc-editor-foot { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-5); padding: var(--sp-1) var(--sp-6); height: 24px; flex-shrink: 0; border-top: 1px solid var(--line); background: var(--surface); font-size: var(--fs-1); color: var(--text-dim); }
 .bc-editor-hint { white-space: nowrap; }
+.bc-drag-handle { cursor: grab; }
+.bc-drag-handle:active { cursor: grabbing; }
 .bc-editor-foot > [data-x="stats"] { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bc-editor-foot-end { display: flex; align-items: center; gap: var(--sp-5); flex-shrink: 0; }
 /* Clipboard follow status: "On clipboard" (accent) / a Copy button / a brief notice. */

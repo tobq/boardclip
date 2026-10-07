@@ -24,6 +24,8 @@ contextBridge.exposeInMainWorld('viewerApi', {
   deleteItems: (targets) => ipcRenderer.invoke('delete-items', targets), // [{ id, rev }]
   copyImagePath: (id) => ipcRenderer.invoke('copy-image-path', id),
   openImageExternal: (id) => ipcRenderer.invoke('open-image-external', id),
+  // Drag this image out as a file (native drag of a temporary copy).
+  startDrag: () => ipcRenderer.send('start-drag', [clipId]),
   close: () => ipcRenderer.send('viewer-close'),
   getColorScheme: () => ipcRenderer.invoke('get-color-scheme'),
   onColorSchemeChanged: (callback) => {

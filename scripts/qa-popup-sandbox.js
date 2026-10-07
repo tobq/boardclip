@@ -9,7 +9,7 @@
 // so scroll events and rAF never fire on their own: the script dispatches
 // scroll events itself and calls rerenderList() directly.
 //
-// Usage: node scripts/qa-list-place.js        (QA_SHOTS=<dir> is not used: hidden)
+// Usage: node scripts/qa-popup-sandbox.js        (QA_SHOTS=<dir> is not used: hidden)
 
 const fs = require('fs');
 const os = require('os');
@@ -385,6 +385,80 @@ async function main() {
     check('editor footer: Copy button when not on the clipboard', ed.start.copyBtn, JSON.stringify(ed.start));
     check('editor footer: Copy -> "On clipboard - edits update it"', ed.after.on && /On clipboard - edits update it/.test(ed.after.text) && ed.after.copied === 'note body', JSON.stringify(ed.after));
     check('editor footer: stop notice, then Copy again', /Clipboard changed elsewhere/.test(ed.notice) && ed.back, JSON.stringify({ notice: ed.notice, back: ed.back }));
+
+    // 15. Drag out of a row (real DOM, synthetic dragstart). Image rows go to
+    //     the host's native file drag; a REAL startDrag is deliberately not
+    //     fired here: with no mouse button held, Windows would "drop" the file
+    //     onto whatever window is under the user's cursor. The spy stands in.
+    const drag = await evalIn(cdp, `(() => {
+      __qa.clear();
+      resetPopupState();
+      const real = appAdapter.dragImages;
+      const calls = [];
+      appAdapter.dragImages = (ids, event) => { event.preventDefault(); calls.push(ids); return true; };
+      const fire = (el) => { const dt = new DataTransfer(); const ev = new DragEvent('dragstart', { bubbles: true, cancelable: true, dataTransfer: dt }); el.dispatchEvent(ev); return { prevented: ev.defaultPrevented, text: dt.getData('text/plain') }; };
+      const rows = [...document.querySelectorAll('#list > .item')];
+      const textRow = rows.find((r) => r.dataset.id.startsWith('txt:') && r.dataset.id !== rows[0].dataset.id);
+      const imgRow = rows.find((r) => r.dataset.id.startsWith('img:'));
+      const text = fire(textRow.querySelector('.preview'));
+      const image = fire(imgRow.querySelector('img'));
+      const star = fire(textRow.querySelector('.star'));
+      // Multi: ctrl-click two images, drag one -> both, list order.
+      const imgs = rows.filter((r) => r.dataset.id.startsWith('img:')).slice(0, 2);
+      imgs.forEach((r) => r.querySelector('.preview').dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, ctrlKey: true })));
+      fire(imgs[1].querySelector('img'));
+      controller.clearSelection();
+      appAdapter.dragImages = real;
+      const textItem = items.find((x) => x.id === textRow.dataset.id);
+      return { text, textOk: text.text === textItem.text, image, imageIds: calls[0], multi: calls[1], expectMulti: imgs.map((r) => r.dataset.id), imgId: imgRow.dataset.id, star, draggable: textRow.getAttribute('draggable') };
+    })()`);
+    check('rows are draggable', drag.draggable === 'true');
+    check('text row drags its full text (native page drag)', drag.textOk && !drag.text.prevented, JSON.stringify(drag.text).slice(0, 120));
+    check('image row -> host file drag (page drag cancelled)', drag.image.prevented && JSON.stringify(drag.imageIds) === JSON.stringify([drag.imgId]), JSON.stringify(drag.imageIds));
+    check('selected images drag together, list order', JSON.stringify(drag.multi) === JSON.stringify(drag.expectMulti), JSON.stringify(drag.multi));
+    check('pressing on a row control never drags', drag.star.prevented && !drag.star.text, JSON.stringify(drag.star));
+
+    // 16. Viewer drag-out (shared createImageViewer mounted in-page): fit size
+    //     drags out, zoomed in pans, Alt+drag drags out, the handle always does.
+    const viewer = await evalIn(cdp, `(async () => {
+      const host = document.createElement('div');
+      host.style.cssText = 'position:fixed;left:-9999px;top:0;width:500px;height:400px;display:flex;flex-direction:column';
+      document.body.appendChild(host);
+      let outs = 0;
+      const v = Core.createImageViewer({ src: 'clip-img:///' + items.find((x) => x.type === 'image' && x.width === 1600).image, onDragOut: () => { outs += 1; } });
+      host.appendChild(v.el);
+      v.el.style.height = '400px';
+      const img = v.el.querySelector('[data-x="img"]');
+      const stage = v.el.querySelector('[data-x="stage"]');
+      await new Promise((r) => { if (img.complete && img.naturalWidth) r(); else img.onload = r; setTimeout(r, 3000); });
+      await new Promise((r) => setTimeout(r, 100));
+      const press = (opts) => stage.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0, pointerId: 1, clientX: 50, clientY: 80, ...(opts || {}) }));
+      const dragFrom = (el) => { const ev = new DragEvent('dragstart', { bubbles: true, cancelable: true, dataTransfer: new DataTransfer() }); el.dispatchEvent(ev); return ev.defaultPrevented; };
+      const cancel = () => stage.dispatchEvent(new PointerEvent('pointercancel', { bubbles: true, pointerId: 1 }));
+      const r = {};
+      press(); r.fitDraggable = img.draggable; r.fitPrevented = dragFrom(img); r.fitOuts = outs; cancel();
+      stage.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY: -100, clientX: 120, clientY: 120 }));
+      stage.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY: -100, clientX: 120, clientY: 120 }));
+      stage.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY: -100, clientX: 120, clientY: 120 }));
+      press(); r.zoomDraggable = img.draggable; dragFrom(img); r.zoomOuts = outs;
+      stage.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, button: 0, pointerId: 1, clientX: 50, clientY: 80 }));
+      press({ altKey: true }); r.altDraggable = img.draggable; dragFrom(img); r.altOuts = outs; cancel();
+      dragFrom(v.el.querySelector('[data-x="drag"]')); r.handleOuts = outs;
+      r.handle = !!v.el.querySelector('.bc-drag-handle[draggable="true"]');
+      host.remove();
+      return r;
+    })()`);
+    check('viewer at fit size: drag pulls the image out', viewer.fitDraggable && viewer.fitPrevented && viewer.fitOuts === 1, JSON.stringify(viewer));
+    check('viewer zoomed in: drag pans, nothing leaves', !viewer.zoomDraggable && viewer.zoomOuts === 1, JSON.stringify({ d: viewer.zoomDraggable, outs: viewer.zoomOuts }));
+    check('viewer zoomed in + Alt: drag pulls the image out', viewer.altDraggable && viewer.altOuts === 2, JSON.stringify({ d: viewer.altDraggable, outs: viewer.altOuts }));
+    check('viewer title-bar handle always drags out', viewer.handle && viewer.handleOuts === 3, JSON.stringify({ h: viewer.handle, outs: viewer.handleOuts }));
+
+    // 17. Navigation guard (LAST: a failure would replace the popup page): a
+    //     renderer navigation, as a file dropped on the window triggers, is refused.
+    await evalIn(cdp, `(location.href = 'file:///C:/Windows/win.ini', true)`).catch(() => {});
+    await sleep(1500);
+    const still = await evalIn(cdp, `({ href: location.href, list: !!document.getElementById('list') })`).catch((e) => ({ error: e.message }));
+    check('a BoardClip window never navigates away (dropped files)', still && /index\.html/.test(still.href || '') && still.list, JSON.stringify(still));
 
     // Renderer exceptions land in the diagnostics file (Core.installRendererErrorReporting).
     await sleep(500);

@@ -349,6 +349,9 @@ const appAdapter = {
   setClipTitle: (id, title) => revGuard(() => window.api.setClipTitle(id, title, clipRevOf(id)), false),
   openImage: (item, options) => window.api.openImage(itemId(item), options || {}),
   openImageExternal: (item) => window.api.openImageExternal(itemId(item)),
+  // Image rows drag out as real files: cancel the page's own drag and let
+  // main run a native file drag (temporary copies named after the clips).
+  dragImages: (ids, event) => { event.preventDefault(); window.api.startDrag(ids); return true; },
   saveImage: async (item) => { const d = await window.api.copyImagePath(itemId(item)); return d && d.path ? 'Path copied' : null; },
   isSettingsOpen: () => document.getElementById('settingsView').classList.contains('show'),
   closeSettings: () => closeSettings(),
@@ -400,6 +403,7 @@ document.addEventListener('mouseup', (e) => controller.onMouseup(e));
 document.addEventListener('auxclick', (e) => controller.onAuxclick(e));
 document.addEventListener('contextmenu', (e) => controller.onContextmenu(e));
 document.addEventListener('wheel', (e) => controller.onWheel(e), { passive: false });
+document.addEventListener('dragstart', (e) => controller.onDragstart(e));
 
 // Popup reset (called by the main process when the window is shown).
 window.resetPopupState = function() {

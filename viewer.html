@@ -107,6 +107,9 @@ window.viewerApi.onInit(async (init) => {
     title: init.title || 'Image',
     onMenu: (x, y) => openMenu(x, y),
     onClose: () => window.viewerApi.close(),
+    // Drag the image out (title-bar handle; the image itself at fit size or
+    // with Alt): a native file drag of a temporary copy, done by main.
+    onDragOut: window.viewerApi.startDrag ? () => window.viewerApi.startDrag() : null,
   });
   host.appendChild(viewer.el);
   viewer.focus();

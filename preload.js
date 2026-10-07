@@ -39,6 +39,9 @@ contextBridge.exposeInMainWorld('api', {
   getConflicts: () => ipcRenderer.invoke('get-conflicts'),
   openConflict: (id) => ipcRenderer.invoke('open-conflict', id),
   openImage: (id, options) => ipcRenderer.invoke('open-image', id, options || {}),
+  // Native file drag of image clips (send, not invoke: main must call
+  // startDrag while the renderer's drag gesture is still live).
+  startDrag: (ids) => ipcRenderer.send('start-drag', ids),
   openImageExternal: (id) => ipcRenderer.invoke('open-image-external', id),
   platform: process.platform,
   setSyncPath: (path) => ipcRenderer.invoke('set-sync-path', path),

@@ -817,6 +817,20 @@
       setClipTitle: (id, title) => { const t = (title || "").trim(); clips = clips.map((item) => Core.itemId(item) === id ? { ...item, title: t || undefined, titleUpdatedAt: Date.now() } : item); },
       openImage: (item) => { if (item && item.imageSrc) openLightbox(item.imageSrc); },
       openImageExternal: (item) => { if (item && item.imageSrc) window.open(item.imageSrc, "_blank"); },
+      // A web page cannot hand the OS a file: drag the image's URL (most apps
+      // and browsers fetch it on drop) plus Chrome's DownloadURL (drop on the
+      // desktop/a folder saves it).
+      dragImages: (ids, event) => {
+        const shots = ids.map((id) => demoAdapter.itemById(id)).filter((clip) => clip && clip.imageSrc);
+        if (!shots.length || !event.dataTransfer) return false;
+        const urls = shots.map((clip) => new URL(clip.imageSrc, location.href).href);
+        const name = (shots[0].title || shots[0].text || "boardclip-image").replace(/\.[a-z0-9]{1,5}$/i, "").replace(/[^\w.-]+/g, "-").slice(0, 40);
+        event.dataTransfer.setData("text/uri-list", urls.join("\r\n"));
+        event.dataTransfer.setData("text/plain", urls.join("\n"));
+        event.dataTransfer.setData("DownloadURL", `image/svg+xml:${name}.svg:${urls[0]}`);
+        event.dataTransfer.effectAllowed = "copy";
+        return true;
+      },
       saveImage: (item) => {
         if (!item || !item.imageSrc) return null;
         const link = document.createElement("a");
@@ -911,6 +925,7 @@
     demoWindowEl.addEventListener("auxclick", (event) => controller.onAuxclick(event));
     demoWindowEl.addEventListener("contextmenu", (event) => controller.onContextmenu(event));
     demoWindowEl.addEventListener("wheel", (event) => controller.onWheel(event), { passive: false });
+    demoWindowEl.addEventListener("dragstart", (event) => controller.onDragstart(event));
 
     // Live syntax highlighting + autocomplete (shared helper) — same as the app popup.
     const demoSearchBox = Core.attachSearchBox(search, {

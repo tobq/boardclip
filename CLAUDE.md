@@ -354,9 +354,21 @@ build could re-trigger the race.
   anchor and stayed put (`reconcileVisible`) - Enter must never paste a hidden row. Rebuild repaints use
   `repaintSelection({scroll:false})`. "Newest"/"Top" pill (+ dot for clips that arrived above) lives in the
   shared shell (`.list-wrap`). Reopening the popup scrolls to the top. Measured (sandbox, 500 clips):
-  clear-to-deep rebuild 12-17 ms, 60 DOM rows, anchor within 1 px. QA: `node scripts/qa-list-place.js`
+  clear-to-deep rebuild 12-17 ms, 60 DOM rows, anchor within 1 px. QA: `node scripts/qa-popup-sandbox.js`
   (hidden popup, never touches the clipboard; a hidden page fires no scroll/rAF, so it dispatches scroll
   events and calls `rerenderList()` itself).
+- **Drag clips out (2026-10-07)**: popup rows are `draggable`; `controller.onDragstart` (both consumers
+  wire `dragstart`) sends image rows to the host's `dragImages` (app: cancel the page drag +
+  `start-drag` IPC -> `startImageDrag` -> `webContents.startDrag({files})`; demo: URL + `DownloadURL`)
+  and text rows as `text/plain` (+ `text/html` for one rich clip). A 2+ selection drags every selected
+  clip of the grabbed row's kind; presses on row controls never drag. The OS always gets TEMP COPIES in
+  `%TEMP%/BoardClip-drag/<per-drag>/` named by `lib/drag-files.js` (title, else "BoardClip image <local
+  time>"): a same-drive drop into a folder is a MOVE and must never take the original out of
+  clipboard-images; folders older than a day are pruned. Viewer (`createImageViewer` `onDragOut`): at fit
+  size a drag pulls out, zoomed in it pans, Alt+drag pulls out, the title-bar handle always pulls out.
+  NEVER fire a real `startDrag` from automation: with no button held, Windows "drops" onto whatever
+  window is under the user's cursor. `app.on('web-contents-created')` blocks `will-navigate` in every
+  window: a file dropped on the popup/editor/viewer used to navigate it to that file.
 - **Image preview zoom**: `Core.createImageZoom` owns `image_preview_height` (40-600, default 60,
   per machine, excluded in `remoteSettingsPayload`) as `--clip-img-h` on the popup root, capped by
   `--clip-img-cap` (the list's height). Ctrl+wheel (document listener, `{passive:false}`, via

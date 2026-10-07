@@ -375,6 +375,10 @@ const siteCss = read('site/styles.css');
     assert.ok(!/clearSelection\(\{\s*paint:\s*false\s*\}\);\s*\n\s*(renderClips|scheduleRerenderList|updateClearControls)/.test(html),
       `${name} wipes the cursor on a query change; call controller.onQueryChange()`);
     assert.ok(html.includes('controller.onQueryChange()'), `${name} must route query changes through controller.onQueryChange`);
+    // Drag-out: the shared controller routes every row drag; the host only
+    // supplies how an IMAGE leaves (native file in the app, URL in the demo).
+    assert.ok(/addEventListener\(\s*["']dragstart["']\s*,\s*\([^)]*\)\s*=>\s*controller\.onDragstart\(/.test(html), `${name} must route dragstart through controller.onDragstart`);
+    assert.ok(/dragImages\s*:/.test(html), `${name} must supply dragImages for image rows`);
   }
   assert.ok(ui.renderSettingsBody().includes('id="imagePreviewHeight"'), 'the shared settings body must carry the image preview height row');
   assert.ok(ui.renderPopupShell({}).includes('class="list-newest"'), 'the shared shell must carry the Newest pill');

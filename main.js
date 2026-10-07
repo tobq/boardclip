@@ -14,6 +14,7 @@ const macPaste = require('./lib/macos-paste');
 const winClipboard = require('./lib/windows-clipboard');
 const { createQuickPaster } = require('./lib/quick-paste');
 const { createClipboardFollower } = require('./lib/clipboard-follow');
+const { dragFileNames } = require('./lib/drag-files');
 const getBuildInfo = require('./lib/build-info');
 const getCloudAccounts = require('./lib/cloud-accounts');
 const blobStore = require('./lib/blob-store');
@@ -4977,6 +4978,52 @@ function openEditor(id, options = {}) {
   createEditorWindow(session, options);
 }
 
+// --- Drag image clips out (popup rows + the image viewer) ---
+// The OS gets temporary COPIES named after each clip (lib/drag-files.js): a drop
+// into a folder on the same drive is a MOVE, which must never take the original
+// out of clipboard-images. One subfolder per drag keeps names from colliding;
+// folders older than a day are pruned (a drop target such as a chat app may
+// read the file well after the drop).
+const DRAG_DIR = path.join(os.tmpdir(), 'BoardClip-drag');
+const DRAG_KEEP_MS = 24 * 60 * 60 * 1000;
+let dragSeq = 0;
+function startImageDrag(sender, ids) {
+  try {
+    const items = (Array.isArray(ids) ? ids : [])
+      .map(id => findHistoryItem(id))
+      .filter(item => item && item.type === 'image' && item.image && fs.existsSync(path.join(IMG_DIR, item.image)));
+    if (!items.length || !sender || sender.isDestroyed()) return;
+    const dragDir = path.join(DRAG_DIR, `${Date.now()}-${++dragSeq}`); // local temp, never a cloud mount
+    fs.mkdirSync(dragDir, { recursive: true });
+    const files = dragFileNames(items).map((name, i) => {
+      const dest = path.join(dragDir, name);
+      fs.copyFileSync(path.join(IMG_DIR, items[i].image), dest);
+      return dest;
+    });
+    let icon = nativeImage.createFromPath(files[0]);
+    if (!icon.isEmpty()) {
+      const { width, height } = icon.getSize();
+      const s = Math.min(1, 96 / Math.max(width, height, 1));
+      icon = icon.resize({ width: Math.max(1, Math.round(width * s)), height: Math.max(1, Math.round(height * s)) });
+    }
+    if (icon.isEmpty()) icon = nativeImage.createFromPath(APP_ICON_PATH);
+    sender.startDrag({ file: files[0], files, icon });
+    diagnostics.record('drag.out', { files: files.length }, { forceFile: diagnostics.isEnabled() });
+  } catch (error) {
+    diagnostics.record('drag.out_error', { error: error && error.message }, { forceFile: true });
+  }
+  pruneDragDir();
+}
+function pruneDragDir() {
+  fs.promises.readdir(DRAG_DIR, { withFileTypes: true }).then(entries => Promise.all(entries
+    .filter(entry => entry.isDirectory())
+    .map(async (entry) => {
+      const full = path.join(DRAG_DIR, entry.name);
+      const stat = await fs.promises.stat(full);
+      if (Date.now() - stat.mtimeMs > DRAG_KEEP_MS) await fs.promises.rm(full, { recursive: true, force: true });
+    }))).catch(() => {});
+}
+
 // --- In-app image viewer (viewer.html mounts the shared Core.createImageViewer;
 // same frameless chrome + theme plumbing as the editor). One window per clip
 // (image ids are stable content hashes). The window carries the SAME shared
@@ -6323,6 +6370,10 @@ function setupIPC() {
   ipcMain.handle('start-unify', (_, ids) => startUnify(ids));
   ipcMain.handle('unify-step', (_, sessionId, payload) => unifyStep(sessionId, payload));
 
+  // Drag image clips OUT (popup rows, the viewer): the renderer cancels its own
+  // dragstart and asks for a native file drag of temporary copies.
+  ipcMain.on('start-drag', (event, ids) => startImageDrag(event.sender, ids));
+
   // Primary image open: BoardClip's OWN viewer window (fit/zoom/pan + the shared
   // clip menu). The OS default app stays available via open-image-external.
   ipcMain.handle('open-image', (_, id, options) => {
@@ -6768,6 +6819,17 @@ app.on('second-instance', () => {
 });
 
 // --- Custom protocol for serving clipboard images ---
+// No BoardClip window ever navigates itself: each loads one local page. Without
+// this guard, dropping a file (an Explorer file, or an image dragged out of
+// BoardClip and released over its own window) made Chromium navigate that window
+// to the file, replacing the popup/editor/viewer with a bare image.
+app.on('web-contents-created', (_event, contents) => {
+  contents.on('will-navigate', (event, url) => {
+    event.preventDefault();
+    diagnostics.record('window.navigation_blocked', { scheme: String(url || '').split(':')[0] });
+  });
+});
+
 protocol.registerSchemesAsPrivileged([
   { scheme: 'clip-img', privileges: { bypassCSP: true, supportFetchAPI: true, standard: true, secure: true } }
 ]);

@@ -506,7 +506,9 @@
     // controller's renderSelection; kept as separate classes so a focused row and
     // a checked row read differently.
     const multi = opts.multiSelected ? ' multi-selected' : '';
-    return `<div class="item${pinned ? ' has-pin' : ''}${selected}${multi}" data-id="${escapeHtml(id)}">
+    // draggable: a row drags its clip out (controller.onDragstart): images as
+    // files, text as text. A still click still pastes.
+    return `<div class="item${pinned ? ' has-pin' : ''}${selected}${multi}" data-id="${escapeHtml(id)}" draggable="true">
       <div class="item-row">
         <div class="pin-area">
           <button class="star${pinned ? ' active' : ''}" type="button" data-action="pin" data-id="${escapeHtml(id)}" title="${pinned ? 'Unpin' : 'Pin'}"><span class="mi${pinned ? ' filled' : ''}">star</span></button>
@@ -2357,6 +2359,35 @@
       }
       return false;
     }
+    // Drag a clip out of the list into another app: image rows go out as image
+    // FILES (the host's dragImages runs the native file drag), text rows as
+    // text (plus its HTML when the clip has one). Grabbing a row that is part of
+    // a 2+ selection drags every selected clip of the grabbed row's kind, in list
+    // order. Presses on a row's own controls never start a drag.
+    function onDragstart(event) {
+      const t = event.target && event.target.nodeType === 1 ? event.target : event.target && event.target.parentElement;
+      const row = t && typeof t.closest === 'function' ? t.closest('.item') : null;
+      if (!row || !row.dataset || !row.dataset.id) return false;
+      if (t.closest('button, .np-btn, .gp-btn, .star, [data-action], a, .filter-tag, .numpad-picker')) { event.preventDefault(); return true; }
+      const item = a.itemById(row.dataset.id);
+      if (!item) { event.preventDefault(); return true; }
+      const isImage = item.type === 'image';
+      const ids = selectedIds.size >= 2 && selectedIds.has(row.dataset.id)
+        ? visibleIds().filter((id) => selectedIds.has(id))
+        : [row.dataset.id];
+      const items = ids.map((id) => a.itemById(id)).filter((it) => it && (it.type === 'image') === isImage);
+      if (isImage) {
+        // No host support -> no drag (a bare internal image URL is useless elsewhere).
+        if (!a.dragImages || !a.dragImages(items.map(itemId), event)) event.preventDefault();
+        return true;
+      }
+      const dt = event.dataTransfer;
+      if (!dt) return false;
+      dt.setData('text/plain', items.map((it) => String(it.text || '')).join('\n'));
+      if (items.length === 1 && typeof items[0].html === 'string' && items[0].html) dt.setData('text/html', items[0].html);
+      dt.effectAllowed = 'copy';
+      return true;
+    }
     // Ctrl+wheel resizes image previews (never the page); hosts bind this on
     // the whole popup with { passive: false }.
     function onWheel(event) {
@@ -2421,6 +2452,7 @@
       onContextmenu,
       onKeydown,
       onWheel,
+      onDragstart,
       deleteGroup,
       tryAssignNumpad,
       addGroup,
@@ -2822,6 +2854,7 @@
         <span class="bc-editor-title"></span>
         <div class="bc-tag-strip" data-x="tags" hidden></div>
         <div class="bc-editor-bar-actions">
+          ${o.onDragOut ? '<span class="icon-btn bc-drag-handle" data-x="drag" draggable="true" role="button" title="Drag the image into another app or a folder" aria-label="Drag the image out"><span class="mi">drag_indicator</span></span>' : ''}
           <button class="icon-btn" type="button" data-x="menu" title="More actions" aria-label="More actions"><span class="mi">more_horiz</span></button>
           <button class="icon-btn close-btn" type="button" data-x="close" title="Close (Esc)">&times;</button>
         </div>
@@ -2852,10 +2885,11 @@
       tx = w <= cw ? (cw - w) / 2 : Math.min(0, Math.max(cw - w, tx));
       ty = h <= ch ? (ch - h) / 2 : Math.min(0, Math.max(ch - h, ty));
     }
+    const isPannable = () => nw * scale > stage.clientWidth || nh * scale > stage.clientHeight;
     function paint() {
       clamp();
       img.style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`;
-      const pannable = nw * scale > stage.clientWidth || nh * scale > stage.clientHeight;
+      const pannable = isPannable();
       stage.style.cursor = pannable ? 'grab' : (fitMode && fitScale() < 1 ? 'zoom-in' : 'default');
       zoomEl.textContent = nw ? `${Math.round(scale * 100)}%` : '';
     }
@@ -2885,15 +2919,21 @@
       zoomAt(e.clientX - rect.left, e.clientY - rect.top, scale * (e.deltaY < 0 ? 1.2 : 1 / 1.2));
     }, { passive: false });
     // Pointer: drag pans (when pannable); a still click toggles fit ⇄ 100% at the point.
+    // With o.onDragOut, a drag on an image that fits (or any Alt+drag) pulls the
+    // image OUT instead: the img turns natively draggable for that press only and
+    // its dragstart hands over to the host (a native file drag).
     let down = null, moved = false;
     stage.addEventListener('pointerdown', (e) => {
       if (e.button !== 0) return;
-      down = { x: e.clientX, y: e.clientY, tx, ty };
+      const out = !!o.onDragOut && nw > 0 && (!isPannable() || e.altKey);
+      img.draggable = out;
+      down = { x: e.clientX, y: e.clientY, tx, ty, out };
       moved = false;
-      stage.setPointerCapture(e.pointerId);
+      if (!out) stage.setPointerCapture(e.pointerId);
     });
+    stage.addEventListener('pointercancel', () => { down = null; moved = false; paint(); });
     stage.addEventListener('pointermove', (e) => {
-      if (!down) return;
+      if (!down || down.out) return;
       const dx = e.clientX - down.x, dy = e.clientY - down.y;
       if (Math.abs(dx) + Math.abs(dy) > 4) moved = true;
       if (moved) {
@@ -2915,6 +2955,16 @@
       const ro = new ResizeObserver(() => { if (fitMode) applyFit(); else paint(); });
       ro.observe(stage);
     }
+    // The title-bar handle always drags out; the image only when this press
+    // was a drag-out press (never in the middle of a pan).
+    root.addEventListener('dragstart', (e) => {
+      const fromHandle = !!e.target.closest && !!e.target.closest('[data-x="drag"]');
+      e.preventDefault();
+      if (!o.onDragOut || (!fromHandle && !(down && down.out))) return;
+      down = null;
+      moved = false;
+      o.onDragOut();
+    });
     q('menu').onclick = (e) => {
       e.stopPropagation();
       const r = q('menu').getBoundingClientRect();

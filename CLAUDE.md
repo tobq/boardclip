@@ -813,10 +813,20 @@ Desktop app distribution has TWO consistent paths, both driven by `main`:
   Diagnose a suspected stale install with `git -C <install> reflog --date=iso` vs the running
   process StartTime: a `pull --ff-only` newer than the process with no `app.quit
   {reason:update-relaunch}` after it is exactly this.
-- **Popup open animation OFF on Windows (2026-10-07)**: Windows 11 scales+fades a window in; on the
-  acrylic popup the backdrop is drawn full size at once while the content scales in, so every open showed
-  a flickering rim. `lib/windows-dwm.js` sets DWMWA_TRANSITIONS_FORCEDISABLED on the popup at creation
-  (logged as `popup.transitions {ok, hr}`, forceFile). Popup only; editor/viewer keep normal animations.
+- **Windows popup is PARKED, never hidden (2026-10-07, the "opens twice" rim)**: every ShowWindow of
+  the acrylic popup drew the glass full size at once while Windows scaled + faded the web content in
+  ~130-200 ms later (measured with a ~100 fps CopyFromScreen recording). DWMWA_TRANSITIONS_FORCEDISABLED
+  and acrylic->mica did NOT change it (the first "fix" shipped that and the owner still saw it); child
+  HWNDs reject DWM attributes (E_HANDLE). Fix: `lib/windows-dwm.js` `setParked` = DWMWA_CLOAK +
+  WS_EX_NOACTIVATE. Closed = shown + cloaked (painted, not drawn, not hit-tested, not in Alt-Tab, never
+  handed focus by Windows); open = uncloak (complete in ONE frame) + a 10 px / 130 ms window-level slide
+  (`setPosition` steps: glass and content move together; `setOpacity` would make it layered and kill
+  the acrylic). RULES: (1) "open" is `isPopupOpen()` (popupOpen && isVisible), NEVER `win.isVisible()`
+  (a parked popup IS visible); (2) MOVE the cloaked window first, uncloak second (the reverse flashed one
+  frame at the last spot); (3) hide hands focus back (`setForegroundWindow(saved)`, else `blur()`), a
+  cloaked window keeps it otherwise; (4) cross-DPI move waits one renderer frame before the reveal.
+  Failures log `popup.park_failed` / `popup.unpark_failed` and fall back to hide/show. macOS untouched.
+  Verify by recording the open (frame N empty, frame N+1 complete) with the popup parked ELSEWHERE first.
 - **Popup renders but paints NOTHING on Windows (2026-09-20, ~40h uptime): Chromium native
   window occlusion.** The popup is `show:false` + hidden on every blur, the pattern
   `CalculateNativeWinOcclusion` mishandles: it stops compositing the "occluded" window and never

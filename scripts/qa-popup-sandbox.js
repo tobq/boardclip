@@ -561,8 +561,9 @@ async function main() {
     const errs = diagLines.filter((l) => l.includes('renderer.error'));
     check('no renderer errors recorded', errs.length === 0, errs[0]);
     if (process.platform === 'win32') {
-      const tr = diagLines.find((l) => l.includes('"popup.transitions"'));
-      check('popup opens without the Windows scale+fade animation (DWM transitions off)', tr && tr.includes('"ok":true'), tr && tr.slice(0, 160));
+      // Closed = parked (cloaked), never a real hide: a park failure logs popup.park_failed.
+      const pf = diagLines.find((l) => l.includes('"popup.park_failed"') || l.includes('"popup.unpark_failed"'));
+      check('popup parks (cloaked) instead of hiding, so it opens without the Windows show animation', !pf, pf && pf.slice(0, 160));
     }
   } finally {
     if (cdp) cdp.close();

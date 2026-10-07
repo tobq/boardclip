@@ -4138,10 +4138,10 @@ function createPopup() {
   });
 
   configureMacPopupWindow(win);
-  // Appear instantly: no Windows scale+fade open animation (on the acrylic
-  // popup it showed as a flickering rim every open). No-op off Windows.
-  diagnostics.record('popup.transitions', windowsDwm.disableWindowTransitions(win), { forceFile: true });
   win.loadFile(path.join(SCRIPT_DIR, 'index.html'));
+  // Windows: park the popup shown-but-cloaked as soon as its page has painted,
+  // so the first open is already an uncloak (see parkPopup).
+  win.webContents.once('did-finish-load', () => { if (!popupOpen) parkPopup('startup'); });
   // Ctrl/Cmd+= / - / 0 size the image previews, never the popup page. Claimed
   // HERE, before the app menu: on macOS the default menu's zoom roles are key
   // equivalents that can fire before the page sees the key, so a renderer
@@ -4169,7 +4169,7 @@ function createPopup() {
     diagnostics.record('popup.renderer_process_gone', {
       reason,
       exit_code: details && details.exitCode,
-      visible: win.isVisible(),
+      visible: isPopupOpen(),
     }, { forceFile: true });
 
     // A renderer can die AGAIN while its replacement is loading. Cancel the
@@ -4212,12 +4212,12 @@ function createPopup() {
   });
   win.webContents.on('unresponsive', () => {
     diagnostics.record('popup.renderer_unresponsive_native', {
-      visible: win && !win.isDestroyed() && win.isVisible(),
+      visible: isPopupOpen(),
     }, { forceFile: true });
   });
   win.webContents.on('responsive', () => {
     diagnostics.record('popup.renderer_responsive_native', {
-      visible: win && !win.isDestroyed() && win.isVisible(),
+      visible: isPopupOpen(),
     }, { forceFile: true });
   });
 
@@ -4251,33 +4251,30 @@ function createPopup() {
   if (process.platform === 'win32') {
     win.on('blur', () => {
       setTimeout(() => {
-        if (Date.now() < ignoreBlurUntil) return;
-        if (win && !win.isDestroyed() && !win.isFocused()) {
+        if (Date.now() < ignoreBlurUntil || !isPopupOpen()) return;
+        if (!win.isFocused()) {
           // Focus moved to one of BoardClip's OWN windows (e.g. an editor opened
           // from the popup)? Keep the popup open so the user can open several
           // items in a row. It still dismisses when focus leaves to another app
           // (getFocusedWindow() is null then) or via Escape / the close button.
           const focused = BrowserWindow.getFocusedWindow();
           if (focused && focused !== win) return;
-          win.hide();
+          hidePopup();
         }
       }, 150);
     });
   }
 
   win.on('hide', () => {
-    if (windowsHook) windowsHook.setPopupVisible(false);
-    stopClickAwayWatcher();
-    // Clear any open modals/state in renderer
-    win.webContents.executeJavaScript(`
-      window.resetPopupState?.();
-    `).catch(() => {});
+    popupOpen = false;
+    popupParked = false;
+    onPopupClosed();
   });
 
   win.on('close', (e) => {
     if (!app.isQuitting) {
       e.preventDefault();
-      win.hide();
+      hidePopup();
     }
   });
 }
@@ -4302,6 +4299,7 @@ function pointInWindowBounds(point, bounds) {
 function pointInAnyOwnWindow(point) {
   for (const w of BrowserWindow.getAllWindows()) {
     if (!w || w.isDestroyed() || !w.isVisible()) continue;
+    if (w === win && !isPopupOpen()) continue; // parked (cloaked), not on screen
     if (pointInWindowBounds(point, w.getBounds())) return true;
   }
   return false;
@@ -4355,7 +4353,7 @@ function startClickAwayWatcher() {
   stopClickAwayWatcher();
   clickAwayMouseWasDown = winPaste.isMouseButtonDown();
   clickAwayTimer = setInterval(() => {
-    if (!win || win.isDestroyed() || !win.isVisible()) {
+    if (!isPopupOpen()) {
       stopClickAwayWatcher();
       return;
     }
@@ -4371,9 +4369,92 @@ function startClickAwayWatcher() {
   }, 50);
 }
 
+// --- Popup open / close ---
+// "Open" is popupOpen, never win.isVisible(): on Windows a closed popup is
+// PARKED - still shown, but cloaked (lib/windows-dwm.js) - so its content stays
+// painted and opening is an uncloak that appears complete in one frame. A real
+// ShowWindow made Windows draw the acrylic glass at once and scale + fade the
+// content in ~150 ms later (the "opens twice" rim; measured frame by frame
+// 2026-10-07). macOS, and any Windows cloak failure, use plain hide()/show().
+let popupOpen = false;
+let popupParked = false;
+const POPUP_SLIDE_PX = 10;
+const POPUP_SLIDE_MS = 130;
+let popupSlideTimer = null;
+// isVisible() too, so an OS-level hide (macOS Cmd+H, no 'hide' event) can never
+// leave the toggle believing the popup is still open.
+function isPopupOpen() {
+  return !!(win && !win.isDestroyed() && popupOpen && win.isVisible());
+}
+function parkPopup(reason) {
+  if (process.platform !== 'win32' || !win || win.isDestroyed()) return false;
+  const cloak = windowsDwm.setParked(win, true);
+  if (!cloak.ok) {
+    diagnostics.record('popup.park_failed', { reason, ...cloak }, { forceFile: true });
+    popupParked = false;
+    return false;
+  }
+  if (!win.isVisible()) win.showInactive();
+  popupParked = true;
+  return true;
+}
+function unparkPopup() {
+  const result = windowsDwm.setParked(win, false);
+  if (!result.ok) diagnostics.record('popup.unpark_failed', result, { forceFile: true });
+  return result.ok;
+}
+// Resolves after the popup renderer has produced a frame (capped).
+function waitForPopupFrame(capMs = 120) {
+  return Promise.race([
+    win.webContents.executeJavaScript('new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r(true))))', true).catch(() => false),
+    new Promise((resolve) => setTimeout(resolve, capMs)),
+  ]);
+}
+function stopPopupSlide() {
+  if (popupSlideTimer) clearTimeout(popupSlideTimer);
+  popupSlideTimer = null;
+}
+// The open animation moves the WHOLE window (glass + content together): a CSS
+// animation cannot touch the OS-drawn glass, and a window fade (setOpacity)
+// makes the window layered, which drops the acrylic.
+function slidePopupInto(x, y) {
+  stopPopupSlide();
+  const startedAt = Date.now();
+  const step = () => {
+    popupSlideTimer = null;
+    if (!isPopupOpen()) return;
+    const t = Math.min(1, (Date.now() - startedAt) / POPUP_SLIDE_MS);
+    const eased = 1 - Math.pow(1 - t, 3);
+    win.setPosition(x, Math.round(y + POPUP_SLIDE_PX * (1 - eased)));
+    if (t < 1) popupSlideTimer = setTimeout(step, 8);
+  };
+  step();
+}
+// Shared by every close path (park or real hide).
+function onPopupClosed() {
+  if (windowsHook) windowsHook.setPopupVisible(false);
+  stopClickAwayWatcher();
+  if (!win || win.isDestroyed()) return;
+  // Clear any open modals/state in renderer
+  win.webContents.executeJavaScript(`
+    window.resetPopupState?.();
+  `).catch(() => {});
+}
 function hidePopup() {
-  diagnostics.record('popup.hide', { visible: !!(win && !win.isDestroyed() && win.isVisible()), items: history.length });
-  if (win && !win.isDestroyed()) win.hide();
+  diagnostics.record('popup.hide', { visible: isPopupOpen(), items: history.length });
+  const wasOpen = popupOpen;
+  popupOpen = false;
+  stopPopupSlide();
+  if (!win || win.isDestroyed()) return;
+  const hadFocus = win.isFocused();
+  if (parkPopup('hide')) {
+    // A cloaked window keeps keyboard focus: hand it back to the app the user
+    // came from (or the next window), as a real hide would have.
+    if (hadFocus && !winPaste.setForegroundWindow(savedForegroundWindow)) win.blur();
+    if (wasOpen) onPopupClosed();
+  } else {
+    win.hide(); // the 'hide' event runs onPopupClosed
+  }
   if (windowsHook) windowsHook.setPopupVisible(false);
   stopClickAwayWatcher();
 }
@@ -4381,7 +4462,7 @@ function hidePopup() {
 function showPopup() {
   if (!win) return;
   const startedAt = Date.now();
-  if (win.isVisible()) {
+  if (isPopupOpen()) {
     hidePopup();
     return;
   }
@@ -4409,11 +4490,38 @@ function showPopup() {
     win.setFocusable(true);
     app.focus({ steal: true });
   }
-  win.setPosition(Math.round(x), Math.round(y));
-  win.show();
-  win.moveTop();
-  if (process.platform === 'darwin') app.focus({ steal: true });
-  win.focus();
+  popupOpen = true;
+  const px = Math.round(x);
+  const py = Math.round(y);
+  const wasParked = popupParked;
+  popupParked = false;
+  if (wasParked && win.isVisible() && !win.isMinimized()) {
+    // Windows: MOVE the parked, already-painted window while it is still
+    // cloaked (uncloaking first flashed it for one frame at its last spot),
+    // then uncloak it just below its target and slide it up (see the popup
+    // open/close block above hidePopup).
+    const fromScale = screen.getDisplayMatching(win.getBounds()).scaleFactor;
+    win.setPosition(px, py + POPUP_SLIDE_PX);
+    const reveal = () => {
+      if (!isPopupOpen()) return; // closed again before the repaint landed
+      unparkPopup();
+      win.show(); // already shown: no Windows show animation, just activation
+      win.moveTop();
+      win.focus();
+      slidePopupInto(px, py);
+    };
+    // Onto a display with another scale factor, Chromium re-renders the page;
+    // reveal after that frame so no wrong-scale frame shows.
+    if (display.scaleFactor !== fromScale) waitForPopupFrame().then(reveal);
+    else reveal();
+  } else {
+    win.setPosition(px, py);
+    if (wasParked) unparkPopup(); // never leave it cloaked behind a real show
+    win.show();
+    win.moveTop();
+    if (process.platform === 'darwin') app.focus({ steal: true });
+    win.focus();
+  }
   resetPopupAfterShow();
   if (windowsHook) windowsHook.setPopupVisible(true);
   startClickAwayWatcher();
@@ -4528,7 +4636,7 @@ async function runNumpadSlotAction(slot, options = {}) {
   };
   diagnostics.record('shortcut.quick_paste_received', { ...trace, slot: slotNum }, { forceFile: true });
 
-  const popupVisible = !!(win && !win.isDestroyed() && win.isVisible());
+  const popupVisible = isPopupOpen();
   const popupFocused = popupVisible && win.isFocused();
   const hasItem = history.some(h => hasNumpadSlot(h, slotNum));
   const assignWhenFocused = options.assignWhenFocused !== false;
@@ -4561,7 +4669,7 @@ async function runNumpadSlotAction(slot, options = {}) {
   }
   await new Promise(r => setTimeout(r, 15));
   await numpadPaste(slotNum, { targetAppName, trace });
-  if (win && !win.isDestroyed() && win.isVisible()) {
+  if (isPopupOpen()) {
     diagnostics.record('shortcut.quick_paste_force_hide', { ...trace, slot: slotNum, window: macWindowSnapshot() }, { forceFile: true });
     hidePopup();
   }

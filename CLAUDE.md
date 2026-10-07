@@ -6,6 +6,12 @@
 - **Preload bridge** (`preload.js`) — contextBridge exposing API to renderer
 - **Single-file UI** (`index.html`) — loaded via `loadFile`, images served via `clip-img://` custom protocol
 - **Cross-platform**: macOS + Windows. Platform differences handled inline with `process.platform` checks
+- **RULE (owner, non-negotiable, 2026-10-07): every change must work on macOS AND Windows.** Design for
+  both up front and audit the mac paths before shipping: Cmd vs Ctrl (`metaKey`/`input.meta`), app-menu key
+  equivalents (macOS can fire default menu roles like View zoom BEFORE the page sees the key - claim such
+  chords in main's `before-input-event`, never rely on a renderer `preventDefault` alone), Option = Alt, no
+  blur-to-hide on the mac popup, dock hidden, `startDrag` needs a non-empty icon, Finder-illegal file-name
+  characters. When reporting, say what was verified on which platform (QA here runs on Windows only).
 - Data: `clipboard-history.json`, `clipboard-images/`, `clipboard-settings.json`
 
 ## Key Data Model
@@ -372,8 +378,10 @@ build could re-trigger the race.
 - **Image preview zoom**: `Core.createImageZoom` owns `image_preview_height` (40-600, default 60,
   per machine, excluded in `remoteSettingsPayload`) as `--clip-img-h` on the popup root, capped by
   `--clip-img-cap` (the list's height). Ctrl+wheel (document listener, `{passive:false}`, via
-  `controller.onWheel`) and Ctrl+=/-/0 (first thing in `controller.onKeydown`) always preventDefault so
-  the PAGE never zooms. Preview markup carries `width`/`height` + `--ar`/`--nw`; CSS width =
+  `controller.onWheel`) always preventDefaults so the PAGE never zooms. Ctrl/Cmd+=/-/0 in the APP are
+  claimed in main (`before-input-event` on the popup, shared `Core.imageZoomKey`, sent as `image-zoom-key`
+  -> `imageZoom.applyKey`) because macOS menu key equivalents beat the page; the demo uses the
+  `controller.onKeydown` path. No async image decoding: rebuilt rows painted blank for a frame. Preview markup carries `width`/`height` + `--ar`/`--nw`; CSS width =
   min(row, height x ratio, real width). Stored dims match the real PNGs (checked on 1529 live images).
 - **Dev auto-reload** — `fs.watch` on `index.html` triggers `reloadIgnoringCache()` (debounced 300ms)
 

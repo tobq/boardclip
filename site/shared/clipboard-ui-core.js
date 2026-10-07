@@ -446,7 +446,9 @@
       const w = Math.round(Number(item.width));
       const h = Math.round(Number(item.height));
       const dims = w > 0 && h > 0 ? ` width="${w}" height="${h}" style="--ar:${+(w / h).toFixed(4)};--nw:${w}px"` : '';
-      return `<img src="${escapeHtml(src)}" alt="image" decoding="async"${dims}>`;
+      // Decoded synchronously (no async decoding hint): every list rebuild re-creates the rows, and an async
+      // decode painted image rows blank for a frame (the "opens twice" flicker).
+      return `<img src="${escapeHtml(src)}" alt="image"${dims}>`;
     }
     const text = item && item.text || '';
     const display = options && typeof options.previewText === 'function'
@@ -1889,6 +1891,13 @@
       const act = imageZoomKey(e);
       if (!act) return false;
       e.preventDefault(); // never the page zoom
+      applyKey(act);
+      return true;
+    }
+    // 'in' | 'out' | 'reset'. Also the entry for hosts whose main process claims
+    // the chord before the page sees it (the app: macOS menu key equivalents).
+    function applyKey(act) {
+      if (act !== 'in' && act !== 'out' && act !== 'reset') return;
       let y = listEl ? listEl.getBoundingClientRect().top + 1 : 0;
       const cursor = listEl && listEl.querySelector(':scope > .item.selected');
       if (cursor) {
@@ -1898,7 +1907,6 @@
       }
       const next = act === 'reset' ? IMAGE_ZOOM.def : exact * (act === 'in' ? IMAGE_ZOOM.keyStep : 1 / IMAGE_ZOOM.keyStep);
       set(next, { anchorY: y });
-      return true;
     }
     // The Settings row: number input (live while typing a valid value, clamped
     // on commit) + a reset button.
@@ -1924,6 +1932,7 @@
       load: (px) => set(px, { silent: true, save: false }),
       onWheel,
       onKeydown,
+      applyKey,
       bindInput,
     };
   }

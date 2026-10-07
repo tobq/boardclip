@@ -16,6 +16,8 @@ const { createQuickPaster } = require('./lib/quick-paste');
 const { createClipboardFollower } = require('./lib/clipboard-follow');
 const { dragFileNames } = require('./lib/drag-files');
 const { createHistoryFeed } = require('./lib/history-feed');
+// Shared UI core (pure UMD, no DOM at load): main reuses its chord tests.
+const BoardClipCore = require('./site/shared/clipboard-ui-core');
 const getBuildInfo = require('./lib/build-info');
 const getCloudAccounts = require('./lib/cloud-accounts');
 const blobStore = require('./lib/blob-store');
@@ -4136,6 +4138,18 @@ function createPopup() {
 
   configureMacPopupWindow(win);
   win.loadFile(path.join(SCRIPT_DIR, 'index.html'));
+  // Ctrl/Cmd+= / - / 0 size the image previews, never the popup page. Claimed
+  // HERE, before the app menu: on macOS the default menu's zoom roles are key
+  // equivalents that can fire before the page sees the key, so a renderer
+  // preventDefault alone does not stop them there. Same path on every platform
+  // (the chord test is the shared Core.imageZoomKey).
+  win.webContents.on('before-input-event', (event, input) => {
+    if (input.type !== 'keyDown') return;
+    const act = BoardClipCore.imageZoomKey({ ctrlKey: input.control, metaKey: input.meta, altKey: input.alt, key: input.key, code: input.code });
+    if (!act) return;
+    event.preventDefault();
+    try { win.webContents.send('image-zoom-key', act); } catch {}
+  });
   win.on('resize', schedulePopupSizeSave);
 
   // A popup show must NEVER be treated as evidence that the renderer died. A

@@ -42,6 +42,13 @@ contextBridge.exposeInMainWorld('api', {
   // Native file drag of image clips (send, not invoke: main must call
   // startDrag while the renderer's drag gesture is still live).
   startDrag: (ids) => ipcRenderer.send('start-drag', ids),
+  // Ctrl/Cmd+= / - / 0, claimed by main before the app menu (macOS key
+  // equivalents would otherwise zoom the whole page): 'in' | 'out' | 'reset'.
+  onImageZoomKey: (callback) => {
+    const listener = (_, act) => callback(act);
+    ipcRenderer.on('image-zoom-key', listener);
+    return () => ipcRenderer.removeListener('image-zoom-key', listener);
+  },
   openImageExternal: (id) => ipcRenderer.invoke('open-image-external', id),
   platform: process.platform,
   setSyncPath: (path) => ipcRenderer.invoke('set-sync-path', path),

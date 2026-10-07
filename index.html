@@ -436,6 +436,7 @@ const imageZoom = Core.createImageZoom({
   toast: (msg) => showToast(msg),
 });
 appAdapter.imageZoom = imageZoom;
+if (window.api.onImageZoomKey) window.api.onImageZoomKey((act) => imageZoom.applyKey(act));
 
 document.addEventListener('click', (e) => controller.onClick(e));
 document.addEventListener('mousedown', (e) => controller.onMousedown(e));
@@ -1354,7 +1355,17 @@ function refreshGroupsAndList({force = true} = {}) {
 }
 
 // --- Data refresh ---
-async function refresh({force = false} = {}) {
+// History fetches run one at a time, each from the revision the previous one
+// left: two overlapping fetches carried the same revision, so the second could
+// only be answered with a FULL snapshot (~1 s on the popup thread) instead of a
+// delta. Every caller (coalesced refreshes, post-mutation, manual sync) queues.
+let refreshChain = Promise.resolve();
+function refresh(options) {
+  const run = refreshChain.then(() => refreshNow(options));
+  refreshChain = run.catch(() => {});
+  return run;
+}
+async function refreshNow({force = false} = {}) {
   const startedAt = performance.now();
   try {
     // Hand main the revision we already hold: unchanged history comes back as a

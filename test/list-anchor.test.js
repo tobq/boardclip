@@ -163,6 +163,15 @@ const tsAt = (list) => (i) => ts[list[i]];
   assert.ok(/function commitEditSession\([\s\S]{0,1200}followEditorSave\(session, prevText, next\.text\)/.test(main), 'every editor save goes through the clipboard follower');
   assert.ok((main.match(/observeEditorsClipboard\(/g) || []).length >= 4, 'the poller re-checks open editors on every text/image capture');
   assert.ok(main.includes("ipcMain.on('editor-focus'") && main.includes("ipcMain.handle('editor-copy'"), 'focus re-check + Copy button IPC');
+  // macOS AND Windows: the zoom chords are claimed in main before the app menu
+  // (macOS key equivalents fire before the page) and routed to the shared zoom.
+  assert.ok(/before-input-event[\s\S]{0,400}BoardClipCore\.imageZoomKey\(\{ ctrlKey: input\.control, metaKey: input\.meta/.test(main), 'main claims Ctrl/Cmd zoom chords with the shared chord test');
+  assert.ok(/before-input-event[\s\S]{0,700}event\.preventDefault\(\);[\s\S]{0,120}webContents\.send\('image-zoom-key', act\)/.test(main), 'claimed chords never reach the page zoom and go to the previews');
+  const preload = fs.readFileSync(path.join(__dirname, '../preload.js'), 'utf8');
+  assert.ok(preload.includes("ipcRenderer.on('image-zoom-key', listener)"));
+  const app = fs.readFileSync(path.join(__dirname, '../index.html'), 'utf8');
+  assert.ok(app.includes('window.api.onImageZoomKey((act) => imageZoom.applyKey(act))'));
+  assert.ok(!/decoding="async"/.test(fs.readFileSync(path.join(__dirname, '../site/shared/clipboard-ui-core.js'), 'utf8')), 'no async image decode: rebuilt rows must not paint blank image boxes');
 }
 
 console.log('list-anchor tests passed');

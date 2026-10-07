@@ -31,6 +31,14 @@ contextBridge.exposeInMainWorld('editorApi', {
   resolveConflict: (payload) => ipcRenderer.invoke('resolve-conflict', payload),
   unifyStep: (payload) => ipcRenderer.invoke('unify-step', sessionId, payload),
   close: () => ipcRenderer.send('editor-close', sessionId),
+  // Clipboard follow: while the clipboard holds this note, saves update it.
+  focused: () => ipcRenderer.send('editor-focus', sessionId),
+  copyToClipboard: (payload) => ipcRenderer.invoke('editor-copy', sessionId, payload),
+  onClipboardState: (callback) => {
+    const listener = (_, state) => callback(state || {});
+    ipcRenderer.on('editor-clipboard', listener);
+    return () => ipcRenderer.removeListener('editor-clipboard', listener);
+  },
   // Clip menu (shared with the popup + viewer). The clip id changes on every
   // committed edit (content-addressed), so the menu asks for the CURRENT id.
   currentId: () => ipcRenderer.invoke('editor-current-id', sessionId),

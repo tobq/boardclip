@@ -145,6 +145,12 @@ window.editorApi.onInit((init) => {
     // (returned promise also lets the strip's commit-on-add await the write).
     onCommit: (payload) => window.editorApi.commit(payload).then((r) => { refreshTags(); return r; }),
     onClose: () => window.editorApi.close(),
+    // While the clipboard holds this note, every save also updates it (main's
+    // clipboard follower); the footer shows that, or a Copy button to start it.
+    clipboard: window.editorApi.copyToClipboard ? {
+      following: !!init.clipboardFollowing,
+      onCopy: (payload) => window.editorApi.copyToClipboard(payload),
+    } : null,
     // "..." in the editor chrome -> the shared clip menu (existing clips only;
     // a brand-new note has no clip until its first commit).
     ...(init.isNew ? {} : { onMenu: (x, y) => openClipMenu(x, y) }),
@@ -154,6 +160,10 @@ window.editorApi.onInit((init) => {
   refreshTags();
 });
 
+// Clipboard follow: main pushes start/stop; regaining focus asks main to
+// re-check (the user may have copied this note, or something else, meanwhile).
+if (window.editorApi.onClipboardState) window.editorApi.onClipboardState((state) => { if (editor) editor.setClipboardState(state); });
+window.addEventListener('focus', () => { if (editor && window.editorApi.focused) window.editorApi.focused(); });
 // Right-click in the editor chrome (bar/foot — not the text area, where the
 // native text menu belongs) opens the same clip menu.
 document.addEventListener('contextmenu', (e) => {

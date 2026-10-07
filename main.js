@@ -13,6 +13,7 @@ const winPaste = require('./lib/windows-paste');
 const macPaste = require('./lib/macos-paste');
 const winClipboard = require('./lib/windows-clipboard');
 const { createQuickPaster } = require('./lib/quick-paste');
+const { createClipboardFollower } = require('./lib/clipboard-follow');
 const getBuildInfo = require('./lib/build-info');
 const getCloudAccounts = require('./lib/cloud-accounts');
 const blobStore = require('./lib/blob-store');
@@ -506,7 +507,12 @@ function loadSettings() {
   }
 }
 
-function saveSettingsFile() {
+// localOnly: the change touches only per-machine keys that never sync and that
+// the popup's list does not depend on (window geometry, the image preview
+// height). Those skip the revision bump: a bump makes the popup re-clone the
+// whole history over IPC and rebuild, which every Ctrl+wheel zoom and every
+// window resize used to trigger.
+function saveSettingsFile({ localOnly = false } = {}) {
   const startedAt = Date.now();
   const previousDiagnosticsEnabled = diagnostics.isEnabled();
   migrateSyncSettings();
@@ -526,6 +532,7 @@ function saveSettingsFile() {
     bytes: Buffer.byteLength(settingsJson),
     diagnostics_changed: previousDiagnosticsEnabled !== diagnostics.isEnabled(),
   }, 50);
+  if (localOnly) return;
   dataRevision++;
   observeLocalChange();
   if (!suppressP2PNotify) p2pNotifyLocalChange();
@@ -881,7 +888,10 @@ function writeEditedTextToClipboard(text) {
   }
 }
 
-function applyExternalTextEdit({ id, originalText, originalTitle, sourceGroups, newText, newTitle, writeClipboard = true }) {
+// Never touches the clipboard: an edit only reaches the clipboard through the
+// open editor's clipboard follower (followEditorSave), and only while the
+// clipboard holds that note.
+function applyExternalTextEdit({ id, originalText, originalTitle, sourceGroups, newText, newTitle }) {
   // Forensics for the fork branch: was the base clip still there, and did its
   // text still match what the editor started from?
   const baseItem = id ? history.find(item => itemKey(item) === id) : null;
@@ -909,9 +919,6 @@ function applyExternalTextEdit({ id, originalText, originalTitle, sourceGroups, 
   for (const supersede of result.supersedes || []) addSupersede(supersede);
   if ((result.tombstoneIds && result.tombstoneIds.length) || (result.supersedes && result.supersedes.length)) saveSettingsFile();
   saveHistory();
-  // Only put the edited text on the clipboard for a deliberate finish (editor
-  // close / final save), not every intermediate auto-captured Ctrl+S.
-  if (writeClipboard) writeEditedTextToClipboard(newText);
   diagnostics.record('editor.text_applied', {
     reason: result.reason,
     conflict: !!result.conflictRecord,
@@ -941,7 +948,6 @@ function applyTextEditToItem(item, { newText, newTitle } = {}) {
     sourceGroups: groupsOf(item),
     newText: resolved,
     newTitle: newTitle !== undefined ? newTitle : titleOf(item),
-    writeClipboard: false, // an edit-by-id never hijacks the user's clipboard
   });
 }
 
@@ -1159,6 +1165,9 @@ function mergeGroups(local, remote) {
   return clipboardModel.mergeGroups(local, remote, settings.group_tombstones);
 }
 
+// Settings the save-settings IPC may write without touching history or sync.
+const LOCAL_ONLY_SETTING_KEYS = new Set(['image_preview_height']);
+
 function remoteSettingsPayload() {
   const remoteSave = {
     ...settings,
@@ -1186,6 +1195,8 @@ function remoteSettingsPayload() {
   delete remoteSave.ui_density;
   delete remoteSave.ui_corners;
   delete remoteSave.ui_borders;
+  // Image preview height suits THIS machine's screen and popup size.
+  delete remoteSave.image_preview_height;
   // AI Access: per-machine, never synced. (groups_shared_with_ai DOES sync - it
   // is user curation that should travel between machines.)
   delete remoteSave.mcp_secret;
@@ -3684,6 +3695,7 @@ function pollClipboard() {
         { type: 'text', text, ts: Date.now() / 1000, ...readRichClipboardPayload() },
         it => it.text === text
       );
+      observeEditorsClipboard(text);
       return;
     }
 
@@ -3718,6 +3730,7 @@ function pollClipboard() {
           { type: 'image', image: fname, ts: Date.now() / 1000, width, height },
           it => it.type === 'image' && it.image === fname
         );
+        observeEditorsClipboard('');
       }
       return;
     }
@@ -3732,6 +3745,7 @@ function pollClipboard() {
         { type: 'text', text, ts: Date.now() / 1000, ...readRichClipboardPayload() },
         it => it.text === text
       );
+      observeEditorsClipboard(text);
     }
   } catch {
     action = 'error';
@@ -3982,7 +3996,7 @@ function schedulePopupSizeSave() {
     const current = popupSizeFromSettings();
     if (next.width === current.width && next.height === current.height) return;
     settings.popup_size = next;
-    saveSettingsFile();
+    saveSettingsFile({ localOnly: true });
     diagnostics.record('popup.resize_saved', next, { forceFile: diagnostics.isEnabled() });
   }, 250);
   if (savePopupSizeTimer.unref) savePopupSizeTimer.unref();
@@ -4699,10 +4713,50 @@ function notifyEditOutcome(result) {
   );
 }
 
+// --- Editor <-> clipboard follow (lib/clipboard-follow.js) ---
+// While the clipboard holds an open editor's note, every save of that note also
+// goes onto the clipboard, so the user never re-copies from the editor. Re-checked
+// whenever the clipboard may have changed: the editor opening or regaining
+// focus, any copy the poller sees, and every save. Writes go through
+// writeEditedTextToClipboard (pollGate + lastText), so the poller never
+// re-captures them as new clips.
+function createEditorClipboardFollower() {
+  return createClipboardFollower({
+    readText: () => clipboard.readText(),
+    writeText: (text) => writeEditedTextToClipboard(text),
+  });
+}
+function editorNoteTexts(session) {
+  return [session.draftText, session.lastCommitted];
+}
+function reportEditorClipboard(session, res) {
+  if (!res || !['started', 'stopped', 'adopted', 'write_failed'].includes(res.event)) return;
+  diagnostics.record('editor.clipboard_follow', { event: res.event, session: session.id }, { forceFile: diagnostics.isEnabled() });
+  if (!session.win || session.win.isDestroyed()) return;
+  try { session.win.webContents.send('editor-clipboard', { following: !!res.following, event: res.event }); } catch {}
+}
+function observeEditorClipboard(session, clipText) {
+  if (!session || !session.follow || session.suppressCommit) return null;
+  const res = session.follow.observe(editorNoteTexts(session), clipText);
+  reportEditorClipboard(session, res);
+  return res;
+}
+// The poller saw the clipboard change to `text` ('' = it now holds an image).
+function observeEditorsClipboard(text) {
+  if (!editSessions.size) return;
+  for (const session of editSessions.values()) {
+    try { observeEditorClipboard(session, text); } catch {}
+  }
+}
+function followEditorSave(session, prevText, text) {
+  if (!session.follow) return;
+  reportEditorClipboard(session, session.follow.afterSave(prevText, text));
+}
+
 // Commit `text` to the clip, re-anchoring the session chain so the next commit
 // descends from this one (in-place, not a fork). For a new-note session the
 // first non-blank commit creates the clip.
-function commitEditSession(session, payload, { final = false } = {}) {
+function commitEditSession(session, payload) {
   if (session.suppressCommit) return null; // clip deleted from this window's menu
   const next = editorPayloadFrom(payload, { text: session.lastCommitted, title: session.lastCommittedTitle });
   if (next.text === session.lastCommitted && next.title === session.lastCommittedTitle) return null;
@@ -4713,9 +4767,10 @@ function commitEditSession(session, payload, { final = false } = {}) {
     sourceGroups: session.sourceGroups,
     newText: next.text,
     newTitle: next.title,
-    writeClipboard: final,   // only a deliberate finish puts the text on the clipboard
   });
   if (result && result.changed) {
+    const prevText = session.lastCommitted;
+    followEditorSave(session, prevText, next.text);
     session.lastCommitted = next.text;
     session.lastCommittedTitle = next.title;
     session.baseText = next.text;
@@ -4752,7 +4807,7 @@ function scheduleWindowBoundsSave(childWin, key) {
     if (!childWin || childWin.isDestroyed()) return;
     const { x, y, width, height } = childWin.getBounds();
     settings[key] = { x, y, width: Math.max(360, width), height: Math.max(240, height) };
-    saveSettingsFile();
+    saveSettingsFile({ localOnly: true });
   }, 300);
   if (timer.unref) timer.unref();
   saveBoundsTimers.set(key, timer);
@@ -4788,10 +4843,14 @@ function createEditorWindow(session, presentOptions = {}) {
   editorWin.once('ready-to-show', () => { try { presentSecondaryWindow(editorWin, presentOptions); } catch {} });
   editorWin.webContents.on('did-finish-load', () => {
     try {
+      // Re-check now (the clipboard may have changed while the window loaded);
+      // the state rides the init payload, so no separate event is sent.
+      if (session.follow) session.follow.observe(editorNoteTexts(session));
       editorWin.webContents.send('editor-init', {
         sessionId: session.id,
         text: session.baseText,
         noteTitle: session.baseTitle,
+        clipboardFollowing: !!(session.follow && session.follow.isFollowing()),
         find: session.initialFind || '',
         findRegex: !!session.initialFindRegex,
         focusTitle: !!session.initialFocusTitle,
@@ -4815,7 +4874,9 @@ function createEditorWindow(session, presentOptions = {}) {
     // re-recovered, and prune. suppressCommit = the clip was deliberately deleted
     // from this window's menu; committing would resurrect it from the draft.
     const draftPayload = (session.inConflict || session.suppressCommit) ? null : readDraftFile(session, { text: session.draftText, title: session.draftTitle });
-    if (draftPayload != null) commitEditSession(session, draftPayload, { final: true });
+    // The follower (not the close) decides whether this last save reaches the
+    // clipboard: only when the clipboard still holds this note.
+    if (draftPayload != null) commitEditSession(session, draftPayload);
     try {
       const done = path.join(path.dirname(session.draftPath), `done-${path.basename(session.draftPath)}`);
       fs.renameSync(session.draftPath, done);
@@ -4907,7 +4968,9 @@ function openEditor(id, options = {}) {
     // is explicit and recoverable straight from the filename.
     draftPath: path.join(EDIT_ARCHIVE_DIR, `boardclip-edit-${baseHash.slice(0, 12)}-${Date.now()}-${editSessionSeq}.txt`),
     win: null,
+    follow: createEditorClipboardFollower(),
   };
+  session.follow.observe(editorNoteTexts(session));
   writeDraftFile(session);
   editSessions.set(session.id, session);
   if (originalId != null) editWindowsByClip.set(originalId, session.id);
@@ -5011,7 +5074,6 @@ function applyConflictResolution(resolution) {
         sourceGroups: snapshot && snapshot.groups || [],
         newText: text,
         newTitle: title,
-        writeClipboard: false,
       });
     }
   }
@@ -5267,7 +5329,7 @@ function recoverOrphanedEdits() {
       // fork-safe, never overwrites.
       const draftText = String(draft.text || '').trim();
       if (draftText && !history.some(it => (it.text || '').includes(draftText))) {
-        const result = applyExternalTextEdit({ id: '', originalText: '', originalTitle: '', sourceGroups: [], newText: draft.text, newTitle: draft.title, writeClipboard: false });
+        const result = applyExternalTextEdit({ id: '', originalText: '', originalTitle: '', sourceGroups: [], newText: draft.text, newTitle: draft.title });
         if (result && result.changed) recovered++;
       }
       // Retire the draft: rename to done- in the archive dir (retained, not re-recovered).
@@ -6137,14 +6199,21 @@ function setupIPC() {
     if (body.ui_density !== undefined && ['normal', 'compact'].includes(body.ui_density)) settings.ui_density = body.ui_density;
     if (body.ui_corners !== undefined && ['soft', 'sharp'].includes(body.ui_corners)) settings.ui_corners = body.ui_corners;
     if (body.ui_borders !== undefined && ['bordered', 'borderless'].includes(body.ui_borders)) settings.ui_borders = body.ui_borders;
+    if (body.image_preview_height !== undefined) {
+      const px = Math.round(Number(body.image_preview_height));
+      if (Number.isFinite(px)) settings.image_preview_height = Math.min(600, Math.max(40, px));
+    }
     if (body.update_mode !== undefined && !app.isPackaged && ['production', 'development'].includes(body.update_mode)) settings.update_mode = body.update_mode;
     if (body.p2p_pinned_peers !== undefined) {
       settings.p2p_pinned_peers = normalizePinnedPeers(body.p2p_pinned_peers);
       if (p2p.started) p2pProbeTargets('pins').catch(() => {});
     }
-    saveSettingsFile();
+    // A save of only per-machine display keys (the Ctrl+wheel preview height)
+    // needs no history refresh, sync or prune.
+    const localOnly = Object.keys(body || {}).length > 0 && Object.keys(body).every(key => LOCAL_ONLY_SETTING_KEYS.has(key));
+    saveSettingsFile({ localOnly });
     if (surfaceChanged) applySurfaceToPopup();
-    pruneHistory();
+    if (!localOnly) pruneHistory();
   });
 
   ipcMain.handle('set-show-shortcut', (_, shortcut) => setShowShortcut(shortcut));
@@ -6202,6 +6271,24 @@ function setupIPC() {
     writeDraftFile(session);
     commitEditSession(session, next);
     return session.currentId || null;
+  });
+  // The editor window regained focus: the user may have copied this note (or
+  // something else) meanwhile. Re-check; a change is pushed as editor-clipboard.
+  ipcMain.on('editor-focus', (_, sessionId) => {
+    observeEditorClipboard(editSessions.get(sessionId));
+  });
+  // The footer's Copy button: save, put the note on the clipboard, follow it.
+  ipcMain.handle('editor-copy', (_, sessionId, payload) => {
+    const session = editSessions.get(sessionId);
+    if (!session || !session.follow) return { following: false };
+    const next = editorPayloadFrom(payload, { text: session.draftText, title: session.draftTitle });
+    session.draftText = next.text;
+    session.draftTitle = next.title;
+    writeDraftFile(session);
+    commitEditSession(session, next);
+    const res = session.follow.adopt(next.text);
+    diagnostics.record('editor.clipboard_follow', { event: res.event, session: session.id }, { forceFile: diagnostics.isEnabled() });
+    return { following: !!res.following, event: res.event };
   });
   ipcMain.on('editor-close', (event, sessionId) => {
     if (String(sessionId || '').startsWith('conflict:')) {

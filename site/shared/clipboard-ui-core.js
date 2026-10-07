@@ -439,7 +439,14 @@
     const isImage = item && item.type === 'image';
     if (isImage) {
       const src = options && typeof options.imageSrc === 'function' ? options.imageSrc(item) : item.imageSrc || item.image || '';
-      return `<img src="${escapeHtml(src)}" alt="image">`;
+      // Known pixel size: width/height reserve the row's space before the image
+      // loads (no layout jump under a kept scroll place) and --ar/--nw let the
+      // shared CSS size it from --clip-img-h (the zoomable preview height)
+      // without ever widening past the row or past the image's real size.
+      const w = Math.round(Number(item.width));
+      const h = Math.round(Number(item.height));
+      const dims = w > 0 && h > 0 ? ` width="${w}" height="${h}" style="--ar:${+(w / h).toFixed(4)};--nw:${w}px"` : '';
+      return `<img src="${escapeHtml(src)}" alt="image" decoding="async"${dims}>`;
     }
     const text = item && item.text || '';
     const display = options && typeof options.previewText === 'function'
@@ -530,6 +537,7 @@
       groupFilters: 'groupFilters',
       selectionBar: 'selectionBar',
       list: 'list',
+      listNewest: 'listNewest',
       settingsView: 'settingsView',
       settingsBack: 'settingsBack',
       settingsCloseBtn: 'settingsCloseBtn',
@@ -564,7 +572,10 @@
         <div class="group-filters" id="${esc(ids.groupFilters)}" aria-label="Filters"></div>
         <div class="selection-bar hidden" id="${esc(ids.selectionBar)}" role="toolbar" aria-label="Selection actions"></div>
       </div>
-      <div class="list" id="${esc(ids.list)}" aria-live="polite"></div>
+      <div class="list-wrap">
+        <div class="list" id="${esc(ids.list)}" aria-live="polite"></div>
+        <button class="list-newest" id="${esc(ids.listNewest)}" type="button" title="Jump to the newest clip" aria-label="Jump to the newest clip" tabindex="-1"><span class="mi sm">arrow_upward</span><span class="list-newest-label">Newest</span><span class="list-newest-dot" aria-hidden="true"></span></button>
+      </div>
       ${afterListHtml}
     </div>
     <div class="settings-view" id="${esc(ids.settingsView)}">
@@ -1136,6 +1147,13 @@
         <button type="button" class="seg-btn" data-theme-mode="dark" title="Always dark">Dark</button>
       </div>
     </div>
+    <div class="setting-row">
+      <label for="imagePreviewHeight">Image preview height (px)</label>
+      <div class="shortcut-control">
+        <input id="imagePreviewHeight" type="number" min="${IMAGE_ZOOM.min}" max="${IMAGE_ZOOM.max}" step="10" title="Also Ctrl+wheel over the list, or Ctrl+= / Ctrl+- / Ctrl+0">
+        <button class="icon-btn shortcut-reset" id="imagePreviewHeightReset" title="Reset to ${IMAGE_ZOOM.def}px" type="button"><span class="mi">restart_alt</span></button>
+      </div>
+    </div>
     <div id="appearanceVariants"></div>
     <div class="setting-row shortcut-row">
       <label>Popup shortcut</label>
@@ -1443,6 +1461,450 @@
   //            expand/filter], refresh() [re-fetch + re-render after a data
   //            mutation; falls back to render() if absent], toast(msg),
   //            deletedToast (string|null)
+  // ---- Keep-your-place clip list (app popup + demo) --------------------------
+  //
+  // resolveListAnchor is the PURE policy for where a rebuilt list sits. It runs
+  // on every rebuild (typing, clearing, a sort flip, a background refresh):
+  //   ids      - the new visible ids, in display order
+  //   tsAt(i)  - capture time of ids[i] (for "nearest clip in time")
+  //   anchor   - { id, offset, ts, atTop, isCursor } from the old list, or null:
+  //              the cursor row if it was on screen, else the top visible row;
+  //              atTop = unscrolled with no on-screen cursor
+  //   prevMode / nextMode - Search.rankMode of the old / new list
+  //   cleared  - the query went to empty (clear X, select-all + delete, last chip)
+  // Returns { index, offset, reason }; index -1 = the top of the list.
+  function resolveListAnchor(opts) {
+    const o = opts || {};
+    const ids = o.ids || [];
+    const top = (reason) => ({ index: -1, offset: 0, reason });
+    if (!ids.length) return top('empty');
+    const nextMode = o.nextMode || 'none';
+    const prevMode = o.prevMode || nextMode;
+    // Starting a search (or flipping to Best match) begins at the best match.
+    if (nextMode === 'best' && prevMode !== 'best') return top('search-start');
+    const anchor = o.anchor;
+    if (!anchor || anchor.id == null) return top('no-anchor');
+    // Leaving a search shows the clip you were on among what you copied around
+    // then, even if you never scrolled; otherwise an unscrolled list stays at
+    // the top (so new clips and the best match show).
+    const leaving = !!o.cleared || (prevMode === 'best' && nextMode === 'none');
+    if (anchor.atTop && !leaving) return top('at-top');
+    const offset = Number(anchor.offset) || 0;
+    const kept = ids.indexOf(anchor.id);
+    if (kept >= 0) return { index: kept, offset, reason: 'kept' };
+    // The clip dropped out. A ranked list has no "nearby": go to the top. A
+    // time-ordered list goes to the clip copied closest in time.
+    if (nextMode === 'best' || typeof o.tsAt !== 'function' || !Number.isFinite(Number(anchor.ts))) return top('dropped');
+    const ts = Number(anchor.ts);
+    let best = 0;
+    let bestDiff = Infinity;
+    for (let i = 0; i < ids.length; i += 1) {
+      const diff = Math.abs((Number(o.tsAt(i)) || 0) - ts);
+      if (diff < bestDiff) { bestDiff = diff; best = i; }
+    }
+    return { index: best, offset, reason: 'nearest' };
+  }
+
+  // createClipList: the ONE list both popups render through. It renders a
+  // window of rows [start, end) around the place being kept and grows it in both
+  // directions as you scroll, so keeping a clip 6,000 rows deep costs no more
+  // than a normal rebuild. Every rebuild captures the anchor, resolves it with
+  // resolveListAnchor and puts that row back at the same pixel offset; the
+  // "Newest" pill takes you back to the top.
+  //   opts: { listEl, newestEl, barEl, renderRow(index, id) -> Element|html,
+  //           controller (optional, or setController later), onRendered(), batch }
+  function createClipList(opts) {
+    const o = opts || {};
+    const listEl = o.listEl;
+    const newestEl = o.newestEl || null;
+    const batch = o.batch || 30;
+    let controller = o.controller || null;
+    let ids = [];
+    let tsAt = () => 0;
+    let start = 0;
+    let end = 0;
+    let mode = null;
+    let queryKey = null;     // null = never rendered
+    let emptyHtml = '';
+    let newestTs = null;
+    let hasNew = false;
+    let lastAnchor = null;   // last anchor seen while laid out (used while hidden)
+    let pendingPlace = null; // { id, offset } to apply once the list is laid out
+    let snapshotTimer = null;
+    const resizeHooks = [];
+
+    const laidOut = () => !!listEl && listEl.clientHeight > 0;
+    const notifyRendered = () => { if (o.onRendered) o.onRendered(); };
+    function toEl(row) {
+      if (row && typeof row !== 'string') return row;
+      const t = document.createElement('template');
+      t.innerHTML = String(row || '').trim();
+      return t.content.firstElementChild || document.createElement('div');
+    }
+    function build(from, to) {
+      const frag = document.createDocumentFragment();
+      for (let i = from; i < to; i += 1) frag.appendChild(toEl(o.renderRow(i, ids[i])));
+      return frag;
+    }
+    function rowFor(id) {
+      if (id == null || !listEl) return null;
+      return listEl.querySelector(`:scope > [data-id="${String(id).replace(/["\\]/g, '\\$&')}"]`);
+    }
+    // The rendered row under client-y (first row whose bottom is below y).
+    function rowAtY(y) {
+      const rows = listEl.children;
+      let lo = 0;
+      let hi = rows.length - 1;
+      let found = null;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        if (rows[mid].getBoundingClientRect().bottom <= y) lo = mid + 1;
+        else { found = rows[mid]; hi = mid - 1; }
+      }
+      return found && found.dataset && found.dataset.id != null ? found : null;
+    }
+    // Chromium's native scroll anchoring must not adjust on top of our own exact
+    // placement; it stays on for everything else (late image loads, etc.).
+    function withAnchoringOff(fn) {
+      const prev = listEl.style.overflowAnchor;
+      listEl.style.overflowAnchor = 'none';
+      try { return fn(); } finally { listEl.style.overflowAnchor = prev; }
+    }
+    function place(el, offset) {
+      if (!el) return;
+      listEl.scrollTop += (el.getBoundingClientRect().top - listEl.getBoundingClientRect().top) - offset;
+    }
+    function appendRows(count) {
+      if (end >= ids.length) return false;
+      const to = Math.min(ids.length, end + Math.max(1, count || batch));
+      listEl.appendChild(build(end, to));
+      end = to;
+      return true;
+    }
+    function prependRows(count) {
+      if (start <= 0) return false;
+      const from = Math.max(0, start - Math.max(1, count || batch));
+      const ref = listEl.firstElementChild;
+      const before = ref && laidOut() ? ref.getBoundingClientRect().top : null;
+      listEl.insertBefore(build(from, start), listEl.firstChild);
+      start = from;
+      if (ref && before != null) {
+        const delta = ref.getBoundingClientRect().top - before;
+        if (Math.abs(delta) > 0.5) listEl.scrollTop += delta;
+      }
+      return true;
+    }
+    // Keep a screenful of rows rendered below AND above the viewport, so the
+    // scrollbar never bottoms out on a partial window (wheeling up at
+    // scrollTop 0 fires no scroll event to load more).
+    function fill() {
+      if (!laidOut() || !ids.length) return;
+      const h = listEl.clientHeight;
+      let guard = 0;
+      while (end < ids.length && listEl.scrollHeight - listEl.scrollTop - h < h && guard++ < 100) appendRows(batch);
+      while (start > 0 && listEl.scrollTop < h && guard++ < 200) prependRows(batch);
+    }
+    function anchorOf(el, offset, isCursor) {
+      const id = el.dataset.id;
+      const index = ids.indexOf(id);
+      return { id, offset, ts: index >= 0 ? tsAt(index) : null, isCursor, atTop: false };
+    }
+    function capture() {
+      if (!ids.length) return null;
+      if (!laidOut()) return lastAnchor;
+      const listTop = listEl.getBoundingClientRect().top;
+      const listBottom = listTop + listEl.clientHeight;
+      const cursorId = controller && controller.focusedId ? controller.focusedId() : null;
+      const cursorEl = rowFor(cursorId);
+      if (cursorEl) {
+        const r = cursorEl.getBoundingClientRect();
+        if (r.bottom > listTop + 1 && r.top < listBottom - 1) return anchorOf(cursorEl, r.top - listTop, true);
+      }
+      const el = rowAtY(listTop + 1);
+      if (!el) return null;
+      const anchor = anchorOf(el, el.getBoundingClientRect().top - listTop, false);
+      anchor.atTop = start === 0 && listEl.scrollTop <= 1;
+      return anchor;
+    }
+    function renderAt(index, offset) {
+      withAnchoringOff(() => {
+        listEl.textContent = '';
+        pendingPlace = null;
+        if (!ids.length) {
+          start = 0; end = 0;
+          if (emptyHtml) listEl.innerHTML = emptyHtml;
+          listEl.scrollTop = 0;
+          return;
+        }
+        if (index < 0 || index >= ids.length) {
+          start = 0; end = 0;
+          appendRows(batch);
+          listEl.scrollTop = 0;
+          fill();
+          return;
+        }
+        start = Math.max(0, index - batch);
+        end = start;
+        appendRows(Math.min(ids.length, index + batch) - start);
+        const el = listEl.children[index - start];
+        if (!laidOut()) { pendingPlace = { id: ids[index], offset }; return; }
+        place(el, offset);
+        fill();
+        place(el, offset);
+      });
+    }
+    function updatePill() {
+      if (!newestEl) return;
+      const away = ids.length > 0 && (start > 0 || listEl.scrollTop > (hasNew ? 1 : 48));
+      if (!away) hasNew = false;
+      newestEl.classList.toggle('show', away);
+      newestEl.classList.toggle('has-new', away && hasNew);
+      const best = mode === 'best';
+      const label = newestEl.querySelector('.list-newest-label');
+      if (label) label.textContent = best ? 'Top' : 'Newest';
+      const title = best ? 'Back to the best match' : (hasNew ? 'New clips above - jump to the newest' : 'Jump to the newest clip');
+      newestEl.title = title;
+      newestEl.setAttribute('aria-label', title);
+    }
+    function scheduleSnapshot() {
+      clearTimeout(snapshotTimer);
+      snapshotTimer = setTimeout(() => { if (laidOut()) lastAnchor = capture(); }, 150);
+    }
+
+    // Rebuild for a new result set. next: { ids, tsAt, mode (Search.rankMode),
+    // queryKey (the query text), emptyHtml }. A changed query/mode only keeps
+    // the cursor if it was the on-screen anchor and stayed put; a background
+    // rebuild (same query) keeps it whenever it is still in the results.
+    function update(next) {
+      const n = next || {};
+      const nextIds = n.ids || [];
+      const nextMode = n.mode || 'none';
+      const nextKey = n.queryKey != null ? String(n.queryKey) : '';
+      const firstRender = queryKey === null;
+      const queryChanged = !firstRender && (nextKey !== queryKey || nextMode !== mode);
+      const cleared = !firstRender && queryKey.trim() !== '' && nextKey.trim() === '';
+      const anchor = firstRender ? null : capture();
+      const resolved = resolveListAnchor({ ids: nextIds, tsAt: n.tsAt, anchor, prevMode: mode || nextMode, nextMode, cleared });
+      // A newer clip than any seen while the place is kept below it -> dot on
+      // the pill. Time-ordered lists are newest-first, so index 0 is newest.
+      if (nextMode !== 'best' && nextIds.length && typeof n.tsAt === 'function') {
+        const topTs = Number(n.tsAt(0)) || 0;
+        if (newestTs !== null && topTs > newestTs && resolved.index >= 0 && !queryChanged) hasNew = true;
+        newestTs = newestTs === null ? topTs : Math.max(newestTs, topTs);
+      }
+      ids = nextIds;
+      tsAt = typeof n.tsAt === 'function' ? n.tsAt : () => 0;
+      mode = nextMode;
+      queryKey = nextKey;
+      if (n.emptyHtml != null) emptyHtml = n.emptyHtml;
+      renderAt(resolved.index, resolved.offset);
+      if (controller && controller.reconcileVisible) {
+        controller.reconcileVisible({ keepCursor: !queryChanged || !!(anchor && anchor.isCursor && resolved.reason === 'kept') });
+        controller.repaintSelection({ scroll: false });
+      }
+      if (laidOut()) lastAnchor = capture();
+      updatePill();
+      notifyRendered();
+      return { ...resolved, anchor };
+    }
+    function scrollToTop() {
+      hasNew = false;
+      if (start > 0) renderAt(-1, 0);
+      else listEl.scrollTop = 0;
+      lastAnchor = null;
+      updatePill();
+      notifyRendered();
+    }
+    // Make sure `id`'s row is rendered (keyboard nav into the unrendered part).
+    function ensureRendered(id) {
+      const existing = rowFor(id);
+      if (existing) return existing;
+      const index = ids.indexOf(id);
+      if (index < 0) return null;
+      if (index >= end && index - end <= batch * 3) { while (end <= index && appendRows(batch)); }
+      else if (index < start && start - index <= batch * 3) { while (start > index && prependRows(batch)); }
+      else renderAt(index, 0);
+      notifyRendered();
+      return rowFor(id);
+    }
+    // The controller's renderSelection hook: paint focus/checked rows + the
+    // selection bar; a scrolling paint (keyboard nav) first renders the row.
+    function paintSelection(state, paintOpts) {
+      const p = paintOpts || {};
+      if (p.scroll !== false && state && state.focusId) ensureRendered(state.focusId);
+      applySelectionUI({ listEl, barEl: o.barEl, state, scroll: p.scroll });
+    }
+    function firstVisibleId() {
+      if (!laidOut()) return null;
+      const el = rowAtY(listEl.getBoundingClientRect().top + 1);
+      return el ? el.dataset.id : null;
+    }
+
+    if (listEl) {
+      listEl.addEventListener('scroll', () => {
+        if (!ids.length) return;
+        const h = listEl.clientHeight;
+        let grew = false;
+        if (end < ids.length && listEl.scrollHeight - listEl.scrollTop - h < h) grew = appendRows(batch) || grew;
+        if (start > 0 && listEl.scrollTop < h) grew = prependRows(batch) || grew;
+        if (grew) notifyRendered();
+        updatePill();
+        scheduleSnapshot();
+      }, { passive: true });
+      if (typeof ResizeObserver === 'function') {
+        new ResizeObserver(() => {
+          if (!laidOut()) return;
+          if (pendingPlace) {
+            const p = pendingPlace;
+            pendingPlace = null;
+            withAnchoringOff(() => { const el = rowFor(p.id); place(el, p.offset); fill(); place(el, p.offset); });
+          } else fill();
+          updatePill();
+          resizeHooks.forEach((fn) => { try { fn(); } catch {} });
+        }).observe(listEl);
+      }
+    }
+    if (newestEl) {
+      newestEl.addEventListener('mousedown', (e) => e.preventDefault()); // keep focus in the search box
+      newestEl.addEventListener('click', (e) => { e.stopPropagation(); scrollToTop(); });
+    }
+    return {
+      listEl,
+      update,
+      capture,
+      scrollToTop,
+      ensureRendered,
+      paintSelection,
+      firstVisibleId,
+      rowAtY,
+      fill,
+      withAnchoringOff,
+      onResize: (fn) => { if (typeof fn === 'function') resizeHooks.push(fn); },
+      setController: (c) => { controller = c; },
+      ids: () => ids,
+      window: () => ({ start, end }),
+    };
+  }
+
+  // Image preview zoom: ONE value (px height, persisted by the host) applied as
+  // --clip-img-h on the popup root. Ctrl+wheel anywhere over the popup or
+  // Ctrl+= / Ctrl+- / Ctrl+0 resize every preview (and never zoom the page);
+  // the row under the pointer (keys: the cursor row, else the top row) stays
+  // where it is. --clip-img-cap keeps one preview inside the visible list.
+  const IMAGE_ZOOM = { min: 40, max: 600, def: 60, wheelStep: 1.15, keyStep: 1.25 };
+  function clampImageHeight(px) {
+    const n = Number(px);
+    if (px === '' || px == null || !Number.isFinite(n)) return IMAGE_ZOOM.def;
+    return Math.min(IMAGE_ZOOM.max, Math.max(IMAGE_ZOOM.min, n));
+  }
+  function imageZoomKey(e) {
+    if (!e || !(e.ctrlKey || e.metaKey) || e.altKey) return null;
+    const k = e.key;
+    const c = e.code;
+    if (k === '=' || k === '+' || c === 'Equal' || c === 'NumpadAdd') return 'in';
+    if (k === '-' || k === '_' || c === 'Minus' || c === 'NumpadSubtract') return 'out';
+    if (k === '0' || c === 'Digit0' || c === 'Numpad0') return 'reset';
+    return null;
+  }
+  //   opts: { root, clipList, initial, save(px), toast(msg) }
+  function createImageZoom(opts) {
+    const o = opts || {};
+    const root = o.root;
+    const list = o.clipList || null;
+    const listEl = list ? list.listEl : null;
+    let exact = clampImageHeight(o.initial == null ? IMAGE_ZOOM.def : o.initial);
+    let saveTimer = null;
+    let inputEl = null;
+    const value = () => Math.round(exact);
+    function applyCss() {
+      if (root) root.style.setProperty('--clip-img-h', `${+exact.toFixed(2)}px`);
+    }
+    function applyCap() {
+      if (root && listEl && listEl.clientHeight) root.style.setProperty('--clip-img-cap', `${Math.max(IMAGE_ZOOM.min, listEl.clientHeight - 40)}px`);
+    }
+    // Keep the point at client-y inside its row fixed across the resize.
+    function holdRowAt(y) {
+      if (!list || !listEl || !listEl.clientHeight) return null;
+      const rect = listEl.getBoundingClientRect();
+      const at = Math.min(rect.bottom - 1, Math.max(rect.top + 1, y));
+      const el = list.rowAtY(at);
+      if (!el) return null;
+      const r = el.getBoundingClientRect();
+      const frac = r.height ? Math.min(1, Math.max(0, (at - r.top) / r.height)) : 0;
+      return () => {
+        const n = el.getBoundingClientRect();
+        listEl.scrollTop += (n.top + frac * n.height) - at;
+      };
+    }
+    function set(px, setOpts) {
+      const so = setOpts || {};
+      const apply = () => {
+        const restore = so.anchorY != null ? holdRowAt(so.anchorY) : null;
+        exact = clampImageHeight(px);
+        applyCss();
+        if (restore) restore();
+        if (list) list.fill();
+      };
+      if (list) list.withAnchoringOff(apply); else apply();
+      if (inputEl && (typeof document === 'undefined' || document.activeElement !== inputEl)) inputEl.value = String(value());
+      if (!so.silent && o.toast) o.toast(`Image previews: ${value()}px`);
+      if (so.save !== false && o.save) {
+        clearTimeout(saveTimer);
+        const v = value();
+        saveTimer = setTimeout(() => o.save(v), 400);
+      }
+      return value();
+    }
+    function onWheel(e) {
+      if (!e || !(e.ctrlKey || e.metaKey)) return false;
+      e.preventDefault(); // never the page zoom
+      const dy = e.deltaMode === 1 ? e.deltaY * 33 : e.deltaMode === 2 ? e.deltaY * 400 : e.deltaY;
+      if (dy) set(exact * Math.pow(IMAGE_ZOOM.wheelStep, -dy / 100), { anchorY: e.clientY });
+      return true;
+    }
+    function onKeydown(e) {
+      const act = imageZoomKey(e);
+      if (!act) return false;
+      e.preventDefault(); // never the page zoom
+      let y = listEl ? listEl.getBoundingClientRect().top + 1 : 0;
+      const cursor = listEl && listEl.querySelector(':scope > .item.selected');
+      if (cursor) {
+        const r = cursor.getBoundingClientRect();
+        const lr = listEl.getBoundingClientRect();
+        if (r.bottom > lr.top && r.top < lr.bottom) y = Math.max(lr.top + 1, r.top + 1);
+      }
+      const next = act === 'reset' ? IMAGE_ZOOM.def : exact * (act === 'in' ? IMAGE_ZOOM.keyStep : 1 / IMAGE_ZOOM.keyStep);
+      set(next, { anchorY: y });
+      return true;
+    }
+    // The Settings row: number input (live while typing a valid value, clamped
+    // on commit) + a reset button.
+    function bindInput(input, resetBtn) {
+      inputEl = input || null;
+      if (input) {
+        input.value = String(value());
+        input.oninput = () => {
+          const n = Number(input.value);
+          if (input.value !== '' && n >= IMAGE_ZOOM.min && n <= IMAGE_ZOOM.max) set(n, { silent: true });
+        };
+        input.onchange = () => { set(input.value, { silent: true }); input.value = String(value()); };
+      }
+      if (resetBtn) resetBtn.onclick = () => { set(IMAGE_ZOOM.def, { silent: true }); if (input) input.value = String(value()); };
+    }
+    applyCss();
+    applyCap();
+    if (list) list.onResize(applyCap);
+    return {
+      get: value,
+      set,
+      // A value loaded from settings: apply without a toast or a save.
+      load: (px) => set(px, { silent: true, save: false }),
+      onWheel,
+      onKeydown,
+      bindInput,
+    };
+  }
+
   function createClipController(adapter) {
     const a = adapter || {};
     const dialogs = a.dialogs || createDialogs(a.dialogHost);
@@ -1516,7 +1978,9 @@
       for (const id of selectedIds) { if (itemIsImage(id)) { hasImage = true; break; } }
       return { count: selectedIds.size, ids: [...selectedIds], selectedIds, focusId, anchorId, hasImage };
     }
-    function paintSelection() { if (a.renderSelection) a.renderSelection(selectionInfo()); }
+    // opts.scroll === false: a repaint after a list rebuild, which must not move
+    // the kept scroll place to chase the cursor.
+    function paintSelection(opts) { if (a.renderSelection) a.renderSelection(selectionInfo(), opts || {}); }
     function clearSelection({ paint = true } = {}) {
       const had = selectedIds.size || focusId != null;
       selectedIds.clear();
@@ -1524,6 +1988,22 @@
       focusId = null;
       if (paint) paintSelection();
       return had;
+    }
+    // The query is changing: a multi-selection would let a bulk action hit
+    // clips the new results hide, so it goes; the cursor waits for the rebuild
+    // (reconcileVisible), which keeps it only if it stays on screen.
+    function onQueryChange() {
+      selectedIds.clear();
+      anchorId = null;
+    }
+    // After a rebuild: drop selection/cursor ids the list no longer shows; a
+    // changed query keeps the cursor only when keepCursor (the list decides).
+    function reconcileVisible({ keepCursor = true } = {}) {
+      if (!selectedIds.size && focusId == null && anchorId == null) return;
+      const visible = new Set(visibleIds());
+      for (const id of [...selectedIds]) if (!visible.has(id)) selectedIds.delete(id);
+      if (anchorId != null && !visible.has(anchorId)) anchorId = null;
+      if (focusId != null && (!keepCursor || !visible.has(focusId))) focusId = null;
     }
     function toggleSelect(id) {
       if (!id) return;
@@ -1563,7 +2043,12 @@
       const ids = visibleIds();
       if (!ids.length) return;
       const idx = focusId != null ? ids.indexOf(focusId) : -1;
-      const next = idx < 0 ? (dir > 0 ? 0 : ids.length - 1) : Math.max(0, Math.min(idx + dir, ids.length - 1));
+      // No cursor yet: start on the first row on screen (keeps a scrolled place),
+      // else the top (Down) / bottom (Up) as before.
+      const onScreen = idx < 0 && a.firstVisibleId ? ids.indexOf(a.firstVisibleId()) : -1;
+      const next = idx < 0
+        ? (onScreen >= 0 ? onScreen : (dir > 0 ? 0 : ids.length - 1))
+        : Math.max(0, Math.min(idx + dir, ids.length - 1));
       const nextId = ids[next];
       if (extend) {
         if (anchorId == null) anchorId = focusId != null ? focusId : nextId;
@@ -1872,7 +2357,16 @@
       }
       return false;
     }
+    // Ctrl+wheel resizes image previews (never the page); hosts bind this on
+    // the whole popup with { passive: false }.
+    function onWheel(event) {
+      if (!a.imageZoom) return false;
+      return a.imageZoom.onWheel(event);
+    }
     async function onKeydown(event) {
+      // Ctrl+= / Ctrl+- / Ctrl+0 size image previews, even under a dialog: the
+      // page itself must never zoom.
+      if (a.imageZoom && a.imageZoom.onKeydown(event)) return;
       if (dialogs.isOpen() || menu.isOpen()) return; // dialogs/menu own their keys
       const mod = event.metaKey || event.ctrlKey;
       if (event.key === 'Escape') {
@@ -1926,6 +2420,7 @@
       onAuxclick,
       onContextmenu,
       onKeydown,
+      onWheel,
       deleteGroup,
       tryAssignNumpad,
       addGroup,
@@ -1941,6 +2436,8 @@
       toggle: toggleSelect,
       selectRange,
       repaintSelection: paintSelection,
+      onQueryChange,
+      reconcileVisible,
       openClipMenu: openClipMenuAt, // standalone editor/viewer windows open the same menu
       openGroupPicker: openGroupPickerAt, // title-bar strip's + popover (same picker as the menu submenu)
       closeMenu: () => menu.close(), // popup hide/reset must not leave a stale popover
@@ -2047,7 +2544,10 @@
       </div>
       <div class="bc-editor-foot">
         <span data-x="stats"></span>
-        <span class="bc-editor-hint">Saved automatically</span>
+        <span class="bc-editor-foot-end">
+          ${o.clipboard ? '<span class="bc-editor-clip" data-x="clip"></span>' : ''}
+          <span class="bc-editor-hint">Saved automatically</span>
+        </span>
       </div>`;
     const q = (name) => root.querySelector(`[data-x="${name}"]`);
     const area = root.querySelector('.bc-editor-area');
@@ -2094,6 +2594,47 @@
       if (idleTimer) clearTimeout(idleTimer);
       idleTimer = setTimeout(commit, idleMs);
     }
+    // Clipboard follow status (opt-in via o.clipboard = { following, onCopy }).
+    // The host keeps the clipboard in step with the note while it holds the
+    // note; the footer says so, or offers Copy to start it.
+    const clipEl = q('clip');
+    let clipNoticeTimer = null;
+    function setClipboardState(state) {
+      if (!clipEl) return;
+      const s = state || {};
+      clearTimeout(clipNoticeTimer);
+      if (s.event === 'stopped' && !s.following) {
+        clipEl.className = 'bc-editor-clip notice';
+        clipEl.removeAttribute('title');
+        clipEl.textContent = 'Clipboard changed elsewhere';
+        clipNoticeTimer = setTimeout(() => setClipboardState({ following: false }), 2500);
+        return;
+      }
+      if (s.following) {
+        clipEl.className = 'bc-editor-clip on';
+        clipEl.title = 'The clipboard holds this note, so every save updates it. Copying something else stops this.';
+        clipEl.innerHTML = '<span class="mi sm">content_paste</span><span>On clipboard - edits update it</span>';
+      } else {
+        clipEl.className = 'bc-editor-clip';
+        clipEl.removeAttribute('title');
+        clipEl.innerHTML = '<button class="bc-editor-copy" type="button" data-x="copy" title="Copy this note. While it stays on the clipboard, your edits keep it up to date."><span class="mi sm">content_copy</span>Copy</button>';
+      }
+    }
+    if (clipEl) {
+      setClipboardState({ following: !!o.clipboard.following });
+      clipEl.addEventListener('click', async (e) => {
+        if (!e.target.closest('[data-x="copy"]') || !o.clipboard.onCopy) return;
+        commit();
+        try { setClipboardState(await o.clipboard.onCopy(payload())); } catch {}
+      });
+    }
+    // Save the moment the editor loses focus (the user switching to the app
+    // they will paste into), not just after the idle pause.
+    function onWindowBlur() {
+      if (!root.isConnected) { window.removeEventListener('blur', onWindowBlur); return; }
+      commit();
+    }
+    if (o.commitOnBlur !== false) window.addEventListener('blur', onWindowBlur);
     function insertAtCursor(s) {
       const start = area.selectionStart;
       const end = area.selectionEnd;
@@ -2257,6 +2798,7 @@
       // removable chips + a "+" opening the group picker. Host calls this after
       // init and after every mutation/commit (the clip id is content-addressed).
       setTags: (item, tagOpts) => updateTagStrip(q('tags'), item, tagOpts),
+      setClipboardState,
       commit,
       focus: () => area.focus(),
       focusTitle: () => { showTitleInput(); titleInput.focus(); titleInput.select(); },
@@ -3114,6 +3656,12 @@
     createVariantSwitcher,
     setActiveVariantSeg,
     createDialogs,
+    resolveListAnchor,
+    createClipList,
+    IMAGE_ZOOM,
+    clampImageHeight,
+    imageZoomKey,
+    createImageZoom,
     createClipController,
     findAllMatches,
     countWords,

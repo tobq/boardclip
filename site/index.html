@@ -288,7 +288,7 @@
         title: !isImage && index % 9 === 0 ? ["Release note", "Support reply", "API reminder"][index % 3] : undefined,
         text: isImage && !/png|screenshot|image/i.test(text) ? `Image clip: product-mockup-${String(index + 1).padStart(2, "0")}.png` : text,
         imageSrc: example.image || (isImage ? DEMO_SHOTS[index % DEMO_SHOTS.length] : null),
-        width: isImage ? 150 : undefined,
+        width: isImage ? 240 : undefined, // the demo-shot SVGs are 240x86
         height: isImage ? 86 : undefined,
         pin: hasPin ? pin : null,
         type: isImage ? "image" : "text",
@@ -388,6 +388,23 @@
       document.getElementById(`${kind}-title`).textContent = osLabels[os];
     }
 
+    // Rows render through the SAME shared list as the app (Core.createClipList,
+    // created below): it keeps your place across every rebuild.
+    let visibleRows = [];
+    let rowNumpadMap = {};
+    function renderClipRow(clip) {
+      const sel = controller ? controller.selection() : null;
+      return Core.renderClipItem(clip, {
+        selected: !!(sel && sel.focusId === Core.itemId(clip)),
+        multiSelected: !!(sel && sel.selectedIds.has(Core.itemId(clip))),
+        imageSrc: item => item.imageSrc,
+        previewText: item => Core.collapsedPreviewText(item.text || "", state.query, state.regex),
+        highlight: text => Core.highlight(text, state.query, state.regex),
+        highlightTitle: text => Core.highlight(text, state.query, state.regex),
+        pickerHtml: Core.renderItemPicker(clip, { items: clips, groups: labels, numpadMap: rowNumpadMap }),
+        actionsHtml: Core.renderClipActions(clip),
+      });
+    }
     function renderClips() {
       const visible = Core.filterItems(clips, state);
       clipCount.textContent = Core.itemCountLabel(clips.length, visible.length, state);
@@ -395,20 +412,15 @@
       updateDemoSortButton(); // defined below; renderClips first runs at the bottom of this script
       renderFilterChips();
       renderDemoSettings();
-      const nmap = Core.numpadMap(clips);
-      const sel = controller ? controller.selection() : null;
-      clipList.innerHTML = visible.map((clip) => Core.renderClipItem(clip, {
-        selected: !!(sel && sel.focusId === Core.itemId(clip)),
-        multiSelected: !!(sel && sel.selectedIds.has(Core.itemId(clip))),
-        imageSrc: item => item.imageSrc,
-        previewText: item => Core.collapsedPreviewText(item.text || "", state.query, state.regex),
-        highlight: text => Core.highlight(text, state.query, state.regex),
-        highlightTitle: text => Core.highlight(text, state.query, state.regex),
-        pickerHtml: Core.renderItemPicker(clip, { items: clips, groups: labels, numpadMap: nmap }),
-        actionsHtml: Core.renderClipActions(clip),
-      })).join("") || `<div class="empty">No clips found. Try a different search.</div>`;
-      if (controller) controller.repaintSelection();
-      scheduleRelativeTimeRefresh();
+      rowNumpadMap = Core.numpadMap(clips);
+      visibleRows = visible;
+      demoList.update({
+        ids: visible.map((clip) => Core.itemId(clip)),
+        tsAt: (i) => Number(visible[i] && visible[i].ts) || 0,
+        mode: Core.search.rankMode(Core.search.parseQuery(state.query), state.sortMode),
+        queryKey: state.query,
+        emptyHtml: `<div class="empty">No clips found. Try a different search.</div>`,
+      });
     }
 
     function renderDemoSettings() {
@@ -455,6 +467,7 @@
       document.getElementById("autoLaunch").checked = true;
       document.getElementById("maxAge").value = 30;
       document.getElementById("maxSize").value = 1.0;
+      demoZoom.bindInput(document.getElementById("imagePreviewHeight"), document.getElementById("imagePreviewHeightReset"));
       document.getElementById("shortcutRecord").textContent = `${mod} + Shift + V`;
       document.getElementById("quickPasteRecord").textContent = `${mod} + Shift + B`;
       const providers = [
@@ -639,6 +652,7 @@
       state.query = "";        // clears content AND facet tokens (both live in the query)
       state.sortMode = null;
       if (typeof demoSearchBox !== "undefined" && demoSearchBox) demoSearchBox.refresh();
+      controller.onQueryChange();
       updateClearControls();
       renderClips();
     }
@@ -724,7 +738,6 @@
     // uses, via an adapter backed by the in-memory clips + browser APIs. Click
     // routing, confirm/prompt dialogs, numpad-replace, add-group and keyboard nav
     // therefore behave identically to the app and cannot drift.
-    function visibleClips() { return Core.filterItems(clips, state); }
     function stripGroupFromClips(group) {
       clips = clips.map((clip) => {
         if (!clip.pin || !Array.isArray(clip.pin.groups)) return clip;
@@ -756,6 +769,7 @@
         search.value = state.query;
         if (typeof demoSearchBox !== "undefined" && demoSearchBox) demoSearchBox.refresh();
         updateClearControls();
+        controller.onQueryChange();
       },
       clearFilters: () => clearSearchAndFilters(),
       focusSearch: () => search.focus(),
@@ -815,10 +829,11 @@
       closeSettings: () => closeDemoSettings(),
       hidePopup: () => {},
       // --- Multi-select contract (selection state lives in the controller) ---
-      visibleIds: () => visibleClips().map((clip) => Core.itemId(clip)),
+      visibleIds: () => demoList.ids(),
+      firstVisibleId: () => demoList.firstVisibleId(),
       allItems: () => clips,
       groupNames: () => labels,
-      renderSelection: (selState) => Core.applySelectionUI({ listEl: clipList, barEl: document.getElementById("selectionBar"), state: selState }),
+      renderSelection: (selState, opts) => demoList.paintSelection(selState, opts),
       deleteClips: (ids) => {
         const set = new Set(ids);
         const snaps = clips.filter((clip) => set.has(Core.itemId(clip))).map((clip) => ({ ...clip }));
@@ -864,6 +879,27 @@
       refresh: () => { renderClips(); refreshDemoEditorTags(); },
     };
     const controller = Core.createClipController(demoAdapter);
+    const demoList = Core.createClipList({
+      listEl: clipList,
+      newestEl: document.getElementById("listNewest"),
+      barEl: document.getElementById("selectionBar"),
+      renderRow: (i) => renderClipRow(visibleRows[i]),
+      controller,
+      onRendered: () => scheduleRelativeTimeRefresh(),
+    });
+    // Image preview height (Ctrl+wheel / Ctrl+=/-/0 / the Settings row), kept
+    // per visitor in localStorage like the demo's other display choices.
+    const DEMO_IMAGE_HEIGHT_KEY = "boardclip-demo-image-height";
+    let demoImageHeight = null;
+    try { demoImageHeight = localStorage.getItem(DEMO_IMAGE_HEIGHT_KEY); } catch {}
+    const demoZoom = Core.createImageZoom({
+      root: demoWindowEl,
+      clipList: demoList,
+      initial: demoImageHeight == null ? undefined : Number(demoImageHeight),
+      save: (px) => { try { localStorage.setItem(DEMO_IMAGE_HEIGHT_KEY, String(px)); } catch {} },
+      toast: (msg) => showToast(msg),
+    });
+    demoAdapter.imageZoom = demoZoom;
 
     // One delegated click + contextmenu binding for the WHOLE popup window (list,
     // filters, settings, AND the popover menu which mounts inside the window),
@@ -874,16 +910,17 @@
     demoWindowEl.addEventListener("mouseup", (event) => controller.onMouseup(event));
     demoWindowEl.addEventListener("auxclick", (event) => controller.onAuxclick(event));
     demoWindowEl.addEventListener("contextmenu", (event) => controller.onContextmenu(event));
+    demoWindowEl.addEventListener("wheel", (event) => controller.onWheel(event), { passive: false });
 
     // Live syntax highlighting + autocomplete (shared helper) — same as the app popup.
     const demoSearchBox = Core.attachSearchBox(search, {
       getRegex: () => state.regex,
       getGroups: () => labels,
-      onChange: (v) => { state.query = v; controller.clearSelection({ paint: false }); renderClips(); },
+      onChange: (v) => { state.query = v; controller.onQueryChange(); renderClips(); },
     });
     search.addEventListener("input", () => {
       state.query = search.value;
-      controller.clearSelection({ paint: false });
+      controller.onQueryChange();
       renderClips();
     });
     clearSearch.addEventListener("click", () => {
@@ -1077,6 +1114,7 @@
       search.value = queries[Math.floor(Math.random() * queries.length)];
       state.query = search.value;
       if (typeof demoSearchBox !== "undefined" && demoSearchBox) demoSearchBox.refresh();
+      controller.onQueryChange();
       renderClips();
       search.focus();
     });

@@ -47,8 +47,7 @@ const searchEl = document.getElementById('search');
 const countEl = document.getElementById('count');
 const regexBtn = document.getElementById('regexBtn');
 let toastTimer, items = [], query = '', regexOn = false;
-const BATCH = 30;
-let rendered = 0, filtered = [];
+let filtered = [];
 let groups = [];
 // The search box TEXT is the single source of truth. Facets (group:/is:/num:/since:…) live
 // as tokens inside `query`; the chip bar's active/excluded state is DERIVED from it. No
@@ -132,6 +131,7 @@ if (window.api.getSettings) window.api.getSettings().then(s => {
   if (!s) return;
   if (s.theme_mode) setThemeMode(s.theme_mode);
   applyAppearance(s);
+  if (s.image_preview_height != null) imageZoom.load(s.image_preview_height);
 }).catch(() => {});
 if (window.api.onSurfaceChanged) window.api.onSurfaceChanged((style) => document.documentElement.setAttribute('data-surface', style === 'solid' ? 'solid' : 'glass'));
 
@@ -201,15 +201,23 @@ function renderGroupFilters() {
   recordRendererPerf('filters.render_bar', startedAt, { groups: groups.length }, 40);
 }
 
+// The shared list keeps your place across every rebuild (Core.createClipList +
+// the resolveListAnchor rules): typing, clearing, a sort flip, a new clip.
 function applyFilter() {
   const startedAt = performance.now();
   filtered = Core.filterItemIndexes(items, { query, regex: regexOn, searchTexts, searchTextLower, sortMode });
-  rendered = 0;
-  listEl.innerHTML = '';
-  loadBatch();
-  if (!filtered.length) listEl.innerHTML = `<div class="empty">${query ? 'No matches' : 'Copy something to get started'}</div>`;
-  recordRendererPerf('list.apply_filter', startedAt, { rendered, regex: regexOn }, 60);
+  const rows = filtered;
+  const rowItems = items;
+  clipList.update({
+    ids: rows.map(ri => itemId(rowItems[ri])),
+    tsAt: (i) => Number(rowItems[rows[i]] && rowItems[rows[i]].ts) || 0,
+    mode: Core.search.rankMode(parsedQuery(), sortMode),
+    queryKey: query,
+    emptyHtml: `<div class="empty">${query ? 'No matches' : 'Copy something to get started'}</div>`,
+  });
+  recordRendererPerf('list.apply_filter', startedAt, { rendered: renderedCount(), regex: regexOn }, 60);
 }
+function renderedCount() { const w = clipList.window(); return w.end - w.start; }
 
 let rerenderFrame = null;
 function rerenderList() {
@@ -222,9 +230,7 @@ function rerenderList() {
   applyFilter();
   updateCount();
   updateSortButton(); // keeps the Best⇄Recent toggle in step with the query
-  if (controller) controller.repaintSelection(); // refresh the selection bar after a rebuild
-  scheduleRelativeTimeRefresh();
-  recordRendererPerf('list.rerender', startedAt, { rendered }, 90);
+  recordRendererPerf('list.rerender', startedAt, { rendered: renderedCount() }, 90);
 }
 
 function scheduleRerenderList() {
@@ -233,23 +239,6 @@ function scheduleRerenderList() {
     rerenderFrame = null;
     rerenderList();
   });
-}
-
-function loadBatch() {
-  const startedAt = performance.now();
-  const end = Math.min(rendered + BATCH, filtered.length);
-  const batch = end - rendered;
-  const nmap = numpadMap();
-  const frag = document.createDocumentFragment();
-  for (let fi = rendered; fi < end; fi++) {
-    const ri = filtered[fi];
-    const it = items[ri];
-    frag.appendChild(buildItem(it, ri, nmap));
-  }
-  listEl.appendChild(frag);
-  rendered = end;
-  scheduleRelativeTimeRefresh();
-  recordRendererPerf('list.load_batch', startedAt, { batch, rendered }, 60);
 }
 
 let relativeTimeTimer = null;
@@ -298,7 +287,7 @@ function clearSearchAndFilters() {
   query = '';        // clears content AND facet tokens (both live in the query)
   sortMode = null;
   if (typeof searchBox !== 'undefined' && searchBox) searchBox.refresh();
-  if (controller) controller.clearSelection({ paint: false });
+  if (controller) controller.onQueryChange();
   updateClearControls();
   rerenderList();
 }
@@ -306,14 +295,6 @@ function clearSearchAndFilters() {
 window.focusSearch = function() {
   searchEl.focus();
 };
-
-// --- Scroll-based lazy load ---
-listEl.addEventListener('scroll', () => {
-  if (rendered < filtered.length) {
-    const {scrollTop, scrollHeight, clientHeight} = listEl;
-    if (scrollTop + clientHeight > scrollHeight * 0.85) loadBatch();
-  }
-});
 
 // --- Shared interaction controller ---
 // The app drives the SAME Core.createClipController the website demo uses; the
@@ -335,7 +316,7 @@ const appAdapter = {
     searchEl.value = query;
     if (typeof searchBox !== 'undefined' && searchBox) searchBox.refresh();
     updateClearControls();
-    if (controller) controller.clearSelection({ paint: false });
+    if (controller) controller.onQueryChange();
   },
   clearFilters: () => clearSearchAndFilters(),
   focusSearch: () => searchEl.focus(),
@@ -373,19 +354,12 @@ const appAdapter = {
   closeSettings: () => closeSettings(),
   hidePopup: () => window.api.hidePopup(),
   // --- Multi-select contract (selection state lives in the controller) ---
-  visibleIds: () => filtered.map(ri => itemId(items[ri])),
+  visibleIds: () => clipList.ids(),
+  firstVisibleId: () => clipList.firstVisibleId(),
   allItems: () => items,
   groupNames: () => groups,
-  renderSelection: (state) => {
-    // The list is lazy-loaded; make sure the focused row is in the DOM so the
-    // shared painter can highlight + scroll to it.
-    if (state.focusId) {
-      const idx = filtered.findIndex(ri => itemId(items[ri]) === state.focusId);
-      let guard = 0;
-      while (idx >= 0 && idx >= rendered && rendered < filtered.length && guard++ < 1000) loadBatch();
-    }
-    Core.applySelectionUI({ listEl, barEl: document.getElementById('selectionBar'), state });
-  },
+  // The shared list renders the focused row on demand, then paints.
+  renderSelection: (state, opts) => clipList.paintSelection(state, opts),
   deleteClips: (ids) => revGuard(() => window.api.deleteItems(Core.revisionTargets(ids, clipRevOf)), []), // returns restorable snapshots
   restoreClips: (snaps) => window.api.restoreItems(snaps),  // re-adds + clears tombstones
   groupAssignMany: (ids, group, shouldHave) => revGuard(() => window.api.groupAssignMany(Core.revisionTargets(ids, clipRevOf), group, shouldHave), false),
@@ -402,18 +376,37 @@ const appAdapter = {
 };
 controller = Core.createClipController(appAdapter);
 const appDialogs = controller.dialogs;
+const clipList = Core.createClipList({
+  listEl,
+  newestEl: document.getElementById('listNewest'),
+  barEl: document.getElementById('selectionBar'),
+  renderRow: (i) => buildItem(items[filtered[i]], filtered[i], numpadMap()),
+  controller,
+  onRendered: () => scheduleRelativeTimeRefresh(),
+});
+// Image preview height: Ctrl+wheel / Ctrl+=/-/0 (routed by the controller) and
+// the Settings row; saved per machine.
+const imageZoom = Core.createImageZoom({
+  root: document.documentElement,
+  clipList,
+  save: (px) => window.api.saveSettings({ image_preview_height: px }),
+  toast: (msg) => showToast(msg),
+});
+appAdapter.imageZoom = imageZoom;
 
 document.addEventListener('click', (e) => controller.onClick(e));
 document.addEventListener('mousedown', (e) => controller.onMousedown(e));
 document.addEventListener('mouseup', (e) => controller.onMouseup(e));
 document.addEventListener('auxclick', (e) => controller.onAuxclick(e));
 document.addEventListener('contextmenu', (e) => controller.onContextmenu(e));
+document.addEventListener('wheel', (e) => controller.onWheel(e), { passive: false });
 
 // Popup reset (called by the main process when the window is shown).
 window.resetPopupState = function() {
   appDialogs.dismiss();
   controller.closeMenu(); // a popover left open at blur-hide would eat keys on re-show
   controller.clearSelection({ paint: false });
+  clipList.scrollToTop(); // reopening always starts at the newest clip
   document.getElementById('settingsView')?.classList.remove('show');
   document.getElementById('mainView')?.classList.remove('hidden');
   document.body.style.pointerEvents = '';
@@ -451,7 +444,7 @@ const searchClear = document.getElementById('searchClear');
 // Shared query-state change path (typed input AND autocomplete-applied tokens).
 function onQueryChanged(v) {
   query = v;
-  if (controller) controller.clearSelection({ paint: false });
+  if (controller) controller.onQueryChange();
   updateClearControls();
   updateSortButton();
   scheduleRerenderList();
@@ -1014,6 +1007,7 @@ async function openSettings() {
   renderShortcutSettings(s);
   const maxAgeEl = document.getElementById('maxAge');
   const maxSizeEl = document.getElementById('maxSize');
+  imageZoom.bindInput(document.getElementById('imagePreviewHeight'), document.getElementById('imagePreviewHeightReset'));
   maxAgeEl.value = s.max_age_days;
   maxSizeEl.value = s.max_size_gb;
   maxAgeEl.onchange = () => window.api.saveSettings({ max_age_days: parseInt(maxAgeEl.value) || 7 });

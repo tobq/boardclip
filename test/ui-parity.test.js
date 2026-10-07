@@ -174,7 +174,9 @@ const siteCss = read('site/styles.css');
     assert.ok(bar.includes(`data-action="${a}"`), `renderSelectionBar missing data-action="${a}"`);
   }
   for (const [name, html] of [['index.html', appHtml], ['site/index.html', siteHtml]]) {
-    assert.ok(html.includes('Core.applySelectionUI('), `${name} must paint selection via the shared Core.applySelectionUI`);
+    // Painting goes through the shared list (which renders an off-window
+    // focused row first, then calls the shared Core.applySelectionUI).
+    assert.ok(/renderSelection\s*:\s*\([^)]*\)\s*=>\s*\w+\.paintSelection\(/.test(html), `${name} must paint selection via the shared clip list's paintSelection`);
     assert.ok(/visibleIds\s*:/.test(html), `${name} must supply the visibleIds() selection hook`);
     assert.ok(/renderSelection\s*:/.test(html), `${name} must supply the renderSelection() selection hook`);
     assert.ok(!/selectedIdx/.test(html), `${name} still uses a bespoke selectedIdx; selection lives in the shared controller now`);
@@ -348,6 +350,35 @@ const siteCss = read('site/styles.css');
     'tag-add must capture its anchor before awaiting commit-on-add');
   const declares = (css, sel) => new RegExp(`(^|[\\s,])\\.${sel}\\s*[,{]`, 'm').test(css);
   assert.ok(declares(popupCss, 'bc-tag-strip'), 'clipboard-popup.css should define .bc-tag-strip');
+}
+
+// 14) Keep-your-place list + image zoom are single-sourced: both consumers
+//     render rows through Core.createClipList (no per-side lazy loader or
+//     innerHTML list rebuild), feed it Search.rankMode, size previews through
+//     Core.createImageZoom, and route Ctrl+wheel through the controller with a
+//     NON-passive listener (a passive one cannot stop the page zoom). A query
+//     change goes through controller.onQueryChange, not a cursor wipe.
+{
+  const coreSrc = read('site/shared/clipboard-ui-core.js');
+  for (const fn of ['createClipList', 'resolveListAnchor', 'createImageZoom']) {
+    assert.ok(typeof ui[fn] === 'function', `core must export ${fn}`);
+  }
+  assert.ok(typeof ui.search.rankMode === 'function', 'clip-search must export rankMode');
+  for (const [name, html] of [['index.html', appHtml], ['site/index.html', siteHtml]]) {
+    assert.ok(html.includes('Core.createClipList('), `${name} must render through the shared Core.createClipList`);
+    assert.ok(html.includes('Core.search.rankMode('), `${name} must tell the list its ranking mode via Search.rankMode`);
+    assert.ok(html.includes('Core.createImageZoom('), `${name} must size image previews through Core.createImageZoom`);
+    assert.ok(/addEventListener\(\s*["']wheel["']\s*,\s*\([^)]*\)\s*=>\s*controller\.onWheel\([^)]*\)\s*,\s*\{\s*passive:\s*false\s*\}/.test(html),
+      `${name} must route wheel events to controller.onWheel with { passive: false }`);
+    assert.ok(html.includes('imageZoom.bindInput(') || html.includes('Zoom.bindInput('), `${name} must bind the Settings image-height row`);
+    assert.ok(!/function loadBatch\b|scrollHeight \* 0\.85/.test(html), `${name} re-inlined a lazy loader; the shared list renders rows`);
+    assert.ok(!/clearSelection\(\{\s*paint:\s*false\s*\}\);\s*\n\s*(renderClips|scheduleRerenderList|updateClearControls)/.test(html),
+      `${name} wipes the cursor on a query change; call controller.onQueryChange()`);
+    assert.ok(html.includes('controller.onQueryChange()'), `${name} must route query changes through controller.onQueryChange`);
+  }
+  assert.ok(ui.renderSettingsBody().includes('id="imagePreviewHeight"'), 'the shared settings body must carry the image preview height row');
+  assert.ok(ui.renderPopupShell({}).includes('class="list-newest"'), 'the shared shell must carry the Newest pill');
+  assert.ok(coreSrc.includes('function resolveListAnchor('), 'anchor policy lives in the shared core');
 }
 
 console.log('ui-parity.test.js: all parity guards passed');

@@ -381,16 +381,23 @@
 
   // Filter + rank -> array of ORIGINAL indexes. `opts`: { regex, now, sortMode ('best'|'new'),
   // docs? (prebuilt), searchTextLower? (precomputed combined haystacks, lowercased) }.
+  // Ranking mode for a parsed query: an explicit sortMode (the Best/Recent toggle) or
+  // `sort:` token wins; else relevance ('best') when a content query is present; else
+  // the caller's ORIGINAL order ('none' - the popup's history order, which is newest
+  // first). 'new' and 'none' are both time-ordered lists; the popup's keep-your-place
+  // rules (Core.resolveListAnchor) key off exactly this, so it has ONE definition.
+  function rankMode(parsed, sortMode) {
+    const p = parsed || {};
+    return sortMode || (p.sort ? p.sort : ((p.content && p.content.length) ? 'best' : 'none'));
+  }
+
   function filterRankIndexes(items, parsed, opts) {
     const o = opts || {};
     const now = o.now || Date.now();
     const docs = o.docs || (items || []).map(clipToDoc);
     const hay = o.searchTextLower || null;
     const hasContent = parsed.content.length > 0;
-    // Ranking mode: an explicit sortMode (the Best/Recent toggle) or `sort:` token wins;
-    // else relevance when a content query is present; else the caller's ORIGINAL order
-    // (the popup's history/recency order is the "idle" default — we don't reshuffle it).
-    const mode = o.sortMode || (parsed.sort ? parsed.sort : (hasContent ? 'best' : 'none'));
+    const mode = rankMode(parsed, o.sortMode);
     const scored = [];
     for (let i = 0; i < docs.length; i++) {
       const doc = docs[i];
@@ -627,7 +634,7 @@
     clipToDoc, docSearchText, normalizeTagName, tagMatchesFilter, docInGroup,
     tokenizeQuery, quoteToken, parseQuery, serializeQuery, applyFacet, facetState,
     anyFilterActive, isEmptyQuery, resolveTimeMs,
-    matchDoc, relevanceScore, recencyScore, filterRankIndexes,
+    matchDoc, relevanceScore, recencyScore, rankMode, filterRankIndexes,
     fuzzyMatch, fuzzyFloor,
     lexQuery, suggestQuery,
     BUILTIN_TO_IS, IS_TO_BUILTIN, IS_VALUES, RECOGNIZED_PREFIXES, NON_FILTER_SCHEMES,

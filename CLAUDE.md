@@ -45,6 +45,18 @@
 - **`setClipboardToItem(item)`** — shared helper to write text or image to clipboard
 - **Backup/restore**: `backupClipboard()` saves text/html/rtf/image, `restoreClipboard()` writes them back. Used by numpad quick-paste.
 - **`pollGate`** flag pauses polling during paste sequences to prevent interference
+- **Editor clipboard follow (`lib/clipboard-follow.js`, 2026-10-07)**: while the clipboard holds an open
+  editor's note (exact text, line endings ignored, either the live draft or the last save), every save of
+  that note also goes onto the clipboard, so nobody re-copies from the editor. It is re-checked on editor
+  open, editor focus (`editor-focus` IPC), every poller capture (`observeEditorsClipboard`, '' for an image)
+  and every save (`followEditorSave` in `commitEditSession`). Before writing it checks the clipboard still
+  holds what it last saw; anything else copied meanwhile stops it ("Clipboard changed elsewhere"). The
+  footer of the shared `createEditor` (opt-in `clipboard` option) shows "On clipboard - edits update it" or
+  a Copy button (`editor-copy` IPC = save + adopt). Saves also fire when the editor window loses focus.
+  `applyExternalTextEdit` NEVER writes the clipboard any more (the old copy-on-close `writeClipboard: final`
+  is gone); writes go through `writeEditedTextToClipboard` (pollGate + lastText = no re-capture). Live
+  clipboard QA is deliberately NOT automated: the live app polls the same system clipboard and would
+  capture QA text into real, synced history.
 
 ## Paste Simulation
 
@@ -327,6 +339,30 @@ build could re-trigger the race.
   "sticky" - the July complaint was a popup that ignored blur, never revisit a blur-suppress
   flag). Keyboard opens (Ctrl/Alt+Enter) stay a hand-off: show + focus + hidePopup.
 - **Settings auto-save** — max age/size save on input change, no Save button
+- **`saveSettingsFile({ localOnly: true })`** for per-machine keys (popup/editor/viewer geometry, and a
+  `save-settings` body made only of `LOCAL_ONLY_SETTING_KEYS`, e.g. `image_preview_height`): writes the
+  file but skips the revision bump. A bump makes the popup re-clone ~10k items over IPC and rebuild, which
+  every Ctrl+wheel zoom and window resize used to trigger.
+- **Keep-your-place list (2026-10-07)**: both popups render rows through ONE `Core.createClipList`
+  (windowed: ~60 rows around the kept place, grown both ways on scroll; `update({ids, tsAt, mode,
+  queryKey})` per rebuild). The PURE `Core.resolveListAnchor` decides where a rebuild sits: anchor = the
+  cursor row if on screen else the top visible row, restored to the same pixel offset; starting a search
+  or flipping to Best = top; leaving a search (clear / text removed) keeps the clip even unscrolled;
+  refine keeps it if it still matches, else nearest-in-time for time-ordered lists (`Search.rankMode`
+  'none'/'new') or top for Best; unscrolled with no cursor stays at the top. A query change clears the
+  multi-select at once (`controller.onQueryChange`) and keeps the cursor only if it was the on-screen
+  anchor and stayed put (`reconcileVisible`) - Enter must never paste a hidden row. Rebuild repaints use
+  `repaintSelection({scroll:false})`. "Newest"/"Top" pill (+ dot for clips that arrived above) lives in the
+  shared shell (`.list-wrap`). Reopening the popup scrolls to the top. Measured (sandbox, 500 clips):
+  clear-to-deep rebuild 12-17 ms, 60 DOM rows, anchor within 1 px. QA: `node scripts/qa-list-place.js`
+  (hidden popup, never touches the clipboard; a hidden page fires no scroll/rAF, so it dispatches scroll
+  events and calls `rerenderList()` itself).
+- **Image preview zoom**: `Core.createImageZoom` owns `image_preview_height` (40-600, default 60,
+  per machine, excluded in `remoteSettingsPayload`) as `--clip-img-h` on the popup root, capped by
+  `--clip-img-cap` (the list's height). Ctrl+wheel (document listener, `{passive:false}`, via
+  `controller.onWheel`) and Ctrl+=/-/0 (first thing in `controller.onKeydown`) always preventDefault so
+  the PAGE never zooms. Preview markup carries `width`/`height` + `--ar`/`--nw`; CSS width =
+  min(row, height x ratio, real width). Stored dims match the real PNGs (checked on 1529 live images).
 - **Dev auto-reload** — `fs.watch` on `index.html` triggers `reloadIgnoringCache()` (debounced 300ms)
 
 ## AI Access (local MCP server)
@@ -727,6 +763,9 @@ Desktop app distribution has TWO consistent paths, both driven by `main`:
   half-applied update retries the relaunch, and every apply outcome is recorded as
   `update.applied` / `update.apply_failed {from,to,disk_head,code,message}` (forceFile). An
   `update.apply_failed` line, or disk HEAD != the `build` in `app.start`, = stale process.
+  **GOTCHA #3 (fixed 2026-10-07):** an install AHEAD of GitHub main (a local commit fast-forwarded
+  into it before a push) relaunched ~90 s after every start: the no-op pull changed no files, mode
+  'none' fell into the relaunch branch. Now no change on disk = `update.unchanged`, stay up.
   Diagnose a suspected stale install with `git -C <install> reflog --date=iso` vs the running
   process StartTime: a `pull --ff-only` newer than the process with no `app.quit
   {reason:update-relaunch}` after it is exactly this.

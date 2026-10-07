@@ -19,7 +19,7 @@ const B = 'b'.repeat(40);
 const appDir = path.join(__dirname, '..'); // a real checkout: has .git + update scripts
 const buildInfo = { fullCommit: A, dirty: false };
 
-function harness({ latest, diskHead, applyCode = 0, applyStderr = '' }) {
+function harness({ latest, diskHead, applyCode = 0, applyStderr = '', changedFiles = ['main.js'] }) {
   const events = [];
   const calls = { apply: 0, relaunch: 0, reload: 0 };
   const updater = createAutoUpdater({
@@ -31,7 +31,7 @@ function harness({ latest, diskHead, applyCode = 0, applyStderr = '' }) {
     onReload: async () => { calls.reload += 1; },
     fetchLatest: async () => latest,
     readHead: async () => diskHead,
-    readChangedFiles: async () => ['main.js'],
+    readChangedFiles: async () => changedFiles,
     applyUpdate: async () => { calls.apply += 1; return { code: applyCode, stdout: '', stderr: applyStderr }; },
   });
   return { updater, events, calls };
@@ -81,7 +81,22 @@ function harness({ latest, diskHead, applyCode = 0, applyStderr = '' }) {
     assert.strictEqual(h.calls.apply, 2, 'the relaunch is retried on the next poll');
   }
 
-  // 4. Guard: no :: label may sit inside a ( ) block in any batch script. cmd
+  // 4. A checkout AHEAD of GitHub main (a local commit not pushed yet): the
+  //    pull is a no-op, nothing differs from the running commit, so the app
+  //    must stay up. It used to fall into the relaunch branch and restart 90 s
+  //    after every start.
+  {
+    const h = harness({ latest: B, diskHead: A, changedFiles: [] });
+    const result = await h.updater.check();
+    assert.strictEqual(result.status, 'unchanged');
+    assert.strictEqual(h.calls.relaunch, 0, 'nothing changed on disk -> no relaunch');
+    assert.strictEqual(h.calls.reload, 0);
+    assert.deepStrictEqual(h.events.map(e => e.type), ['unchanged']);
+    const again = await h.updater.check();
+    assert.strictEqual(again.status, 'unchanged', 'not left stuck "busy" after a no-op apply');
+  }
+
+  // 5. Guard: no :: label may sit inside a ( ) block in any batch script. cmd
   //    does not treat :: as a comment there; the line is parsed, a ) in it
   //    closes the block early, and the script dies with "was unexpected at
   //    this time" - silently, from the updater's point of view. Use rem.

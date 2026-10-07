@@ -126,6 +126,18 @@
 :root[data-borders="borderless"] .filter-tag.active,
 .bc-popup[data-borders="borderless"] .filter-tag.active { background: var(--accent); }
 
+/* The list sits in a wrapper so the "Newest" pill can float over its top edge
+   without being part of the scrolled rows (Core.createClipList owns both). */
+.list-wrap { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.list-newest { position: absolute; top: var(--sp-4); left: 50%; z-index: 30; display: inline-flex; align-items: center; gap: var(--sp-2);
+               padding: 3px var(--sp-5) 3px var(--sp-4); border: 1px solid var(--line-strong); border-radius: var(--r-pill); background: var(--menu); color: var(--text);
+               font: inherit; font-size: var(--fs-2); box-shadow: 0 4px 14px var(--shadow); cursor: pointer;
+               opacity: 0; pointer-events: none; transform: translate(-50%, -6px); transition: opacity var(--dur) var(--ease), transform var(--dur) var(--ease); }
+.list-newest.show { opacity: 1; pointer-events: auto; transform: translate(-50%, 0); }
+.list-newest:hover { border-color: var(--accent); color: var(--accent); }
+.list-newest .mi.sm { font-size: var(--icon-sm); }
+.list-newest-dot { display: none; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
+.list-newest.has-new .list-newest-dot { display: inline-block; }
 .list { flex: 1; overflow-y: auto; padding: 0 0 var(--sp-4); min-height: 0; scrollbar-width: var(--list-scrollbar-width, none); scrollbar-color: var(--list-scrollbar-thumb, transparent) transparent; }
 .list::-webkit-scrollbar { width: var(--list-scrollbar-size, 0); }
 .list::-webkit-scrollbar-track { background: transparent; }
@@ -182,7 +194,16 @@
 .preview { font-size: var(--fs-3); line-height: 1.5; color: var(--text); font-family: var(--font-mono); }
 .preview.collapsed { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .preview.expanded { white-space: pre-wrap; word-break: break-word; max-height: 300px; overflow-y: auto; background: var(--bg); border-radius: var(--r-2); padding: var(--sp-4); margin: var(--sp-1) 0; }
-.preview img { max-width: 100%; max-height: 60px; border-radius: var(--r-1); object-fit: cover; }
+/* Image previews render at --clip-img-h (Ctrl+wheel / Settings, default 60px),
+   capped by --clip-img-cap (the list's visible height, set by Core.createImageZoom)
+   so one preview never outgrows the list. With known dims (--ar/--nw from the
+   row markup) the width is the smallest of: the row, height x aspect ratio, and
+   the image's real width - so the ratio holds, nothing overflows sideways and
+   nothing is enlarged past its real size. Legacy clips without dims fall back
+   to max-width/max-height, which also keeps the ratio. */
+.preview img { --img-h: min(var(--clip-img-h, 60px), var(--clip-img-cap, 100000px));
+               display: block; max-width: 100%; max-height: var(--img-h); height: auto; border-radius: var(--r-1); }
+.preview img[style*="--ar"] { width: min(100%, calc(var(--img-h) * var(--ar)), var(--nw)); max-height: none; }
 .meta { margin-top: var(--sp-1); font-size: var(--fs-1); color: var(--text-dim); display: flex; gap: var(--sp-4); flex-wrap: wrap; align-items: center; }
 .numpad-tag { color: var(--green); }
 .group-tag { color: var(--accent); }
@@ -236,7 +257,6 @@
 
 @media (max-width: 760px) {
   .item { padding-inline: var(--sp-5); }
-  .preview img { max-width: 78px; max-height: 50px; }
 }
 
 /* Popup theme variables + design tokens live in clipboard-tokens.css
@@ -364,6 +384,17 @@ mark { background: var(--mark-bg); color: var(--mark-fg); border-radius: 2px; pa
 .bc-editor-hl mark.cur { background: color-mix(in srgb, var(--accent) 55%, transparent); }
 .bc-editor-foot { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-5); padding: var(--sp-1) var(--sp-6); height: 24px; flex-shrink: 0; border-top: 1px solid var(--line); background: var(--surface); font-size: var(--fs-1); color: var(--text-dim); }
 .bc-editor-hint { white-space: nowrap; }
+.bc-editor-foot > [data-x="stats"] { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bc-editor-foot-end { display: flex; align-items: center; gap: var(--sp-5); flex-shrink: 0; }
+/* Clipboard follow status: "On clipboard" (accent) / a Copy button / a brief notice. */
+.bc-editor-clip { display: inline-flex; align-items: center; gap: var(--sp-2); white-space: nowrap; }
+.bc-editor-clip.on { color: var(--accent); }
+.bc-editor-clip.notice { color: var(--text); }
+.bc-editor-clip .mi.sm { font-size: var(--icon-sm); }
+.bc-editor-copy { display: inline-flex; align-items: center; gap: var(--sp-2); height: 18px; padding: 0 var(--sp-3); border: 1px solid var(--line-strong); border-radius: var(--r-1);
+                  background: transparent; color: var(--text-dim); font: inherit; cursor: pointer; transition: color var(--dur) var(--ease), border-color var(--dur) var(--ease); }
+.bc-editor-copy:hover { color: var(--accent); border-color: var(--accent); }
+@media (max-width: 480px) { .bc-editor-clip ~ .bc-editor-hint { display: none; } }
 /* Glass: the editor canvas goes transparent so the OS acrylic + tint scrim show
    through; the chrome bars keep their translucent --surface. */
 :root[data-surface="glass"] .bc-editor,

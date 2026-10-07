@@ -4221,9 +4221,20 @@ function createPopup() {
     }, { forceFile: true });
   });
 
-  // Dev/source installs: auto-reload renderer files while iterating.
+  // Dev/source installs: auto-reload renderer files while iterating. Only a
+  // real content change counts (size or mtime moved): with last-access updates
+  // on, Windows reports a READ of a watched file as a change, so opening an
+  // editor window (which loads these same files) or any indexer/antivirus scan
+  // reloaded the popup from scratch, icon font and all (2026-10-07).
   let reloadTimer = null;
-  const scheduleRendererReload = () => {
+  const watchedSignatures = new Map();
+  const signatureKey = (sig) => `${sig.exists}:${sig.size}:${sig.mtimeMs}`;
+  const scheduleRendererReload = async (file) => {
+    const sig = signatureKey(await fileSignature(file));
+    const prev = watchedSignatures.get(file);
+    watchedSignatures.set(file, sig);
+    if (prev === undefined || prev === sig) return;
+    diagnostics.record('popup.dev_reload', { file: path.basename(file) });
     if (reloadTimer) clearTimeout(reloadTimer);
     reloadTimer = setTimeout(() => {
       if (win && !win.isDestroyed()) win.webContents.reloadIgnoringCache();
@@ -4237,7 +4248,8 @@ function createPopup() {
       path.join(SCRIPT_DIR, 'site', 'shared', 'clipboard-popup.css'),
       path.join(SCRIPT_DIR, 'site', 'shared', 'clipboard-tokens.css'),
     ]) {
-      try { rendererWatchers.push(fs.watch(file, scheduleRendererReload)); } catch {}
+      fileSignature(file).then((sig) => { if (!watchedSignatures.has(file)) watchedSignatures.set(file, signatureKey(sig)); });
+      try { rendererWatchers.push(fs.watch(file, () => { scheduleRendererReload(file); })); } catch {}
     }
   }
   win.rendererWatchers = rendererWatchers;

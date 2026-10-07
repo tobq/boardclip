@@ -134,6 +134,15 @@ assert.ok(between(mainJs, 'function relaunchAfterUpdate() {', 'function develope
 }
 
 {
+  // The dev auto-reload must ignore watch events that changed nothing: Windows
+  // reports a READ as a change when last-access updates are on, so opening an
+  // editor window reloaded the popup from scratch.
+  const dev = between(mainJs, '  // Dev/source installs: auto-reload renderer files while iterating.', 'win.rendererWatchers = rendererWatchers;');
+  assert.ok(/const sig = signatureKey\(await fileSignature\(file\)\);[\s\S]{0,160}if \(prev === undefined \|\| prev === sig\) return;[\s\S]{0,300}reloadIgnoringCache/.test(dev),
+    'dev reload compares the file signature before reloading');
+}
+
+{
   // A QA sandbox (BOARDCLIP_ISOLATED=1) must never take the keyboard: its hook
   // would sit in front of the live app's and steal Win+V / numpad pastes.
   const reg = between(mainJs, 'function registerShortcuts() {', 'globalShortcut.unregisterAll();');

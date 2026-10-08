@@ -77,7 +77,8 @@ function seed() {
   }] };
   // Solid surface: a glass page is translucent, and a CDP screenshot has no OS
   // blur behind it.
-  const settings = { groups: ['Work', 'Work/Clients', 'Personal', 'Snippets', 'AI', 'Ideas'], groups_shared_with_ai: ['AI'], ai_approval_timeout_sec: 120, surface_style: 'solid' };
+  // Advanced: the search shots show the language's tokens (the mode shots switch).
+  const settings = { groups: ['Work', 'Work/Clients', 'Personal', 'Snippets', 'AI', 'Ideas'], groups_shared_with_ai: ['AI'], ai_approval_timeout_sec: 120, surface_style: 'solid', search_mode: 'advanced' };
   return { history, images, conflicts, settings };
 }
 
@@ -92,7 +93,7 @@ const menuItemCenter = (popup, re) => popup.eval(`(() => {
 async function resetPopup(c) {
   await c.popup.mouse('mouseMoved', -10, -10).catch(() => {});
   await c.popup.eval(`(() => {
-    if (regexBtn.classList.contains('active')) regexBtn.click();
+    if (searchBox.getMode() !== 'advanced') searchBox.setMode('advanced', { load: true });
     // Clear the query BEFORE the reset: leaving a search keeps the clip it was on
     // in place, so a reset first would scroll back to it after its scrollToTop.
     clearSearchAndFilters();
@@ -384,9 +385,8 @@ const STEPS = [
     for (let i = 0; i < 3; i += 1) await press(p, 'ArrowDown');
     await expect('Down x3', (f) => f.label === 'Add to group');
     await press(p, 'ArrowRight');
-    await expect('Right opens the groups on the first group', (f) => f.inSub && f.subShown && f.label === 'AI');
-    for (let i = 0; i < 4; i += 1) await press(p, 'ArrowDown');
-    await expect('Down to Work', (f) => f.label === 'Work' && f.inSub);
+    // Groups sort by use (Search.groupWeights): Work, the most used, leads.
+    await expect('Right opens the groups on the first group (the most used)', (f) => f.inSub && f.subShown && f.label === 'Work');
     await press(p, 'ArrowRight');
     await expect('Right opens Work > Clients', (f) => f.label === 'Clients' && f.subShown);
     await c.shot(p, 'popup-menu-keyboard-groups');
@@ -512,7 +512,7 @@ const STEPS = [
   { name: 'popup-search-facet', popup: true, run: async (c) => { await setQuery(c, 'group:Work plan'); await c.shot(c.popup, 'popup-search-facet'); } },
   { name: 'popup-search-suggest', popup: true, run: async (c) => { await setQuery(c, 'is:'); await c.shot(c.popup, 'popup-search-suggest'); } },
   { name: 'popup-search-regex-invalid', popup: true, run: async (c) => {
-    await c.popup.eval(`(regexBtn.click(), true)`);
+    await c.popup.eval(`(searchBox.setMode('regex', { load: true }), true)`);
     await setQuery(c, '[unclosed');
     // A regex still being typed is flagged after 700 ms idle: shoot the error.
     await c.popup.waitFor(`!!document.querySelector('.search-hint.show')`, 'the broken regex hint', 1500);
@@ -549,7 +549,8 @@ const STEPS = [
   // The flat field: idle ("Click here to search...", no buttons) and focused
   // ("Search...", regex + options slid in).
   { name: 'popup-search-unfocused', popup: true, run: async (c) => {
-    await c.popup.eval(`(document.getElementById('search').blur(), true)`);
+    // Basic (the default): an idle Basic field reveals nothing.
+    await c.popup.eval(`(searchBox.setMode('basic', { load: true }), document.getElementById('search').blur(), true)`);
     await c.popup.waitFor(`document.getElementById('search').placeholder === 'Click here to search...' && !document.querySelector('.bc-reveal[data-reveal="tools"]').classList.contains('open')`, 'idle field', 5000);
     await qa.sleep(300);
     await c.shot(c.popup, 'popup-search-unfocused');
@@ -559,6 +560,33 @@ const STEPS = [
     await c.popup.waitFor(`document.getElementById('search').placeholder === 'Search...' && document.querySelector('.bc-reveal[data-reveal="tools"]').classList.contains('open')`, 'focused field', 5000);
     await qa.sleep(300);
     await c.shot(c.popup, 'popup-search-focused');
+  } },
+  // Search modes: Basic with its filters as pills after the words (an OR pill
+  // with its connective, an excluded one, a date); the mode list on hover with
+  // a lossy switch named; Advanced painting OR, groups and a /regex/.
+  { name: 'popup-search-basic-pills', popup: true, run: async (c) => {
+    await c.popup.eval(`(() => { searchBox.setMode('basic', { load: true }); appAdapter.setQuery('plan group:Work OR group:Ideas since:7d -is:image'); rerenderList(); document.getElementById('search').focus(); return true; })()`);
+    await c.popup.waitFor(`document.querySelectorAll('.search-pills .search-pill').length === 3 && document.getElementById('search').value === 'plan'`, 'pills shown', 5000);
+    await qa.sleep(300);
+    await c.shot(c.popup, 'popup-search-basic-pills');
+  } },
+  { name: 'popup-search-mode-menu', popup: true, run: async (c) => {
+    await setQuery(c, '(plan OR notes) group:Work');
+    await c.popup.eval(`(document.getElementById('search').focus(), true)`);
+    await qa.sleep(250);
+    const chip = await c.popup.centerOf('#modeBtn');
+    await c.popup.mouse('mouseMoved', chip.x - 40, chip.y + 80);
+    await c.popup.mouse('mouseMoved', chip.x, chip.y);
+    await c.popup.waitFor(`!!document.querySelector('.mode-menu .mode-loss')`, 'the mode list with a lossy switch named', 3000);
+    await qa.sleep(200);
+    await c.shot(c.popup, 'popup-search-mode-menu');
+    await c.popup.mouse('mouseMoved', 5, 5);
+    await qa.sleep(400);
+  } },
+  { name: 'popup-search-advanced-or', popup: true, run: async (c) => {
+    await setQuery(c, 'group:Work OR group:Ideas (plan OR notes) -/draft\\d+/');
+    await qa.sleep(300);
+    await c.shot(c.popup, 'popup-search-advanced-or');
   } },
   // The options panel (the tune toggle), opened by a real press, then with a
   // facet chip applied (it writes the token into the query and lights the toggle).
@@ -722,6 +750,16 @@ const STEPS = [
     await ed.eval(`(() => { const f = document.querySelector('.bc-find-input'); f.value = 'the'; f.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`);
     await ed.waitFor(`document.querySelectorAll('.bc-editor-hl mark').length > 0`, 'find matches highlighted', 5000);
     await c.shot(ed, 'editor-find');
+    // The same mode chip (Regex) and match case, lit.
+    await ed.click('.bc-find [data-x="findmode"]');
+    await ed.click('.bc-find [data-x="findcase"]');
+    await ed.eval(`(() => { const f = document.querySelector('.bc-find-input'); f.value = 'Th.'; f.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`);
+    await ed.waitFor(`document.querySelector('[data-x="findmode"]').classList.contains('active') && document.querySelector('[data-x="findcase"]').classList.contains('active')`, 'find mode + case lit', 5000);
+    await ed.mouse('mouseMoved', 5, 5);
+    await qa.sleep(300);
+    await c.shot(ed, 'editor-find-regex');
+    await ed.click('.bc-find [data-x="findmode"]');
+    await ed.click('.bc-find [data-x="findcase"]');
     await escape(ed);
     await editorMenu(ed);
     await c.shot(ed, 'editor-menu');

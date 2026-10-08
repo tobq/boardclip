@@ -132,7 +132,9 @@ window.editorApi.onInit((init) => {
     initialText: init.text || '',
     initialTitle: init.noteTitle || '',
     initialFind: init.find || '',
-    initialFindRegex: !!init.findRegex,
+    initialFindMode: init.findMode,
+    findPrefs: init.findPrefs,
+    saveFindPrefs: (prefs) => window.editorApi.saveFindPrefs && window.editorApi.saveFindPrefs(prefs),
     initialFocusTitle: !!init.focusTitle,
     nativeControls: true,
     toastEl: document.getElementById('toast'), // Revert to original offers Undo here
@@ -175,7 +177,7 @@ if (window.editorApi.onFind) {
   window.editorApi.onFind((find) => {
     if (!editor || !find) return;
     if (find.focusTitle && editor.focusTitle) editor.focusTitle();
-    else if (find.query) editor.openFind(find.query, !!find.regex);
+    else if (find.query) editor.openFind(find.query, find.findMode);
   });
 }
 

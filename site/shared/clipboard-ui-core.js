@@ -143,7 +143,11 @@
       .map(normalizeTagName)
       .filter(group => group && !group.startsWith('__'));
   }
-  function buildTagTree(groups) {
+  // The group tree, siblings ordered by order.tier(path) first when given
+  // (the chip row: usable chips before greyed ones), then by use
+  // (order.weights = Search.groupWeights: decayed clip usage), then by name.
+  function buildTagTree(groups, order) {
+    const o = order || {};
     const roots = [];
     const byName = new Map();
     const sourceGroups = [...new Set((groups || []).map(normalizeTagName).filter(Boolean))];
@@ -166,8 +170,9 @@
     for (const group of sourceGroups) {
       for (const path of tagParentPaths(group)) ensureNode(path, path === group);
     }
+    const byUse = Search.compareGroupUse(o.weights || null);
     const sortNodes = (nodes) => {
-      nodes.sort((a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: 'base', numeric: true }));
+      nodes.sort((a, b) => (o.tier ? o.tier(a.name) - o.tier(b.name) : 0) || byUse(a.name, b.name));
       nodes.forEach(node => sortNodes(node.children));
     };
     sortNodes(roots);
@@ -238,24 +243,6 @@
       ? `<div class="tag-submenu" role="menu" popover="manual">${renderTagTreeMenu(node.children, opts, depth + 1)}</div>`
       : '';
     return `<span class="tag-menu-node${hasChildren ? ' has-children' : ''}">${control}${children}</span>`;
-  }
-  function prepareQuery(query, regex) {
-    const q = String(query || '').trim();
-    if (!q) return { kind: 'none' };
-    if (regex) {
-      try { return { kind: 'regex', regex: new RegExp(q, 'i') }; } catch { return { kind: 'invalid' }; }
-    }
-    return { kind: 'text', needle: q.toLowerCase() };
-  }
-  function matchesPreparedQuery(text, prepared, lowerText) {
-    if (!prepared || prepared.kind === 'none') return true;
-    if (prepared.kind === 'invalid') return false;
-    if (prepared.kind === 'regex') return prepared.regex.test(String(text || ''));
-    if (lowerText != null) return String(lowerText).includes(prepared.needle);
-    return String(text || '').toLowerCase().includes(prepared.needle);
-  }
-  function matchesQuery(text, query, regex) {
-    return matchesPreparedQuery(text, prepareQuery(query, regex));
   }
   function asFilterSet(value) {
     if (value instanceof Set) return value;
@@ -374,7 +361,6 @@
   function filterItemIndexes(items, state) {
     const s = state || {};
     return Search.filterRankIndexes(items, parsedFromState(s), {
-      regex: !!s.regex,
       now: s.now,
       sortMode: s.sortMode,
       docs: s.docs,
@@ -480,7 +466,11 @@
         html: builtinFilterIconHtml(filter, options),
       });
     }
-    html += renderTagTreeMenu(buildTagTree(groups), {
+    // Groups: the chips that would show something first (the row is one line,
+    // so greyed chips never push usable ones out of sight), each tier by use.
+    const tier = verdict ? (g) => { const v = verdict({ kind: 'group', value: g }); return v.enabled ? 0 : v.kind === 'structural' ? 2 : 1; } : null;
+    const weights = options.groupWeights || (census && census.groupWeights) || Search.groupWeights(items);
+    html += renderTagTreeMenu(buildTagTree(groups, { weights, tier }), {
       mode: 'filter',
       items,
       activeFilters,
@@ -521,7 +511,7 @@
   // ROW_LINE_SCAN chars (no newline there = the rest is one line), and every
   // part goes through the match-centred window, so nothing here scans,
   // flattens or lowercases a whole body.
-  //   opts: { query, regex, matchIndex (where the match sits in item.text) }
+  //   opts: { query, matchIndex (where the match sits in item.text) }
   // Returns { primary, derived, rest } ('' rest = no preview line).
   const ROW_BLANK_LINES_MAX = 200;
   const ROW_LINE_SCAN = 65536;
@@ -550,7 +540,7 @@
     const o = options || {};
     const text = String(item && item.text || '');
     const mi = Number.isFinite(o.matchIndex) ? o.matchIndex : null;
-    const windowed = (part, at) => collapsedPreviewText(part, o.query, o.regex, { max: ROW_LINE_CHARS, lead: ROW_LINE_LEAD, ...(at != null ? { matchIndex: at } : {}) });
+    const windowed = (part, at) => collapsedPreviewText(part, o.query, { max: ROW_LINE_CHARS, lead: ROW_LINE_LEAD, ...(at != null ? { matchIndex: at } : {}) });
     // The part of text from `from` on, with the match index made relative to it.
     const restFrom = (from) => {
       const restText = text.slice(from);
@@ -652,7 +642,7 @@
       else x = right + nameGap;
     });
   }
-  // One row. opts: { query, regex, matchIndex, highlight(text), highlightTitle(text),
+  // One row. opts: { query, matchIndex, highlight(text), highlightTitle(text),
   // imageSrc(item), actionsHtml (Core.renderClipActions), selection (the
   // controller's selection(): paints the cursor, checked, held and similar
   // states) or the legacy selected / multiSelected booleans }.
@@ -662,8 +652,8 @@
     const pinned = isPinned(item);
     const isImage = item && item.type === 'image';
     const sel = opts.selection || null;
-    const hl = typeof opts.highlight === 'function' ? opts.highlight : (s) => highlight(s, opts.query, opts.regex);
-    const hlTitle = typeof opts.highlightTitle === 'function' ? opts.highlightTitle : hl;
+    const hl = typeof opts.highlight === 'function' ? opts.highlight : (s) => highlight(s, opts.query);
+    const hlTitle = typeof opts.highlightTitle === 'function' ? opts.highlightTitle : (s) => highlight(s, opts.query, 'title');
     let primaryHtml = '';
     let previewHtml = '';
     if (isImage) {
@@ -714,12 +704,12 @@
   //   'filtered'    - the filters (group:/is:/since:/...) exclude everything
   //   'empty-group' - the only filter is one group, and it has no clips
   // opts.nudgeHtml fills the .empty-nudge slot (renderRelaxNudge);
-  // opts.regex / opts.groups let it tell an invalid query from a bad spelling.
+  // opts.groups lets it tell an invalid query from a bad spelling.
   function emptyStateKind(opts) {
     const o = opts || {};
     if (!(Number(o.total) > 0)) return 'no-clips';
     const parsed = Search.parseQuery(o.query || '');
-    if (parsed.content.length) return 'no-match';
+    if (Search.hasSearchTerms(parsed)) return 'no-match';
     const onlyGroup = parsed.groups.length === 1 && !parsed.negGroups.length && !parsed.is.length && !parsed.negIs.length
       && !parsed.nums.length && !parsed.negNums.length && !parsed.since && !parsed.before && !parsed.len && !parsed.lines && !parsed.words && !parsed.id;
     return onlyGroup ? 'empty-group' : 'filtered';
@@ -728,7 +718,7 @@
     const o = options || {};
     const kind = o.kind || emptyStateKind(o);
     const parsed = Search.parseQuery(o.query || '');
-    const said = parsed.content.filter((c) => !c.neg).map((c) => c.value).join(' ').trim();
+    const said = parsed.terms.map((c) => (c.regex ? `/${c.value}/` : c.value)).join(' ').trim();
     const group = parsed.groups[0] || '';
     const states = {
       'no-clips': { icon: 'content_paste', title: 'No clips yet', hint: 'Copy something and it shows up here.' },
@@ -739,9 +729,10 @@
     const s = states[kind] || states['no-match'];
     // A query the validator rejects (a broken regex, a bad value, an unknown
     // filter) is the real reason, and the hint line under the field already
-    // says what: never point at the spelling instead. opts.regex / opts.groups
-    // = the same context the search box validates with.
-    const invalid = kind !== 'no-clips' && o.query && Search.validateQuery(o.query, { regex: !!o.regex, groups: o.groups || [] }).length;
+    // says what: never point at the spelling instead. opts.groups = the same
+    // context the search box validates with (the query is the canonical,
+    // Advanced text whatever the field shows).
+    const invalid = kind !== 'no-clips' && o.query && Search.validateQuery(o.query, { groups: o.groups || [] }).length;
     const hint = invalid ? 'Part of the search is not valid: fix the part marked in red.' : s.hint;
     const action = s.action ? `<button class="btn quiet sm empty-action" type="button" data-action="clear-search-filters">${escapeHtml(s.action)}</button>` : '';
     return `<div class="list-empty" data-empty="${escapeHtml(kind)}" role="status">`
@@ -820,7 +811,7 @@
       closeBtn: 'closeBtn',
       search: 'search',
       searchClear: 'searchClear',
-      regexBtn: 'regexBtn',
+      modeBtn: 'modeBtn',
       sortBtn: 'sortBtn',
       searchOptsBtn: 'searchOptsBtn',
       searchOpts: 'searchOpts',
@@ -851,11 +842,11 @@
           <button class="icon-btn close-btn${closeCls}" id="${esc(ids.closeBtn)}" type="button" title="Close (Esc)" aria-label="Close"><span class="mi">close</span></button>
         </header>
         <div class="search-row">
-          <div class="search-field"><input class="search" id="${esc(ids.search)}" type="text" placeholder="Click here to search..." aria-label="Search clips" autocomplete="off" spellcheck="false"></div>
+          <div class="search-field"><div class="search-input-wrap"><input class="search" id="${esc(ids.search)}" type="text" placeholder="Click here to search..." aria-label="Search clips" autocomplete="off" spellcheck="false"></div><div class="search-pills" role="list" aria-label="Active filters" hidden></div></div>
           <span class="bc-reveal" data-reveal="clear"><span class="bc-reveal-inner"><button class="icon-btn search-clear" id="${esc(ids.searchClear)}" type="button" tabindex="-1" title="Clear search" aria-label="Clear search"><span class="mi">close</span></button></span></span>
           <span class="bc-reveal" data-reveal="sort"><span class="bc-reveal-inner"><button class="icon-btn sort-btn" id="${esc(ids.sortBtn)}" type="button" title="Sort results" aria-label="Sort results"><span class="mi">sort</span></button></span></span>
           <span class="bc-reveal" data-reveal="tools"><span class="bc-reveal-inner">
-            <button class="icon-btn rx-btn" id="${esc(ids.regexBtn)}" type="button" title="Regex search" aria-label="Regex search"><span class="mi">regular_expression</span></button>
+            <button class="icon-btn mode-btn" id="${esc(ids.modeBtn)}" type="button" aria-haspopup="menu" title="Search mode" aria-label="Search mode: Basic"><span class="mi">text_fields</span></button>
             <button class="icon-btn opts-btn" id="${esc(ids.searchOptsBtn)}" type="button" title="Search options" aria-label="Search options" aria-expanded="false" aria-controls="${esc(ids.searchOpts)}"><span class="mi">tune</span></button>
           </span></span>
         </div>
@@ -890,19 +881,18 @@
   }
   const COLLAPSED_PREVIEW_CHARS = 700;
   const SEARCH_PREVIEW_CONTEXT = 260;
-  function queryMatchIndex(text, query, regex) {
-    const queryText = String(query || '').trim();
-    if (!queryText) return -1;
-    if (regex) {
-      try {
-        const match = new RegExp(queryText, 'i').exec(text);
-        return match ? match.index : -1;
-      } catch { return -1; }
-    }
-    // Case-insensitive search of the text as is (no lowercased copy of a
-    // possibly huge body).
-    const match = new RegExp(queryText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i').exec(String(text || ''));
-    return match ? match.index : -1;
+  // The last query's parse, kept: every row of a rebuild highlights against
+  // the same query, so it is parsed (and its terms compiled) once.
+  let lastParsedQuery = null;
+  let lastParsed = null;
+  function parsedQueryOf(query) {
+    const q = String(query == null ? '' : query);
+    if (q !== lastParsedQuery) { lastParsedQuery = q; lastParsed = Search.parseQuery(q); }
+    return lastParsed;
+  }
+  // Where the query first matches in text (-1: nowhere), for the preview window.
+  function queryMatchIndex(text, query) {
+    return String(query || '').trim() ? Search.firstMatchIndex(parsedQueryOf(query), String(text || '')) : -1;
   }
   // One-line preview window around the first match. Only the window is ever
   // flattened: flattening (and lowercasing) the WHOLE text cost ~300 ms per
@@ -911,13 +901,13 @@
   // search; without it a case-insensitive search of the raw text is used.
   // opts.max / opts.lead: the window's length and how much text it keeps
   // before the match (default 700 / 260).
-  function collapsedPreviewText(text, query, regex, opts) {
+  function collapsedPreviewText(text, query, opts) {
     const raw = String(text || '');
     const max = opts && opts.max > 0 ? opts.max : COLLAPSED_PREVIEW_CHARS;
     const lead = opts && opts.lead >= 0 ? opts.lead : SEARCH_PREVIEW_CONTEXT;
     if (raw.length <= max) return raw.replace(/\r?\n/g, ' ');
     const known = opts && Number.isFinite(opts.matchIndex) ? opts.matchIndex : null;
-    const matchIndex = known != null ? known : queryMatchIndex(raw, query, regex);
+    const matchIndex = known != null ? known : queryMatchIndex(raw, query);
     const center = matchIndex >= 0 ? Math.max(0, matchIndex - lead) : 0;
     const start = Math.min(center, Math.max(0, raw.length - max));
     const end = Math.min(raw.length, start + max);
@@ -935,25 +925,20 @@
     for (const id of state.order || []) { const item = byId.get(id); if (item) out.push(item); }
     return out;
   }
-  function highlight(text, query, regex) {
+  // Every term of the query marked in text (Search.termSpans: a multi-word
+  // query marks each word, a /regex/ its matches, an excluded word nothing).
+  // scope: 'title' for a clip's title (title: terms apply, text: ones do not).
+  function highlight(text, query, scope) {
     const raw = String(text || '');
-    const queryText = String(query || '').trim();
-    if (!queryText) return escapeHtml(raw);
-    try {
-      const re = regex ? new RegExp(queryText, 'gi') : new RegExp(queryText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
-      let out = '';
-      let last = 0;
-      let count = 0;
-      let match;
-      while ((match = re.exec(raw)) && count < 100) {
-        if (match[0] === '') { re.lastIndex += 1; continue; }
-        out += escapeHtml(raw.slice(last, match.index));
-        out += `<mark>${escapeHtml(match[0])}</mark>`;
-        last = match.index + match[0].length;
-        count += 1;
-      }
-      return out + escapeHtml(raw.slice(last));
-    } catch { return escapeHtml(raw); }
+    if (!String(query || '').trim()) return escapeHtml(raw);
+    const spans = Search.termSpans(parsedQueryOf(query), raw, scope === 'title' ? 'title' : 'body', 100);
+    let out = '';
+    let last = 0;
+    for (const sp of spans) {
+      out += escapeHtml(raw.slice(last, sp.start)) + `<mark>${escapeHtml(raw.slice(sp.start, sp.end))}</mark>`;
+      last = sp.end;
+    }
+    return out + escapeHtml(raw.slice(last));
   }
   // Shared per-clip action row. App wires window.api; demo wires in-browser
   // equivalents. Markup MUST stay identical so the two popups never drift.
@@ -1107,7 +1092,7 @@
     // The editor's "back to the text it opened with" (the window bar keeps
     // only find and the menu).
     if (context === 'editor' && !isImage) html += row('revert', 'Revert to original');
-    html += submenuNodeHtml({ icon: 'sell', label: 'Add to group' }, clipGroupTreeHtml(groups, item));
+    html += submenuNodeHtml({ icon: 'sell', label: 'Add to group' }, clipGroupTreeHtml(groups, item, Search.groupWeights(opts.items || [])));
     html += submenuNodeHtml({ icon: 'tag', label: 'Numpad', hint: numpadOf(item) ? String(numpadOf(item)) : '' }, renderKeypadMenu(item, items, nmap), 'bc-keypad');
     // opts.similarCount: a number (0 = no row) or null while it is being
     // counted (a disabled placeholder the controller fills in); absent = never.
@@ -1123,9 +1108,9 @@
   // Group checklist + "New group..." for ONE clip: the single builder behind
   // the clip menu's "Add to group" submenu AND the title-bar strip's / a row's
   // + popover (openGroupPickerAt). The clip's current groups carry the check.
-  function clipGroupTreeHtml(groups, item) {
+  function clipGroupTreeHtml(groups, item, weights) {
     const itemGroups = new Set(groupsOf(item));
-    return withNewGroupRow(renderTagTreeMenu(buildTagTree([...(groups || []), ...itemGroups]), { mode: 'picker', itemGroups }), 'add-group');
+    return withNewGroupRow(renderTagTreeMenu(buildTagTree([...(groups || []), ...itemGroups], { weights }), { mode: 'picker', itemGroups }), 'add-group');
   }
   // ONE menu-content builder for the multi-select bulk menu (shared by the
   // action bar's overflow and the right-click menu on a multi-selection). Bulk
@@ -1141,7 +1126,7 @@
     const row = (action, icon, label, cls) => menuRowHtml({ icon, label, cls, attrs: { 'data-action': action } });
     let html = '<div class="bc-menu-list">';
     html += row('bulk-paste', 'content_paste', `Paste all (${count})`);
-    html += submenuNodeHtml({ icon: 'sell', label: 'Add to group' }, bulkGroupTreeHtml(groups, selItems));
+    html += submenuNodeHtml({ icon: 'sell', label: 'Add to group' }, bulkGroupTreeHtml(groups, selItems, Search.groupWeights(opts.items || [])));
     if (allText) html += row('bulk-unify', 'merge', `Unify (${count})`);
     html += MENU_SEPARATOR + row('bulk-delete', CLIP_ACTION_ICONS.del, `Delete (${count})`, 'danger');
     html += '</div>';
@@ -1152,10 +1137,10 @@
   // Each group shows its membership across the selection (all = check, some =
   // dash, none = empty); a click toggles it for every selected clip (all ->
   // remove from all, else add to all).
-  function bulkGroupTreeHtml(groups, selItems) {
+  function bulkGroupTreeHtml(groups, selItems, weights) {
     const sel = selItems || [];
     const treeGroups = [...new Set([...(groups || []), ...sel.flatMap(groupsOf)])];
-    return withNewGroupRow(renderGroupChecklist(buildTagTree(treeGroups), (g) => groupMembership(sel, g), 'bulk-group'), 'bulk-add-group');
+    return withNewGroupRow(renderGroupChecklist(buildTagTree(treeGroups, { weights }), (g) => groupMembership(sel, g), 'bulk-group'), 'bulk-add-group');
   }
   // The contextual bar shown while 2+ clips are selected. It takes the chip
   // bar's place at the same height (the shell stacks both in .chip-row; the
@@ -1486,10 +1471,10 @@
   // so the availability census can grey an option out through the same markup.
   function renderFacetOption(opt, state, extra) {
     const x = extra || {};
-    const cls = state === 'include' ? ' active' : state === 'exclude' ? ' excluded' : '';
     const tokenText = Search && Search.facetTokenText ? Search.facetTokenText(opt.token) : '';
-    const label = opt.prompt && state === 'include' && x.value ? `Before ${x.value}` : opt.label;
-    const title = x.reason || (opt.prompt ? (state === 'include' ? 'Remove this filter' : `Add ${opt.prompt} and type a date (2026-01-31) or 7d`) : tokenText);
+    const label = opt.prompt && state === 'include' && x.label ? x.label : opt.label;
+    const ask = opt.prompt && Search.FIELD_ASK ? Search.FIELD_ASK[opt.token.kind] : null;
+    const title = x.reason || (opt.prompt ? (state === 'include' ? 'Remove this filter' : `${ask ? `${ask.ask} ${ask.example}` : opt.label}`) : tokenText);
     return renderChip({
       tag: 'button',
       cls: `facet-opt${disabledChipClass(x)}`,
@@ -1504,15 +1489,19 @@
     return x && x.disabled ? ` is-disabled${x.disabledKind === 'structural' ? ' dis-structural' : ''}` : '';
   }
   // A query token painted exactly as the search field paints it (lexQuery's
-  // .qh-* spans), so the panel shows the syntax the field will show.
-  function queryTokenHtml(text) {
+  // .qh-* spans; mode = the field's mode), so the panel shows the syntax the
+  // field will show.
+  function queryTokenHtml(text, mode) {
     if (!Search || !Search.lexQuery) return escapeHtml(text);
-    return Search.lexQuery(String(text)).map((seg) => `<span class="qh-${seg.kind}">${escapeHtml(seg.text)}</span>`).join('');
+    return Search.lexQuery(String(text), { mode: mode || 'advanced' }).map((seg) => `<span class="qh-${seg.kind}">${escapeHtml(seg.text)}</span>`).join('');
   }
   // census: Search.facetCensus for this query (null = everything enabled). An
   // option the census hides (a kind absent from all history) is left out.
-  function renderSearchFacets(query, census) {
+  // mode: the field's search mode (its notes line; key chips type in Advanced
+  // and ask for a value elsewhere).
+  function renderSearchFacets(query, census, mode) {
     if (!Search || !Search.OPTION_FACETS) return '';
+    const m = Search.normalizeMode ? Search.normalizeMode(mode) : 'advanced';
     const parsed = Search.parseQuery(query || '');
     // One unit per filter (label + its chips). Units FLOW (Forge's FacetRows):
     // side by side while they fit, one per line in a narrow popup, so a wide
@@ -1520,10 +1509,10 @@
     const row = (label, html) => `<div class="opts-unit"><span class="opts-facet-label">${escapeHtml(label)}</span><div class="opts-facet-chips" role="group" aria-label="${escapeHtml(label)}">${html}</div></div>`;
     const facets = Search.OPTION_FACETS.map((def, r) => row(def.label, def.options.map((opt, i) => {
       const probe = opt.prompt ? { kind: opt.token.kind } : opt.token;
-      const state = Search.facetTokenState(parsed, probe);
+      const state = opt.prompt ? Search.promptOptionState(parsed, def, opt) : Search.facetTokenState(parsed, probe);
       const v = census ? Search.facetOptionVerdict(census, parsed, probe, { selected: state !== null }) : { enabled: true };
       if (v.hidden) return '';
-      return renderFacetOption(opt, state, { row: r, index: i, value: opt.prompt ? parsed[opt.token.kind] : '', disabled: !v.enabled, disabledKind: v.kind, reason: v.reason });
+      return renderFacetOption(opt, state, { row: r, index: i, label: opt.prompt ? Search.promptOptionLabel(parsed, opt) : '', disabled: !v.enabled, disabledKind: v.kind, reason: v.reason });
     }).join(''))).join('');
     // A key chip puts its prefix in the field for typing (the autocomplete then
     // offers its values); its tooltip is the autocomplete's own hint.
@@ -1531,11 +1520,148 @@
       const f = Search.FIELD_INFO[key] || {};
       return renderChip({ tag: 'button', cls: 'opts-field', attrs: { 'data-insert': `${key}:`, title: `${key}: ${f.desc || ''}${f.short ? ` (or ${f.short}:)` : ''}` }, html: queryTokenHtml(`${key}:`) });
     }).join('');
-    const notes = (Search.SYNTAX_NOTES || []).map((n) => (n.code ? `${queryTokenHtml(n.code)} ` : '') + escapeHtml(n.text)).join('<span class="opts-notes-sep" aria-hidden="true">·</span>');
+    const notes = ((Search.SYNTAX_NOTES || {})[m] || []).map((n) => (n.code ? `${queryTokenHtml(n.code, m === 'basic' ? 'basic' : m === 'regex' ? 'regex' : 'advanced')} ` : '') + escapeHtml(n.text)).join('<span class="opts-notes-sep" aria-hidden="true">·</span>');
     return facets + (fields ? row('More', fields) : '') + (notes ? `<p class="opts-notes">${notes}</p>` : '');
   }
   function renderSearchOptions(query) {
     return `<div class="opts-facets">${renderSearchFacets(query)}</div>`;
+  }
+
+  // ── the search-mode chip (the popup's search AND the editor's find bar) ──
+  // ONE control for the mode: a click cycles it, hovering lists the modes
+  // (each with an example, the current one ticked; a switch that would remove
+  // part of the search names it), and without a hover-capable pointer (or on
+  // a touch press) a tap lists them instead. Alt+R (Cmd+Option+R on macOS)
+  // cycles from anywhere in `scope`, Shift going back. A mode other than the
+  // first is lit, like any toggled in-field control.
+  //   opts: { modes, get(), set(mode), loss?(mode) -> text a switch would
+  //           remove, menuHost, scope }
+  const MODE_INFO = {
+    basic: { icon: 'text_fields', label: 'Basic', example: 'words, as typed' },
+    regex: { icon: 'regular_expression', label: 'Regex', example: 'colou?r' },
+    advanced: { icon: 'data_object', label: 'Advanced', example: 'a OR b -c is:image' },
+  };
+  const HOVER_INTENT_MS = 160; // Forge's hover-peek timing, open and close
+  function isMacPlatform() { return typeof navigator !== 'undefined' && /Mac/i.test(navigator.platform || ''); }
+  // The chord that cycles a search mode / toggles match case (VS Code's find
+  // keys): Alt+key, Cmd+Option+key on macOS (Option alone types a character).
+  function modeChord(e, code) {
+    if (!e || e.code !== code) return false;
+    return isMacPlatform() ? e.metaKey && e.altKey && !e.ctrlKey : e.altKey && !e.ctrlKey && !e.metaKey;
+  }
+  function modeChordLabel(key) { return isMacPlatform() ? `⌥⌘${key}` : `Alt+${key}`; }
+  function attachModeChip(btn, opts) {
+    if (typeof document === 'undefined' || !btn) return { paint() {}, destroy() {}, close() {} };
+    const o = opts || {};
+    const modes = o.modes || Search.SEARCH_MODES;
+    const menu = createMenu(o.menuHost || document.body);
+    const canHover = typeof matchMedia === 'function' && matchMedia('(hover: hover)').matches;
+    const step = (dir) => modes[(modes.indexOf(o.get()) + (dir || 1) + modes.length) % modes.length];
+    let openTimer = null;
+    let closeTimer = null;
+    let hoverOpened = false;
+    let lastPointer = '';
+    let menuHtml = ''; // what the open list shows: repainted only when it changes (a press on a row survives)
+    const lossOf = (m) => (m !== o.get() && o.loss ? o.loss(m) : '');
+    function rowsHtml() {
+      const cur = o.get();
+      return modes.map((m) => {
+        const info = MODE_INFO[m];
+        const loss = lossOf(m);
+        return menuRowHtml({ icon: m === cur ? 'check' : '', check: m === cur, label: info.label, hint: loss ? `removes ${loss}` : info.example, cls: `mode-row${loss ? ' mode-loss' : ''}`, role: 'menuitemradio', attrs: { 'data-mode': m, 'aria-checked': String(m === cur) } });
+      }).join('');
+    }
+    function paint() {
+      const cur = o.get();
+      const info = MODE_INFO[cur] || MODE_INFO.basic;
+      const icon = btn.querySelector('.mi');
+      if (icon) icon.textContent = info.icon;
+      btn.classList.toggle('active', cur !== modes[0]);
+      const next = step(1);
+      const loss = lossOf(next);
+      btn.title = `${info.label} search. Click for ${MODE_INFO[next].label}${loss ? ` (removes ${loss})` : ''}, ${modeChordLabel('R')}`;
+      btn.setAttribute('aria-label', `Search mode: ${info.label}`);
+      const root = menu.root();
+      const html = root ? rowsHtml() : '';
+      if (root && html !== menuHtml) { root.innerHTML = html; menuHtml = html; }
+    }
+    function openMenu(keyboard) {
+      clearTimeout(openTimer);
+      const r = btn.getBoundingClientRect();
+      menuHtml = rowsHtml();
+      menu.open({ x: r.left, y: r.bottom + 4, aboveY: r.top, html: menuHtml, className: 'mode-menu', keyboard: !!keyboard, anchor: btn, onClose: () => { hoverOpened = false; btn.setAttribute('aria-expanded', 'false'); } });
+      btn.setAttribute('aria-expanded', 'true');
+      const root = menu.root();
+      if (!root) return;
+      root.addEventListener('click', (e) => {
+        const row = e.target.closest('[data-mode]');
+        if (!row) return;
+        e.stopPropagation();
+        menu.close();
+        o.set(row.dataset.mode);
+      });
+      root.addEventListener('pointerenter', () => clearTimeout(closeTimer));
+      root.addEventListener('pointerleave', () => { if (hoverOpened) scheduleClose(); });
+    }
+    function scheduleClose() {
+      clearTimeout(closeTimer);
+      closeTimer = setTimeout(() => { if (hoverOpened) menu.close(); }, HOVER_INTENT_MS);
+    }
+    const onPointerDown = (e) => { lastPointer = e.pointerType || ''; };
+    const onEnter = (e) => {
+      if (!canHover || e.pointerType === 'touch') return;
+      clearTimeout(closeTimer);
+      if (menu.isOpen()) return;
+      clearTimeout(openTimer);
+      openTimer = setTimeout(() => { hoverOpened = true; openMenu(false); }, HOVER_INTENT_MS);
+    };
+    const onLeave = () => { clearTimeout(openTimer); if (hoverOpened) scheduleClose(); };
+    const onClick = (e) => {
+      e.preventDefault();
+      clearTimeout(openTimer);
+      const touch = lastPointer === 'touch' || !canHover;
+      lastPointer = '';
+      if (touch) { if (menu.isOpen()) menu.close(); else openMenu(false); return; }
+      o.set(step(1));
+    };
+    const onKey = (e) => {
+      if (e.key === 'ArrowDown') { e.preventDefault(); e.stopPropagation(); openMenu(true); }
+    };
+    const scope = o.scope || null;
+    const onDocKey = (e) => {
+      if (!modeChord(e, 'KeyR') || e.repeat) return;
+      const active = document.activeElement;
+      if (scope && !(scope.contains(active) || (active === document.body && scope === document.documentElement))) return;
+      e.preventDefault();
+      e.stopPropagation();
+      o.set(step(e.shiftKey ? -1 : 1));
+    };
+    btn.addEventListener('pointerdown', onPointerDown);
+    btn.addEventListener('pointerenter', onEnter);
+    btn.addEventListener('pointerleave', onLeave);
+    btn.addEventListener('click', onClick);
+    btn.addEventListener('keydown', onKey);
+    if (scope) document.addEventListener('keydown', onDocKey, true);
+    // The button never takes the focus from the field it belongs to.
+    const onMouseDown = (e) => { if (e.button === 0 && document.activeElement && document.activeElement.tagName === 'INPUT') e.preventDefault(); };
+    btn.addEventListener('mousedown', onMouseDown);
+    paint();
+    return {
+      paint,
+      close: () => menu.close(),
+      destroy() {
+        clearTimeout(openTimer);
+        clearTimeout(closeTimer);
+        menu.close();
+        btn.removeEventListener('pointerdown', onPointerDown);
+        btn.removeEventListener('pointerenter', onEnter);
+        btn.removeEventListener('pointerleave', onLeave);
+        btn.removeEventListener('click', onClick);
+        btn.removeEventListener('keydown', onKey);
+        btn.removeEventListener('mousedown', onMouseDown);
+        if (scope) document.removeEventListener('keydown', onDocKey, true);
+      },
+    };
   }
 
   // ── Search box enhancer: live query-syntax highlighting + autocomplete ──
@@ -1544,14 +1670,23 @@
   // you type, plus a token autocomplete dropdown (prefixes, group names, is:/sort: values,
   // since: presets, num:). It also owns the field's chrome, for the app popup AND the
   // demo: the placeholder ("Click here to search..." until focused), the in-field
-  // buttons on the shared reveal (clear with text, sort with a query, regex + options
-  // while focused or in use) and the options panel (the "tune" toggle).
-  //   opts: { getRegex(): bool, getGroups(): string[], onChange(value), onEnter?(),
-  //           optionsHeight?: px (0 = default), saveOptionsHeight?(px | 0),
-  //           sizeRoot?: element the panel is sized against (default: the popup) }
-  // Returns { refresh(), isSuggestOpen(), isOptionsOpen(), openOptions(),
-  //           closeOptions({ instant }) -> bool, setOptionsHeight(px), destroy() }.
-  // The input keeps its id/handlers; we only decorate.
+  // buttons on the shared reveal (clear with text, sort with a query, the mode chip +
+  // options while focused or in use) and the options panel (the "tune" toggle).
+  // It OWNS the query: the canonical text (Advanced syntax, what search and the
+  // chips read) is getQuery(); the field shows it in the search mode (Basic:
+  // literal words; Regex: one pattern; Advanced: the whole language) with the
+  // filters as pills in Basic and Regex (Search.splitQuery / composeQuery).
+  //   opts: { mode, saveMode?(mode), getGroups(): string[], onChange(query), onEnter?(),
+  //           getCensus?(parsed), optionsHeight?: px (0 = default), saveOptionsHeight?(px | 0),
+  //           sizeRoot?: element the panel is sized against (default: the popup),
+  //           menuHost?: where the mode list mounts, toast?({ message, actionLabel,
+  //           onAction }) (a switch that removed part of the search offers Undo),
+  //           prompt?({ title, placeholder, validate }) -> Promise<string|null> (a value
+  //           for a key or "Since..." chip outside Advanced) }
+  // Returns { refresh(), getQuery(), setQuery(query), getMode(), setMode(mode),
+  //           isSuggestOpen(), isOptionsOpen(), openOptions(), closeOptions({ instant })
+  //           -> bool, setOptionsHeight(px), destroy() }.
+  // The input keeps its id; the consumer reads the query from onChange, never the input.
   const SEARCH_PLACEHOLDER_IDLE = 'Click here to search...';
   // The Best/Recent sort toggle's look for the effective mode ('best' | 'new'),
   // painted by both popups (attachSearchBox decides when it is shown).
@@ -1571,10 +1706,17 @@
   function attachSearchBox(inputEl, opts) {
     if (typeof document === 'undefined' || !inputEl) return { refresh() {}, destroy() {}, closeOptions: () => false, isOptionsOpen: () => false };
     const o = opts || {};
-    const getRegex = o.getRegex || (() => false);
     const getGroups = o.getGroups || (() => []);
     const row = inputEl.closest('.search-row') || inputEl.parentElement;
     const field = inputEl.parentElement;
+    // The query and how the field shows it.
+    let mode = Search.normalizeMode(o.mode);
+    let query = '';
+    let pills = []; // Basic / Regex: the filters (Search.splitQuery's pills)
+    const pillsEl = row ? row.querySelector('.search-pills') : null;
+    const pillsFade = pillsEl ? attachSideScroll(pillsEl) : null;
+    const queryFromField = () => (mode === 'advanced' ? inputEl.value : Search.composeQuery(mode, inputEl.value, pills));
+    const emit = () => { if (o.onChange) o.onChange(query); };
     // Backdrop mirror: a div exactly under the input, carrying the SAME text metrics.
     const backdrop = document.createElement('div');
     backdrop.className = 'search-hl';
@@ -1642,13 +1784,13 @@
       let segs = [];
       let shown = [];
       if (Search && Search.validateQuery) {
-        const all = Search.validateQuery(value, { regex: !!getRegex(), groups: getGroups(), caret: caretAt() });
+        const all = Search.validateQuery(value, { mode, groups: getGroups(), caret: caretAt() });
         // A token still being typed at the caret (a regex mid-group) is flagged
         // only once typing pauses.
         shown = all.filter((p) => !p.pending || pendingShown === value);
         clearTimeout(pendingTimer);
         if (all.some((p) => p.pending) && pendingShown !== value) pendingTimer = setTimeout(() => { pendingShown = inputEl.value; paintHighlight(); }, 700);
-        segs = Search.lexQuery(value, { regex: !!getRegex(), problems: shown });
+        segs = Search.lexQuery(value, { mode, problems: shown });
       }
       backdrop.innerHTML = segs.map((s) => `<span class="qh-${s.kind}">${escapeHtml(s.text)}</span>`).join('')
         + (ghost ? `<span class="qh-ghost">${escapeHtml(ghost)}</span>` : '');
@@ -1668,9 +1810,14 @@
         fix.className = 'btn quiet sm accent search-hint-fix';
         fix.innerHTML = `Did you mean <code>${escapeHtml(problem.didYouMean)}</code>?`;
         const neg = problem.token[0] === '-' && problem.token.length > 1 ? '-' : '';
-        fix.dataset.from = String(problem.kind === 'unknown-key' ? problem.start + neg.length : problem.start);
-        fix.dataset.to = String(problem.kind === 'unknown-key' ? problem.valueStart : problem.end);
-        fix.dataset.text = problem.kind === 'unknown-key' ? problem.didYouMean : neg + problem.didYouMean;
+        // problem.fix: an exact repair (a negated filter's inverse, an OR
+        // between two keys); else the bad key or token is swapped.
+        const repair = problem.fix || (problem.kind === 'unknown-key'
+          ? { start: problem.start + neg.length, end: problem.valueStart, text: problem.didYouMean }
+          : { start: problem.start, end: problem.end, text: neg + problem.didYouMean });
+        fix.dataset.from = String(repair.start);
+        fix.dataset.to = String(repair.end);
+        fix.dataset.text = repair.text;
         fix.dataset.for = inputEl.value;
         hintText.appendChild(fix);
       }
@@ -1684,11 +1831,12 @@
       const focusInside = row ? rowFocused() : fieldFocused();
       inputEl.placeholder = focusInside ? SEARCH_PLACEHOLDER_FOCUSED : SEARCH_PLACEHOLDER_IDLE;
       if (row) row.classList.toggle('is-focused', focusInside);
-      const parsed = Search && Search.parseQuery ? Search.parseQuery(value) : null;
+      const parsed = Search && Search.parseQuery ? Search.parseQuery(query) : null;
       const optionFilters = !!(parsed && Search.optionFacetsActive && Search.optionFacetsActive(parsed));
-      if (clearReveal) clearReveal.classList.toggle('open', value.length > 0);
-      if (sortReveal) sortReveal.classList.toggle('open', !!value.trim());
-      if (toolsReveal) toolsReveal.classList.toggle('open', focusInside || value.length > 0 || !!getRegex() || panelOpen);
+      if (clearReveal) clearReveal.classList.toggle('open', query.length > 0);
+      if (sortReveal) sortReveal.classList.toggle('open', !!query.trim());
+      if (toolsReveal) toolsReveal.classList.toggle('open', focusInside || value.length > 0 || pills.length > 0 || mode !== 'basic' || panelOpen);
+      if (modeChip) modeChip.paint();
       if (optsBtn) {
         optsBtn.classList.toggle('active', panelOpen || optionFilters);
         optsBtn.setAttribute('aria-expanded', String(panelOpen));
@@ -1700,16 +1848,16 @@
     // text: typing words with the panel open rebuilds nothing.
     function renderFacets() {
       if (!facetsEl) return;
-      const parsed = Search.parseQuery(inputEl.value);
+      const parsed = Search.parseQuery(query);
       const census = o.getCensus ? o.getCensus(parsed) : null;
-      const key = `${Search.facetKey(parsed)}\u0001${census ? census.id || 'c' : ''}`;
+      const key = `${Search.facetKey(parsed)}\u0001${census ? census.id || 'c' : ''}\u0001${mode}`;
       if (facetsKey === key) return;
       facetsKey = key;
       // A rebuild must not drop a keyboard user's place: the focused chip's twin
       // takes the focus back (else it falls to <body> and Tab starts over).
       const focused = facetsEl.contains(document.activeElement) ? document.activeElement : null;
       const place = focused && focused.dataset ? `.facet-opt[data-row="${focused.dataset.row}"][data-opt="${focused.dataset.opt}"]` : null;
-      facetsEl.innerHTML = renderSearchFacets(inputEl.value, census);
+      facetsEl.innerHTML = renderSearchFacets(query, census, mode);
       const twin = place ? facetsEl.querySelector(place) : null;
       if (twin) twin.focus({ preventScroll: true });
     }
@@ -1730,7 +1878,8 @@
     function computeSuggest() {
       const caret = caretAt();
       const parked = parkedFor !== null && parkedFor === inputEl.value;
-      suggestRes = !parked && caret != null && Search && Search.suggestQuery ? Search.suggestQuery(inputEl.value, caret, { groups: getGroups() }) : null;
+      const census = o.getCensus && mode === 'advanced' ? o.getCensus(Search.parseQuery(query)) : null;
+      suggestRes = !parked && caret != null && Search && Search.suggestQuery ? Search.suggestQuery(inputEl.value, caret, { groups: getGroups(), mode, groupWeights: census && census.groupWeights }) : null;
       ghost = suggestRes && Search.ghostCompletion ? Search.ghostCompletion(inputEl.value, caret, suggestRes) : '';
       suggestFor = inputEl.value;
     }
@@ -1755,24 +1904,168 @@
       closeSuggest();
       suggestRes = null;
       ghost = '';
+      query = queryFromField();
       paintHighlight();
       syncControls();
-      if (o.onChange) o.onChange(inputEl.value);
+      emit();
       return true;
     }
-    // A programmatic change of the query (suggestion, panel chip): repaint, then
-    // hand the new value to the consumer like typed input.
+    // A programmatic change of the FIELD's text (a suggestion, a hint's fix, a
+    // pasted phrase, a key chip in Advanced): repaint, then hand the new query
+    // to the consumer like typed input.
     function commitValue(next, caret) {
       closeSuggest(); // its rows (and their replace ranges) belong to the old text
       autoFill = null;
       inputEl.value = next;
       const at = caret == null ? next.length : caret;
       inputEl.setSelectionRange(at, at);
+      query = queryFromField();
       computeSuggest();
       paintHighlight();
       syncControls();
-      if (o.onChange) o.onChange(inputEl.value);
+      emit();
     }
+    // The field shows `query` in the current mode. The typed text stays as it
+    // is when it still says the same (a chip changed only the pills), so the
+    // caret never jumps.
+    function showQuery(next) {
+      query = String(next == null ? '' : next);
+      if (mode === 'advanced') {
+        pills = [];
+        if (inputEl.value !== query) inputEl.value = query;
+      } else {
+        const v = Search.splitQuery(query, mode);
+        pills = v.pills;
+        if (Search.composeQuery(mode, inputEl.value, []) !== Search.composeQuery(mode, v.text, [])) inputEl.value = v.text;
+        // The query reads back from the field from now on.
+        query = queryFromField();
+      }
+      renderPills();
+    }
+    // A programmatic change of the QUERY (a panel chip, a pill, a prompt):
+    // shown, then handed to the consumer.
+    function commitQuery(next) {
+      closeSuggest();
+      autoFill = null;
+      showQuery(next);
+      computeSuggest();
+      paintHighlight();
+      syncControls();
+      emit();
+    }
+    // ── pills (Basic / Regex): the filters of the query, after the text ──
+    // A value pill shows its key once and its values with the or/and
+    // connective between them (a click flips it); a token pill is the token
+    // painted as Advanced would. x removes a pill; a right-click excludes a
+    // filter value (or clears an exclusion), like the chips.
+    function pillHtml(p, i) {
+      const x = `<button class="pill-x" type="button" tabindex="-1" data-pill-x="${i}" title="Remove" aria-label="Remove ${escapeHtml(p.text)}"><span class="mi">close</span></button>`;
+      let body;
+      if (p.kind === 'facet') {
+        const key = p.field === 'is' ? 'is:' : `${p.field}:`;
+        const conn = p.conn ? `<button class="pill-conn" type="button" tabindex="-1" data-pill-conn="${i}" title="${p.conn === 'or' ? 'Either matches. Click: both must match' : 'Both must match. Click: either matches'}">${p.conn}</button>` : '';
+        body = `<span class="qh-prefix">${escapeHtml(key)}</span>` + p.values.map((v) => `<span class="pill-value" data-pill-value="${i}" data-value="${escapeHtml(String(v.value))}">${escapeHtml(String(v.value))}</span>`).join(conn);
+      } else {
+        body = queryTokenHtml(p.text);
+      }
+      return `<span class="filter-tag search-pill${p.neg ? ' excluded-pill' : ''}" role="listitem" data-pill="${i}" title="${escapeHtml(p.text)}">${body}${x}</span>`;
+    }
+    function renderPills() {
+      if (!pillsEl) return;
+      const show = mode !== 'advanced' && pills.length > 0;
+      pillsEl.hidden = !show;
+      pillsEl.innerHTML = show ? pills.map(pillHtml).join('') : '';
+      if (pillsFade) pillsFade.refresh();
+    }
+    const pillAt = (el, attr) => { const i = Number(el.getAttribute(attr)); return pills[i] || null; };
+    const onPillsMousedown = (e) => { if (e.button === 0 && document.activeElement === inputEl) e.preventDefault(); };
+    const onPillsClick = (e) => {
+      const xBtn = e.target.closest('[data-pill-x]');
+      const connBtn = e.target.closest('[data-pill-conn]');
+      if (xBtn) { e.preventDefault(); const p = pillAt(xBtn, 'data-pill-x'); if (p) commitQuery(Search.removePill(query, mode, p)); return; }
+      if (connBtn) { e.preventDefault(); const p = pillAt(connBtn, 'data-pill-conn'); if (p) commitQuery(Search.setPillConnective(query, mode, p, p.conn === 'or' ? 'and' : 'or')); }
+    };
+    const onPillsContextmenu = (e) => {
+      const pillEl = e.target.closest('[data-pill]');
+      if (!pillEl) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const p = pillAt(pillEl, 'data-pill');
+      if (!p) return;
+      const valueEl = e.target.closest('[data-pill-value]');
+      if (p.kind === 'facet') {
+        const v = valueEl ? valueEl.dataset.value : String(p.values[0].value);
+        const token = { kind: p.field === 'is' ? 'is' : p.field, value: p.field === 'num' ? Number(v) : v };
+        commitQuery(Search.applyFacet(query, token, 'exclude'));
+        return;
+      }
+      // An excluded value clears; a word or a scoped term flips its sign; a
+      // single-valued filter (a date, a size) has no exclusion.
+      const one = Search.parseQuery(p.text);
+      const leaf = one.items.length === 1 && one.items[0].kind === 'leaf' ? one.items[0].leaf : null;
+      if (!leaf) return;
+      if (leaf.neg && (leaf.field === 'group' || leaf.field === 'is' || leaf.field === 'num')) {
+        commitQuery(Search.applyFacet(query, { kind: leaf.field, value: leaf.value }, 'exclude'));
+      } else if (leaf.field === 'content') {
+        const flipped = leaf.neg ? p.text.replace(/^-/, '') : `-${p.text}`;
+        const v = Search.splitQuery(query, mode);
+        commitQuery(Search.composeQuery(mode, v.text, v.pills.map((x) => (x.key === p.key ? { ...x, text: flipped } : x))));
+      }
+    };
+    if (pillsEl) {
+      pillsEl.addEventListener('mousedown', onPillsMousedown);
+      pillsEl.addEventListener('click', onPillsClick);
+      pillsEl.addEventListener('contextmenu', onPillsContextmenu);
+    }
+    // ── the search mode ──
+    // A switch rewrites the field (into Advanced the query shows as it is, so
+    // the format is learned; out of it the filters become pills). Part of the
+    // search no pill can show (a OR b) is named in the mode list first and,
+    // when a switch removes it anyway, offered back with Undo.
+    // how.load: the saved mode arriving (not the user's switch: nothing saved).
+    function setMode(next, how) {
+      const to = Search.normalizeMode(next);
+      if (to === mode) return;
+      const before = { mode, text: inputEl.value, query };
+      const sw = Search.switchModeQuery(query, mode, to, inputEl.value);
+      mode = to;
+      if (o.saveMode && !(how && how.load)) o.saveMode(mode);
+      pills = to === 'advanced' ? [] : sw.pills;
+      inputEl.value = to === 'advanced' ? sw.query : sw.text;
+      query = queryFromField();
+      const at = inputEl.value.length;
+      try { inputEl.setSelectionRange(at, at); } catch {}
+      closeSuggest();
+      facetsKey = null;
+      renderPills();
+      computeSuggest();
+      paintHighlight();
+      syncControls();
+      emit();
+      if (sw.dropped.length && o.toast) {
+        o.toast({ message: `${MODE_INFO[to].label} search: removed ${sw.dropped.map((d) => d.text).join(', ')}`, actionLabel: 'Undo', onAction: () => {
+          mode = before.mode;
+          if (o.saveMode) o.saveMode(mode);
+          pills = mode === 'advanced' ? [] : Search.splitQuery(before.query, mode).pills;
+          inputEl.value = before.text;
+          query = before.query;
+          facetsKey = null;
+          renderPills();
+          paintHighlight();
+          syncControls();
+          emit();
+        } });
+      }
+    }
+    const modeBtn = row ? row.querySelector('.mode-btn') : null;
+    const lossText = (to) => Search.modeSwitchLoss(query, mode, to).map((d) => d.text).join(', ');
+    const modeChip = modeBtn ? attachModeChip(modeBtn, {
+      get: () => mode,
+      set: setMode,
+      loss: lossText,
+      menuHost: o.menuHost,
+      scope: o.sizeRoot || inputEl.closest('.bc-popup') || document.documentElement,
+    }) : null;
     function applySuggestion(i) {
       const s = suggestRes && suggestRes.suggestions[i];
       if (!s) return;
@@ -1846,23 +2139,40 @@
       const opt = rowDef && rowDef.options[Number(chip.dataset.opt)];
       return opt ? { chip, opt } : null;
     }
+    // A key to give a value to (a key chip, a "Since..." chip): in Advanced its
+    // prefix goes on the end of the field for typing (the autocomplete offers
+    // the values); elsewhere the field is not syntax, so a prompt asks for the
+    // value and the filter lands as a pill. op: a size direction a bare
+    // number takes (Longer than: 200 -> len:>200).
+    function askForValue(key, op) {
+      if (mode === 'advanced' || !o.prompt) {
+        if (mode !== 'advanced') setMode('advanced');
+        const base = inputEl.value.replace(/\s+$/, '');
+        commitValue(`${base}${base ? ' ' : ''}${key}:${op || ''}`);
+        inputEl.focus();
+        updateSuggest();
+        return;
+      }
+      const ask = (Search.FIELD_ASK && Search.FIELD_ASK[key]) || { ask: key, example: '' };
+      const validate = (answer) => { const r = Search.promptQuery(query, key, answer, { op, groups: getGroups() }); return r.error || null; };
+      Promise.resolve(o.prompt({ title: ask.ask, placeholder: ask.example, validate })).then((answer) => {
+        if (answer == null) return;
+        const r = Search.promptQuery(query, key, answer, { op, groups: getGroups() });
+        if (!r.error) commitQuery(r.query);
+      });
+    }
     function applyOption(opt, intent) {
-      const value = inputEl.value;
       if (opt.prompt) {
-        // A prompt option either clears its facet or puts its prefix in the field
-        // for typing (the autocomplete then offers the presets).
-        if (Search.facetTokenState(Search.parseQuery(value), { kind: opt.token.kind })) {
-          commitValue(Search.applyFacet(value, { kind: opt.token.kind, value: Search.parseQuery(value)[opt.token.kind] }, 'include'));
-        } else {
-          const base = value.replace(/\s+$/, '');
-          commitValue(`${base}${base ? ' ' : ''}${opt.prompt}`);
-          inputEl.focus();
-          updateSuggest();
-        }
+        // A lit prompt chip clears its filter; else it asks for a value.
+        const parsed = Search.parseQuery(query);
+        const rowDef = Search.OPTION_FACETS.find((r) => r.options.includes(opt));
+        if (rowDef && Search.promptOptionState(parsed, rowDef, opt)) {
+          commitQuery(Search.clearFacet(query, opt.token.kind));
+        } else askForValue(opt.token.kind, opt.prompt.op);
         return;
       }
       const single = ['since', 'before', 'len', 'lines', 'words'].includes(opt.token.kind);
-      commitValue(Search.applyFacet(value, opt.token, single ? 'include' : intent));
+      commitQuery(Search.applyFacet(query, opt.token, single ? 'include' : intent));
     }
     const onPanelClick = (e) => {
       // A key chip: its prefix goes on the end of the query (a space before it)
@@ -1871,10 +2181,7 @@
       if (key && key.dataset.insert) {
         e.preventDefault();
         e.stopPropagation();
-        const base = inputEl.value.replace(/\s+$/, '');
-        commitValue(`${base}${base ? ' ' : ''}${key.dataset.insert}`);
-        inputEl.focus();
-        updateSuggest();
+        askForValue(key.dataset.insert.replace(/:$/, ''));
         return;
       }
       const hit = facetFromEvent(e);
@@ -1931,7 +2238,7 @@
     const onInput = () => {
       if (autoFill && autoFill.text !== inputEl.value) autoFill = null; // typed over (or deleted) the fill
       updateSuggest();
-      if (!maybeAutoFill()) { paintHighlight(); syncControls(); }
+      if (!maybeAutoFill()) { query = queryFromField(); paintHighlight(); syncControls(); emit(); }
       lastCaret = caretAt(); // the keyup that follows is not a caret move
     };
     const onScroll = () => { backdrop.scrollLeft = inputEl.scrollLeft; };
@@ -1994,12 +2301,12 @@
     const onPaste = (e) => {
       const raw = rawPaste && Date.now() - rawPaste < 1000;
       rawPaste = false;
-      if (raw || !Search || !Search.quotePastedText) return;
+      if (raw || mode === 'regex' || !Search || !Search.quotePastedText) return;
       const v = inputEl.value;
       const start = inputEl.selectionStart == null ? v.length : inputEl.selectionStart;
       const end = inputEl.selectionEnd == null ? v.length : inputEl.selectionEnd;
       if (Search.insideQuote(v, start)) return;
-      const quoted = Search.quotePastedText(e.clipboardData ? e.clipboardData.getData('text') : '');
+      const quoted = Search.quotePastedText(e.clipboardData ? e.clipboardData.getData('text') : '', mode);
       if (!quoted) return;
       e.preventDefault();
       const before = start > 0 && !/\s/.test(v[start - 1]) ? ' ' : '';
@@ -2036,10 +2343,19 @@
     inputEl.addEventListener('mouseup', onCaretMove);
     if (typeof window !== 'undefined') { window.addEventListener('focus', onWindowFocus); window.addEventListener('blur', onWindowFocus); }
     if (row) { row.addEventListener('focusin', onRowFocusChange); row.addEventListener('focusout', onRowFocusChange); }
+    inputEl.value = '';
+    renderPills();
     paintHighlight();
     syncControls();
     return {
       refresh,
+      getQuery: () => query,
+      // The consumer changed the query (cleared it, a chip bar click, the
+      // empty state's nudge): shown in the current mode. No onChange (the
+      // consumer already has it).
+      setQuery: (next) => { const given = String(next == null ? '' : next); showQuery(given); refresh(); if (query !== given) emit(); },
+      getMode: () => mode,
+      setMode: (next, how) => setMode(next, how),
       isSuggestOpen: () => suggestOpen,
       isOptionsOpen: () => panelOpen,
       openOptions: () => setPanel(true),
@@ -2048,6 +2364,13 @@
       setOptionsHeight: (px) => { optionsHeight = Math.max(0, Math.round(Number(px) || 0)); if (panelOpen) applyOptionsHeight(effectiveOptionsHeight()); },
       destroy() {
         clearTimeout(pendingTimer);
+        if (modeChip) modeChip.destroy();
+        if (pillsEl) {
+          pillsEl.removeEventListener('mousedown', onPillsMousedown);
+          pillsEl.removeEventListener('click', onPillsClick);
+          pillsEl.removeEventListener('contextmenu', onPillsContextmenu);
+        }
+        if (pillsFade) pillsFade.detach();
         inputEl.removeEventListener('beforeinput', onBeforeInput);
         inputEl.removeEventListener('input', onInput);
         inputEl.removeEventListener('paste', onPaste);
@@ -2137,6 +2460,7 @@
     let el = null;
     let onClosed = null;
     let opener = null;
+    let anchor = null;
     function close() {
       if (!el) return;
       const hadFocus = el.contains(document.activeElement);
@@ -2148,12 +2472,13 @@
       window.removeEventListener('resize', close, true);
       const back = opener;
       opener = null;
+      anchor = null;
       if (hadFocus && back && back.isConnected && typeof back.focus === 'function') back.focus({ preventScroll: true });
       const done = onClosed;
       onClosed = null;
       if (done) done();
     }
-    function onOutside(e) { if (el && !el.contains(e.target)) close(); }
+    function onOutside(e) { if (el && !el.contains(e.target) && !(anchor && anchor.contains(e.target))) close(); }
     // Scrolling the list under an open menu would leave it floating over rows
     // that moved away — close instead (scrolls inside the menu are fine).
     function onScroll(e) { if (el && !el.contains(e.target)) close(); }
@@ -2247,10 +2572,12 @@
     // closest('[data-id]')), className (an extra class), onClose(), aboveY (the
     // anchor's top edge: when the menu does not fit below y it opens above the
     // anchor instead of being pushed up over it), keyboard (opened from the
-    // keyboard: focus the first row; default = the last input was a key) }
+    // keyboard: focus the first row; default = the last input was a key),
+    // anchor (an element a press on does not close the menu: its own button) }
     function open(opts) {
       close();
       const o = opts || {};
+      anchor = o.anchor || null;
       const active = document.activeElement;
       opener = active && active !== document.body ? active : null;
       el = document.createElement('div');
@@ -3107,7 +3434,7 @@
     // Buttons are the shared .btn set: Cancel is the default button, the
     // confirm is .primary, or .danger when the caller passes {danger:true}.
     const confirmEl = make('<div class="dialog"><h3 data-x="title"></h3><p data-x="msg"></p><div class="dialog-preview" data-x="preview"></div><div class="dialog-btns"><button type="button" class="btn" data-x="no"></button><button type="button" class="btn primary" data-x="yes"></button></div></div>');
-    const promptEl = make('<div class="dialog"><h3 data-x="title"></h3><input class="prompt-input" type="text" autocomplete="off" spellcheck="false" data-x="input"><div class="dialog-btns"><button type="button" class="btn" data-x="no"></button><button type="button" class="btn primary" data-x="yes"></button></div></div>');
+    const promptEl = make('<div class="dialog"><h3 data-x="title"></h3><input class="prompt-input" type="text" autocomplete="off" spellcheck="false" data-x="input"><p class="prompt-error" data-x="error" role="alert" hidden></p><div class="dialog-btns"><button type="button" class="btn" data-x="no"></button><button type="button" class="btn primary" data-x="yes"></button></div></div>');
     const q = (parent, name) => parent.querySelector(`[data-x="${name}"]`);
     let activeCancel = null;
     // Keys: Esc cancels. Enter confirms a non-destructive dialog; a destructive
@@ -3116,7 +3443,8 @@
     // red button needs a click or a deliberate Tab to it. Focus moves into the
     // dialog (the field, else the default button) and goes back on close when
     // it came from a field or the keyboard.
-    function run(overlay, setup, getValue, focusEl, danger) {
+    // accept(value): a value it refuses (returns false) keeps the dialog open.
+    function run(overlay, setup, getValue, focusEl, danger, accept) {
       return new Promise((resolve) => {
         setup();
         overlay.classList.add('show');
@@ -3134,7 +3462,7 @@
           if (restore) back.focus({ preventScroll: true });
           resolve(value);
         };
-        const onYes = () => finish(getValue());
+        const onYes = () => { const v = getValue(); if (accept && v != null && accept(v) === false) return; finish(v); };
         const onNo = () => finish(getValue(true));
         const onBackdrop = (e) => { if (e.target === overlay) onNo(); };
         const onKey = (e) => {
@@ -3177,16 +3505,32 @@
         q(confirmEl, 'no').textContent = o.cancelLabel || 'Cancel';
       }, (cancelled) => !cancelled, q(confirmEl, o.danger ? 'no' : 'yes'), !!o.danger);
     }
+    // opts: { title, value, placeholder (an example answer), okLabel,
+    // cancelLabel, validate(value) -> an error to show (the dialog stays open)
+    // or null }.
     function prompt(opts) {
       const o = typeof opts === 'string' ? { title: opts } : (opts || {});
       const input = q(promptEl, 'input');
+      const error = q(promptEl, 'error');
+      const showError = (text) => { error.textContent = text || ''; error.hidden = !text; };
+      const onInput = () => showError('');
+      input.addEventListener('input', onInput);
+      const accept = typeof o.validate === 'function' ? (value) => {
+        const problem = o.validate(value);
+        if (!problem) return true;
+        showError(problem);
+        input.focus();
+        return false;
+      } : null;
       const result = run(promptEl, () => {
         q(promptEl, 'title').textContent = o.title || '';
         input.value = o.value || '';
+        input.placeholder = o.placeholder || '';
+        showError('');
         q(promptEl, 'yes').textContent = o.okLabel || 'OK';
         q(promptEl, 'no').textContent = o.cancelLabel || 'Cancel';
-      }, (cancelled) => cancelled ? null : (input.value.trim() || null), input, false);
-      return result;
+      }, (cancelled) => cancelled ? null : (input.value.trim() || null), input, false, accept);
+      return result.then((v) => { input.removeEventListener('input', onInput); return v; });
     }
     return {
       confirm,
@@ -4302,13 +4646,13 @@
     function openBulkMenu(x, y, keyboard) {
       const info = selectionInfo();
       const selItems = info.ids.map((id) => a.itemById(id)).filter(Boolean);
-      menu.open({ x, y, keyboard, html: renderBulkMenu(info, { groups: groupNames(), selectedItems: selItems }) });
+      menu.open({ x, y, keyboard, html: renderBulkMenu(info, { groups: groupNames(), selectedItems: selItems, items: allItems() }) });
     }
     // The bar's dedicated Group button: a popover with JUST the tri-state group
     // tree (no submenu hop). The full bulk menu stays on right-click.
     function openBulkGroupMenu(x, y) {
       const selItems = selectionInfo().ids.map((id) => a.itemById(id)).filter(Boolean);
-      menu.open({ x, y, html: `<div class="bc-menu-list bc-group-list">${bulkGroupTreeHtml(groupNames(), selItems)}</div>` });
+      menu.open({ x, y, html: `<div class="bc-menu-list bc-group-list">${bulkGroupTreeHtml(groupNames(), selItems, Search.groupWeights(allItems()))}</div>` });
     }
     // The popup's single-clip menu: also holds the row's buttons out while it
     // is open and offers "Select N similar" for a text clip (N over all
@@ -4353,7 +4697,7 @@
     function openGroupPickerAt(id, x, y, aboveY) {
       const item = a.itemById(id);
       if (!item) return;
-      menu.open({ id, x, y, aboveY, onClose: releaseOnClose(id), html: `<div class="bc-menu-list bc-group-list">${clipGroupTreeHtml(groupNames(), item)}</div>` });
+      menu.open({ id, x, y, aboveY, onClose: releaseOnClose(id), html: `<div class="bc-menu-list bc-group-list">${clipGroupTreeHtml(groupNames(), item, Search.groupWeights(allItems()))}</div>` });
       hold(id);
     }
     // A row's numpad badge / ghost #: the keypad (the same renderKeypadMenu the
@@ -4766,27 +5110,25 @@
       closeMenu: () => { menu.close(); closeTopLayerSubmenus(a.menuHost || (typeof document !== 'undefined' ? document : null)); },
     };
   }
+  // What a search hands the editor's find bar when a clip opens from it: the
+  // words and patterns it searched for, never its filters (group:work is not
+  // text in the clip). One word or phrase = Basic, one /regex/ = Regex, more =
+  // one Regex alternation, so the find shows every term the search matched.
+  // {} = nothing to find.
+  function editorFindFor(query) {
+    const terms = Search.parseQuery(query || '').terms
+      .filter((t) => t.scope !== 'title' && (!t.regex || Search.compileTerm(t.value, { regex: true }).valid));
+    if (!terms.length) return {};
+    if (terms.length === 1) return { find: terms[0].value, findMode: terms[0].regex ? 'regex' : 'basic' };
+    return { find: terms.map((t) => (t.regex ? `(?:${t.value})` : Search.escapeRegExp(t.value))).join('|'), findMode: 'regex' };
+  }
   // Pure find helpers (shared by the editor's find bar). findAllMatches returns
-  // every {start,end} span so the editor can navigate/count; countWords for the
+  // every {start,end} span so the editor can navigate/count (the engine's ONE
+  // compile primitive: opts { regex, caseSensitive }); countWords for the
   // footer stats. Kept pure so they're unit-testable without a DOM.
-  function findAllMatches(text, query, regex) {
-    const raw = String(text || '');
+  function findAllMatches(text, query, opts) {
     const q = String(query || '');
-    if (!q) return [];
-    const out = [];
-    try {
-      const re = regex
-        ? new RegExp(q, 'gi')
-        : new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
-      let m;
-      let guard = 0;
-      while ((m = re.exec(raw)) && guard < 100000) {
-        if (m[0] === '') { re.lastIndex += 1; continue; }
-        out.push({ start: m.index, end: m.index + m[0].length });
-        guard += 1;
-      }
-    } catch { return []; }
-    return out;
+    return q ? Search.compileTerm(q, opts || {}).all(String(text || '')) : [];
   }
   function countWords(text) {
     const t = String(text || '').trim();
@@ -4980,7 +5322,8 @@
       })}
       <div class="bc-find" data-x="findbar" hidden>
         <input class="bc-find-input" type="text" placeholder="Find" spellcheck="false" autocomplete="off" data-x="findinput">
-        <button class="icon-btn rx-btn" type="button" data-x="findregex" title="Regex find" aria-label="Regex find"><span class="mi">regular_expression</span></button>
+        <button class="icon-btn mode-btn" type="button" data-x="findmode" aria-haspopup="menu" title="Find mode" aria-label="Find mode: Basic"><span class="mi">text_fields</span></button>
+        <button class="icon-btn case-btn" type="button" data-x="findcase" aria-pressed="false" title="Match case" aria-label="Match case"><span class="mi">match_case</span></button>
         <span class="bc-find-count" data-x="findcount"></span>
         <button class="icon-btn" type="button" data-x="findprev" title="Previous (Shift+Enter)"><span class="mi">keyboard_arrow_up</span></button>
         <button class="icon-btn" type="button" data-x="findnext" title="Next (Enter)"><span class="mi">keyboard_arrow_down</span></button>
@@ -5004,7 +5347,8 @@
     const saveStateEl = q('savestate');
     const findBar = q('findbar');
     const findInput = q('findinput');
-    const findRegexBtn = q('findregex');
+    const findModeBtn = q('findmode');
+    const findCaseBtn = q('findcase');
     const findCount = q('findcount');
     const findHl = q('findhl');
     area.value = originalText;
@@ -5015,11 +5359,22 @@
     let lastCommittedTitle = originalTitle;
     let matches = [];
     let findIdx = -1;
-    let findRegex = !!o.initialFindRegex;
+    // The find bar's mode (Basic: the text as typed; Regex: one pattern) and
+    // match case, kept per device (o.findPrefs / o.saveFindPrefs). A popup
+    // hand-off (o.initialFindMode) sets the mode for that search only.
+    const prefs = o.findPrefs || {};
+    let findMode = prefs.mode === 'regex' ? 'regex' : 'basic';
+    let findCase = !!prefs.caseSensitive;
 
     function payload() { return { text: area.value, title: cleanTitle(titleInput.value) }; }
     function emitInput() { if (o.onInput) o.onInput(payload()); }
-    function updateRegexButton() { findRegexBtn.classList.toggle('active', findRegex); }
+    const saveFindPrefs = () => { if (o.saveFindPrefs) o.saveFindPrefs({ mode: findMode, caseSensitive: findCase }); };
+    function updateFindButtons() {
+      if (findModeChip) findModeChip.paint();
+      findCaseBtn.classList.toggle('active', findCase);
+      findCaseBtn.setAttribute('aria-pressed', String(findCase));
+      findCaseBtn.title = `Match case (${modeChordLabel('C')})`;
+    }
     // The bar's title field: an untitled note shows its first line, dim.
     function updateTitleHint() { titleInput.placeholder = untitledHint(area.value); }
 
@@ -5191,8 +5546,11 @@
       syncHlScroll();
     }
     function recomputeMatches() {
-      matches = findAllMatches(area.value, findInput.value, findRegex);
-      if (!matches.length) { findIdx = -1; findCount.textContent = findInput.value ? '0/0' : ''; }
+      const term = findInput.value ? Search.compileTerm(findInput.value, { regex: findMode === 'regex', caseSensitive: findCase }) : null;
+      matches = term ? term.all(area.value) : [];
+      findCount.title = term && !term.valid ? `Not a valid regular expression: ${term.error}.` : '';
+      findBar.classList.toggle('bad-pattern', !!(term && !term.valid));
+      if (!matches.length) { findIdx = -1; findCount.textContent = term && !term.valid ? 'Invalid' : findInput.value ? '0/0' : ''; }
       else if (findIdx < 0 || findIdx >= matches.length) findIdx = 0;
       renderFindHighlights();
     }
@@ -5205,20 +5563,20 @@
       const opt = options || {};
       findBar.hidden = false;
       if (query != null) findInput.value = String(query || '');
-      if (opt.regex != null) findRegex = !!opt.regex;
-      updateRegexButton();
+      if (opt.mode != null) findMode = opt.mode === 'regex' ? 'regex' : 'basic';
+      updateFindButtons();
       findIdx = -1;
       recomputeMatches();
       selectMatch({ preserveFocus: true });
       findInput.focus();
       if (opt.select !== false) findInput.select();
     }
-    function openFind(query, regex) {
-      if (query != null) { setFindQuery(query, { regex, select: true }); return; }
+    function openFind(query, mode) {
+      if (query != null) { setFindQuery(query, { mode, select: true }); return; }
       findBar.hidden = false;
       const sel = area.value.slice(area.selectionStart, area.selectionEnd);
       if (sel && !sel.includes('\n')) findInput.value = sel.slice(0, 120);
-      updateRegexButton();
+      updateFindButtons();
       findIdx = -1;
       recomputeMatches();
       selectMatch({ preserveFocus: true });
@@ -5251,7 +5609,19 @@
       if (e.key === 'Enter') { e.preventDefault(); step(e.shiftKey ? -1 : 1); }
       else if (e.key === 'Escape') { e.preventDefault(); closeFind(); }
     });
-    findRegexBtn.onclick = () => { findRegex = !findRegex; updateRegexButton(); findIdx = -1; recomputeMatches(); selectMatch({ preserveFocus: true }); findInput.focus(); };
+    const refind = () => { updateFindButtons(); findIdx = -1; recomputeMatches(); selectMatch({ preserveFocus: true }); };
+    // The same mode chip as the popup's search, with its two find modes.
+    const findModeChip = attachModeChip(findModeBtn, {
+      modes: ['basic', 'regex'],
+      get: () => findMode,
+      set: (m) => { findMode = m === 'regex' ? 'regex' : 'basic'; saveFindPrefs(); refind(); findInput.focus(); },
+      menuHost: o.menuHost,
+      scope: findBar,
+    });
+    const toggleCase = () => { findCase = !findCase; saveFindPrefs(); refind(); };
+    findCaseBtn.onclick = () => { toggleCase(); findInput.focus(); };
+    findCaseBtn.addEventListener('mousedown', (e) => { if (e.button === 0) e.preventDefault(); });
+    findBar.addEventListener('keydown', (e) => { if (modeChord(e, 'KeyC') && !e.repeat) { e.preventDefault(); e.stopPropagation(); toggleCase(); } });
     q('findprev').onclick = () => step(-1);
     q('findnext').onclick = () => step(1);
     q('findclose').onclick = closeFind;
@@ -5283,12 +5653,12 @@
 
     updateStats();
     updateTitleHint();
-    updateRegexButton();
+    updateFindButtons();
     refreshSaveState();
     const focusTitle = () => { titleInput.focus(); titleInput.select(); };
     setTimeout(() => {
       if (o.initialFocusTitle) focusTitle();
-      else if (o.initialFind) openFind(o.initialFind, !!o.initialFindRegex);
+      else if (o.initialFind) openFind(o.initialFind, o.initialFindMode);
       else area.focus();
     }, 0);
     return {
@@ -6213,8 +6583,6 @@
     sourceGroupsFromFilters,
     buildTagTree,
     renderTagTreeMenu,
-    prepareQuery,
-    matchesQuery,
     asFilterSet,
     filterStateFrom,
     ensureFilterState,
@@ -6309,6 +6677,8 @@
     createImageZoom,
     createClipController,
     findAllMatches,
+    editorFindFor,
+    attachModeChip,
     countWords,
     editorSaveState,
     lineNumberAtIndex,

@@ -127,7 +127,7 @@
       <dl class="spec">
         <div>
           <dt>Search with filters</dt>
-          <dd>Plain words match titles and text. Filters narrow the list, and a minus in front excludes one. Regex is a click away when words are not enough.
+          <dd>Plain words match titles and text, exactly as typed. Filters narrow the list, and a right-click excludes one. One click switches to Regex for a pattern, or to Advanced for OR, brackets and every filter as text.
             <span class="tries">
               <button class="try" type="button" data-try="group:work">group:work</button>
               <button class="try" type="button" data-try="is:pinned">is:pinned</button>
@@ -225,7 +225,7 @@
         closeBtn: "demo-close-button",
         search: "demo-search",
         searchClear: "demo-clear-search",
-        regexBtn: "demo-regex",
+        modeBtn: "demo-mode",
         sortBtn: "demo-sort",
         groupFilters: "filter-chips",
         list: "clip-list",
@@ -357,7 +357,7 @@
 
     // The search box TEXT is the single source of truth (same model as the app): facets live
     // as group:/is:/num:/since: tokens inside `query`; chip state is DERIVED from it.
-    const state = { query: "", regex: false, sortMode: null };
+    const state = { query: "", sortMode: null };
     const facetState = () => Core.search.facetState(Core.search.parseQuery(state.query));
     const installState = { mode: "installer", downloadOS: "win" };
     const clipList = document.getElementById("clip-list");
@@ -365,7 +365,6 @@
     const search = document.getElementById("demo-search");
     const clearSearch = document.getElementById("demo-clear-search");
     const filterChips = document.getElementById("filter-chips");
-    const regexButton = document.getElementById("demo-regex");
     const settingsButton = document.getElementById("demo-settings-button");
     const settingsBack = document.getElementById("demo-settings-back");
     const settingsPanel = document.getElementById("demo-settings");
@@ -446,7 +445,6 @@
       return Core.renderClipItem(clip, {
         imageSrc: item => item.imageSrc,
         query: state.query,
-        regex: state.regex,
         selection: controller ? controller.selection() : null,
         actionsHtml: Core.renderClipActions(clip),
       });
@@ -464,7 +462,7 @@
         tsAt: (i) => Number(visible[i] && visible[i].ts) || 0,
         mode: Core.search.rankMode(Core.search.parseQuery(state.query), state.sortMode),
         queryKey: state.query,
-        emptyHtml: () => Core.renderEmptyState({ total: clips.length, query: state.query, regex: state.regex, groups: labels, nudgeHtml: Core.renderRelaxNudge(Core.search.bestRelaxation(demoSearchDocs(), state.query, { regex: state.regex, cache: demoRelaxCache })) }),
+        emptyHtml: () => Core.renderEmptyState({ total: clips.length, query: state.query, groups: labels, nudgeHtml: Core.renderRelaxNudge(Core.search.bestRelaxation(demoSearchDocs(), state.query, { cache: demoRelaxCache })) }),
       });
     }
 
@@ -689,17 +687,16 @@
       if (delay) relativeTimeTimer = window.setTimeout(scheduleRelativeTimeRefresh, delay);
     }
 
-    // The clear / sort / regex / options buttons slide in and out with the field's
+    // The clear / sort / mode / options buttons slide in and out with the field's
     // state (Core.attachSearchBox owns that); the demo only keeps their titles.
     function updateClearControls() {
       clearSearch.title = Core.hasActiveFilters({ query: state.query }) ? "Clear search and filters" : "Clear search";
     }
 
     function clearSearchAndFilters() {
-      search.value = "";
       state.query = "";        // clears content AND facet tokens (both live in the query)
       state.sortMode = null;
-      if (typeof demoSearchBox !== "undefined" && demoSearchBox) demoSearchBox.refresh();
+      if (typeof demoSearchBox !== "undefined" && demoSearchBox) demoSearchBox.setQuery("");
       controller.onQueryChange();
       updateClearControls();
       renderClips();
@@ -768,8 +765,7 @@
       setFilterIntent: (filter, intent) => {
         const token = String(filter).startsWith("__") ? { kind: "builtin", value: filter } : { kind: "group", value: filter };
         state.query = Core.search.applyFacet(state.query, token, intent);
-        search.value = state.query;
-        if (typeof demoSearchBox !== "undefined" && demoSearchBox) demoSearchBox.refresh();
+        if (typeof demoSearchBox !== "undefined" && demoSearchBox) demoSearchBox.setQuery(state.query);
         updateClearControls();
         controller.onQueryChange();
       },
@@ -777,8 +773,7 @@
       // The empty-result nudge rewrites the whole query (one filter dropped).
       setQuery: (next) => {
         state.query = String(next || "");
-        search.value = state.query;
-        if (typeof demoSearchBox !== "undefined" && demoSearchBox) demoSearchBox.refresh();
+        if (typeof demoSearchBox !== "undefined" && demoSearchBox) demoSearchBox.setQuery(state.query);
         updateClearControls();
         controller.onQueryChange();
       },
@@ -797,13 +792,8 @@
       createGroup: (name) => { if (!labels.includes(name)) labels.push(name); },
       deleteGroup: (group) => {
         labels = labels.filter((l) => l !== group);
-        const p = Core.search.parseQuery(state.query);
-        const norm = Core.search.normalizeTagName(group);
-        p.groups = p.groups.filter((g) => g !== norm);
-        p.negGroups = p.negGroups.filter((g) => g !== norm);
-        state.query = Core.search.serializeQuery(p);
-        search.value = state.query;
-        if (typeof demoSearchBox !== "undefined" && demoSearchBox) demoSearchBox.refresh();
+        state.query = Core.search.stripFacet(state.query, { kind: "group", value: group });
+        if (typeof demoSearchBox !== "undefined" && demoSearchBox) demoSearchBox.setQuery(state.query);
         stripGroupFromClips(group);
       },
       deleteClip: (id) => { clips = Core.deleteItem(clips, id); },
@@ -824,7 +814,7 @@
         showToast("Copied");
         renderClips();
       },
-      editClip: (id, _itemEl, options) => openDemoEditor(id, { ...(state.query ? { find: state.query, regex: state.regex } : {}), ...(options || {}) }),
+      editClip: (id, _itemEl, options) => openDemoEditor(id, { ...Core.editorFindFor(state.query), ...(options || {}) }),
       // The open editor's title field is authoritative for its clip (it rides
       // every commit), so a rename from its menu goes through it, as in the app.
       setClipTitle: (id, title) => {
@@ -949,16 +939,26 @@
     demoWindowEl.addEventListener("mouseover", (event) => controller.onMouseover(event));
     demoWindowEl.addEventListener("mouseout", (event) => controller.onMouseout(event));
 
-    // Live syntax highlighting + autocomplete + the options panel (shared helper),
-    // same as the app popup. The panel height is kept per visitor in localStorage.
+    // The shared search box, same as the app popup: it owns the query (the field
+    // shows it in the search mode, filters as pills), live highlighting,
+    // autocomplete and the options panel. The panel height and the search
+    // mode are kept per visitor in localStorage (the app keeps them per device).
     const DEMO_OPTIONS_HEIGHT_KEY = "boardclip-demo-options-height";
+    const DEMO_SEARCH_MODE_KEY = "boardclip-demo-search-mode";
+    const DEMO_FIND_PREFS_KEY = "boardclip-demo-find";
     let demoOptionsHeight = 0;
+    let demoSearchMode = "basic";
     try { demoOptionsHeight = Number(localStorage.getItem(DEMO_OPTIONS_HEIGHT_KEY)) || 0; } catch {}
+    try { demoSearchMode = localStorage.getItem(DEMO_SEARCH_MODE_KEY) || "basic"; } catch {}
     const demoSearchBox = Core.attachSearchBox(search, {
-      getRegex: () => state.regex,
+      mode: demoSearchMode,
+      saveMode: (mode) => { try { localStorage.setItem(DEMO_SEARCH_MODE_KEY, mode); } catch {} },
       getGroups: () => labels,
       getCensus: (parsed) => demoCensus.get(parsed),
       onChange: (v) => { state.query = v; controller.onQueryChange(); renderClips(); },
+      menuHost: demoWindowEl,
+      toast: (opts) => Core.showActionToast(demoToast, opts),
+      prompt: (opts) => dialogs.prompt(opts),
       optionsHeight: demoOptionsHeight,
       saveOptionsHeight: (px) => { try { localStorage.setItem(DEMO_OPTIONS_HEIGHT_KEY, String(px)); } catch {} },
     });
@@ -966,20 +966,8 @@
     // cannot move its window, so a drag is a no-op here.
     Core.attachWindowDrag(demoMainView.querySelector(".sticky"), { onClick: () => search.focus() });
     Core.attachWindowDrag(settingsPanel.querySelector(".settings-hdr"), {});
-    search.addEventListener("input", () => {
-      state.query = search.value;
-      controller.onQueryChange();
-      renderClips();
-    });
     clearSearch.addEventListener("click", () => {
       clearSearchAndFilters();
-      search.focus();
-    });
-    regexButton.addEventListener("click", () => {
-      state.regex = !state.regex;
-      regexButton.classList.toggle("active", state.regex);
-      if (demoSearchBox) demoSearchBox.refresh();
-      renderClips();
       search.focus();
     });
     // Best⇄Recent toggle: same behavior as the app (visible while searching).
@@ -1058,7 +1046,10 @@
         initialText: currentText,
         initialTitle: currentTitle,
         initialFind: options.find || "",
-        initialFindRegex: !!options.regex,
+        initialFindMode: options.findMode,
+        findPrefs: (() => { try { return JSON.parse(localStorage.getItem(DEMO_FIND_PREFS_KEY) || "{}") || {}; } catch { return {}; } })(),
+        saveFindPrefs: (prefs) => { try { localStorage.setItem(DEMO_FIND_PREFS_KEY, JSON.stringify(prefs)); } catch {} },
+        menuHost: demoWindowEl,
         initialFocusTitle: !!options.focusTitle,
         title: clip ? "Edit clip" : "New clip",
         onCommit: (payload) => {

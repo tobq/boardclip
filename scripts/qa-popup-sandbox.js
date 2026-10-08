@@ -75,6 +75,7 @@ async function main() {
     name: 'popup',
     settings: {
       diagnostics_enabled: PERF, // perf mode: the renderer logs every refresh/rebuild with ms
+      search_mode: 'advanced', // the checks type the language's tokens (is:, group:, ...)
       max_age_days: 365,
       max_size_gb: 5,
     },
@@ -568,11 +569,9 @@ async function main() {
       r.afterFix = searchEl.value;
       await type('is:pin');
       r.validPrefixHint = hint().show;
-      // Regex error (regex mode, a finished token).
-      regexBtn.click(); await tick();
-      await type('(ab x');
+      // Regex error (a finished /regex/ term).
+      await type('/(ab/ x');
       r.regexHint = hint();
-      regexBtn.click(); await tick();
       await type('');
       r.noHint = hint();
       // Ghost: a key being typed shows its rest; Tab takes it.
@@ -623,7 +622,7 @@ async function main() {
     check('invalid token: one hint line with "Did you mean"', sbx.invalidHint.show && /Did you mean title:\?/.test(sbx.invalidHint.text), JSON.stringify(sbx.invalidHint));
     check('the hint\'s fix rewrites the key', sbx.afterFix === 'title:foo', sbx.afterFix);
     check('a valid prefix is never flagged while typed', !sbx.validPrefixHint);
-    check('regex mode: a broken regex shows its error', sbx.regexHint.show && /regular expression/.test(sbx.regexHint.text), JSON.stringify(sbx.regexHint));
+    check('a broken /regex/ term shows its error', sbx.regexHint.show && /regular expression/.test(sbx.regexHint.text), JSON.stringify(sbx.regexHint));
     check('no hint = the line takes 0 px', !sbx.noHint.show, JSON.stringify(sbx.noHint));
     check('ghost completion painted in the mirror; Tab takes it', sbx.ghost === 'tle:' && sbx.ghostTab && sbx.afterGhost === 'title:', JSON.stringify({ g: sbx.ghost, v: sbx.afterGhost }));
     check('a unique value auto-fills with the inserted part selected; Space keeps it', sbx.autoFill.value === 'is:multiline' && sbx.autoFill.sel[0] === 5 && sbx.autoFill.sel[1] === 12 && sbx.afterSpace === 'is:multiline ', JSON.stringify(sbx.autoFill) + ' ' + JSON.stringify(sbx.afterSpace));
@@ -639,7 +638,7 @@ async function main() {
     const focusPair = async (win, target) => cdp.eval(`(async () => {
       document.hasFocus = () => ${win ? 'true' : 'false'};
       const el = ${target || 'searchEl'};
-      if (el !== searchEl) regexBtn.closest('.bc-reveal').classList.add('open'); // the tools show while the row is focused
+      if (el !== searchEl) modeBtn.closest('.bc-reveal').classList.add('open'); // the tools show while the row is focused
       el.focus();
       window.dispatchEvent(new Event('${win ? 'focus' : 'blur'}'));
       const row = document.querySelector('.search-row');
@@ -653,7 +652,7 @@ async function main() {
     const focusedWin = await focusPair(true);
     check('focus state: window unfocused = no accent line AND the idle placeholder', !unfocused.hasFocus && !unfocused.lit && unfocused.ph === 'Click here to search...' && unfocused.line !== focusedWin.line, JSON.stringify(unfocused));
     check('focus state: field + window focused = accent line AND "Search..."', focusedWin.hasFocus && focusedWin.lit && focusedWin.ph === 'Search...', JSON.stringify(focusedWin));
-    const onTool = await focusPair(true, 'regexBtn');
+    const onTool = await focusPair(true, 'modeBtn');
     check('focus state: Tab onto a field button keeps the accent line AND "Search..." together', onTool.active && onTool.lit && onTool.ph === 'Search...', JSON.stringify(onTool));
 
     // 17. Navigation guard (LAST: a failure would replace the popup page): a

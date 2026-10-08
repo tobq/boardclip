@@ -19,7 +19,13 @@
 //   during the open slide is not pulled back, Enter / Space on the tune toggle
 //   and the chips activate them (never a paste) and keep the chip focused,
 //   nothing in the panel takes the field's focus, Esc gives it back, and the
-//   autocomplete never covers the panel or outlives its text.
+//   autocomplete never covers the panel or outlives its text;
+// - search modes: Basic words are literal, filters are pills (connective,
+//   x, right-click exclude), a click cycles the mode (Basic -> Regex keeps
+//   the text, -> Advanced shows the query), hover lists the modes and names
+//   what a switch would remove, a lossy switch offers Undo, Alt+R cycles, a
+//   touch tap lists, a key / "Since..." chip outside Advanced asks for its
+//   value (refusing a bad one in place), Regex flags a broken pattern.
 //
 // Usage: node scripts/qa-popup-header.js
 
@@ -86,7 +92,7 @@ async function main() {
     await sleep(350);
     const focused = await fieldState();
     check('header click focuses the search', focused.focused, J(focused));
-    check('field focused: "Search..." placeholder, regex + options revealed', focused.placeholder === 'Search...' && focused.tools && !focused.clear && !focused.sort, J(focused));
+    check('field focused: "Search..." placeholder, mode + options revealed', focused.placeholder === 'Search...' && focused.tools && !focused.clear && !focused.sort, J(focused));
     check('field idle -> focused: the input gave up width for the revealed buttons', focused.inputW < idle.inputW, `${idle.inputW} -> ${focused.inputW}`);
     await popup.eval(`(() => { const s = document.getElementById('search'); s.value = 'clip'; s.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`);
     await sleep(250);
@@ -98,6 +104,9 @@ async function main() {
     await sleep(300);
     const cleared = await fieldState();
     check('clear empties the field and keeps the focus in it', cleared.focused && !cleared.clear && cleared.tools && (await popup.eval(`document.getElementById('search').value`)) === '', J(cleared));
+    // The checks below type the language's tokens: Advanced (saved, so reloads keep it;
+    // the search-mode section sets its own).
+    await popup.eval(`(searchBox.setMode('advanced'), true)`);
 
     // --- window drag ------------------------------------------------------------
     const bounds = () => sb.mainEval(`(() => { const w = __qa.electron.BrowserWindow.getAllWindows().find((x) => /index\\.html/.test(x.webContents.getURL())); return w.getBounds(); })()`);
@@ -381,18 +390,18 @@ async function main() {
 
     // --- the reveal ANIMATES (Forge's measurement rule: drive the transition's
     // own clock, a frame-starved page reads the start value) -----------------
-    // The saved regex toggle applies from the first open (not only after Settings),
-    // and an active regex keeps the tools revealed on an idle field.
-    await popup.eval(`window.api.saveSettings({ regex_search: true })`);
+    // The saved search mode applies from the first open (not only after Settings),
+    // and a mode past Basic keeps the mode chip revealed (and lit) on an idle field.
+    await popup.eval(`window.api.saveSettings({ search_mode: 'regex' })`);
     await popup.send('Page.reload', { ignoreCache: true });
     await sleep(600);
     await popup.waitFor(`!!(window.api && document.querySelectorAll('.item').length >= 10)`, 'popup rows after reload');
     await sleep(400);
     await popup.eval(`(document.getElementById('search').blur(), true)`);
     await sleep(300);
-    const rx = await popup.eval(`({ active: document.getElementById('regexBtn').classList.contains('active'), tools: document.querySelector('.bc-reveal[data-reveal="tools"]').classList.contains('open'), focused: document.activeElement === document.getElementById('search') })`);
-    check('a saved regex toggle is on from the first open and keeps its button revealed', rx.active && rx.tools && !rx.focused, J(rx));
-    await popup.eval(`window.api.saveSettings({ regex_search: false })`);
+    const rx = await popup.eval(`({ mode: searchBox.getMode(), active: document.getElementById('modeBtn').classList.contains('active'), tools: document.querySelector('.bc-reveal[data-reveal="tools"]').classList.contains('open'), focused: document.activeElement === document.getElementById('search') })`);
+    check('a saved search mode applies from the first open and keeps its chip revealed', rx.mode === 'regex' && rx.active && rx.tools && !rx.focused, J(rx));
+    await popup.eval(`window.api.saveSettings({ search_mode: 'basic' })`); // the product default (an idle Basic field reveals nothing)
     await popup.send('Page.reload', { ignoreCache: true });
     await sleep(600);
     await popup.waitFor(`!!(window.api && document.querySelectorAll('.item').length >= 10)`, 'popup rows after reload');
@@ -464,6 +473,131 @@ async function main() {
     const pulledBack = slideDrag.trace.filter(([t, y]) => t >= 40 && y !== slidePlain.final.y + 40);
     check('a drag during the open slide moves from the resting place and is never pulled back', slideDrag.final.y === slidePlain.final.y + 40 && pulledBack.length === 0,
       J({ rest: slidePlain.final.y, final: slideDrag.final.y, off: pulledBack.slice(0, 5) }));
+
+    // --- search modes: the chip, pills, switches, Undo, touch, Alt+R ----------
+    // (the checks above run in Advanced; the product default is Basic)
+    const typeIt = (v) => popup.eval(`(() => { const s = document.getElementById('search'); s.focus(); s.value = ${J(v)}; s.setSelectionRange(s.value.length, s.value.length); s.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText' })); return true; })()`);
+    const modeState = () => popup.eval(`(() => {
+      const b = document.getElementById('modeBtn');
+      const pills = [...document.querySelectorAll('.search-pills .search-pill')].map((p) => p.textContent.replace(/close$/, ''));
+      return { mode: searchBox.getMode(), query: searchBox.getQuery(), app: query, field: document.getElementById('search').value, active: b.classList.contains('active'), icon: b.querySelector('.mi').textContent,
+        pills, pillsShown: !document.querySelector('.search-pills').hidden, prefix: !!document.querySelector('.search-hl .qh-prefix'), menu: !!document.querySelector('.mode-menu'),
+        rows: [...document.querySelectorAll('.mode-menu [data-mode]')].map((r) => ({ m: r.dataset.mode, on: r.getAttribute('aria-checked'), hint: (r.querySelector('.bc-menu-hint') || {}).textContent || '' })) };
+    })()`);
+    await popup.eval(`(searchBox.closeOptions({ instant: true }), clearSearchAndFilters(), searchBox.setMode('basic'), true)`);
+    await sleep(150);
+    await typeIt('rm -rf group:x');
+    await sleep(150);
+    let ms = await modeState();
+    check('Basic: the words are literal (quoted where they look like syntax), nothing painted as a key', ms.mode === 'basic' && ms.query === 'rm "-rf" "group:x"' && ms.app === ms.query && !ms.prefix && !ms.active && ms.icon === 'text_fields', J(ms));
+    await popup.eval(`(searchBox.openOptions(), true)`);
+    await sleep(400);
+    await popup.click('#searchOpts .facet-opt[data-row="0"][data-opt="0"]');
+    await sleep(200);
+    ms = await modeState();
+    check('Basic: a panel chip adds a pill after the text; the typed text stays', ms.query === 'rm "-rf" "group:x" since:24h' && ms.field === 'rm -rf group:x' && ms.pillsShown && J(ms.pills) === J(['since:24h']), J(ms));
+    await popup.click('#searchOpts .facet-opt[data-row="1"][data-opt="0"]');
+    await popup.click('#searchOpts .facet-opt[data-row="1"][data-opt="1"]');
+    await sleep(200);
+    ms = await modeState();
+    check('two values of one kind: ONE pill with "or" (written is:text OR is:url)', /is:text OR is:url/.test(ms.query) && ms.pills.some((p) => /^is:text\s*or\s*url$/.test(p)), J(ms));
+    await popup.click('.search-pills .pill-conn');
+    await sleep(200);
+    ms = await modeState();
+    check('the pill\'s connective flips to "and" (written side by side)', /is:text is:url/.test(ms.query) && !/ OR /.test(ms.query) && ms.pills.some((p) => /^is:text\s*and\s*url$/.test(p)), J(ms));
+    const textValue = await popup.centerOf('.search-pills .pill-value[data-value="text"]');
+    await popup.mouse('mousePressed', textValue.x, textValue.y, { button: 'right', buttons: 2, clickCount: 1 });
+    await popup.mouse('mouseReleased', textValue.x, textValue.y, { button: 'right', buttons: 0, clickCount: 1 });
+    await sleep(200);
+    ms = await modeState();
+    check('right-click a pill value: excluded (its own pill)', /-is:text/.test(ms.query) && ms.pills.includes('-is:text'), J(ms));
+    await popup.click('.search-pills .search-pill[title="since:24h"] .pill-x');
+    await sleep(200);
+    ms = await modeState();
+    check('a pill\'s x removes it', !/since:/.test(ms.query) && !ms.pills.includes('since:24h'), J(ms));
+    await popup.eval(`(searchBox.closeOptions({ instant: true }), true)`);
+    // A click cycles: Basic -> Regex (the text stays, read as a pattern) -> Advanced (the query as it is).
+    await popup.click('#modeBtn');
+    await sleep(250);
+    ms = await modeState();
+    check('click: Basic -> Regex keeps the typed text and reads it as one pattern', ms.mode === 'regex' && ms.field === 'rm -rf group:x' && ms.query.startsWith('/rm -rf group:x/') && ms.active && ms.icon === 'regular_expression', J(ms));
+    await popup.click('#modeBtn');
+    await sleep(250);
+    ms = await modeState();
+    check('click: Regex -> Advanced shows the whole query (the format is learned)', ms.mode === 'advanced' && ms.field === ms.query && ms.field.startsWith('/rm -rf group:x/') && /-is:text/.test(ms.field) && !ms.pillsShown && ms.icon === 'data_object', J(ms));
+    const savedMode = await popup.eval(`window.api.getSettings().then((s) => s.search_mode)`);
+    check('the mode is saved per device', savedMode === 'advanced', String(savedMode));
+    // Hover lists the modes; a switch that would remove part of the search says what, and offers Undo.
+    await typeIt('(a OR b) c');
+    await sleep(150);
+    const chip = await popup.centerOf('#modeBtn');
+    await popup.mouse('mouseMoved', chip.x - 30, chip.y + 60);
+    await popup.mouse('mouseMoved', chip.x, chip.y);
+    await sleep(450);
+    ms = await modeState();
+    const basicRow = ms.rows.find((r) => r.m === 'basic') || {};
+    check('hover lists the three modes, the current one ticked', ms.menu && J(ms.rows.map((r) => r.m)) === J(['basic', 'regex', 'advanced']) && (ms.rows.find((r) => r.m === 'advanced') || {}).on === 'true', J(ms.rows));
+    check('the list names what a switch would remove', /removes \(a OR b\)/.test(basicRow.hint), J(basicRow));
+    await popup.click('.mode-menu [data-mode="basic"]');
+    await sleep(250);
+    ms = await modeState();
+    const undo = await popup.eval(`(() => { const t = document.getElementById('toast'); return { show: t.classList.contains('show'), text: t.textContent, btn: !!t.querySelector('.toast-action') }; })()`);
+    check('a lossy switch removes the custom part and offers Undo', ms.mode === 'basic' && ms.query === 'c' && undo.show && undo.btn && /removed \(a OR b\)/.test(undo.text), J({ ms, undo }));
+    await popup.click('#toast .toast-action');
+    await sleep(250);
+    ms = await modeState();
+    check('Undo brings the mode and the search back', ms.mode === 'advanced' && ms.field === '(a OR b) c' && ms.query === '(a OR b) c', J(ms));
+    await popup.mouse('mouseMoved', chip.x - 30, chip.y + 120);
+    await sleep(450);
+    check('the hover list closes when the pointer leaves', !(await modeState()).menu);
+    // Alt+R cycles (Cmd+Option+R on macOS), Shift goes back.
+    await popup.eval(`(document.getElementById('search').focus(), clearSearchAndFilters(), true)`);
+    const altR = async (shift) => {
+      const mods = 1 | (shift ? 8 : 0);
+      await popup.send('Input.dispatchKeyEvent', { type: 'rawKeyDown', modifiers: mods, key: 'r', code: 'KeyR', windowsVirtualKeyCode: 82 });
+      await popup.send('Input.dispatchKeyEvent', { type: 'keyUp', modifiers: mods, key: 'r', code: 'KeyR', windowsVirtualKeyCode: 82 });
+      await sleep(150);
+      return (await modeState()).mode;
+    };
+    const r1 = await altR(false);
+    const r2 = await altR(true);
+    check('Alt+R cycles the mode, Alt+Shift+R goes back', r1 === 'basic' && r2 === 'advanced', `${r1} -> ${r2}`);
+    // Touch (no hover): a tap lists the modes instead of cycling.
+    await popup.eval(`(() => { const b = document.getElementById('modeBtn'); b.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerType: 'touch' })); b.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true })); return true; })()`);
+    await sleep(200);
+    ms = await modeState();
+    check('a touch tap lists the modes and changes nothing', ms.menu && ms.mode === 'advanced', J({ menu: ms.menu, mode: ms.mode }));
+    await popup.eval(`(document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })), true)`);
+    await sleep(150);
+    // Outside Advanced a key chip asks for its value (the field is not syntax there).
+    await popup.eval(`(searchBox.setMode('basic'), clearSearchAndFilters(), searchBox.openOptions(), true)`);
+    await sleep(400);
+    await popup.click('#searchOpts .opts-field[data-insert="title:"]');
+    await sleep(300);
+    const asked = await popup.eval(`(() => { const o = [...document.querySelectorAll('.overlay.show')].find((x) => x.querySelector('.prompt-input')); return o ? { title: o.querySelector('h3').textContent, ph: o.querySelector('.prompt-input').placeholder } : null; })()`);
+    check('Basic: a key chip asks for its value (no syntax typed)', asked && asked.title === 'Title contains' && /phrase/.test(asked.ph), J(asked));
+    await popup.eval(`(() => { const o = [...document.querySelectorAll('.overlay.show')].find((x) => x.querySelector('.prompt-input')); o.querySelector('.prompt-input').value = 'hello world'; o.querySelector('[data-x="yes"]').click(); return true; })()`);
+    await sleep(250);
+    ms = await modeState();
+    check('the answer lands as a pill', ms.query === 'title:"hello world"' && ms.pills.includes('title:"hello world"'), J(ms));
+    await popup.click('#searchOpts .facet-opt[data-row="0"][data-opt="3"]');
+    await sleep(300);
+    const sinceAsk = await popup.eval(`(() => { const o = [...document.querySelectorAll('.overlay.show')].find((x) => x.querySelector('.prompt-input')); if (!o) return null; o.querySelector('.prompt-input').value = 'soon'; o.querySelector('[data-x="yes"]').click(); const err = o.querySelector('.prompt-error'); return { title: o.querySelector('h3').textContent, err: err.hidden ? '' : err.textContent, open: o.classList.contains('show') }; })()`);
+    check('"Since..." asks; a value that is not a time is refused in place', sinceAsk && sinceAsk.title === 'Since when?' && sinceAsk.open && /not a time/.test(sinceAsk.err), J(sinceAsk));
+    await popup.eval(`(() => { const o = [...document.querySelectorAll('.overlay.show')].find((x) => x.querySelector('.prompt-input')); o.querySelector('.prompt-input').value = '3d'; o.querySelector('[data-x="yes"]').click(); return true; })()`);
+    await sleep(250);
+    const sinceChip = await popup.eval(`(() => { const b = document.querySelector('#searchOpts .facet-opt[data-row="0"][data-opt="3"]'); return { text: b.textContent.trim(), on: b.classList.contains('active') }; })()`);
+    ms = await modeState();
+    check('"Since..." lights with its value once answered', /since:3d/.test(ms.query) && sinceChip.on && sinceChip.text === 'Since 3d', J({ q: ms.query, sinceChip }));
+    await popup.eval(`(searchBox.closeOptions({ instant: true }), true)`);
+    // Regex: a broken pattern is flagged once typing pauses.
+    await popup.eval(`(searchBox.setMode('regex'), clearSearchAndFilters(), true)`);
+    await typeIt('[a');
+    await sleep(900);
+    const rxHint = await popup.eval(`(() => { const h = document.querySelector('.search-hint'); return { show: h.classList.contains('show'), text: h.textContent }; })()`);
+    check('Regex: a broken pattern shows its error', rxHint.show && /regular expression/.test(rxHint.text), J(rxHint));
+    await popup.eval(`(clearSearchAndFilters(), searchBox.setMode('advanced'), true)`);
+    await sleep(150);
 
     // --- the website demo: same shell, click focuses, drag is a no-op ----------
     const site = await qa.startStaticServer(require('path').join(qa.ROOT, 'site'));

@@ -22,13 +22,31 @@ const ui = require('../site/shared/clipboard-ui-core');
   assert.deepStrictEqual(ui.findAllMatches('a.b a-b', '.'), [{ start: 1, end: 2 }], 'dot is literal by default');
 
   // regex mode when opted in
-  assert.strictEqual(ui.findAllMatches('a1 b2 c3', '[0-9]', true).length, 3, 'regex mode honoured');
+  assert.strictEqual(ui.findAllMatches('a1 b2 c3', '[0-9]', { regex: true }).length, 3, 'regex mode honoured');
 
   // zero-width patterns can't loop forever
-  assert.deepStrictEqual(ui.findAllMatches('abc', 'x*', true), [], 'empty matches are skipped, no infinite loop');
+  assert.deepStrictEqual(ui.findAllMatches('abc', 'x*', { regex: true }), [], 'empty matches are skipped, no infinite loop');
 
   // invalid regex degrades to no matches
-  assert.deepStrictEqual(ui.findAllMatches('abc', '(', true), [], 'invalid regex -> []');
+  assert.deepStrictEqual(ui.findAllMatches('abc', '(', { regex: true }), [], 'invalid regex -> []');
+
+  // match case (the find bar's Aa), literal and regex
+  assert.deepStrictEqual(ui.findAllMatches('Foo foo FOO', 'foo', { caseSensitive: true }), [{ start: 4, end: 7 }]);
+  assert.strictEqual(ui.findAllMatches('Ab ab', '[A-Z]b', { regex: true, caseSensitive: true }).length, 1);
+  // . never crosses a line break
+  assert.deepStrictEqual(ui.findAllMatches('a\nb', 'a.b', { regex: true }), []);
+}
+
+// editorFindFor: what a search hands the find bar (its words and patterns,
+// never its filters).
+{
+  assert.deepStrictEqual(ui.editorFindFor(''), {});
+  assert.deepStrictEqual(ui.editorFindFor('group:work is:text'), {}, 'filters are not text in the clip');
+  assert.deepStrictEqual(ui.editorFindFor('invoice group:work'), { find: 'invoice', findMode: 'basic' });
+  assert.deepStrictEqual(ui.editorFindFor('"a b" group:work'), { find: 'a b', findMode: 'basic' });
+  assert.deepStrictEqual(ui.editorFindFor('/inv(oice)?/'), { find: 'inv(oice)?', findMode: 'regex' });
+  assert.deepStrictEqual(ui.editorFindFor('foo a.b'), { find: 'foo|a\\.b', findMode: 'regex' }, 'several terms: one alternation, every term found');
+  assert.deepStrictEqual(ui.editorFindFor('foo -bar title:x'), { find: 'foo', findMode: 'basic' }, 'excluded and title-only terms are left out');
 }
 
 // countWords: footer word count.

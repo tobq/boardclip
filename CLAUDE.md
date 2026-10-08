@@ -239,8 +239,8 @@ Otherwise the key passes through so normal numpad typing works. Main thread call
   field (Last 7 days -> `since:7d`); `OPTION_FIELDS` (derived: FIELD_INFO keys no facet row
   writes, minus is:/sort:/id:) are one key chip each, painted as the field paints a key
   (`queryTokenHtml` = lexQuery's `.qh-*` spans), a click appends `key:` and opens the
-  autocomplete on its values; `SYNTAX_NOTES` is ONE line (-word, "a phrase", AND). All in one
-  label | chips grid (Date / Type / Size / More). `SYNTAX_HELP`, `SYNTAX_FOOT`, FIELD_INFO
+  autocomplete on its values (outside Advanced it asks for the value instead, see Search modes);
+  `SYNTAX_NOTES` is ONE line PER MODE. All in one label | chips grid (Date / Type / Size / More). `SYNTAX_HELP`, `SYNTAX_FOOT`, FIELD_INFO
   `group`/`example` are gone; ui-parity guards it. A bare known key (`title:`) lexes as a
   prefix (it used to paint as plain text until a value followed).
 - **Popup header + search field + options panel (2026-10-07, UI overhaul B)**: the popup header
@@ -266,7 +266,7 @@ Otherwise the key passes through so normal numpad typing works. Main thread call
   QA: `qa-ui-shots --only popup-chips-many`. macOS needs
   `acceptFirstMouse` on the popup (it never blur-hides, so it is often inactive; unverified on a Mac). The field is flat (no fill, `--line` hairline underline, accent on focus);
   `attachSearchBox` owns its chrome for app + demo: placeholder "Click here to search..." until
-  focused, clear / sort / regex + tune on the ONE `.bc-reveal` (grid 0fr -> 1fr width track, both
+  focused, clear / sort / mode chip + tune on the ONE `.bc-reveal` (grid 0fr -> 1fr width track, both
   Forge belts) and the options panel (grid-rows fold + `inert`, facet chips from
   `Search.OPTION_FACETS` writing tokens via `applyFacet`; a chip-bar filter (is:pinned/image/
   numpad) is never a panel option, key chips + one notes line,
@@ -542,11 +542,53 @@ clear-all). All popup CSS + theme variables live in `site/shared/clipboard-popup
   rewrites query tokens through `Core.search.applyFacet(query, token, intent)`; deleting a
   group strips its `group:`/`-group:` tokens. `ui-parity.test.js` #11 guards that neither
   consumer reintroduces filter Sets.
-- **Grammar** (colon-uniform, quote-aware, `-` negates): free text · `title:` · `text:`/
+- **Grammar** (colon-uniform, quote-aware, `-` negates): free text (ALWAYS literal) · `/re/`
+  (one regex term, also `title:/re/` `text:/re/`) · `a OR b` (binds TIGHTER than side by side,
+  Gmail's rule: `x a OR b` = x AND (a OR b)) · `( )` at any depth, `-( )` · `title:` · `text:`/
   `body:` · `group:` · `is:pinned|image|text|numpad` · `num:1-9` · `since:`/`before:`
   (`7d`/`24h`/`30d`) · `len:>N` · `id:` · `sort:new|best`. `item.ts` is Unix SECONDS.
   Unknown `word:val` → stripped to `val` as free text + recorded in `parsed.unknown` for a
-  hint. URL/Windows-path values (`http://`, `C:\`) are left verbatim.
+  hint. URL/Windows-path values (`http://`, `C:\`) are left verbatim. A quoted token is literal
+  (`"-foo"`, `"title:x"`, `"OR"`); `/usr/bin` and an unclosed `/abc` are text.
+- **Search modes (2026-10-08, `SEARCH-MODES-PLAN.md`, the spec Forge's mode lane got too)**:
+  ONE scanner (`scanQuery`) feeds parse, lex, validate and the chip edits. `parseQuery` builds an
+  AND/OR/NOT tree: top-level leaves fill the flat fields as before (now `num:1 num:2` = AND, flagged
+  with an "OR" fix; a negated single-valued filter is IGNORED and flagged with its inverse), a
+  same-dimension OR of filter values is `anyOf` (the or/and pill: dims = group, kinds of clip
+  (image/text/url/multiline/rich), num; pinned and numpad are their own), anything else is
+  `compound` (evaluated as a tree; a chip whose value sits inside one is greyed "part of a custom
+  filter"). `terms` = every positive content term, the ones inside an OR too (highlight +
+  relevance). ONE compile primitive `compileTerm(value, {regex, caseSensitive})` serves search, the
+  row highlight (`termSpans`: every word marked; the old whole-query highlight marked nothing for
+  two words) and the editor find (`findAllMatches`); `prepareQuery`/`matchesQuery` are gone.
+  The canonical query is ALWAYS Advanced text; `attachSearchBox` OWNS it (`getQuery`/`setQuery`,
+  onChange gets the query, consumers never read or write the input): Basic shows literal words +
+  pills, Regex one pattern + pills (`splitQuery`/`composeQuery`), Advanced the text. Switches
+  (`switchModeQuery`): into Advanced the query shows as is (Basic `-rf` appears as `"-rf"`, a
+  Regex as `/.../`: the format is learned); Basic <-> Regex keep the typed text; out of Advanced a
+  `compound` is dropped, named first in the mode list (`modeSwitchLoss`) and offered back with
+  Undo (toast). A second chip of an OR dimension ORs in (at its value order: chips in any order
+  write the same text); a click on a value in an OR takes it out; right-click excludes. The mode
+  chip = `Core.attachModeChip` (search box AND find bar): click cycles, hover-intent 160/160 ms
+  lists (each with an example, current ticked), a touch press or no `(hover: hover)` = tap lists,
+  Alt+R / Cmd+Option+R cycles (Shift back; the find bar's Alt+C / Cmd+Option+C = match case). A key or
+  prompt chip ("Since...", "Longer than...", "Lines..." ...) outside Advanced asks through
+  `dialogs.prompt` (placeholder + `validate`: a bad value is refused in place) -> `promptQuery`;
+  in Advanced it types the prefix. Settings: `search_mode`, `find_mode`, `find_case` are
+  LOCAL-ONLY (never synced); `regex_search: true` loads as 'regex' and the key is stripped (it
+  used to leak into sync writes). The editor hand-off is `Core.editorFindFor(query)` (its words
+  and patterns, never its filters; several terms = one regex alternation). MCP `search_clips` takes
+  the whole language; legacy `regex: true` = `legacyRegexQuery` (the free text as ONE regex).
+  QA: `qa-popup-header` (modes, pills, switch + Undo, touch, Alt+R, prompts), `qa-ui-shots`
+  `popup-search-basic-pills` / `-mode-menu` / `-advanced-or` / `editor-find-regex`. The older
+  QA steps type tokens, so they launch with `search_mode: 'advanced'`.
+- **Group usage = ONE decayed score (2026-10-08, owner)**: `Search.groupWeights(list)` = each
+  group's clips weighted by `decayWeight(age, 14 d)` (ts moves on every use; parents count their
+  sub-groups; kept per list + hour). It orders the chip row (`buildTagTree(groups, {weights,
+  tier})`: usable chips first, then greyed, then structural, each by use), the group pickers and
+  the group autocomplete, and nudges Best match (`GROUP_USE_WEIGHT` 8 for a clip of the most-used
+  group). The ranking's recency term uses the same `decayWeight` (3-day scale). No per-clip use
+  counter exists (a new primitive was not worth it): ts is the usage signal.
 - **Per-keystroke search speed (fixed 2026-10-07, measured on the owner's 13.9k clips / 70.8 MB, one
   31 MB clip): 430-840 ms -> ~25 ms per keystroke** (search 5-18 ms, list rebuild ~13 ms). Three costs
   were the old 400 ms: (1) `filterItemIndexes` was called without `docs`, so every keystroke rebuilt
@@ -595,7 +637,8 @@ clear-all). All popup CSS + theme variables live in `site/shared/clipboard-popup
   `Core.createCensusCache` (key = `facetKey` + groups + minute + docs identity); with
   `onUpdate` a history/minute change recomputes AFTER the paint (a background change blocks
   0 ms). `validateQuery` is the ONE invalid rule (`lexQuery` paints its `problemRanges`;
-  a valid prefix is never flagged; a regex at the caret is `pending` until 700 ms idle).
+  a valid prefix is never flagged; a regex, a dangling OR or an unclosed group at the caret is
+  `pending` until 700 ms idle).
   Autocomplete = Forge rules (caret at a token END, complete value = nothing, ghost via
   `ghostCompletion`, unique value auto-fill with the suffix selected, Esc parks until the
   text changes). `applyFacet` EDITS the text (removes its tokens, inserts at the canonical

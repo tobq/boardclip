@@ -99,6 +99,16 @@ const history = [
 
 // --- searchClips ---
 {
+  // The AI tool speaks the app's whole language (Advanced): /regex/, OR, groups.
+  const regexHits = core.searchClips(history, settings, { query: '/c.ip/', scope: 'all' });
+  assert.ok(regexHits.matches.length >= 1, 'a /regex/ term');
+  assert.strictEqual(core.searchClips(history, settings, { query: 'c.ip', scope: 'all' }).matches.length, 0, 'plain text is literal');
+  const either = core.searchClips(history, settings, { query: 'ungrouped OR zzznothing', scope: 'all' });
+  assert.strictEqual(either.matches.length, 1, 'OR');
+  // Legacy regex: true reads the free text as ONE regex.
+  assert.ok(core.searchClips(history, settings, { query: 'c.ip', regex: true, scope: 'all' }).matches.length >= 1, 'legacy regex flag');
+}
+{
   // "clip" appears in shared (work, AI) and non-shared (private, ungrouped)
   const res = core.searchClips(history, settings, { query: 'clip' });
   assert.ok(res.matches.every(m => m.shared));

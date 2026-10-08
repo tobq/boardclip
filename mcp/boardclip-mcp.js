@@ -129,10 +129,10 @@ server.registerTool('list_clips', {
 });
 
 server.registerTool('search_clips', {
-  description: 'Search shared clips. Supports the same query syntax as the BoardClip app: plain words (AND, substring), "quoted phrases", field scopes title:/text:/group: (short: t:/b:/g:), facets is:pinned|is:image|is:text|is:numpad|is:url|is:multiline|is:rich, num:1-9 (n:), since:/before: e.g. since:7d (s:/bf:), len:>100 or len:50-200 (l:), lines:>3 (ln:), words:<20 (wd:), sort:new|best (o:), id:, and -negation on any token. Every prefix has a short + long alias. Returns matching shared clips with previews plus a count of how many NON-shared clips also matched. Set include_unshared to run the full search over everything - that requires the app and pops an approval prompt.',
+  description: 'Search shared clips with the BoardClip search language (the app\'s Advanced mode). Plain words are literal, case-insensitive substrings, and every term must match (AND); "a quoted phrase" matches exactly; /pattern/ is a regular expression term (case-insensitive, . never crosses a line break; title:/re/ and text:/re/ too); a OR b matches either (OR binds tighter than AND, so x a OR b = x AND (a OR b)); ( ) groups at any depth; -term or -( ... ) excludes. Field scopes title:/text:/group: (short: t:/b:/g:), facets is:pinned|is:image|is:text|is:numpad|is:url|is:multiline|is:rich, num:1-9 (n:), since:/before: e.g. since:7d (s:/bf:), len:>100 or len:50-200 (l:), lines:>3 (ln:), words:<20 (wd:), sort:new|best (o:), id:. Every prefix has a short + long alias. Example: group:Work OR group:Ideas /inv(oice)?/ -draft. Returns matching shared clips with previews plus a count of how many NON-shared clips also matched. Set include_unshared to run the full search over everything - that requires the app and pops an approval prompt.',
   inputSchema: {
     query: z.string().min(1),
-    regex: z.boolean().optional(),
+    regex: z.boolean().optional().describe('Legacy: read the query\'s free text as ONE regular expression. Prefer /pattern/ terms in the query.'),
     include_unshared: z.boolean().optional(),
     limit: z.number().int().min(1).max(200).optional(),
   },

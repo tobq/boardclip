@@ -10,8 +10,17 @@
 // id — is a field on the doc.
 //
 // Grammar (colon-uniform, quote-aware, `-` negates any token, unknown `word:val` is stripped
-// to `val` as free text + recorded so a typo can't silently flood):
-//   free text                bare words / "quoted phrase" -> substring over title+body+groups
+// to `val` as free text + recorded so a typo can't silently flood). This is the Advanced
+// mode's text; the canonical query is ALWAYS this text, whatever mode the field shows
+// (splitQuery / composeQuery turn it into a Basic or Regex view and back):
+//   free text                bare words / "quoted phrase" -> literal substring over
+//                            title+body+groups (always literal: no implicit regex)
+//   /pattern/                one regular expression term (case-insensitive, `.` never
+//                            crosses a line break); also title:/re/ and text:/re/
+//   a b                      side by side = AND (every term must match)
+//   a OR b                   either (OR binds tighter than AND, Gmail's rule:
+//                            `x a OR b` = x AND (a OR b)); `or` is a plain word
+//   ( ... )   -( ... )       grouping at any depth; `-` negates a term or a group
 //   title:VALUE  text:VALUE  field-scoped content (text:/body: = the clip body only)
 //   group:NAME   g:NAME      group membership (hierarchical: matches NAME and NAME/child)
 //   is:pinned is:image is:text is:numpad     boolean facets
@@ -24,8 +33,9 @@
 //   sort:new|best            explicit ranking override
 // The user-facing reference is the search options panel (OPTION_FACETS, OPTION_FIELDS,
 // SYNTAX_NOTES) plus the autocomplete's hints (FIELD_INFO) - keep them in step with the parser.
-// Free text + title:/text: honour the caller's regex flag (the app's `.*` toggle); every
-// other facet is an enum/number/time spec, never a regex.
+// Only free text and title:/text: take a /regex/; every other facet is an enum/number/time
+// spec. ONE compile primitive (compileTerm) matches literal and regex terms for search, the
+// row highlight and the editor's find bar.
 
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) module.exports = factory();
@@ -109,6 +119,56 @@
     return doc.groups.some((g) => tagMatchesFilter(g, filter));
   }
 
+  // ── ONE recency decay (usage x recency, "frecency"): a weight that falls off
+  // exponentially with age (ageMs / scaleMs = 1 -> 1/e). The result ranking's
+  // recency term and the group usage score both use it. ──
+  function decayWeight(ageMs, scaleMs) {
+    return Math.exp(-Math.max(0, ageMs) / scaleMs);
+  }
+  // How much each group is used: its clips, each weighted by how recently it
+  // was copied or used (ts moves on every paste), on a two-week scale. Every
+  // parent path counts its sub-groups' clips too. ONE score orders the chip
+  // row, the group pickers and the group autocomplete, and nudges the ranking
+  // (clips of the groups you use rank a little higher). list: clips or search
+  // docs (both carry ts in seconds); kept per list and per hour. The map's
+  // `max` = the top score (0: no group has clips).
+  const GROUP_USAGE_SCALE_MS = 14 * 86400 * 1000;
+  const groupWeightCache = typeof WeakMap === 'function' ? new WeakMap() : null;
+  function groupWeights(list, now) {
+    const arr = Array.isArray(list) ? list : [];
+    const nowMs = now || Date.now();
+    const hour = Math.floor(nowMs / 3600000);
+    const hit = groupWeightCache && groupWeightCache.get(arr);
+    if (hit && hit.hour === hour) return hit.weights;
+    const weights = new Map();
+    for (const x of arr) {
+      if (!x) continue;
+      const gs = Array.isArray(x.groups) ? x.groups : pinGroups(x);
+      if (!gs.length) continue;
+      const w = decayWeight(nowMs - (Number(x.ts) || 0) * 1000, GROUP_USAGE_SCALE_MS);
+      const seen = new Set();
+      for (const g of gs) {
+        const parts = normalizeTagName(g).split('/').filter(Boolean);
+        for (let i = 1; i <= parts.length; i += 1) {
+          const path = parts.slice(0, i).join('/');
+          if (seen.has(path)) continue;
+          seen.add(path);
+          weights.set(path, (weights.get(path) || 0) + w);
+        }
+      }
+    }
+    let max = 0;
+    for (const w of weights.values()) if (w > max) max = w;
+    weights.max = max;
+    if (groupWeightCache) groupWeightCache.set(arr, { hour, weights });
+    return weights;
+  }
+  // Order group paths by use (groupWeights), then by name.
+  function compareGroupUse(weights) {
+    return (a, b) => ((weights && (weights.get(normalizeTagName(b)) || 0)) - (weights && (weights.get(normalizeTagName(a)) || 0)))
+      || a.localeCompare(b, undefined, { sensitivity: 'base', numeric: true });
+  }
+
   // ── quote-aware tokenizer (ported from Forge querySyntax.ts) ──
   function tokenizeQuery(text) {
     const tokens = [];
@@ -162,10 +222,10 @@
   function emptyParsed(raw) {
     return {
       raw: String(raw == null ? '' : raw),
-      content: [],            // { scope:'any'|'title'|'body', value, neg }
+      content: [],            // { scope:'any'|'title'|'body', value, neg, regex? }
       groups: [], negGroups: [],
       is: [], negIs: [],      // arrays of 'pinned'|'image'|'text'|'numpad'
-      nums: [], negNums: [],  // numbers 1-9
+      nums: [], negNums: [],  // numbers 1-9 (each one must hold: a clip has one key)
       since: null, before: null,
       len: null,              // { op:'>'|'<'|'>='|'<='|'='|'range', n, m? }
       lines: null,            // same shape as len
@@ -173,6 +233,16 @@
       id: null,
       sort: null,             // 'new' | 'best'
       unknown: [],            // unrecognized prefixes (for the "not a filter" hint)
+      // The tree parts no flat field can hold. anyOf: a top-level OR of one
+      // filter's values (group:A OR group:B), the pill with an or/and
+      // connective. compound: any other top-level OR or group (a OR b,
+      // -(a b), group:A OR is:image), evaluated as a tree; a chip whose value
+      // sits inside one is greyed ("part of a custom filter").
+      anyOf: [],              // { dim, field, values, members: [{ value, text, start, end }], start, end }
+      compound: [],           // expression nodes (see parseExpression)
+      terms: [],              // every content term that can match (top level and inside compound): highlight + relevance
+      syntax: [],             // structural problems: { kind: 'dangling-or' | 'unclosed', start, end }
+      items: [],              // the top-level items in text order: { kind: 'leaf'|'any'|'compound', start, end, leaf|any|node }
     };
   }
 
@@ -191,77 +261,317 @@
     return (b.op === '=' ? '' : b.op) + b.n;
   }
 
-  // Content terms keep the token exactly as typed (`raw`), so a chip rewriting
-  // the query (applyFacet -> serializeQuery) never reshapes the user's words: an
-  // unknown `titel:foo` stays `titel:foo`, quotes stay where they were typed.
-  function parseQuery(query) {
-    const out = emptyParsed(query);
-    for (const { text: typed } of rawTokensPreserving(query)) {
-      const rawTok = typed.replace(/"/g, '');
-      if (!rawTok) continue;
-      const before = out.content.length;
-      parseToken(out, rawTok);
-      // Non-enumerable: serialization metadata, invisible to consumers that
-      // compare or spread a term.
-      if (out.content.length > before) Object.defineProperty(out.content[out.content.length - 1], 'raw', { value: typed, writable: true, configurable: true });
+  // ── the ONE query scanner: parse, highlight, validation and edits all walk it ──
+  // scanQuery(text) -> tokens in text order, each with its exact source range:
+  //   { t: 'lp', neg }  '(' or '-(' at a token start
+  //   { t: 'rp' }       ')' closing an open group (an unmatched ')' is plain text)
+  //   { t: 'or' }       the word OR, unquoted and upper case
+  //   { t: 'term', text, neg, body, regex }  anything else, quotes kept
+  // A term's regex is { scope, pattern, open, close } when its value is
+  // /pattern/ (bare, or after title: / text:): closed by the first unescaped
+  // '/' outside a [class], on one line, followed by whitespace, the end or a
+  // group's ')'. Anything else that starts with '/' (/usr/bin, an unclosed
+  // /abc, //) is plain text. A token whose first character is quoted is
+  // literal: "-foo", "title:x" and "OR" are text; -"a b" negates a phrase.
+  const CONTENT_KEYS = new Set(['title', 'text']);
+  const isSpace = (c) => c === ' ' || c === '\t' || c === '\n' || c === '\r' || (c !== undefined && /\s/.test(c));
+  function regexClose(s, at, depth, classes) {
+    let inClass = false;
+    for (let k = at + 1; k < s.length; k += 1) {
+      const ch = s[k];
+      if (ch === '\n' || ch === '\r') return -1;
+      if (ch === '\\') { k += 1; continue; }
+      if (classes && inClass) { if (ch === ']') inClass = false; continue; }
+      if (classes && ch === '[') { inClass = true; continue; }
+      if (ch !== '/') continue;
+      if (k === at + 1) return -1; // `//` is text, never an empty regex
+      const next = s[k + 1];
+      if (next === undefined || isSpace(next) || (next === ')' && depth > 0)) return k;
+      if (classes) return -1; // the first closer must end the token
+    }
+    return -1;
+  }
+  // The closing '/' of a regex opening at `at`, or -1. An unclosed [class]
+  // (a broken regex) still ends at its last '/', so it is reported as a broken
+  // regex instead of searched as text.
+  function regexEnd(s, at, depth) {
+    if (s[at] !== '/') return -1;
+    const k = regexClose(s, at, depth, true);
+    return k >= 0 ? k : regexClose(s, at, depth, false);
+  }
+  function scanQuery(text) {
+    const s = String(text == null ? '' : text);
+    const out = [];
+    let depth = 0;
+    let i = 0;
+    while (i < s.length) {
+      const c = s[i];
+      if (isSpace(c)) { i += 1; continue; }
+      if (c === '(') { out.push({ t: 'lp', start: i, end: i + 1, neg: false }); depth += 1; i += 1; continue; }
+      if (c === '-' && s[i + 1] === '(') { out.push({ t: 'lp', start: i, end: i + 2, neg: true }); depth += 1; i += 2; continue; }
+      if (c === ')' && depth > 0) { out.push({ t: 'rp', start: i, end: i + 1 }); depth -= 1; i += 1; continue; }
+      const start = i;
+      const neg = c === '-' && i + 1 < s.length && !isSpace(s[i + 1]);
+      const bodyAt = neg ? i + 1 : i;
+      // A /regex/ value: bare, or after a content key (title:/re/, text:/re/).
+      const km = /^([a-zA-Z][a-zA-Z0-9_]*):/.exec(s.slice(bodyAt, bodyAt + 32));
+      const canon = km ? PREFIX_ALIASES[km[1].toLowerCase()] : null;
+      const valueAt = km ? (CONTENT_KEYS.has(canon) ? bodyAt + km[0].length : -1) : bodyAt;
+      const close = valueAt >= 0 ? regexEnd(s, valueAt, depth) : -1;
+      if (close > 0) {
+        const regex = { scope: km ? (canon === 'title' ? 'title' : 'body') : 'any', pattern: s.slice(valueAt + 1, close), open: valueAt, close };
+        out.push({ t: 'term', start, end: close + 1, neg, text: s.slice(start, close + 1), body: s.slice(bodyAt, close + 1), regex });
+        i = close + 1;
+        continue;
+      }
+      // A plain term: up to unquoted whitespace.
+      let j = i;
+      let inQuote = false;
+      for (; j < s.length; j += 1) {
+        const ch = s[j];
+        if (ch === '"') inQuote = !inQuote;
+        else if (!inQuote && isSpace(ch)) break;
+      }
+      // Closers at its end close open groups, but only those its own brackets
+      // leave over: f(x) stays a word, f(x)) closes one group.
+      let end = j;
+      if (depth > 0) {
+        let tail = j;
+        while (tail > bodyAt && s[tail - 1] === ')') tail -= 1;
+        let quotes = 0;
+        let opens = 0;
+        let closes = 0;
+        let q = false;
+        for (let k = bodyAt; k < j; k += 1) {
+          const ch = s[k];
+          if (ch === '"') { q = !q; if (k < tail) quotes += 1; } else if (!q) { if (ch === '(') opens += 1; else if (ch === ')') closes += 1; }
+        }
+        if (quotes % 2 === 0) end = j - Math.max(0, Math.min(j - tail, closes - opens, depth));
+      }
+      const textOf = s.slice(start, end);
+      if (textOf === 'OR') out.push({ t: 'or', start, end });
+      else if (end > start) out.push({ t: 'term', start, end, neg: neg && end > bodyAt, text: textOf, body: s.slice(neg && end > bodyAt ? bodyAt : start, end), regex: null });
+      for (let k = end; k < j; k += 1) { out.push({ t: 'rp', start: k, end: k + 1 }); depth -= 1; }
+      i = j;
     }
     return out;
   }
-  function parseToken(out, rawTok) {
-    {
-      let tok = rawTok;
-      let neg = false;
-      if (tok[0] === '-' && tok.length > 1) { neg = true; tok = tok.slice(1); }
-      const m = KEY_TOKEN_RE.exec(tok);
-      if (m && m[2]) {
-        const rawKey = m[1].toLowerCase();
-        const key = PREFIX_ALIASES[rawKey] || rawKey; // fold short aliases to canonical
-        const val = m[2];
-        // URL / windows-path guard: a value starting with / or \ (http://, C:\path)
-        if ((val[0] === '/' || val[0] === '\\') && !RECOGNIZED_PREFIXES.has(rawKey)) { out.content.push({ scope: 'any', value: tok, neg }); return; }
-        if (key === 'title') { out.content.push({ scope: 'title', value: val, neg }); return; }
-        if (key === 'text') { out.content.push({ scope: 'body', value: val, neg }); return; }
-        if (key === 'group') { (neg ? out.negGroups : out.groups).push(normalizeTagName(val)); return; }
-        if (key === 'is') {
-          const v = val.toLowerCase();
-          if (IS_VALUES.includes(v)) { (neg ? out.negIs : out.is).push(v); return; }
-        }
-        if (key === 'num') {
-          const n = parseInt(val, 10);
-          if (n >= 1 && n <= 9) { (neg ? out.negNums : out.nums).push(n); return; }
-        }
-        if (key === 'since') { out.since = val; return; }
-        if (key === 'before') { out.before = val; return; }
-        if (key === 'len' || key === 'lines' || key === 'words') {
-          const bound = parseBound(val);
-          if (bound) { out[key] = bound; return; }
-        }
-        if (key === 'id') { out.id = val; return; }
-        if (key === 'sort') { const v = val.toLowerCase(); if (v === 'new' || v === 'best' || v === 'recent' || v === 'relevance') { out.sort = (v === 'recent' ? 'new' : v === 'relevance' ? 'best' : v); return; } }
-        // an unrecognized word: prefix (typo / unsupported) that isn't a URL scheme ->
-        // strip to its value as free text + record the bad prefix for a hint.
-        if (!NON_FILTER_SCHEMES.has(rawKey) && UNKNOWN_KEY_RE.test(rawKey)) {
-          out.content.push({ scope: 'any', value: val, neg });
-          if (!out.unknown.includes(rawKey)) out.unknown.push(rawKey);
-          return;
-        }
-        // recognized-but-malformed (e.g. num:99) or URL scheme -> treat whole token as text
-        out.content.push({ scope: 'any', value: tok, neg });
+
+  // One term token -> a leaf: { field, neg, value, scope?, regex?, bound?,
+  // unknownKey? }. field: 'content' | 'group' | 'is' | 'num' | 'since' |
+  // 'before' | 'len' | 'lines' | 'words' | 'id' | 'sort', or null (nothing to
+  // match: an empty phrase).
+  function leafOf(tok) {
+    const neg = !!tok.neg;
+    if (tok.regex) return { field: 'content', scope: tok.regex.scope, value: tok.regex.pattern, regex: true, neg };
+    const body = tok.body;
+    const plain = body.replace(/"/g, '');
+    if (!plain) return { field: null, neg };
+    const content = (value, scope, unknownKey) => ({ field: 'content', scope: scope || 'any', value, neg, ...(unknownKey ? { unknownKey } : {}) });
+    const m = body[0] !== '"' ? KEY_TOKEN_RE.exec(body) : null;
+    if (!m || !m[2]) return content(plain);
+    const rawKey = m[1].toLowerCase();
+    const key = PREFIX_ALIASES[rawKey] || rawKey; // fold short aliases to canonical
+    const val = m[2].replace(/"/g, '');
+    if (!val) return content(plain);
+    // URL / windows-path guard: a value starting with / or \ (http://, C:\path)
+    if ((m[2][0] === '/' || m[2][0] === '\\') && !RECOGNIZED_PREFIXES.has(rawKey)) return content(plain);
+    if (key === 'title') return content(val, 'title');
+    if (key === 'text') return content(val, 'body');
+    if (key === 'group') return { field: 'group', value: normalizeTagName(val), neg };
+    if (key === 'is') { const v = val.toLowerCase(); if (IS_VALUES.includes(v)) return { field: 'is', value: v, neg }; }
+    if (key === 'num') { const n = parseInt(val, 10); if (n >= 1 && n <= 9 && /^\d$/.test(val)) return { field: 'num', value: n, neg }; }
+    if (key === 'since' || key === 'before' || key === 'id') return { field: key, value: val, neg };
+    if (key === 'len' || key === 'lines' || key === 'words') { const bound = parseBound(val); if (bound) return { field: key, value: val, bound, neg }; }
+    if (key === 'sort') { const v = val.toLowerCase(); if (v === 'new' || v === 'best' || v === 'recent' || v === 'relevance') return { field: 'sort', value: v === 'recent' ? 'new' : v === 'relevance' ? 'best' : v, neg }; }
+    // an unrecognized word: prefix (typo / unsupported) that isn't a URL scheme ->
+    // strip to its value as free text + record the bad prefix for a hint.
+    if (!NON_FILTER_SCHEMES.has(rawKey) && UNKNOWN_KEY_RE.test(rawKey)) return content(val, 'any', rawKey);
+    // recognized-but-malformed (e.g. num:99) or URL scheme -> treat whole token as text
+    return content(plain);
+  }
+  // A negated single-valued filter (-since:7d) cannot be excluded: it is
+  // ignored (validateQuery offers the inverse) instead of acting as positive.
+  const SINGLE_FIELDS = new Set(['since', 'before', 'len', 'lines', 'words', 'id', 'sort']);
+  function addLeaf(out, leaf, raw) {
+    const neg = leaf.neg;
+    switch (leaf.field) {
+      case 'content': {
+        const c = { scope: leaf.scope, value: leaf.value, neg };
+        if (leaf.regex) c.regex = true;
+        out.content.push(c);
+        // Non-enumerable: serialization metadata, invisible to consumers that
+        // compare or spread a term.
+        Object.defineProperty(c, 'raw', { value: raw, writable: true, configurable: true });
+        if (leaf.unknownKey && !out.unknown.includes(leaf.unknownKey)) out.unknown.push(leaf.unknownKey);
+        if (!neg) out.terms.push(c);
         return;
       }
-      out.content.push({ scope: 'any', value: tok, neg });
+      case 'group': (neg ? out.negGroups : out.groups).push(leaf.value); return;
+      case 'is': (neg ? out.negIs : out.is).push(leaf.value); return;
+      case 'num': (neg ? out.negNums : out.nums).push(leaf.value); return;
+      default:
+        if (!SINGLE_FIELDS.has(leaf.field) || neg) return;
+        out[leaf.field] = leaf.bound || leaf.value;
     }
   }
+  // Which OR dimension a filter value belongs to: every group is one, the
+  // kinds of clip (image, text, link, multi-line, rich) are one, numpad keys
+  // are one; pinned and "on a key" are each their own (pinned OR image is not
+  // one question). A second chip of an OR dimension adds an OR.
+  const TYPE_IS = new Set(['image', 'text', 'url', 'multiline', 'rich']);
+  const OR_DIMS = new Set(['group', 'type', 'num']);
+  function facetDim(field, value) {
+    if (field === 'group' || field === 'num') return field;
+    if (field === 'is') return TYPE_IS.has(value) ? 'type' : value;
+    return null;
+  }
+  // A top-level OR whose sides are all positive values of ONE OR dimension
+  // (group:A OR group:B): the anyOf pill. null for any other OR.
+  function anyOfGroup(node) {
+    let dim = null;
+    let field = null;
+    const members = [];
+    for (const k of node.children) {
+      if (k.type !== 'leaf' || k.leaf.neg) return null;
+      const d = facetDim(k.leaf.field, k.leaf.value);
+      if (!d || !OR_DIMS.has(d) || (dim && d !== dim)) return null;
+      dim = d;
+      field = k.leaf.field;
+      if (!members.some((x) => x.value === k.leaf.value)) members.push({ value: k.leaf.value, text: k.text, start: k.start, end: k.end });
+    }
+    return { dim, field, values: members.map((x) => x.value), members, start: node.start, end: node.end };
+  }
 
+  // Tokens -> expression: juxtaposition is AND; OR binds tighter (Gmail's
+  // rule, so `x a OR b` = x AND (a OR b) and an OR pill sits beside other terms
+  // without brackets); `-` negates a term or a group. Nodes: { type: 'leaf',
+  // leaf, text } | { type: 'or', children } | { type: 'and', neg, children },
+  // each with its source range. A dangling OR or an unclosed '(' is recorded in
+  // `syntax` (validateQuery reports it) and parsed as if it were not there /
+  // closed at the end, so a query mid-typing still searches.
+  function parseExpression(s, syntax) {
+    const toks = scanQuery(s);
+    let pos = 0;
+    function unary() {
+      while (pos < toks.length && toks[pos].t === 'or') { syntax.push({ kind: 'dangling-or', start: toks[pos].start, end: toks[pos].end }); pos += 1; }
+      const tok = toks[pos];
+      if (!tok || tok.t === 'rp') return null;
+      pos += 1;
+      if (tok.t === 'lp') {
+        const children = sequence(true);
+        const close = toks[pos] && toks[pos].t === 'rp' ? toks[pos] : null;
+        if (close) pos += 1; else syntax.push({ kind: 'unclosed', start: tok.start, end: tok.end });
+        return { type: 'and', neg: tok.neg, children, start: tok.start, end: close ? close.end : (children.length ? children[children.length - 1].end : tok.end) };
+      }
+      return { type: 'leaf', leaf: leafOf(tok), text: tok.text, start: tok.start, end: tok.end };
+    }
+    function either() {
+      const first = unary();
+      if (!first) return null;
+      const kids = [first];
+      while (pos < toks.length && toks[pos].t === 'or') {
+        const orTok = toks[pos];
+        pos += 1;
+        const next = toks[pos] && toks[pos].t !== 'rp' && toks[pos].t !== 'or' ? unary() : null;
+        if (!next) { syntax.push({ kind: 'dangling-or', start: orTok.start, end: orTok.end }); break; }
+        kids.push(next);
+      }
+      return kids.length === 1 ? first : { type: 'or', children: kids, start: first.start, end: kids[kids.length - 1].end };
+    }
+    function sequence(inGroup) {
+      const items = [];
+      while (pos < toks.length) {
+        if (toks[pos].t === 'rp') { if (inGroup) break; pos += 1; continue; }
+        const before = pos;
+        const node = either();
+        if (node) items.push(node);
+        else if (pos === before) pos += 1;
+      }
+      return items;
+    }
+    return sequence(false).map(simplifyNode).filter(Boolean);
+  }
+  // Flatten what changes nothing: a group of one, a group inside an AND, an
+  // OR inside an OR; drop empty groups.
+  function simplifyNode(node) {
+    if (node.type === 'leaf') return node.leaf.field ? node : null;
+    const kids = node.children.map(simplifyNode).filter(Boolean);
+    if (!kids.length) return null;
+    if (node.type === 'or') {
+      const flat = [];
+      for (const k of kids) { if (k.type === 'or') flat.push(...k.children); else flat.push(k); }
+      return flat.length === 1 ? flat[0] : { ...node, children: flat };
+    }
+    // A group of one keeps its brackets in its range: removing or naming it
+    // takes the brackets too.
+    if (kids.length === 1 && !node.neg) return { ...kids[0], start: node.start, end: node.end };
+    const flat = [];
+    for (const k of kids) { if (k.type === 'and' && !k.neg) flat.push(...k.children); else flat.push(k); }
+    return { ...node, children: flat };
+  }
+  // The content terms of a node that can match (an even number of NOTs above).
+  function collectTerms(node, negated, out) {
+    if (node.type === 'leaf') {
+      const l = node.leaf;
+      if (l.field === 'content' && l.neg === negated) {
+        const c = { scope: l.scope, value: l.value, neg: false };
+        if (l.regex) c.regex = true;
+        out.push(c);
+      }
+      return;
+    }
+    const n = node.type === 'and' && node.neg ? !negated : negated;
+    for (const k of node.children) collectTerms(k, n, out);
+  }
+
+  // Content terms keep the token exactly as typed (`raw`), so a chip rewriting
+  // the query never reshapes the user's words: an unknown `titel:foo` stays
+  // `titel:foo`, quotes stay where they were typed.
+  function parseQuery(query) {
+    const out = emptyParsed(query);
+    const top = [];
+    for (const node of parseExpression(out.raw, out.syntax)) {
+      if (node.type === 'and' && !node.neg) top.push(...node.children); else top.push(node);
+    }
+    for (const node of top) {
+      if (node.type === 'leaf') {
+        addLeaf(out, node.leaf, node.text);
+        out.items.push({ kind: 'leaf', start: node.start, end: node.end, leaf: node.leaf, text: node.text });
+        continue;
+      }
+      const any = node.type === 'or' ? anyOfGroup(node) : null;
+      if (any) {
+        out.anyOf.push(any);
+        out.items.push({ kind: 'any', start: node.start, end: node.end, any });
+        continue;
+      }
+      out.compound.push(node);
+      out.items.push({ kind: 'compound', start: node.start, end: node.end, node });
+      collectTerms(node, false, out.terms);
+    }
+    return out;
+  }
   // Canonical serialization: the content terms first, as typed (their `raw`
   // token) and in the typed order, then the facets in ONE fixed order
   // (FACET_ORDER, then value: groups by name, is: by IS_VALUES, slots
-  // ascending). facetKey uses it; a chip never re-serializes the query (see
-  // applyFacet: it edits only the tokens it changes).
+  // ascending), then the OR pills and the custom expressions as typed.
+  // facetKey uses it; a chip never re-serializes the query (see applyFacet: it
+  // edits only the tokens it changes).
   const byName = (a, b) => a.localeCompare(b, undefined, { sensitivity: 'base', numeric: true }) || (a < b ? -1 : a > b ? 1 : 0);
   const byIs = (a, b) => IS_VALUES.indexOf(a) - IS_VALUES.indexOf(b);
   const byNum = (a, b) => a - b;
   const FACET_ORDER = ['group', '-group', 'is', '-is', 'num', '-num', 'since', 'before', 'len', 'lines', 'words', 'id', 'sort'];
+  // One filter value's canonical token ('group:"My notes"', 'is:image', 'num:3').
+  function facetPart(field, value) {
+    if (field === 'group') return 'group:' + quoteToken(value);
+    if (field === 'num') return 'num:' + value;
+    return 'is:' + value;
+  }
+  function anyOfText(g) {
+    const sort = g.field === 'group' ? byName : g.field === 'num' ? byNum : byIs;
+    return [...g.values].sort(sort).map((v) => facetPart(g.field, v)).join(' OR ');
+  }
   // One query token per facet value, canonical text, canonical order.
   function facetParts(p) {
     const parts = [];
@@ -278,11 +588,13 @@
     if (p.words) parts.push('words:' + serializeBound(p.words));
     if (p.id) parts.push('id:' + quoteToken(p.id));
     if (p.sort) parts.push('sort:' + p.sort);
+    for (const g of p.anyOf || []) parts.push(anyOfText(g));
+    for (const n of p.compound || []) parts.push(p.raw.slice(n.start, n.end));
     return parts;
   }
   function serializeQuery(p) {
     const parts = [];
-    for (const c of p.content) parts.push(c.raw || ((c.neg ? '-' : '') + (c.scope === 'title' ? 'title:' : c.scope === 'body' ? 'text:' : '') + quoteToken(c.value)));
+    for (const c of p.content) parts.push(c.raw || ((c.neg ? '-' : '') + (c.scope === 'title' ? 'title:' : c.scope === 'body' ? 'text:' : '') + (c.regex ? `/${c.value}/` : quoteToken(c.value))));
     return parts.concat(facetParts(p)).join(' ');
   }
   // The query's filters alone (no free text, no sort), canonical: the cache key
@@ -310,14 +622,13 @@
     if (k === 'num') return byNum(Number(partValue(a)), Number(partValue(b)));
     return 0;
   }
-  // The facet part ONE typed token stands for (its canonical text), or null
-  // for a content term.
-  function tokenPart(typed) {
-    const one = emptyParsed('');
-    const tok = String(typed).replace(/"/g, '');
-    if (tok) parseToken(one, tok);
-    const parts = facetParts(one);
-    return parts.length ? parts[0] : null;
+  // The canonical facet part a top-level leaf stands for, or null (content).
+  function leafPart(leaf) {
+    if (!leaf || !leaf.field || leaf.field === 'content') return null;
+    const neg = leaf.neg ? '-' : '';
+    if (leaf.field === 'group' || leaf.field === 'is' || leaf.field === 'num') return neg + facetPart(leaf.field, leaf.value);
+    if (leaf.bound) return `${neg}${leaf.field}:${serializeBound(leaf.bound)}`;
+    return `${neg}${leaf.field}:${quoteToken(leaf.value)}`;
   }
 
   // ── chip <-> query bridge: toggle a facet in the query string (bar = source of truth) ──
@@ -328,70 +639,152 @@
   // go, a new token goes in at its canonical place among the facet tokens
   // already there (FACET_ORDER + value order, so chips clicked in any order
   // write the same text), and everything else - the words, their quotes, an
-  // unknown prefix, the order the user typed - stays exactly as typed.
+  // unknown prefix, the order the user typed, a custom (a OR b) - stays exactly
+  // as typed. A value joins an OR dimension (groups, kinds of clip, numpad keys)
+  // with OR when it holds one value or an OR already (group:A -> group:A OR
+  // group:B); two values side by side (the pill's "and") take a third the same
+  // way. Only the top level is edited: a value inside a custom expression is
+  // left alone (its chip is greyed).
   const SINGLE_FACETS = ['since', 'before', 'len', 'lines', 'words', 'id'];
   const BOUND_FACETS = ['len', 'lines', 'words'];
-  function toggleIn(arr, v) { const i = arr.indexOf(v); if (i >= 0) { arr.splice(i, 1); return false; } arr.push(v); return true; }
-  function changeFacet(p, token, intent) {
-    if (SINGLE_FACETS.includes(token.kind)) {
-      const k = token.kind;
-      if (BOUND_FACETS.includes(k)) {
-        const bound = parseBound(String(token.value == null ? '' : token.value));
-        p[k] = bound && !(p[k] && serializeBound(p[k]) === serializeBound(bound)) ? bound : null;
-      } else {
-        const v = String(token.value == null ? '' : token.value).trim();
-        p[k] = v && String(p[k] || '').toLowerCase() !== v.toLowerCase() ? v : null;
+  // A chip token -> { field, value } (builtin chip ids are is: kinds).
+  function tokenFieldValue(token) {
+    if (token.kind === 'group') return { field: 'group', value: normalizeTagName(token.value) };
+    if (token.kind === 'num') return { field: 'num', value: Number(token.value) };
+    return { field: 'is', value: BUILTIN_TO_IS[token.value] || token.value };
+  }
+  function singleFacetNext(p, token) {
+    const k = token.kind;
+    if (BOUND_FACETS.includes(k)) {
+      const bound = parseBound(String(token.value == null ? '' : token.value));
+      return bound && !(p[k] && serializeBound(p[k]) === serializeBound(bound)) ? `${k}:${serializeBound(bound)}` : null;
+    }
+    const v = String(token.value == null ? '' : token.value).trim();
+    return v && String(p[k] || '').toLowerCase() !== v.toLowerCase() ? `${k}:${quoteToken(v)}` : null;
+  }
+  // Apply range edits ({ start, end, text }) to text. A removal also takes the
+  // whitespace after it (or, at the end, before it), so no double spaces are
+  // left; groups the edit emptied go too.
+  function applyEdits(text, edits) {
+    let out = text;
+    for (const e of [...edits].sort((a, b) => b.start - a.start || b.end - a.end)) {
+      let { start, end } = e;
+      if (!e.text) {
+        let after = end;
+        while (after < out.length && isSpace(out[after])) after += 1;
+        if (after < out.length) end = after;
+        else { while (start > 0 && isSpace(out[start - 1])) start -= 1; end = after; }
       }
-      return;
+      out = out.slice(0, start) + e.text + out.slice(end);
     }
-    const exclude = intent === 'exclude';
-    let inc, ex, value;
-    if (token.kind === 'group') { inc = p.groups; ex = p.negGroups; value = normalizeTagName(token.value); }
-    else if (token.kind === 'num') { inc = p.nums; ex = p.negNums; value = Number(token.value); }
-    else { // builtin id (__pinned__/__images__/__numbered__) -> is: facet
-      const isv = BUILTIN_TO_IS[token.value] || token.value;
-      inc = p.is; ex = p.negIs; value = isv;
-    }
-    const rm = (arr, v) => { const i = arr.indexOf(v); if (i >= 0) arr.splice(i, 1); };
-    if (exclude) {
-      if (ex.indexOf(value) >= 0) rm(ex, value);          // already excluded -> clear
-      else { rm(inc, value); ex.push(value); }             // include->exclude / add exclude
-    } else {
-      if (inc.indexOf(value) >= 0) rm(inc, value);         // already included -> clear
-      else if (ex.indexOf(value) >= 0) rm(ex, value);      // excluded -> clear
-      else inc.push(value);                                // add include
-    }
+    return out.replace(/(^|\s)-?\(\s*\)(?=\s|$)/g, '$1').replace(/^\s+/, '');
+  }
+  function editFacets(text, p, plan) {
+    const edits = [];
+    const removed = new Set();
+    const remove = (item) => { removed.add(item); edits.push({ start: item.start, end: item.end, text: '' }); };
+    const rewriteAny = (item, members) => {
+      if (!members.length) { remove(item); return; }
+      removed.add(item);
+      edits.push({ start: item.start, end: item.end, text: members.map((m) => m.text).join(' OR ') });
+    };
+    // A new token goes before the first top-level filter that sorts after it,
+    // else at the end.
+    const insertPart = (part) => {
+      for (const item of p.items) {
+        if (removed.has(item) || item.kind !== 'leaf') continue;
+        const at = leafPart(item.leaf);
+        if (at && compareParts(at, part) > 0) { edits.push({ start: item.start, end: item.start, text: `${part} ` }); return; }
+      }
+      const end = text.replace(/\s+$/, '').length;
+      edits.push({ start: end, end, text: end ? ` ${part}` : part });
+    };
+    plan({ remove, rewriteAny, insertPart, edits });
+    const out = applyEdits(text, edits);
+    return out && /\s$/.test(text) && !/\s$/.test(out) ? `${out} ` : out; // a trailing space (mid-typing) stays
   }
   function applyFacet(query, token, intent) {
     const text = String(query == null ? '' : query);
-    const after = parseQuery(text);
-    changeFacet(after, token, intent);
-    const was = facetParts(parseQuery(text));
-    const now = facetParts(after);
-    const count = (arr) => arr.reduce((m, x) => m.set(x, (m.get(x) || 0) + 1), new Map());
-    const left = count(now);
-    const removed = new Map();
-    for (const part of was) { if (left.get(part)) left.set(part, left.get(part) - 1); else removed.set(part, (removed.get(part) || 0) + 1); }
-    const used = count(was);
-    const added = [];
-    for (const part of now) { if (used.get(part)) used.set(part, used.get(part) - 1); else added.push(part); }
-    // A changed single-valued facet drops every token of its kind (a later one
-    // overrides an earlier one, so the text may hold several).
-    const dropKinds = new Set([...removed.keys()].map(partKind).filter((k) => SINGLE_FACETS.includes(k)));
-    const kept = [];
-    for (const t of rawTokensPreserving(text)) {
-      const part = tokenPart(t.text);
-      if (part && dropKinds.has(partKind(part))) continue;
-      if (part && removed.get(part)) { removed.set(part, removed.get(part) - 1); continue; }
-      kept.push({ text: t.text, part });
+    const p = parseQuery(text);
+    if (SINGLE_FACETS.includes(token.kind)) {
+      const k = token.kind;
+      const next = singleFacetNext(p, token);
+      return editFacets(text, p, ({ remove, insertPart }) => {
+        // A later token overrides an earlier one, so the text may hold several.
+        for (const item of p.items) if (item.kind === 'leaf' && item.leaf.field === k) remove(item);
+        if (next) insertPart(next);
+      });
     }
-    for (const part of added.sort(compareParts)) {
-      let at = kept.length;
-      for (let i = 0; i < kept.length; i += 1) if (kept[i].part && compareParts(kept[i].part, part) > 0) { at = i; break; }
-      kept.splice(at, 0, { text: part, part });
-    }
-    const out = kept.map((t) => t.text).join(' ');
-    return out && /\s$/.test(text) ? `${out} ` : out; // a trailing space (mid-typing) stays
+    const { field, value } = tokenFieldValue(token);
+    const part = facetPart(field, value);
+    const dim = facetDim(field, value);
+    const isLeaf = (item, neg) => item.kind === 'leaf' && item.leaf.field === field && !!item.leaf.neg === neg && item.leaf.value === value;
+    const pos = p.items.filter((item) => isLeaf(item, false));
+    const negs = p.items.filter((item) => isLeaf(item, true));
+    const holding = p.items.filter((item) => item.kind === 'any' && item.any.field === field && item.any.values.includes(value));
+    return editFacets(text, p, ({ remove, rewriteAny, insertPart, edits }) => {
+      const dropValue = () => {
+        pos.forEach(remove);
+        for (const item of holding) rewriteAny(item, item.any.members.filter((m) => m.value !== value));
+      };
+      if (intent === 'exclude') {
+        if (negs.length) negs.forEach(remove);                // already excluded -> clear
+        else { dropValue(); insertPart(`-${part}`); }           // include->exclude / add exclude
+        return;
+      }
+      if (pos.length || holding.length) { dropValue(); return; } // already included -> clear
+      if (negs.length) { negs.forEach(remove); return; }         // excluded -> clear
+      // Add: OR into the dimension's OR, or onto its one value, at its value
+      // order (chips clicked in any order write the same text); else a token.
+      if (OR_DIMS.has(dim)) {
+        const order = field === 'group' ? byName : field === 'num' ? byNum : byIs;
+        const anyItem = p.items.find((item) => item.kind === 'any' && item.any.dim === dim);
+        const ones = p.items.filter((item) => item.kind === 'leaf' && !item.leaf.neg && facetDim(item.leaf.field, item.leaf.value) === dim);
+        const members = anyItem ? anyItem.any.members : ones.length === 1 ? [{ value: ones[0].leaf.value, start: ones[0].start, end: ones[0].end }] : null;
+        if (members) {
+          const next = members.find((m) => order(m.value, value) > 0);
+          if (next) edits.push({ start: next.start, end: next.start, text: `${part} OR ` });
+          else edits.push({ start: members[members.length - 1].end, end: members[members.length - 1].end, text: ` OR ${part}` });
+          return;
+        }
+      }
+      insertPart(part);
+    });
+  }
+  // Remove every top-level token of one filter value (both signs, from an OR
+  // too): a deleted group leaves no group: behind.
+  function stripFacet(query, token) {
+    const text = String(query == null ? '' : query);
+    const p = parseQuery(text);
+    const { field, value } = tokenFieldValue(token);
+    return editFacets(text, p, ({ remove, rewriteAny }) => {
+      for (const item of p.items) {
+        if (item.kind === 'leaf' && item.leaf.field === field && item.leaf.value === value) remove(item);
+        else if (item.kind === 'any' && item.any.field === field && item.any.values.includes(value)) rewriteAny(item, item.any.members.filter((m) => m.value !== value));
+      }
+    });
+  }
+  // Remove every top-level token of a single-valued filter (since:, len:, ...).
+  function clearFacet(query, kind) {
+    const text = String(query == null ? '' : query);
+    const p = parseQuery(text);
+    return editFacets(text, p, ({ remove }) => { for (const item of p.items) if (item.kind === 'leaf' && item.leaf.field === kind) remove(item); });
+  }
+  // Add one token (a pill's text, title:"a b") to the query: a filter at its
+  // canonical place, anything else after the words.
+  function addToken(query, tokenText) {
+    const text = String(query == null ? '' : query);
+    const t = String(tokenText || '').trim();
+    if (!t) return text;
+    const p = parseQuery(text);
+    const one = parseQuery(t);
+    const part = one.items.length === 1 && one.items[0].kind === 'leaf' ? leafPart(one.items[0].leaf) : null;
+    return editFacets(text, p, ({ insertPart, edits }) => {
+      if (part) { insertPart(t); return; }
+      const lastContent = [...p.items].reverse().find((item) => item.kind === 'leaf' && item.leaf.field === 'content');
+      if (lastContent) edits.push({ start: lastContent.end, end: lastContent.end, text: ` ${t}` });
+      else insertPart(t);
+    });
   }
 
   // One facet token's state in a parsed query: 'include' | 'exclude' | null. A
@@ -406,11 +799,31 @@
       if (BOUND_FACETS.includes(k)) { const b = parseBound(String(token.value)); return b && serializeBound(cur) === serializeBound(b) ? 'include' : null; }
       return String(cur).toLowerCase() === String(token.value).toLowerCase() ? 'include' : null;
     }
-    let inc, ex, value;
-    if (k === 'group') { inc = parsed.groups; ex = parsed.negGroups; value = normalizeTagName(token.value); }
-    else if (k === 'num') { inc = parsed.nums; ex = parsed.negNums; value = Number(token.value); }
-    else { inc = parsed.is; ex = parsed.negIs; value = BUILTIN_TO_IS[token.value] || token.value; }
-    return inc.includes(value) ? 'include' : ex.includes(value) ? 'exclude' : null;
+    const { field, value } = tokenFieldValue(token);
+    const inc = field === 'group' ? parsed.groups : field === 'num' ? parsed.nums : parsed.is;
+    const ex = field === 'group' ? parsed.negGroups : field === 'num' ? parsed.negNums : parsed.negIs;
+    if (inc.includes(value) || (parsed.anyOf || []).some((g) => g.field === field && g.values.includes(value))) return 'include';
+    return ex.includes(value) ? 'exclude' : null;
+  }
+
+  // Every filter value named inside a custom expression (a OR b, -(a b)): its
+  // chip is greyed, since a click could not change it there. Census keys.
+  function nodeFacetKeys(node, out) {
+    if (node.type === 'leaf') {
+      const l = node.leaf;
+      if (l.field === 'group') out.add(`group:${l.value}`);
+      else if (l.field === 'is') out.add(`is:${l.value}`);
+      else if (l.field === 'num') out.add(`num:${l.value}`);
+      else if (l.field && l.field !== 'content') out.add(`${l.field}:`);
+      return out;
+    }
+    for (const k of node.children) nodeFacetKeys(k, out);
+    return out;
+  }
+  function customFacetKeys(parsed) {
+    if (!parsed.compound || !parsed.compound.length) return null;
+    if (!parsed.customKeys) Object.defineProperty(parsed, 'customKeys', { value: parsed.compound.reduce((set, n) => nodeFacetKeys(n, set), new Set()), configurable: true });
+    return parsed.customKeys;
   }
 
   // Chip active/excluded state for the filter bar, derived straight from the query.
@@ -421,16 +834,30 @@
     for (const g of parsed.negGroups) excluded.add(g);
     for (const v of parsed.is) if (IS_TO_BUILTIN[v]) active.add(IS_TO_BUILTIN[v]);
     for (const v of parsed.negIs) if (IS_TO_BUILTIN[v]) excluded.add(IS_TO_BUILTIN[v]);
-    if (parsed.nums.length || parsed.is.includes('numpad')) active.add('__numbered__');
+    for (const g of parsed.anyOf || []) for (const v of g.values) {
+      if (g.field === 'group') active.add(v);
+      else if (g.field === 'is' && IS_TO_BUILTIN[v]) active.add(IS_TO_BUILTIN[v]);
+    }
+    if (parsed.nums.length || parsed.is.includes('numpad') || (parsed.anyOf || []).some((g) => g.field === 'num')) active.add('__numbered__');
     return { active, excluded };
   }
 
+  function nodeHasFilter(node) {
+    if (node.type === 'leaf') return !!node.leaf.field && node.leaf.field !== 'content';
+    return node.children.some(nodeHasFilter);
+  }
   function anyFilterActive(parsed) {
     return !!(parsed.groups.length || parsed.negGroups.length || parsed.is.length || parsed.negIs.length ||
-      parsed.nums.length || parsed.negNums.length || parsed.since || parsed.before || parsed.len || parsed.lines || parsed.words || parsed.id);
+      parsed.nums.length || parsed.negNums.length || parsed.since || parsed.before || parsed.len || parsed.lines || parsed.words || parsed.id
+      || (parsed.anyOf && parsed.anyOf.length) || (parsed.compound && parsed.compound.some(nodeHasFilter)));
+  }
+  // Is there anything to search FOR (a word, a phrase, a /regex/), as opposed
+  // to filters only?
+  function hasSearchTerms(parsed) {
+    return !!((parsed.content && parsed.content.length) || (parsed.terms && parsed.terms.length) || (parsed.compound && parsed.compound.some((n) => !nodeHasFilter(n))));
   }
   function isEmptyQuery(parsed) {
-    return !parsed.content.length && !anyFilterActive(parsed) && !parsed.sort;
+    return !parsed.content.length && !anyFilterActive(parsed) && !parsed.sort && !(parsed.compound && parsed.compound.length);
   }
 
   // ── time-spec resolution (mirrors Forge resolveTimeMs) ──
@@ -450,20 +877,65 @@
   }
 
   // ── matching ──
-  // test(text, isLower): isLower says the text is ALREADY lowercased (the
-  // precomputed haystack), so a plain term never lowercases it again.
-  function makeTermMatcher(value, regex) {
-    if (regex) {
-      let re = null;
-      try { re = new RegExp(value, 'i'); } catch {}
-      return { regex: true, lower: '', test: (t) => !!re && re.test(String(t || '')) };
-    }
-    const lower = String(value).toLowerCase();
-    return { regex: false, lower, test: (t, isLower) => (isLower && typeof t === 'string' ? t : String(t || '').toLowerCase()).includes(lower) };
+  // ONE compile primitive for a literal or a regex term, shared by search, the
+  // row highlight and the editor's find bar. compileTerm(value, { regex,
+  // caseSensitive }) -> { regex, valid, error, lower, test(text, isLower),
+  // find(text, from) -> { start, end } | null, all(text, limit) -> spans }.
+  // Case-insensitive unless caseSensitive; `.` never crosses a line break (no
+  // s flag); an invalid regex is valid:false and matches nothing. test's
+  // isLower says the text is ALREADY lowercased (the precomputed haystack), so
+  // a literal term never lowercases it again.
+  const RE_META_G = /[.*+?^${}()|[\]\\]/g;
+  function escapeRegExp(s) { return String(s).replace(RE_META_G, '\\$&'); }
+  function regexError(value) {
+    try { new RegExp(value, 'i'); return null; } catch (e) { return String(e && e.message || 'invalid').replace(/^Invalid regular expression: \/.*\/[a-z]*: /, ''); }
+  }
+  function compileTerm(value, opts) {
+    const o = opts || {};
+    const src = String(value == null ? '' : value);
+    const cs = !!o.caseSensitive;
+    let re = null;
+    let error = null;
+    if (o.regex) { try { re = new RegExp(src, cs ? 'g' : 'gi'); } catch { error = regexError(src); } }
+    else if (src) re = new RegExp(escapeRegExp(src), cs ? 'g' : 'gi');
+    const lower = o.regex ? '' : cs ? src : src.toLowerCase();
+    const str = (t) => (t == null ? '' : String(t));
+    const test = o.regex
+      ? (t) => { if (!re) return false; re.lastIndex = 0; return re.test(str(t)); }
+      : (t, isLower) => (cs ? str(t) : isLower && typeof t === 'string' ? t : str(t).toLowerCase()).includes(lower);
+    const find = (t, from) => {
+      if (!re) return null;
+      const text = str(t);
+      re.lastIndex = from || 0;
+      let m;
+      while ((m = re.exec(text))) {
+        if (m[0] !== '') return { start: m.index, end: m.index + m[0].length };
+        re.lastIndex += 1; // an empty match (a*) shows nothing; look on
+        if (re.lastIndex > text.length) break;
+      }
+      return null;
+    };
+    const all = (t, limit) => {
+      const spans = [];
+      const cap = limit || 100000;
+      let at = 0;
+      let hit;
+      while (spans.length < cap && (hit = find(t, at))) { spans.push(hit); at = hit.end; }
+      return spans;
+    };
+    return { regex: !!o.regex, valid: !error, error, source: src, lower, test, find, all };
+  }
+  // Compiled once per term object (a query compiles each term once, not once
+  // per clip).
+  const compiled = typeof WeakMap === 'function' ? new WeakMap() : null;
+  function termMatcher(term) {
+    let m = compiled && compiled.get(term);
+    if (!m) { m = compileTerm(term.value, { regex: !!term.regex }); if (compiled) compiled.set(term, m); }
+    return m;
   }
   // One matcher per content term, built once per query (not once per clip).
-  function compileContent(parsed, regex) {
-    return parsed.content.map((c) => makeTermMatcher(c.value, regex));
+  function compileContent(parsed) {
+    return parsed.content.map(termMatcher);
   }
   // Where lowercase `v` first occurs in the clip's BODY, read from the lowercased
   // combined haystack ([title, body, type, groups...].join(' ')) instead of
@@ -489,30 +961,63 @@
       default: return len === cond.n;
     }
   }
-  // Strict AND filter. `opts`: { regex, now, searchText? (precomputed combined
-  // haystack, LOWERCASED), matchers? (compileContent of this query) }.
+  function contentHit(c, m, doc, hayLower) {
+    if (c.scope === 'title') return m.test(doc.title, false);
+    if (c.scope === 'body') return m.regex ? m.test(doc.body, false) : bodyIndexOf(doc, hayLower, m.lower) >= 0;
+    return m.test(hayLower, true);
+  }
+  function facetValueOk(doc, field, v) {
+    if (field === 'group') return docInGroup(doc, v);
+    if (field === 'num') return doc.numpad === v;
+    return docHasIs(doc, v);
+  }
+  // One leaf of a custom expression (its sign included). A negated
+  // single-valued filter is ignored (always true), as at the top level.
+  function leafOk(leaf, doc, hayLower, now) {
+    let hit;
+    switch (leaf.field) {
+      case 'content': hit = contentHit(leaf, termMatcher(leaf), doc, hayLower); break;
+      case 'group': case 'is': case 'num': hit = facetValueOk(doc, leaf.field, leaf.value); break;
+      case 'since': case 'before': {
+        if (leaf.neg) return true;
+        const b = resolveTimeMs(leaf.value, now);
+        return b == null || (leaf.field === 'since' ? doc.ts * 1000 >= b : doc.ts * 1000 <= b);
+      }
+      case 'len': case 'lines': case 'words': {
+        if (leaf.neg) return true;
+        return lenSatisfies(leaf.field === 'len' ? doc.len : leaf.field === 'lines' ? docLines(doc) : docWords(doc), leaf.bound);
+      }
+      case 'id': return leaf.neg || doc.id.toLowerCase().includes(String(leaf.value).toLowerCase());
+      default: return true;
+    }
+    return leaf.neg ? !hit : hit;
+  }
+  function evalNode(node, doc, hayLower, now) {
+    if (node.type === 'leaf') return leafOk(node.leaf, doc, hayLower, now);
+    if (node.type === 'or') return node.children.some((k) => evalNode(k, doc, hayLower, now));
+    const all = node.children.every((k) => evalNode(k, doc, hayLower, now));
+    return node.neg ? !all : all;
+  }
+  // Strict filter: every top-level term, filter, OR pill and custom expression
+  // must hold. `opts`: { now, searchText? (precomputed combined haystack,
+  // LOWERCASED), matchers? (compileContent of this query) }.
   function matchDoc(doc, parsed, opts) {
     if (!doc) return false;
     const o = opts || {};
-    const matchers = o.matchers || compileContent(parsed, !!o.regex);
+    const matchers = o.matchers || compileContent(parsed);
     let any = o.searchText;
     for (let k = 0; k < parsed.content.length; k += 1) {
       const c = parsed.content[k];
       const m = matchers[k];
-      let hit;
-      if (c.scope === 'title') hit = m.test(doc.title, false);
-      else if (c.scope === 'body') hit = m.regex ? m.test(doc.body, false) : bodyIndexOf(doc, any, m.lower) >= 0;
-      else {
-        if (any == null) any = docSearchText(doc).toLowerCase();
-        hit = m.test(any, true);
-      }
+      if (c.scope === 'any' && any == null) any = docSearchText(doc).toLowerCase();
+      const hit = c.scope === 'title' ? m.test(doc.title, false) : contentHit(c, m, doc, any);
       if (c.neg ? hit : !hit) return false;
     }
     for (const g of parsed.groups) if (!docInGroup(doc, g)) return false;
     for (const g of parsed.negGroups) if (docInGroup(doc, g)) return false;
     for (const v of parsed.is) if (!docHasIs(doc, v)) return false;
     for (const v of parsed.negIs) if (docHasIs(doc, v)) return false;
-    if (parsed.nums.length && !parsed.nums.includes(doc.numpad)) return false;
+    for (const n of parsed.nums) if (doc.numpad !== n) return false;
     for (const n of parsed.negNums) if (doc.numpad === n) return false;
     if (parsed.since != null) { const b = resolveTimeMs(parsed.since, o.now); if (b != null && doc.ts * 1000 < b) return false; }
     if (parsed.before != null) { const b = resolveTimeMs(parsed.before, o.now); if (b != null && doc.ts * 1000 > b) return false; }
@@ -520,6 +1025,11 @@
     if (parsed.lines && !lenSatisfies(docLines(doc), parsed.lines)) return false;
     if (parsed.words && !lenSatisfies(docWords(doc), parsed.words)) return false;
     if (parsed.id && !doc.id.toLowerCase().includes(String(parsed.id).toLowerCase())) return false;
+    for (const g of parsed.anyOf || []) if (!g.values.some((v) => facetValueOk(doc, g.field, v))) return false;
+    if (parsed.compound && parsed.compound.length) {
+      if (any == null) any = docSearchText(doc).toLowerCase();
+      for (const n of parsed.compound) if (!evalNode(n, doc, any, o.now || Date.now())) return false;
+    }
     return true;
   }
   function docHasIs(doc, v) {
@@ -532,21 +1042,55 @@
     if (v === 'rich') return !!doc.rich;
     return false;
   }
+  // Every span the query's terms match in `text` (positive terms only, the
+  // ones inside an OR included), merged where they touch: the row highlight
+  // and the preview window. scope: 'title' | 'body' (which terms apply).
+  function termSpans(parsed, text, scope, limit) {
+    const raw = String(text == null ? '' : text);
+    const spans = [];
+    for (const t of (parsed && parsed.terms) || []) {
+      if (scope === 'title' ? t.scope === 'body' : t.scope === 'title') continue;
+      const m = termMatcher(t);
+      if (!m.valid || (!m.regex && !m.lower)) continue;
+      spans.push(...m.all(raw, limit || 100));
+    }
+    if (spans.length < 2) return spans;
+    spans.sort((a, b) => a.start - b.start || b.end - a.end);
+    const merged = [spans[0]];
+    for (const s of spans.slice(1)) {
+      const last = merged[merged.length - 1];
+      if (s.start <= last.end) last.end = Math.max(last.end, s.end); else merged.push({ ...s });
+    }
+    return merged;
+  }
+  // Where the query first matches in `text` (-1: nowhere), for a preview
+  // window around it.
+  function firstMatchIndex(parsed, text) {
+    let best = -1;
+    for (const t of (parsed && parsed.terms) || []) {
+      if (t.scope === 'title') continue;
+      const m = termMatcher(t);
+      const hit = m.valid && (m.regex || m.lower) ? m.find(text, 0) : null;
+      if (hit && (best < 0 || hit.start < best)) best = hit.start;
+    }
+    return best;
+  }
 
   // ── relevance scoring (for the strict-filter list; rank survivors) ──
-  const RECENCY_HALFLIFE_MS = 3 * 86400 * 1000; // 3 days
-  const RECENCY_WEIGHT = 30;                     // max recency contribution vs relevance
+  const RECENCY_SCALE_MS = 3 * 86400 * 1000; // 3 days
+  const RECENCY_WEIGHT = 30;                  // max recency contribution vs relevance
+  const GROUP_USE_WEIGHT = 8;                 // max nudge for a clip of your most-used group
   function recencyScore(doc, now) {
-    const age = Math.max(0, (now || Date.now()) - doc.ts * 1000);
-    return RECENCY_WEIGHT * Math.exp(-age / RECENCY_HALFLIFE_MS);
+    return RECENCY_WEIGHT * decayWeight((now || Date.now()) - doc.ts * 1000, RECENCY_SCALE_MS);
   }
   function normalizedPhrase(v) { return String(v == null ? '' : v).trim().toLowerCase(); }
-  // The positive content terms a relevance score reads, normalised once per
-  // query (not once per clip): [{ scope, v (lowercase phrase), spaced }].
+  // The terms a relevance score reads (every term that can match, the ones
+  // inside an OR included), normalised once per query (not once per clip):
+  // [{ scope, v (lowercase phrase), spaced } | { scope, re (compiled regex) }].
   function relevanceTerms(parsed) {
     const out = [];
-    for (const c of parsed.content) {
-      if (c.neg) continue; // negatives don't add signal
+    for (const c of parsed.terms || []) {
+      if (c.regex) { const m = termMatcher(c); if (m.valid) out.push({ scope: c.scope, re: m }); continue; }
       const v = normalizedPhrase(c.value);
       if (v) out.push({ scope: c.scope, v, spaced: /\s/.test(v) });
     }
@@ -558,23 +1102,26 @@
   }
   function relevanceScore(doc, parsed, opts) {
     const o = opts || {};
-    const regex = !!o.regex;
     let score = 0;
     // opts.hay: the clip's lowercased combined haystack; body positions come
     // from it (bodyIndexOf) instead of lowercasing the whole body per keystroke.
     // opts.terms: relevanceTerms(parsed), precomputed by a caller scoring many clips.
     const titleLower = docTitleLower(doc);
     for (const t of (o.terms || relevanceTerms(parsed))) {
+      const wantTitle = t.scope !== 'body';
+      const wantBody = t.scope !== 'title';
+      if (t.re) {
+        if (wantTitle && doc.title && t.re.test(doc.title)) score += 22;
+        if (wantBody && doc.body && t.re.test(doc.body)) score += 12;
+        continue;
+      }
       const v = t.v;
-      const c = t;
-      const wantTitle = c.scope !== 'body';
-      const wantBody = c.scope !== 'title';
       // exact / prefix / substring in title
       if (wantTitle && doc.title) {
         if (titleLower === v) score += 60;
         else if (titleLower.startsWith(v)) score += 34;
         else if (titleLower.includes(v)) score += 22;
-        else if (!regex) { const fm = fuzzyMatch(v, doc.title); if (fm && fm.score >= fuzzyFloor(v.length)) score += 10 + Math.min(14, fm.score / 6); }
+        else { const fm = fuzzyMatch(v, doc.title); if (fm && fm.score >= fuzzyFloor(v.length)) score += 10 + Math.min(14, fm.score / 6); }
       }
       if (wantBody && doc.body) {
         const idx = bodyIndexOf(doc, o.hay, v);
@@ -582,45 +1129,54 @@
         // multi-word phrase already covered by includes; word tokens add a little
         if (t.spaced && idx >= 0) score += 6;
       }
-      if (c.scope === 'any') {
+      if (t.scope === 'any') {
         // group-name hit is weak signal
         if (doc.groups.length && doc.groups.some((g) => g.toLowerCase().includes(v))) score += 4;
       }
     }
-    // small structural nudges
+    // small structural nudges: pinned, and a group you use (o.groupUse:
+    // groupWeights of the whole history)
     if (doc.pinned) score += 3;
+    const use = o.groupUse;
+    if (use && use.max > 0 && doc.groups.length) {
+      let best = 0;
+      for (const g of doc.groups) { const w = use.get(g) || 0; if (w > best) best = w; } // stored names are normalised
+      score += GROUP_USE_WEIGHT * (best / use.max);
+    }
     return score;
   }
 
-  // Filter + rank -> array of ORIGINAL indexes. `opts`: { regex, now, sortMode ('best'|'new'),
+  // Filter + rank -> array of ORIGINAL indexes. `opts`: { now, sortMode ('best'|'new'),
   // docs? (prebuilt), searchTextLower? (precomputed combined haystacks, lowercased) }.
   // Ranking mode for a parsed query: an explicit sortMode (the Best/Recent toggle) or
-  // `sort:` token wins; else relevance ('best') when a content query is present; else
-  // the caller's ORIGINAL order ('none' - the popup's history order, which is newest
+  // `sort:` token wins; else relevance ('best') when there is something to search for;
+  // else the caller's ORIGINAL order ('none' - the popup's history order, which is newest
   // first). 'new' and 'none' are both time-ordered lists; the popup's keep-your-place
   // rules (Core.resolveListAnchor) key off exactly this, so it has ONE definition.
   function rankMode(parsed, sortMode) {
     const p = parsed || {};
-    return sortMode || (p.sort ? p.sort : ((p.content && p.content.length) ? 'best' : 'none'));
+    return sortMode || (p.sort ? p.sort : (hasSearchTerms(p) ? 'best' : 'none'));
   }
 
   // Incremental refinement: typing more of a term can only narrow the result,
   // so the next keystroke tests the previous matches instead of every clip.
-  // Valid when the docs + haystacks are the same arrays, no regex, the facets
-  // are identical (no before:, whose relative bound widens as time passes), and
-  // every earlier content term is kept (same scope and sign) with a positive
-  // term only growing (new includes old) and a negative one unchanged; terms
-  // may be appended. `cache` is a caller-owned object (one per list).
-  function refineState(parsed, regex) {
+  // Valid when the docs + haystacks are the same arrays, the query is a plain
+  // AND of literal terms (no /regex/, no custom expression: neither narrows by
+  // growing), the facets are identical (no before:, whose relative bound widens
+  // as time passes), and every earlier content term is kept (same scope and
+  // sign) with a positive term only growing (new includes old) and a negative
+  // one unchanged; terms may be appended. `cache` is a caller-owned object
+  // (one per list).
+  function refineState(parsed) {
     return {
       facets: facetKey(parsed),
       before: !!parsed.before,
-      regex: !!regex,
+      strict: !(parsed.compound && parsed.compound.length) && !parsed.content.some((c) => c.regex),
       terms: parsed.content.map((c) => ({ scope: c.scope, neg: !!c.neg, lower: String(c.value).toLowerCase() })),
     };
   }
   function canRefine(prev, next) {
-    if (!prev || prev.regex || next.regex || prev.before || next.before || prev.facets !== next.facets) return false;
+    if (!prev || !prev.strict || !next.strict || prev.before || next.before || prev.facets !== next.facets) return false;
     if (next.terms.length < prev.terms.length) return false;
     for (let k = 0; k < prev.terms.length; k += 1) {
       const a = prev.terms[k];
@@ -635,14 +1191,14 @@
     const now = o.now || Date.now();
     const docs = o.docs || (items || []).map(clipToDoc);
     const hay = o.searchTextLower || null;
-    const hasContent = parsed.content.length > 0;
+    const hasContent = hasSearchTerms(parsed);
     const mode = rankMode(parsed, o.sortMode);
     const scored = [];
     // One options object and one compiled matcher set for the whole pass.
-    const matchOpts = { regex: o.regex, now, searchText: undefined, matchers: compileContent(parsed, !!o.regex) };
-    const relOpts = { ...o, hay: undefined, terms: relevanceTerms(parsed) };
+    const matchOpts = { now, searchText: undefined, matchers: compileContent(parsed) };
+    const relOpts = { ...o, hay: undefined, terms: relevanceTerms(parsed), groupUse: mode === 'best' && hasContent ? groupWeights(docs, now) : null };
     const cache = o.cache || null;
-    const state = cache ? refineState(parsed, o.regex) : null;
+    const state = cache ? refineState(parsed) : null;
     const prev = cache && cache.docs === docs && cache.hay === hay ? cache.state : null;
     const candidates = prev && canRefine(prev, state) ? cache.matched : null;
     const matched = cache ? [] : null;
@@ -733,45 +1289,32 @@
 
   // ── query syntax lexer (presentational, for the highlight overlay) ──
   // Walks the EXACT raw text (whitespace + quotes preserved, concat(text) === input) into
-  // typed segments: prefix | value | neg | quote | regex | unknown | ws. parseQuery stays
-  // the semantic authority; this only decides colors, derived from the same prefix sets.
-  function rawTokensPreserving(text) {
-    const out = [];
-    let cur = '';
-    let start = 0;
-    let inQuote = false;
-    const s = String(text || '');
-    for (let i = 0; i < s.length; i++) {
-      const ch = s[i];
-      if (ch === '"') inQuote = !inQuote;
-      if (!inQuote && /\s/.test(ch)) { if (cur) out.push({ text: cur, start }); cur = ''; continue; }
-      if (!cur) start = i;
-      cur += ch;
-    }
-    if (cur) out.push({ text: cur, start });
-    return out;
-  }
+  // typed segments: prefix | value | neg | quote | regex | op | unknown | ws. parseQuery
+  // stays the semantic authority; this only decides colors, from the same scanner.
+  // The search modes: 'advanced' = the whole language; 'basic' = the field is
+  // literal words (quotes still make a phrase); 'regex' = the field is one regex.
+  const SEARCH_MODES = ['basic', 'regex', 'advanced'];
+  function normalizeMode(mode) { return SEARCH_MODES.includes(mode) ? mode : 'basic'; }
   const REGEX_META = /[[\]().*+?|^$\\{}]/;
-  function pushValueSegs(segs, value, regexAware) {
+  function pushValueSegs(segs, value, regexAware, plainQuotes) {
     let buf = '';
     let kind = null;
     const flush = () => { if (buf && kind) segs.push({ kind, text: buf }); buf = ''; kind = null; };
     for (const ch of String(value)) {
-      const k = ch === '"' ? 'quote' : (regexAware && REGEX_META.test(ch)) ? 'regex' : 'value';
+      const k = ch === '"' && !plainQuotes ? 'quote' : (regexAware && REGEX_META.test(ch)) ? 'regex' : 'value';
       if (k !== kind) flush();
       buf += ch; kind = k;
     }
     flush();
   }
-  // `opts.regex` = the app's .* toggle: content values get regex-metachar coloring only then.
   // What is INVALID comes from validateQuery (ONE rule): its problemRanges are
   // painted 'unknown', exactly the bad key or value and nothing around it.
-  // opts.problems: the caller's validateQuery result (e.g. with pending ones
-  // left out); else every non-pending problem of the text.
+  // opts: { mode, groups, problems (the caller's validateQuery result, e.g.
+  // with pending ones left out; else every non-pending problem of the text) }.
   function lexQuery(text, opts) {
     const o = opts || {};
     const segs = lexSegments(text, o);
-    const problems = o.problems || validateQuery(text, { regex: !!o.regex, groups: o.groups }).filter((p) => !p.pending);
+    const problems = o.problems || validateQuery(text, { mode: o.mode, groups: o.groups }).filter((p) => !p.pending);
     return problems.length ? markRanges(segs, problemRanges(problems), 'unknown') : segs;
   }
   // Split segments at range edges and give the covered parts `kind`.
@@ -794,29 +1337,45 @@
     }
     return out;
   }
+  // Words and the spaces between them, for the Basic and Regex views.
+  function lexPlain(s, regexAware) {
+    const segs = [];
+    for (const part of s.split(/(\s+)/)) {
+      if (!part) continue;
+      if (/^\s+$/.test(part)) segs.push({ kind: 'ws', text: part }); else pushValueSegs(segs, part, regexAware, regexAware);
+    }
+    return segs;
+  }
   function lexSegments(text, opts) {
     const o = opts || {};
+    const s = String(text || '');
+    const mode = o.mode ? normalizeMode(o.mode) : 'advanced';
+    if (mode !== 'advanced') return lexPlain(s, mode === 'regex');
     const segs = [];
     let pos = 0;
-    const s = String(text || '');
-    for (const tok of rawTokensPreserving(s)) {
+    for (const tok of scanQuery(s)) {
       if (tok.start > pos) segs.push({ kind: 'ws', text: s.slice(pos, tok.start) });
-      pos = tok.start + tok.text.length;
+      pos = tok.end;
+      if (tok.t === 'lp') { if (tok.neg) segs.push({ kind: 'neg', text: '-' }); segs.push({ kind: 'op', text: '(' }); continue; }
+      if (tok.t !== 'term') { segs.push({ kind: 'op', text: s.slice(tok.start, tok.end) }); continue; }
       let body = tok.text;
-      if (body[0] === '-' && body.length > 1) { segs.push({ kind: 'neg', text: '-' }); body = body.slice(1); }
-      // A bare known key (`title:`, its value still to type) is already a key.
-      const m = KEY_TOKEN_RE.exec(body);
-      if (m && m[2][0] !== '/' && m[2][0] !== '\\') {
-        const key = m[1].toLowerCase();
-        if (RECOGNIZED_PREFIXES.has(key)) {
-          segs.push({ kind: 'prefix', text: body.slice(0, m[1].length + 1) });
-          const canon = PREFIX_ALIASES[key];
-          const contentScope = canon === 'title' || canon === 'text';
-          if (m[2]) pushValueSegs(segs, m[2], contentScope && !!o.regex);
-          continue;
-        }
+      let at = tok.start;
+      if (tok.neg) { segs.push({ kind: 'neg', text: '-' }); body = body.slice(1); at += 1; }
+      if (tok.regex) {
+        if (tok.regex.open > at) segs.push({ kind: 'prefix', text: s.slice(at, tok.regex.open) });
+        segs.push({ kind: 'regex', text: '/' });
+        pushValueSegs(segs, tok.regex.pattern, true, true);
+        segs.push({ kind: 'regex', text: '/' });
+        continue;
       }
-      pushValueSegs(segs, body, !!o.regex);
+      // A bare known key (`title:`, its value still to type) is already a key.
+      const m = body[0] !== '"' ? KEY_TOKEN_RE.exec(body) : null;
+      if (m && m[2][0] !== '/' && m[2][0] !== '\\' && RECOGNIZED_PREFIXES.has(m[1].toLowerCase())) {
+        segs.push({ kind: 'prefix', text: body.slice(0, m[1].length + 1) });
+        if (m[2]) pushValueSegs(segs, m[2], false);
+        continue;
+      }
+      pushValueSegs(segs, body, false);
     }
     if (pos < s.length) segs.push({ kind: 'ws', text: s.slice(pos) });
     return segs;
@@ -836,13 +1395,26 @@
     num: { desc: 'on numpad key 1-9', short: 'n' },
     since: { desc: 'newer than (1h, 7d or a date)', short: 's', values: { '1h': 'the last hour', '24h': 'the last day', '7d': 'the last week', '30d': 'the last month' } },
     before: { desc: 'older than (1h, 7d or a date)', short: 'bf', values: { '1h': 'an hour ago', '24h': 'a day ago', '7d': 'a week ago', '30d': 'a month ago' } },
-    len: { desc: 'character count (>100, 50-200)', short: 'l' },
-    lines: { desc: 'line count (>3)', short: 'ln' },
-    words: { desc: 'word count (<20)', short: 'wd' },
-    id: { desc: 'clip id starts with' },
+    len: { desc: 'character count (>100, 50-200)', short: 'l', values: { '>100': 'more than 100 characters', '>500': 'more than 500 characters', '<80': 'under 80 characters', '50-200': '50 to 200 characters' } },
+    lines: { desc: 'line count (>3)', short: 'ln', values: { '>1': 'more than one line', '>10': 'more than 10 lines', '<3': 'under 3 lines', '2-5': '2 to 5 lines' } },
+    words: { desc: 'word count (<20)', short: 'wd', values: { '<20': 'under 20 words', '>100': 'more than 100 words', '10-50': '10 to 50 words' } },
+    id: { desc: 'clip id contains' },
     sort: { desc: 'order results: newest or best match first', short: 'o', values: { new: 'newest first', best: 'best match first' } },
   };
-  const IS_SUGGESTIONS = IS_VALUES.map((v) => 'is:' + v);
+  // What a value prompt asks (an options-panel "Since..." chip, or a key chip
+  // in Basic / Regex mode, where the field is not syntax): the question and an
+  // example answer.
+  const FIELD_ASK = {
+    title: { ask: 'Title contains', example: 'a word or a phrase' },
+    text: { ask: 'Text contains', example: 'a word or a phrase' },
+    group: { ask: 'In group', example: 'a group name' },
+    num: { ask: 'On numpad key', example: '1 to 9' },
+    since: { ask: 'Since when?', example: '3d, 12h or 2026-01-31' },
+    before: { ask: 'Before when?', example: '3d, 12h or 2026-01-31' },
+    len: { ask: 'How many characters?', example: '>200, <80 or 50-200' },
+    lines: { ask: 'How many lines?', example: '>10, <3 or 2-5' },
+    words: { ask: 'How many words?', example: '>100, <20 or 10-50' },
+  };
   const SINCE_PRESETS = Object.keys(FIELD_INFO.since.values);
   // Derived views of FIELD_INFO (kept as exports): 'title:' -> its description /
   // its short alias ('t:').
@@ -851,8 +1423,11 @@
 
   // The search options panel's facet rows: the less-used filters, one click each.
   // Chips write tokens through applyFacet (the query text stays the single source
-  // of truth) and paint their state from facetTokenState. `prompt` options insert
-  // their prefix for typing instead of a fixed value. ONE table: the panel and the
+  // of truth) and paint their state from facetTokenState. `prompt` options take
+  // a value of the user's (promptOptionState / promptQuery): in Advanced their
+  // prefix goes into the field for typing, elsewhere a small prompt asks for
+  // it; `prompt.op` = a size direction (> longer, < shorter) a bare number
+  // takes; `prompt.active` = the lit chip's label. ONE table: the panel and the
   // availability census both read it. A filter the chip bar already owns (is:pinned,
   // is:image, is:numpad = BUILTIN_TO_IS) never appears here: one filter, one place,
   // and the panel's toggle lights only for the panel's own filters.
@@ -861,7 +1436,8 @@
       { label: 'Last 24h', token: { kind: 'since', value: '24h' } },
       { label: 'Last 7 days', token: { kind: 'since', value: '7d' } },
       { label: 'Last 30 days', token: { kind: 'since', value: '30d' } },
-      { label: 'Before...', token: { kind: 'before' }, prompt: 'before:' },
+      { label: 'Since...', token: { kind: 'since' }, prompt: { active: 'Since {v}' } },
+      { label: 'Before...', token: { kind: 'before' }, prompt: { active: 'Before {v}' } },
     ] },
     { id: 'type', label: 'Type', options: [
       { label: 'Text', token: { kind: 'is', value: 'text' } },
@@ -873,8 +1449,50 @@
       { label: 'Under 80 chars', token: { kind: 'len', value: '<80' } },
       { label: 'Over 500 chars', token: { kind: 'len', value: '>500' } },
       { label: 'Over 10 lines', token: { kind: 'lines', value: '>10' } },
+      { label: 'Longer than...', token: { kind: 'len' }, prompt: { op: '>', active: 'Longer than {v}' } },
+      { label: 'Shorter than...', token: { kind: 'len' }, prompt: { op: '<', active: 'Shorter than {v}' } },
+      { label: 'Lines...', token: { kind: 'lines' }, prompt: { active: 'Lines {v}' } },
+      { label: 'Words...', token: { kind: 'words' }, prompt: { active: 'Words {v}' } },
     ] },
   ];
+  // A prompt chip lights for a value of its kind that no preset of its row
+  // holds (and, for a size direction, one going that way): 'include' | null.
+  // Its label then shows the value (active, {v}).
+  function promptOptionState(parsed, row, opt) {
+    const k = opt.token.kind;
+    const cur = parsed[k];
+    if (!cur || !opt.prompt) return null;
+    if (row.options.some((o) => !o.prompt && o.token.kind === k && facetTokenState(parsed, o.token) === 'include')) return null;
+    const op = opt.prompt.op;
+    if (op && !(BOUND_FACETS.includes(k) && cur.op && cur.op[0] === op)) return null;
+    if (!op && row.options.some((o) => o !== opt && o.prompt && o.prompt.op && o.token.kind === k && promptOptionState(parsed, row, o))) return null;
+    return 'include';
+  }
+  function promptOptionLabel(parsed, opt) {
+    const k = opt.token.kind;
+    const cur = parsed[k];
+    if (!cur || !opt.prompt || !opt.prompt.active) return opt.label;
+    const v = BOUND_FACETS.includes(k) ? (opt.prompt.op && cur.op === opt.prompt.op ? String(cur.n) : serializeBound(cur)) : String(cur);
+    return opt.prompt.active.replace('{v}', v);
+  }
+  // The query after a prompt's answer: { query } or { error } (the answer is
+  // not a valid value). key: a FIELD_ASK key; op: a size direction a bare
+  // number takes (len, Longer than: 200 -> len:>200). A value already there
+  // leaves the query as it is (a prompt never toggles a filter off).
+  function promptQuery(query, key, answer, opts) {
+    const o = opts || {};
+    const raw = String(answer == null ? '' : answer).trim();
+    if (!raw) return { query: String(query || '') };
+    const value = BOUND_FACETS.includes(key) && o.op && /^d+$/.test(raw) ? `${o.op}${raw}` : raw;
+    const tokenText = `${key}:${quoteToken(value)}`;
+    const problems = validateQuery(tokenText, { mode: 'advanced', groups: o.groups });
+    if (problems.length) return { error: describeProblem(problems[0]) };
+    const q = String(query || '');
+    if (key === 'title' || key === 'text') return { query: addToken(q, tokenText) };
+    const token = key === 'group' || key === 'num' ? { kind: key, value: key === 'num' ? Number(value) : value } : { kind: key, value };
+    if (facetTokenState(parseQuery(q), token) === 'include') return { query: q };
+    return { query: applyFacet(q, token, 'include') };
+  }
   // The panel teaches the grammar the way Forge's does: a toggle WRITES its
   // token into the field (Last 7 days -> since:7d), so the format is learned by
   // using it. What no toggle writes gets one key chip each (OPTION_FIELDS: a
@@ -885,11 +1503,27 @@
   const PANEL_TAUGHT_ELSEWHERE = new Set(['is', 'sort', 'id']);
   const OPTION_FIELDS = Object.keys(FIELD_INFO).filter((k) => !PANEL_TAUGHT_ELSEWHERE.has(k)
     && !OPTION_FACETS.some((row) => row.options.some((opt) => opt.token.kind === k)));
-  const SYNTAX_NOTES = [
-    { code: '-word', text: 'excludes' },
-    { code: '"a phrase"', text: 'matches exactly' },
-    { text: 'every term must match' },
-  ];
+  // One line per mode: what the field means there (Basic's words are literal,
+  // Regex's text is one pattern, Advanced is the whole language).
+  const SYNTAX_NOTES = {
+    basic: [
+      { text: 'every word must match' },
+      { code: '"a phrase"', text: 'matches exactly' },
+      { text: 'right-click a filter to exclude it' },
+    ],
+    regex: [
+      { text: 'the field is one regular expression' },
+      { code: '.', text: 'stays on one line' },
+      { text: 'right-click a filter to exclude it' },
+    ],
+    advanced: [
+      { code: '-word', text: 'excludes' },
+      { code: '"a phrase"', text: 'exact' },
+      { code: 'a OR b', text: 'either' },
+      { code: '(a b)', text: 'groups' },
+      { code: '/regex/', text: 'a pattern' },
+    ],
+  };
   // The query text a facet token stands for (its chip tooltip).
   function facetTokenText(token) {
     if (SINGLE_FACETS.includes(token.kind)) return `${token.kind}:${token.value == null ? '' : token.value}`;
@@ -906,7 +1540,7 @@
   }
 
   // ── autocomplete (Forge querySuggest rules) ──
-  // suggestQuery(text, caret, { groups }) -> null, or { kind: 'key' | 'value',
+  // suggestQuery(text, caret, { groups, mode }) -> null, or { kind: 'key' | 'value',
   // replaceStart, replaceEnd, query (the typed key / value fragment), quoted,
   // suggestions: [{ text, label, hint, continuation }] }. Rules: nothing on an
   // empty box or an empty token; only with the caret at the END of a token
@@ -914,7 +1548,9 @@
   // (is:pinned, since:7d, num:3, an exact group) offers nothing more.
   // `continuation`: the row's text starts with what was typed, so the rest of
   // it can be painted as a ghost (ghostCompletion) or filled in
-  // (uniqueCompletion).
+  // (uniqueCompletion). Only Advanced has keys to offer: Basic and Regex
+  // fields are plain text, so they get nothing. A term may sit inside a
+  // group ('(gro' offers group:), and after a term an 'o' offers OR.
   function isValidTimeSpec(v) {
     const s = String(v || '').trim();
     return resolveTimeMs(s, 0) != null; // exactly the rule resolveTimeMs filters by
@@ -947,8 +1583,13 @@
   }
   function suggestQuery(text, caret, opts) {
     const o = opts || {};
-    const tok = tokenAtCaret(text, caret);
-    if (!tok || !tok.text || tok.text === '-') return null;
+    if (o.mode && normalizeMode(o.mode) !== 'advanced') return null;
+    const whole = tokenAtCaret(text, caret);
+    if (!whole) return null;
+    // Group openers before the term are not part of it.
+    const lead = /^(?:-?\()+/.exec(whole.text);
+    const tok = lead ? { start: whole.start + lead[0].length, end: whole.end, text: whole.text.slice(lead[0].length) } : whole;
+    if (!tok.text || tok.text === '-') return null;
     const neg = tok.text[0] === '-' ? '-' : '';
     const body = neg ? tok.text.slice(1) : tok.text;
     const lowerTok = tok.text.toLowerCase();
@@ -974,7 +1615,8 @@
       if (key === 'group') {
         // Prefix matches first, then names containing the fragment.
         const names = (o.groups || []).filter((g) => !val || g.toLowerCase().includes(val));
-        names.sort((a, b) => (b.toLowerCase().startsWith(val) - a.toLowerCase().startsWith(val)) || byName(a, b));
+        const byUse = compareGroupUse(o.groupWeights);
+        names.sort((a, b) => (b.toLowerCase().startsWith(val) - a.toLowerCase().startsWith(val)) || byUse(a, b));
         for (const g of names) push(`${cm[1]}:${quoteToken(g)}`, '');
       } else if (key === 'is') {
         for (const v of IS_VALUES) if (!val || v.startsWith(val)) push(`${cm[1]}:${v}`, hintOf(v));
@@ -984,6 +1626,9 @@
         for (let n = 1; n <= 9; n++) if (!val || String(n).startsWith(val)) push(`${cm[1]}:${n}`, '');
       } else if (key === 'sort') {
         for (const v of ['new', 'best']) if (!val || v.startsWith(val)) push(`${cm[1]}:${v}`, hintOf(v));
+      } else if (BOUND_FACETS.includes(key) && info.values) {
+        // Comparators and a range, as examples to finish (a number may follow).
+        for (const v of Object.keys(info.values)) if (!val || (v.startsWith(val) && v !== val)) push(`${cm[1]}:${v}`, hintOf(v));
       }
     } else {
       // A bare word: offer prefixes it could start. Match on BOTH the long form
@@ -1000,6 +1645,8 @@
       for (const canon of Object.keys(FIELD_INFO)) if (canon.startsWith(lower) && `${canon}:` !== lower) offer(canon);
       for (const [alias, canon] of Object.entries(PREFIX_ALIASES)) if (FIELD_INFO[canon] && alias.startsWith(lower)) offer(canon);
       for (const g of (o.groups || [])) if (g.toLowerCase().startsWith(lower)) push(`group:${quoteToken(g)}`, '');
+      // OR between two terms: offered once a term stands before this one.
+      if (!neg && (lower === 'o' || lower === 'or') && body !== 'OR' && /\S/.test(String(text || '').slice(0, tok.start))) push('OR', 'either side may match');
     }
     if (!out.length) return null;
     // A row that is what was typed in another case (group:work -> group:Work)
@@ -1035,13 +1682,14 @@
     const s = res.suggestions[0];
     if (!s.continuation) return null;
     if (/^\d+$/.test(res.query) && /^-?(since|s|after|before|bf):/i.test(s.text)) return null;
+    if (/^-?(len|l|lines|ln|words|wd):/i.test(s.text)) return null; // a size is the user's own number
     const v = String(text || '');
     const next = v.slice(0, res.replaceStart) + s.text + v.slice(res.replaceEnd);
     return { text: next, selectionStart: res.replaceEnd, selectionEnd: res.replaceStart + s.text.length };
   }
 
   // ── invalid-token feedback (Forge validateQuery) ──
-  // validateQuery(text, { regex, groups, caret }) -> [{ start, end, valueStart,
+  // validateQuery(text, { mode, groups, caret }) -> [{ start, end, valueStart,
   // key, value, kind, message, options?, didYouMean?, pending? }]. A value that
   // is still a valid prefix (is:pin, since:7, len:>) is never flagged while it is
   // typed. An unknown key flags its KEY only (its value is still searched as
@@ -1084,37 +1732,56 @@
   function nearKey(key, rawValue, o) {
     const guess = KEY_GUESSES[key] || (key.length >= 3 ? closestTo(key, FIELD_NAMES, key.length <= 4 ? 1 : 2) : undefined);
     if (!guess) return undefined;
-    return validateQuery(`${guess}:${rawValue}`, { regex: o.regex, groups: o.groups }).length ? undefined : `${guess}:`;
+    return validateQuery(`${guess}:${rawValue}`, { groups: o.groups }).length ? undefined : `${guess}:`;
   }
-  function regexError(value) {
-    try { new RegExp(value, 'i'); return null; } catch (e) { return String(e && e.message || 'invalid').replace(/^Invalid regular expression: \/.*\/[a-z]*: /, ''); }
+  // The inverse a negated single-valued filter means (-since:7d = before:7d,
+  // -len:>5 = len:<=5), or undefined where there is none to offer.
+  const INVERSE_OP = { '>': '<=', '>=': '<', '<': '>=', '<=': '>' };
+  function negatedFilterFix(field, value) {
+    if (field === 'since') return `before:${quoteToken(value)}`;
+    if (field === 'before') return `since:${quoteToken(value)}`;
+    if (BOUND_FACETS.includes(field)) {
+      const b = parseBound(value);
+      return b && INVERSE_OP[b.op] ? `${field}:${INVERSE_OP[b.op]}${b.n}` : undefined;
+    }
+    return undefined;
   }
+  // validateQuery(text, { mode, groups, caret }). The field's text in its
+  // mode: Basic is plain words (nothing to flag), Regex one pattern (flagged
+  // when broken), Advanced the whole language. A problem may carry `fix`
+  // ({ start, end, text }: the one-click repair the hint offers) beside its
+  // `didYouMean` label.
   function validateQuery(text, opts) {
     const o = opts || {};
     const s = String(text || '');
     const caret = o.caret == null ? null : o.caret;
+    const mode = o.mode ? normalizeMode(o.mode) : 'advanced';
+    if (mode === 'basic') return [];
+    if (mode === 'regex') {
+      const err = s.trim() ? regexError(s) : null;
+      return err ? [{ start: 0, end: s.length, valueStart: 0, token: s, key: '', value: s, kind: 'invalid-regex', message: `Not a valid regular expression: ${err}.`, pending: caret === s.length }] : [];
+    }
     // Every group path a group: value can name (Work/Clients also offers Work).
     const groupPaths = [...new Set((o.groups || []).flatMap((g) => normalizeTagName(g).split('/').filter(Boolean).map((_, i, a) => a.slice(0, i + 1).join('/'))))];
     const problems = [];
-    for (const tok of rawTokensPreserving(s)) {
-      const neg = tok.text[0] === '-' && tok.text.length > 1 ? 1 : 0;
+    const numsSeen = [];
+    for (const tok of scanQuery(s)) {
+      if (tok.t !== 'term') continue;
+      const neg = tok.neg ? 1 : 0;
       const body = tok.text.slice(neg);
-      const tokEnd = tok.start + tok.text.length;
-      const atCaret = caret != null && caret === tokEnd;
-      const m = KEY_TOKEN_RE.exec(body);
-      const key = m ? m[1].toLowerCase() : '';
-      const canon = PREFIX_ALIASES[key];
-      const base = { start: tok.start, end: tokEnd, token: tok.text };
-      const checkRegex = (value, valueStart, key) => {
-        const err = o.regex && value ? regexError(value) : null;
-        if (err) problems.push({ ...base, valueStart, key: key || '', value, kind: 'invalid-regex', message: `Not a valid regular expression: ${err}.`, pending: atCaret });
-      };
-      // Searched as plain text, decided exactly as parseToken does: no key, no
-      // value, a path or URL, a URL scheme, or a key too long to be a filter.
-      if (!m || !m[2] || ((m[2][0] === '/' || m[2][0] === '\\') && !canon) || NON_FILTER_SCHEMES.has(key) || (!canon && !UNKNOWN_KEY_RE.test(key))) {
-        checkRegex(body.replace(/"/g, ''), tok.start + neg, '');
+      const atCaret = caret != null && caret === tok.end;
+      const base = { start: tok.start, end: tok.end, token: tok.text };
+      if (tok.regex) {
+        const err = regexError(tok.regex.pattern);
+        if (err) problems.push({ ...base, valueStart: tok.regex.open, key: '', value: tok.regex.pattern, kind: 'invalid-regex', message: `Not a valid regular expression: ${err}.`, pending: atCaret });
         continue;
       }
+      const m = body[0] !== '"' ? KEY_TOKEN_RE.exec(body) : null;
+      const key = m ? m[1].toLowerCase() : '';
+      const canon = PREFIX_ALIASES[key];
+      // Searched as plain text, decided exactly as leafOf does: no key, no
+      // value, a path or URL, a URL scheme, or a key too long to be a filter.
+      if (!m || !m[2] || ((m[2][0] === '/' || m[2][0] === '\\') && !canon) || NON_FILTER_SCHEMES.has(key) || (!canon && !UNKNOWN_KEY_RE.test(key))) continue;
       const valueStart = tok.start + neg + m[1].length + 1;
       const value = m[2].replace(/^"|"$/g, '');
       if (!canon) {
@@ -1124,11 +1791,18 @@
       }
       const lower = value.toLowerCase();
       const bad = (message, options, didYouMean) => problems.push({ ...base, valueStart, key, value, kind: 'invalid-value', message, options, didYouMean });
-      if (canon === 'title' || canon === 'text') checkRegex(value, valueStart, key);
-      else if (canon === 'is') {
+      // A single-valued filter cannot be excluded: the hint offers the inverse.
+      if (neg && (SINGLE_FIELDS.has(canon))) {
+        const fix = negatedFilterFix(canon, value);
+        problems.push({ ...base, valueStart: tok.start, key, value, kind: 'negated-filter', message: `${key}: cannot be excluded, so this filter is ignored.`, didYouMean: fix, fix: fix ? { start: tok.start, end: tok.end, text: fix } : undefined });
+        continue;
+      }
+      if (canon === 'title' || canon === 'text') continue;
+      if (canon === 'is') {
         if (!IS_VALUES.some((v) => v.startsWith(lower))) { const near = closestTo(lower, IS_VALUES); bad(`${key}:${value} is not a kind of clip.`, IS_VALUES, near ? `${key}:${near}` : undefined); }
       } else if (canon === 'num') {
         if (!/^[1-9]$/.test(lower)) bad(`${key}: takes a numpad slot from 1 to 9.`);
+        else if (!neg) numsSeen.push(tok);
       } else if (canon === 'sort') {
         const vals = ['new', 'best', 'recent', 'relevance'];
         if (!vals.some((v) => v.startsWith(lower))) { const near = closestTo(lower, ['new', 'best']); bad(`${key}:${value} is not a sort order.`, ['new', 'best'], near ? `${key}:${near}` : undefined); }
@@ -1151,6 +1825,25 @@
           bad(`There is no group named "${value}".`, undefined, shown ? `${key}:${quoteToken(shown)}` : undefined);
         }
       }
+    }
+    // Two numpad keys side by side ask for a clip on both: it has one key.
+    // Flagged only where both stand at the top level (an OR is fine); the fix
+    // puts OR between them.
+    if (numsSeen.length > 1) {
+      const top = parseQuery(s);
+      if (top.nums.length > 1) {
+        const second = numsSeen[1];
+        problems.push({ start: second.start, end: second.end, token: second.text, valueStart: second.start, key: 'num', value: second.text, kind: 'num-and',
+          message: 'A clip sits on one numpad key, so these keys together find nothing.', didYouMean: `OR ${second.text}`, fix: { start: second.start, end: second.start, text: 'OR ' } });
+      }
+    }
+    // Structure: an OR with nothing on one side, a group never closed. Both
+    // are pending while the caret is still at their end.
+    const syntax = parseQuery(s).syntax;
+    for (const p of syntax) {
+      const pending = caret != null && (p.kind === 'unclosed' ? caret === s.length : caret === p.end);
+      const message = p.kind === 'unclosed' ? 'This group is never closed with ")".' : 'OR needs a term on each side.';
+      problems.push({ start: p.start, end: p.end, token: s.slice(p.start, p.end), valueStart: p.start, key: '', value: '', kind: p.kind, message, pending });
     }
     return problems;
   }
@@ -1212,24 +1905,52 @@
     if (v === 'multiline') return docLinesCapped(doc) > 1;
     return docHasIs(doc, v);
   }
-  function facetChecks(parsed, now) {
+  // The OR dimensions whose next value goes in with an OR (applyFacet's rule:
+  // one value there, or an OR pill already): dim -> the check dim the census
+  // holds open for that dimension's options ('any:group').
+  function openDims(parsed) {
+    const open = new Map();
+    for (const dim of OR_DIMS) {
+      if ((parsed.anyOf || []).some((g) => g.dim === dim)) { open.set(dim, `any:${dim}`); continue; }
+      const n = dim === 'group' ? parsed.groups.length : dim === 'num' ? parsed.nums.length : parsed.is.filter((v) => TYPE_IS.has(v)).length;
+      if (n === 1) open.set(dim, `any:${dim}`);
+    }
+    return open;
+  }
+  // Every top-level filter as a census / relaxation check: { dim, ok(doc, i),
+  // label, tokens (applyFacet steps that remove it), time }. A lone value of
+  // an open OR dimension is that dimension's check (its options would OR in).
+  // A custom expression is one check, never relaxed (no tokens), and last, so
+  // the failure cap usually stops before it is evaluated. hay: the lowercased
+  // haystacks, by doc index (a custom expression may hold words).
+  function facetChecks(parsed, now, hay) {
     const checks = [];
-    for (const g of parsed.groups) checks.push({ dim: `group:${g}`, ok: (d) => docInGroup(d, g) });
-    for (const g of parsed.negGroups) checks.push({ dim: `-group:${g}`, ok: (d) => !docInGroup(d, g) });
-    for (const v of parsed.is) checks.push({ dim: `is:${v}`, ok: (d) => docIsFast(d, v) });
-    for (const v of parsed.negIs) checks.push({ dim: `-is:${v}`, ok: (d) => !docIsFast(d, v) });
-    if (parsed.nums.length) checks.push({ dim: 'num', ok: (d) => parsed.nums.includes(d.numpad) });
-    for (const n of parsed.negNums) checks.push({ dim: `-num:${n}`, ok: (d) => d.numpad !== n });
-    if (parsed.since != null) { const b = resolveTimeMs(parsed.since, now); if (b != null) checks.push({ dim: 'since', ok: (d) => d.ts * 1000 >= b }); }
-    if (parsed.before != null) { const b = resolveTimeMs(parsed.before, now); if (b != null) checks.push({ dim: 'before', ok: (d) => d.ts * 1000 <= b }); }
-    for (const k of BOUND_FACETS) if (parsed[k]) { const bound = parsed[k]; checks.push({ dim: k, ok: (d) => docBoundOk(d, k, bound) }); }
-    if (parsed.id) { const id = String(parsed.id).toLowerCase(); checks.push({ dim: 'id', ok: (d) => d.id.toLowerCase().includes(id) }); }
+    const open = openDims(parsed);
+    const anyDims = new Set((parsed.anyOf || []).map((g) => g.dim));
+    const lone = (dim, own) => (open.has(dim) && !anyDims.has(dim) ? open.get(dim) : own);
+    for (const g of parsed.groups) checks.push({ dim: lone('group', `group:${g}`), ok: (d) => docInGroup(d, g), label: `group:${quoteToken(g)}`, tokens: [[{ kind: 'group', value: g }, 'include']] });
+    for (const g of parsed.negGroups) checks.push({ dim: `-group:${g}`, ok: (d) => !docInGroup(d, g), label: `-group:${quoteToken(g)}`, tokens: [[{ kind: 'group', value: g }, 'exclude']] });
+    for (const v of parsed.is) checks.push({ dim: TYPE_IS.has(v) ? lone('type', `is:${v}`) : `is:${v}`, ok: (d) => docIsFast(d, v), label: `is:${v}`, tokens: [[{ kind: 'is', value: v }, 'include']] });
+    for (const v of parsed.negIs) checks.push({ dim: `-is:${v}`, ok: (d) => !docIsFast(d, v), label: `-is:${v}`, tokens: [[{ kind: 'is', value: v }, 'exclude']] });
+    for (const n of parsed.nums) checks.push({ dim: lone('num', `num:${n}`), ok: (d) => d.numpad === n, label: `num:${n}`, tokens: [[{ kind: 'num', value: n }, 'include']] });
+    for (const n of parsed.negNums) checks.push({ dim: `-num:${n}`, ok: (d) => d.numpad !== n, label: `-num:${n}`, tokens: [[{ kind: 'num', value: n }, 'exclude']] });
+    for (const g of parsed.anyOf || []) {
+      checks.push({ dim: `any:${g.dim}`, ok: (d) => g.values.some((v) => (g.field === 'is' ? docIsFast(d, v) : facetValueOk(d, g.field, v))), label: anyOfText(g), tokens: g.values.map((v) => [{ kind: g.field, value: v }, 'include']) });
+    }
+    for (const k of ['since', 'before']) {
+      if (parsed[k] == null) continue;
+      const b = resolveTimeMs(parsed[k], now);
+      if (b != null) checks.push({ dim: k, ok: k === 'since' ? (d) => d.ts * 1000 >= b : (d) => d.ts * 1000 <= b, label: `${k}:${quoteToken(parsed[k])}`, time: true, tokens: [[{ kind: k, value: parsed[k] }, 'include']] });
+    }
+    for (const k of BOUND_FACETS) if (parsed[k]) { const bound = parsed[k]; checks.push({ dim: k, ok: (d) => docBoundOk(d, k, bound), label: `${k}:${serializeBound(bound)}`, tokens: [[{ kind: k, value: serializeBound(bound) }, 'include']] }); }
+    if (parsed.id) { const id = String(parsed.id).toLowerCase(); checks.push({ dim: 'id', ok: (d) => d.id.toLowerCase().includes(id), label: `id:${quoteToken(parsed.id)}`, tokens: [[{ kind: 'id', value: parsed.id }, 'include']] }); }
+    (parsed.compound || []).forEach((node, n) => checks.push({ dim: `compound:${n}`, ok: (d, i) => evalNode(node, d, hay && hay[i] != null ? hay[i] : docSearchText(d).toLowerCase(), now) }));
     return checks;
   }
-  function facetFailures(doc, checks, out) {
+  function facetFailures(doc, checks, out, i) {
     out.length = 0;
     for (let k = 0; k < checks.length; k += 1) {
-      if (checks[k].ok(doc)) continue;
+      if (checks[k].ok(doc, i)) continue;
       out.push(checks[k].dim);
       if (out.length >= FAILURE_CAP) break;
     }
@@ -1244,16 +1965,22 @@
     if (BOUND_FACETS.includes(k)) return `${k}:${serializeBound(parseBound(String(token.value == null ? '' : token.value)))}`;
     return `${k}:${token.value == null ? '' : String(token.value).toLowerCase()}`;
   }
-  // The dim an option belongs to under this query (null = none held open).
+  // The dim an option belongs to under this query (null = none held open):
+  // an excluded value its own, a value of an open OR dimension that
+  // dimension's (selecting it would OR it in), a selected value its own.
   function optionDim(parsed, token) {
     const k = token.kind;
     if (SINGLE_FACETS.includes(k)) return k;
-    if (k === 'num') return 'num';
-    if (k === 'group') { const g = normalizeTagName(token.value); return parsed.groups.includes(g) ? `group:${g}` : parsed.negGroups.includes(g) ? `-group:${g}` : null; }
-    const v = BUILTIN_TO_IS[token.value] || token.value;
-    return parsed.is.includes(v) ? `is:${v}` : parsed.negIs.includes(v) ? `-is:${v}` : null;
+    const { field, value } = tokenFieldValue(token);
+    const neg = field === 'group' ? parsed.negGroups : field === 'num' ? parsed.negNums : parsed.negIs;
+    if (neg.includes(value)) return `-${field}:${value}`;
+    const open = openDims(parsed);
+    const dim = facetDim(field, value);
+    if (open.has(dim)) return open.get(dim);
+    const pos = field === 'group' ? parsed.groups : field === 'num' ? parsed.nums : parsed.is;
+    return pos.includes(value) ? `${field}:${value}` : null;
   }
-  // facetCensus(docs, parsed, { now, groups }) -> { permissive, total,
+  // facetCensus(docs, parsed, { now, groups, searchTextLower }) -> { permissive, total,
   // count(key), present(key) }. Options counted: every is: value, every
   // OPTION_FACETS token, and every group (with its parent paths) in `groups`.
   // `present` = the option exists somewhere in history, filters ignored (an
@@ -1295,12 +2022,13 @@
     const counts = new Map();
     const present = new Map();
     const bump = (m, key) => m.set(key, (m.get(key) || 0) + 1);
-    const checks = facetChecks(parsed, now);
+    const checks = facetChecks(parsed, now, o.searchTextLower);
     const failed = [];
     const seen = new Set();
-    for (const doc of list) {
+    for (let i = 0; i < list.length; i += 1) {
+      const doc = list[i];
       if (!doc) continue;
-      facetFailures(doc, checks, failed);
+      facetFailures(doc, checks, failed, i);
       const only = failed.length === 1 ? failed[0] : null;
       const inBase = failed.length === 0;
       for (const opt of options) {
@@ -1326,6 +2054,7 @@
     return {
       permissive,
       total: list.length,
+      groupWeights: groupWeights(list, now),
       count: (key) => counts.get(key) || 0,
       present: (key) => (present.get(key) || 0) > 0,
     };
@@ -1375,6 +2104,9 @@
     const probe = token.kind === 'before' && !token.value ? { kind: 'before' } : token;
     const selected = o.selected != null ? !!o.selected : facetTokenState(parsed, probe) !== null;
     if (selected) return { enabled: true, count };
+    // A value a custom expression names (a OR b): a click could not change it there.
+    const custom = customFacetKeys(parsed);
+    if (custom && (custom.has(key) || (SINGLE_FACETS.includes(token.kind) && custom.has(`${token.kind}:`)))) return { enabled: false, kind: 'structural', reason: 'Part of a custom filter in the search: change it there', count: 0 };
     if (!census || census.permissive) return { enabled: true, count };
     const categorical = token.kind === 'builtin' || token.kind === 'is';
     if (categorical && !census.present(key)) return { enabled: false, hidden: true, count: 0 };
@@ -1394,38 +2126,25 @@
   // terms must still match (they are never relaxed); a doc failing exactly one
   // facet counts for that facet. `query` is the text with that facet removed
   // through applyFacet (everything else, free text included, stays as typed).
-  function relaxDims(parsed) {
-    const out = [];
-    for (const g of parsed.groups) out.push({ dim: `group:${g}`, label: `group:${quoteToken(g)}`, tokens: [[{ kind: 'group', value: g }, 'include']] });
-    for (const g of parsed.negGroups) out.push({ dim: `-group:${g}`, label: `-group:${quoteToken(g)}`, tokens: [[{ kind: 'group', value: g }, 'exclude']] });
-    for (const v of parsed.is) out.push({ dim: `is:${v}`, label: `is:${v}`, tokens: [[{ kind: 'is', value: v }, 'include']] });
-    for (const v of parsed.negIs) out.push({ dim: `-is:${v}`, label: `-is:${v}`, tokens: [[{ kind: 'is', value: v }, 'exclude']] });
-    if (parsed.nums.length) out.push({ dim: 'num', label: parsed.nums.map((n) => `num:${n}`).join(' '), tokens: parsed.nums.map((n) => [{ kind: 'num', value: n }, 'include']) });
-    for (const n of parsed.negNums) out.push({ dim: `-num:${n}`, label: `-num:${n}`, tokens: [[{ kind: 'num', value: n }, 'exclude']] });
-    for (const k of ['since', 'before']) if (parsed[k]) out.push({ dim: k, label: `${k}:${quoteToken(parsed[k])}`, time: true, tokens: [[{ kind: k, value: parsed[k] }, 'include']] });
-    for (const k of BOUND_FACETS) if (parsed[k]) out.push({ dim: k, label: `${k}:${serializeBound(parsed[k])}`, tokens: [[{ kind: k, value: serializeBound(parsed[k]) }, 'include']] });
-    if (parsed.id) out.push({ dim: 'id', label: `id:${quoteToken(parsed.id)}`, tokens: [[{ kind: 'id', value: parsed.id }, 'include']] });
-    return out;
-  }
   function bestRelaxation(docs, query, opts) {
     const o = opts || {};
     const parsed = typeof query === 'string' ? parseQuery(query) : query;
-    const dims = relaxDims(parsed);
-    if (!dims.length) return null;
     const now = o.now || Date.now();
-    const matchers = compileContent(parsed, !!o.regex);
-    const contentOnly = { ...emptyParsed(''), content: parsed.content };
-    const matchOpts = { regex: o.regex, now, searchText: undefined, matchers };
-    const checks = facetChecks(parsed, now);
-    const failed = [];
-    const counts = new Map();
     const list = docs || [];
     const hay = o.searchTextLower || null;
+    const checks = facetChecks(parsed, now, hay);
+    const dims = checks.filter((c) => c.tokens);
+    if (!dims.length) return null;
+    const matchers = compileContent(parsed);
+    const contentOnly = { ...emptyParsed(''), content: parsed.content };
+    const matchOpts = { now, searchText: undefined, matchers };
+    const failed = [];
+    const counts = new Map();
     // o.cache (caller-owned, one per list): typing more of the same words only
     // re-tests the clips that counted last time (filterRankIndexes' refine
     // rule), so a nudge shown while typing does not rescan the whole history.
     const cache = o.cache || null;
-    const state = cache ? refineState(parsed, o.regex) : null;
+    const state = cache ? refineState(parsed) : null;
     const prev = cache && cache.docs === list && cache.hay === hay ? cache.state : null;
     const candidates = prev && canRefine(prev, state) ? cache.matched : null;
     const matched = cache ? [] : null;
@@ -1434,7 +2153,7 @@
       const i = candidates ? candidates[k] : k;
       const doc = list[i];
       if (!doc) continue;
-      facetFailures(doc, checks, failed);
+      facetFailures(doc, checks, failed, i);
       if (failed.length !== 1) continue;
       matchOpts.searchText = hay ? hay[i] : undefined;
       if (parsed.content.length && !matchDoc(doc, contentOnly, matchOpts)) continue;
@@ -1453,17 +2172,162 @@
     return { dim: best.dim, label: best.label, count: best.count, time: !!best.time, query: next };
   }
 
+  // ── search modes: the field's view of the ONE canonical query ──
+  // The query text is always Advanced syntax (what search, chips, the census
+  // and AI tools read). Basic and Regex show it as the field's text plus
+  // pills: splitQuery(query, mode) -> { text, words, pills, dropped };
+  // composeQuery(mode, text, pills) -> the query again. Basic text = the
+  // literal words (a phrase keeps its quotes); Regex text = the first /regex/
+  // term, else the words read as one pattern. Pills hold everything else: a
+  // filter, an excluded word, a scoped term, another /regex/. The values of
+  // one OR dimension are ONE pill with a connective: { conn: 'or' } for
+  // group:A OR group:B, 'and' for group:A group:B, none for a single value.
+  // dropped: the custom expressions a pill cannot show (a OR b, -(a b)): a
+  // switch out of Advanced removes them (switchModeQuery says which).
+  // pill: { key, kind: 'facet' | 'token', field?, dim?, conn?, neg?,
+  //         values?: [{ value, text }], text (its query tokens) }.
+  function basicWordsOf(text) {
+    const out = [];
+    let cur = '';
+    let phrase = false;
+    let inQuote = false;
+    const s = String(text || '');
+    const flush = () => { if (cur) out.push({ value: cur, phrase }); cur = ''; phrase = false; };
+    for (const ch of s) {
+      if (ch === '"') { inQuote = !inQuote; phrase = true; continue; }
+      if (!inQuote && isSpace(ch)) { flush(); continue; }
+      cur += ch;
+    }
+    flush();
+    return out;
+  }
+  // Would Advanced read this bare word as exactly itself (a literal term)?
+  function literalInAdvanced(word) {
+    const p = parseQuery(word);
+    const c = p.content[0];
+    return p.items.length === 1 && p.content.length === 1 && !c.neg && !c.regex && c.scope === 'any' && c.value === word && !p.unknown.length && !p.syntax.length;
+  }
+  // Basic text -> query text: every word literal, quoted where Advanced would
+  // read it as syntax (-x, key:val, OR, (x), /x/).
+  function basicToQuery(text) {
+    return basicWordsOf(text).map((w) => (w.phrase || !literalInAdvanced(w.value) ? `"${w.value}"` : w.value)).join(' ');
+  }
+  // Regex text -> query text: /pattern/, its unescaped slashes escaped.
+  function regexToQuery(text) {
+    const s = String(text || '');
+    if (!s.trim()) return '';
+    let out = '';
+    for (let i = 0; i < s.length; i += 1) {
+      if (s[i] === '\\') { out += s.slice(i, i + 2); i += 1; continue; }
+      out += s[i] === '/' ? '\\/' : s[i];
+    }
+    return `/${out}/`;
+  }
+  function regexText(pattern) { return String(pattern || '').replace(/\\\//g, '/'); }
+  function splitQuery(query, mode) {
+    const m = normalizeMode(mode);
+    const q = String(query == null ? '' : query);
+    if (m === 'advanced') return { text: q, words: [], pills: [], dropped: [] };
+    const p = parseQuery(q);
+    const words = [];
+    const pills = [];
+    const dropped = [];
+    const dims = new Map();
+    let regexTerm = null;
+    if (m === 'regex') {
+      const first = p.items.find((it) => it.kind === 'leaf' && it.leaf.field === 'content' && it.leaf.regex && !it.leaf.neg && it.leaf.scope === 'any');
+      if (first) regexTerm = first;
+    }
+    const tokenPill = (it) => pills.push({ key: `t${pills.length}:${it.text}`, kind: 'token', neg: !!it.leaf.neg, field: it.leaf.field, text: it.text });
+    for (const it of p.items) {
+      if (it.kind === 'compound') { dropped.push({ text: q.slice(it.start, it.end) }); continue; }
+      if (it.kind === 'any') {
+        pills.push({ key: `any:${it.any.dim}`, kind: 'facet', field: it.any.field, dim: it.any.dim, conn: 'or', values: it.any.members.map((x) => ({ value: x.value, text: x.text })), text: it.any.members.map((x) => x.text).join(' OR ') });
+        continue;
+      }
+      const l = it.leaf;
+      if (it === regexTerm) continue;
+      if (l.field === 'content' && !l.neg && l.scope === 'any' && !l.regex && !regexTerm) { words.push({ value: l.value, phrase: /\s/.test(l.value) }); continue; }
+      const dim = !l.neg ? facetDim(l.field, l.value) : null;
+      if (dim && OR_DIMS.has(dim)) {
+        let pill = dims.get(dim);
+        if (!pill) { pill = { key: `dim:${dim}`, kind: 'facet', field: l.field, dim, conn: null, values: [], text: '' }; dims.set(dim, pill); pills.push(pill); }
+        pill.values.push({ value: l.value, text: it.text });
+        pill.conn = pill.values.length > 1 ? 'and' : null;
+        pill.text = pill.values.map((x) => x.text).join(' ');
+        continue;
+      }
+      tokenPill(it);
+    }
+    const text = regexTerm ? regexText(regexTerm.leaf.value)
+      : m === 'regex' ? words.map((w) => w.value).join(' ')
+        : words.map((w) => (w.phrase ? `"${w.value}"` : w.value)).join(' ');
+    return { text, words, pills, dropped };
+  }
+  function composeQuery(mode, text, pills) {
+    const m = normalizeMode(mode);
+    const head = m === 'regex' ? regexToQuery(text) : m === 'basic' ? basicToQuery(text) : String(text || '').trim();
+    return [head, ...(pills || []).map((p) => p.text)].filter((x) => x && x.trim()).join(' ');
+  }
+  // Switching the field from one mode to another: { query, text, pills,
+  // dropped }. Into Advanced the query is shown as it is (Basic words already
+  // quoted where they look like syntax, a Regex already /.../), so the switch
+  // teaches the format. Out of Advanced every filter and extra term becomes a
+  // pill; a custom expression cannot, so it is dropped (and listed: the caller
+  // warns first and offers Undo). Between Basic and Regex the text stays as
+  // typed, read the other way. viewText: what the field shows now.
+  function switchModeQuery(query, from, to, viewText) {
+    const a = normalizeMode(from);
+    const b = normalizeMode(to);
+    const q = String(query == null ? '' : query);
+    if (a === b || b === 'advanced') return { query: q, text: q, pills: [], dropped: [] };
+    if (a === 'advanced') {
+      const v = splitQuery(q, b);
+      return { query: composeQuery(b, v.text, v.pills), text: v.text, pills: v.pills, dropped: v.dropped };
+    }
+    const text = viewText == null ? splitQuery(q, a).text : String(viewText);
+    const pills = splitQuery(q, a).pills;
+    return { query: composeQuery(b, text, pills), text, pills, dropped: [] };
+  }
+  // What a switch to `mode` would remove (the mode menu names it first).
+  function modeSwitchLoss(query, from, to) {
+    return normalizeMode(from) === 'advanced' && normalizeMode(to) !== 'advanced' ? splitQuery(query, to).dropped : [];
+  }
+  // The old regex flag (an AI tool's regex: true, a saved regex toggle): the
+  // query's free text, read as ONE regex.
+  function legacyRegexQuery(query) {
+    const v = splitQuery(query, 'basic');
+    return composeQuery('regex', v.words.map((w) => w.value).join(' '), v.pills);
+  }
+  // A pill's or/and connective, flipped: the query with that pill's tokens
+  // rewritten (group:A OR group:B <-> group:A group:B).
+  function setPillConnective(query, mode, pill, conn) {
+    const v = splitQuery(query, mode);
+    const at = v.pills.findIndex((x) => x.key === pill.key);
+    if (at < 0 || !pill.values || pill.values.length < 2) return String(query || '');
+    const sep = conn === 'and' ? ' ' : ' OR ';
+    const pills = v.pills.map((x, i) => (i === at ? { ...x, conn, text: x.values.map((y) => y.text).join(sep) } : x));
+    return composeQuery(mode, v.text, pills);
+  }
+  // The query without one pill.
+  function removePill(query, mode, pill) {
+    const v = splitQuery(query, mode);
+    return composeQuery(mode, v.text, v.pills.filter((x) => x.key !== pill.key));
+  }
+
   // ── paste: a multi-word plain-text snippet searches as ONE phrase (Forge
   // quotePastedText). null = paste it as it is: one word, or text that is
   // query syntax (a recognised filter or a field-scoped term), or text whose
   // words are not split by single spaces: a phrase is a plain substring test, so
   // a line break, a tab or a double space inside it would stop it matching the
   // very clip it was copied from (pasted raw, its words are AND-ed instead).
-  function quotePastedText(text) {
+  // In Basic nothing is syntax, so only the spacing rule applies.
+  function quotePastedText(text, mode) {
     const collapsed = String(text || '').trim();
     if (!/\s/.test(collapsed) || /[^ \S]| {2}/.test(collapsed)) return null;
+    if (normalizeMode(mode || 'advanced') === 'basic') return `"${collapsed.replace(/"/g, '')}"`;
     const p = parseQuery(collapsed);
-    if (anyFilterActive(p) || p.sort || p.content.some((c) => c.scope !== 'any')) return null;
+    if (anyFilterActive(p) || p.sort || p.compound.length || p.content.some((c) => c.scope !== 'any' || c.regex || c.neg)) return null;
     return `"${collapsed.replace(/"/g, '')}"`;
   }
   // Is position `at` inside an open quote (an odd number of quotes before it)?
@@ -1476,9 +2340,12 @@
 
   return {
     clipToDoc, docSearchText, normalizeTagName, tagMatchesFilter, docInGroup,
-    tokenizeQuery, quoteToken, parseQuery, serializeQuery, applyFacet, facetState, facetTokenState,
-    anyFilterActive, isEmptyQuery, resolveTimeMs,
-    matchDoc, relevanceScore, recencyScore, rankMode, filterRankIndexes, bodyIndexOf,
+    tokenizeQuery, quoteToken, parseQuery, scanQuery, serializeQuery, applyFacet, stripFacet, clearFacet, addToken, facetState, facetTokenState,
+    anyFilterActive, hasSearchTerms, isEmptyQuery, resolveTimeMs,
+    matchDoc, relevanceScore, recencyScore, decayWeight, groupWeights, compareGroupUse, rankMode, filterRankIndexes, bodyIndexOf,
+    compileTerm, escapeRegExp, termSpans, firstMatchIndex,
+    SEARCH_MODES, normalizeMode, splitQuery, composeQuery, switchModeQuery, modeSwitchLoss, legacyRegexQuery,
+    setPillConnective, removePill, promptOptionState, promptOptionLabel, promptQuery, FIELD_ASK,
     fuzzyMatch, fuzzyFloor,
     lexQuery, suggestQuery,
     BUILTIN_TO_IS, IS_TO_BUILTIN, IS_VALUES, RECOGNIZED_PREFIXES, NON_FILTER_SCHEMES,

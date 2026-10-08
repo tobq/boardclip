@@ -68,10 +68,10 @@ assert.notStrictEqual(rendererStamp(base), rendererStamp({ ...base, html: '<b>bo
 {
   const huge = `${'lorem ipsum\n'.repeat(200000)}NEEDLE here\n${'tail\n'.repeat(1000)}`;
   const t = Date.now();
-  const preview = Core.collapsedPreviewText(huge, 'needle', false);
+  const preview = Core.collapsedPreviewText(huge, 'needle');
   assert.ok(preview.includes('NEEDLE here') && !preview.includes('\n'), 'centred on the match, one line');
   assert.ok(preview.length < 800, 'bounded window');
-  const known = Core.collapsedPreviewText(huge, 'needle', false, { matchIndex: huge.indexOf('NEEDLE') });
+  const known = Core.collapsedPreviewText(huge, 'needle', { matchIndex: huge.indexOf('NEEDLE') });
   assert.strictEqual(known, preview, 'a known match index gives the same window');
   assert.ok(Date.now() - t < 500, 'no whole-text pass');
 }

@@ -181,7 +181,27 @@
    placeholder, so an unfocused popup never shows an accent line beside
    "Click here to search...". */
 .search-row.is-focused { box-shadow: inset 0 -1px 0 var(--accent); }
-.search-field { position: relative; flex: 1; min-width: 0; display: flex; }
+.search-field { position: relative; flex: 1; min-width: 0; display: flex; align-items: center; gap: var(--sp-2); }
+/* The input and its highlight mirror share this box (the pills sit beside it). */
+.search-input-wrap { position: relative; flex: 1 1 auto; min-width: 4em; display: flex; }
+/* Basic / Regex: the query's filters as pills after the text, ONE line that
+   scrolls sideways under the strip fade (Core.attachSideScroll). A pill is a
+   chip painted as the field paints its tokens (the key in the accent, an
+   exclusion's minus red); its connective flips or / and, its x removes it. */
+.search-pills { display: flex; align-items: center; gap: var(--sp-1); flex: 0 1 auto; max-width: 62%; min-width: 0;
+                overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
+.search-pills::-webkit-scrollbar { display: none; }
+.search-pills[hidden] { display: none; }
+.filter-tag.search-pill { flex-shrink: 0; max-width: none; gap: 0; padding-inline: var(--sp-2) 0; background: var(--hover); color: var(--text); cursor: default;
+                          font-family: var(--font-mono); font-size: var(--fs-meta); white-space: nowrap; }
+.pill-value { color: var(--text); }
+.pill-conn { margin: 0 var(--sp-1); padding: 0 var(--sp-1); height: calc(var(--ctl-sm) - 6px); border: 0; border-radius: var(--r-1); background: transparent;
+             color: var(--accent-text); font: inherit; font-weight: var(--fw-strong); cursor: pointer; }
+.pill-conn:hover { background: var(--accent-bg); }
+.pill-x { display: inline-flex; align-items: center; justify-content: center; width: var(--ctl-sm); height: var(--ctl-sm); margin-left: var(--sp-1);
+          border: 0; border-radius: var(--r-chip); background: transparent; color: var(--text-dim); cursor: pointer; padding: 0; }
+.pill-x .mi { font-size: var(--icon-sm); }
+.pill-x:hover { color: var(--text); background: var(--hover); }
 .search { flex: 1; background: transparent; border: none; padding: var(--sp-3) var(--sp-2) var(--sp-3) 0; color: var(--text); font-size: var(--fs-text); outline: none; font-family: inherit; min-width: 0; }
 .search::placeholder { color: var(--text-dim); }
 /* The live-highlight input paints its text transparent (the mirror shows it);
@@ -193,10 +213,15 @@
    selection bar's close, the underline under it. */
 .search-row > .bc-reveal[data-reveal="tools"] { transition: grid-template-columns var(--dur) var(--ease), margin-right var(--dur) var(--ease); }
 .search-row > .bc-reveal[data-reveal="tools"].open { margin-right: calc(var(--edge-ctl) - var(--gutter)); } /* closed, the field keeps the whole row */
-/* A toggled in-field control: regex on, Recent order, the options panel open
-   (or a filter it owns in the query). */
-.rx-btn.active, .sort-btn.active, .opts-btn.active { color: var(--accent); background: var(--accent-bg); }
-.rx-btn.active:hover, .sort-btn.active:hover, .opts-btn.active:hover { color: var(--accent); background: var(--accent-bg-strong); }
+/* A toggled in-field control: a search mode past Basic (the mode chip, the
+   find bar's too), match case, Recent order, the options panel open (or a
+   filter it owns in the query). */
+.mode-btn.active, .case-btn.active, .sort-btn.active, .opts-btn.active { color: var(--accent); background: var(--accent-bg); }
+.mode-btn.active:hover, .case-btn.active:hover, .sort-btn.active:hover, .opts-btn.active:hover { color: var(--accent); background: var(--accent-bg-strong); }
+/* The mode list: the example in mono; a switch that would remove part of the
+   search says so in red. */
+.mode-menu .bc-menu-hint { font-family: var(--font-mono); }
+.mode-menu .mode-loss .bc-menu-hint { color: var(--red); font-family: inherit; }
 
 /* Live query-syntax highlight: a colored backdrop mirror UNDER a transparent input. The
    two must share identical text metrics (font/size/padding/line-height) so glyphs align. */
@@ -210,6 +235,8 @@
 .qh-value { color: var(--text); }
 .qh-regex { color: var(--green); }
 .qh-quote { color: var(--text-dim); }
+/* OR and the brackets of a group: the language's operators, like a key. */
+.qh-op { color: var(--accent-text); font-weight: var(--fw-strong); }
 /* Exactly the invalid key or value (Search.validateQuery), nothing around it. */
 .qh-unknown { color: var(--red); text-decoration: underline wavy var(--red); text-decoration-thickness: 1px; text-underline-offset: 3px; }
 .qh-ws { color: transparent; }
@@ -645,6 +672,10 @@ mark { background: var(--mark-bg); color: var(--mark-fg); border-radius: var(--r
 .dialog-preview:empty { display: none; }
 .dialog-btns { display: flex; gap: var(--sp-4); justify-content: flex-end; }
 .prompt-input { width: 100%; height: var(--ctl-lg); background: var(--input); border: none; border-radius: var(--r-ctl); padding: 0 var(--sp-4); color: var(--text); font-size: var(--fs-text); outline: none; margin-bottom: var(--sp-6); font-family: inherit; }
+/* A value the prompt refuses: what is wrong, under the field (in the gap the
+   field keeps above the buttons), until the next keystroke. */
+.prompt-error { margin: calc(var(--sp-2) - var(--sp-6)) 0 var(--sp-6); font-size: var(--fs-meta); line-height: var(--lh-ui); color: var(--red); }
+.prompt-error[hidden] { display: none; }
 
 /* Settings: the shortcut fields (sans key names; "Not set" dim) and the sync
    button's live spin. Buttons are the shared .btn / .icon-btn. */
@@ -732,6 +763,7 @@ input.bc-bar-title::placeholder { color: var(--text-dim); font-weight: var(--fw-
                  padding: 0; margin-right: var(--sp-2); outline: none; }
 .bc-find-input::placeholder { color: var(--text-dim); }
 .bc-find-count { font-size: var(--fs-meta); color: var(--text-dim); min-width: 34px; text-align: right; font-variant-numeric: tabular-nums; margin-right: var(--sp-2); }
+.bc-find.bad-pattern .bc-find-count { color: var(--red); }
 .bc-editor-area { flex: 1; min-height: 0; width: 100%; resize: none; border: 0; outline: none; background: transparent; color: var(--text); }
 .bc-editor-area, .bc-editor-hl {
   font-family: var(--font-mono); font-size: var(--fs-text); line-height: var(--lh-text); padding: var(--sp-6) var(--gutter); tab-size: 4; white-space: pre-wrap; word-break: break-word; }

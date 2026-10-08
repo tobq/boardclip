@@ -233,19 +233,29 @@ const siteCss = read('site/styles.css');
     'menu and popover submenus must overlap horizontally with their parent so hover does not drop');
 }
 
-// 11) Search bar parity: BOTH consumers render the shared shell's sort + regex
+// 11) Search bar parity: BOTH consumers render the shared shell's sort + mode
 //     buttons and drive the ONE attachSearchBox enhancer + shared query engine
-//     (bar text = source of truth; no bespoke filter Sets). The in-app "AI search"
+//     (the box's canonical query = source of truth; no bespoke filter Sets, no
+//     regex flag beside it: a /regex/ is part of the query). The in-app "AI search"
 //     mode (sparkle/Tab toggle, BYO-endpoint agent, offline IDF ranking) was REMOVED
 //     on 2026-09-02 ("remove the shitty AI search for now, will impl better later");
 //     neither consumer, the shared shell, nor the search engine may grow it back.
 {
   const shell = ui.renderPopupShell({});
-  for (const id of ['sortBtn', 'regexBtn']) {
+  for (const id of ['sortBtn', 'modeBtn']) {
     assert.ok(shell.includes(`id="${id}"`), `renderPopupShell missing the shared ${id} control`);
   }
+  assert.ok(shell.includes('class="search-pills"') && shell.includes('class="search-input-wrap"'), 'the field holds the input and the pills strip');
   for (const [name, html] of [['index.html', appHtml], ['site/index.html', siteHtml]]) {
     assert.ok(html.includes('Core.attachSearchBox('), `${name} must decorate the search box via the shared Core.attachSearchBox`);
+    // The box owns the query: the consumer hands it over with setQuery and
+    // reads it from onChange, never the input's value (in Basic and Regex the
+    // input shows only the words, the filters are pills).
+    assert.ok(/\.setQuery\(/.test(html) && !/(searchEl|search)\.value = (query|state\.query)/.test(html), `${name} must set the query through searchBox.setQuery, never the input`);
+    assert.ok(!/(searchEl|search)\.addEventListener\(['"]input['"]/.test(html), `${name} must read the query from the box's onChange, not the input event`);
+    assert.ok(/saveMode:/.test(html) && /prompt: \(opts\) =>/.test(html) && /toast: \(opts\) =>/.test(html), `${name} must keep the search mode and wire the mode switch's Undo + the value prompt`);
+    assert.ok(!/regexOn|state\.regex|regex_search|getRegex|regexBtn|demo-regex/.test(html), `${name} re-introduced the old regex toggle`);
+    assert.ok(/editorFindFor\(/.test(html), `${name} hands the editor its search words through the shared editorFindFor (never the raw query)`);
     assert.ok(!/activeFilters\s*=\s*new Set|excludedFilters\s*=\s*new Set/.test(html),
       `${name} re-introduced bespoke filter Sets; the query text is the single source of truth`);
   }
@@ -255,6 +265,12 @@ const siteCss = read('site/styles.css');
     assert.ok(!/aiBtn|aiStatus|ai-search|aiSearch|rankFuzzyIndexes|getAiMode|resetAiRun|runAiSearch|aiStatusText|aiRunning|aiResultIds|updateAiUi|setAiMode|searchIdf/.test(text), `${name} re-introduced a piece of the removed AI search mode`);
   }
   assert.ok(!require('fs').existsSync(require('path').join(__dirname, '..', 'lib', 'ai-search-agent.js')), 'lib/ai-search-agent.js was removed with the AI search mode');
+  // The search mode + the find bar's mode and case: per device (never synced),
+  // and the old synced regex toggle migrates (on -> Regex) and is stripped.
+  const mainSrc = read('main.js');
+  assert.ok(/LOCAL_ONLY_SETTING_KEYS = new Set\(\[[^\]]*'search_mode', 'find_mode', 'find_case'/.test(mainSrc), 'the search modes save without a revision bump');
+  for (const key of ['search_mode', 'find_mode', 'find_case', 'regex_search']) assert.ok(mainSrc.includes(`delete remoteSave.${key};`), `${key} never syncs`);
+  assert.ok(/REMOVED_SETTING_KEYS = \[[^\]]*'regex_search'/.test(mainSrc) && /promoted\.regex_search === true && !promoted\.search_mode\) merged\.search_mode = 'regex'/.test(mainSrc), 'a saved regex toggle loads as the Regex mode');
 }
 
 // 12) In-app image viewer + context-menu parity: the viewer window mounts the
@@ -981,10 +997,15 @@ const siteCss = read('site/styles.css');
   assert.ok(/setOrClear\('data-glass-scope', o\.glassScope, 'popup'\)/.test(coreSrc) && /glassScope: demoLook\.glassScope/.test(siteHtml), 'the demo passes Glass on to its window');
   assert.ok(/onMenu: \(x, y\) => \{[^}]*controller\.openClipMenu\(demoEditorClipId, x, y, "editor"\)/.test(siteHtml) && /revertClip: \(\) => \{ if \(demoEditor\) demoEditor\.revert\(\); \}/.test(siteHtml), 'the demo editor has the app editor\'s clip menu, Revert included');
   assert.ok(/toastEl: document\.getElementById\('toast'\)/.test(read('editor.html')) && /toastEl: demoToast/.test(siteHtml) && /showActionToast\(o\.toastEl, \{ message: 'Reverted to the original', actionLabel: 'Undo'/.test(coreSrc), 'Revert to original offers Undo, app and demo');
-  // One numpad glyph ('#'), one icon-button hover (no accent hover), the regex toggle a Material glyph.
+  // One numpad glyph ('#'), one icon-button hover (no accent hover), ONE mode chip (search + find).
   for (const [name, src] of [['core', coreSrc], ['mcp-approval.html', approvalHtml]]) assert.ok(!/dialpad/.test(src), `${name}: the numpad is the # (tag) glyph everywhere`);
   assert.ok(!rules(popupCss).some((r) => /\.icon-btn\.accent/.test(r.sel)) && !/icon-btn accent/.test(coreSrc + appHtml + siteHtml), 'icon buttons hover --text + --hover (accent is not a hover colour)');
-  assert.ok(!/>\.\*<\/button>/.test(coreSrc) && (coreSrc.match(/class="icon-btn rx-btn"[^>]*><span class="mi">regular_expression<\/span>/g) || []).length === 2, 'the regex toggles are the regular_expression glyph');
+  assert.ok(!/>\.\*<\/button>/.test(coreSrc) && !/rx-btn|findregex|initialFindRegex|prepareQuery|matchesQuery/.test(coreSrc + popupCss + read('editor.html')), 'the old regex toggles and the dead whole-query matcher are gone');
+  assert.strictEqual((coreSrc.match(/class="icon-btn mode-btn"/g) || []).length, 2, 'two mode chips: the search box and the find bar');
+  assert.strictEqual((coreSrc.match(/attachModeChip\(/g) || []).length, 3, 'one mode chip component (defined once, used by the search box and the find bar)');
+  assert.ok(/data-x="findcase"/.test(coreSrc) && /saveFindPrefs/.test(read('editor.html')) && /saveFindPrefs/.test(siteHtml), 'the find bar has match case and keeps its mode, app and demo');
+  // ONE compile primitive: search, the row highlight and the editor find all use Search.compileTerm.
+  assert.ok(/Search\.compileTerm\(/.test(coreSrc) && /Search\.termSpans\(/.test(coreSrc) && !/new RegExp\(queryText/.test(coreSrc), 'the highlight and the find go through the engine\'s one matcher');
   assert.ok(!rules(popupCss).some((r) => /\.star \.mi/.test(r.sel) && /--icon-lg/.test(r.body)), 'the row star is --icon-md like every row icon');
   // Labels: the overline is a section heading; the small sentence-case label is one rule.
   const label = rules(popupCss).find((r) => r.sel.split(/,\s*/).includes('.bc-label'));

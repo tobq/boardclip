@@ -249,11 +249,19 @@
 .search-opts-clip { min-height: 0; overflow: hidden; display: flex; flex-direction: column; }
 .search-opts-scroll { max-height: var(--opts-h, 240px); overflow-y: auto; padding: var(--sp-2) var(--gutter) var(--sp-4); }
 .search-opts.resizing .search-opts-scroll { max-height: none; height: var(--opts-h, 240px); }
-.opts-facets { display: grid; grid-template-columns: max-content 1fr; gap: var(--sp-2) var(--sp-5); align-items: center; }
-.opts-facet-chips { display: flex; flex-wrap: wrap; gap: var(--sp-1); }
+/* Filter units flow and wrap (Forge's FacetRows): as many per line as fit.
+   Every label takes the same width, so units stacked in a narrow popup still
+   line their chips up in one column. */
+.opts-facets { --opts-label-w: 3.2em; display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2) var(--sp-10); }
+.opts-unit { display: flex; align-items: center; gap: var(--sp-3); flex: 0 0 auto; max-width: 100%; } /* whole units move to the next line; only one wider than the panel wraps its chips */
+/* A real width, not just a flex-basis: Chromium sizes the unit from the
+   label's TEXT width, then lays the label out at its basis, taking the
+   difference from the chips (the last chip of a unit that fit wrapped). */
+.opts-unit > .opts-facet-label { flex: 0 0 auto; width: var(--opts-label-w); }
+.opts-facet-chips { display: flex; flex-wrap: wrap; gap: var(--sp-1); min-width: 0; }
 /* A key chip paints its prefix as the field will (.qh-prefix), and the notes
    their tokens (.qh-neg, .qh-quote): what the panel shows is what you type. */
-.opts-notes { grid-column: 2; margin: 0; padding-left: var(--sp-3); font-size: var(--fs-meta); line-height: var(--lh-ui); color: var(--text-dim); }
+.opts-notes { flex: 1 0 100%; margin: 0; padding-left: calc(var(--opts-label-w) + var(--sp-3) + var(--sp-3)); font-size: var(--fs-meta); line-height: var(--lh-ui); color: var(--text-dim); }
 .opts-notes-sep { margin: 0 var(--sp-2); }
 /* Bottom edge: the resize handle (Forge's ResizeHandle: a chrome-less strip,
    accent while hovered or dragged) over the panel's divider line. */

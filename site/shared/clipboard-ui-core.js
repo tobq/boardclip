@@ -1481,7 +1481,7 @@
   // Facet rows (Core.search.OPTION_FACETS) as chips that write query tokens (the
   // field shows what a toggle means: that is how the grammar is learned), the
   // keys no toggle writes (OPTION_FIELDS) and one line of rules (SYNTAX_NOTES),
-  // all in ONE label | chips grid. The chip renderer takes the
+  // as units that flow across the width. The chip renderer takes the
   // state from the query (facetTokenState) plus an optional { disabled, reason },
   // so the availability census can grey an option out through the same markup.
   function renderFacetOption(opt, state, extra) {
@@ -1514,7 +1514,10 @@
   function renderSearchFacets(query, census) {
     if (!Search || !Search.OPTION_FACETS) return '';
     const parsed = Search.parseQuery(query || '');
-    const row = (label, html) => `<span class="opts-facet-label">${escapeHtml(label)}</span><div class="opts-facet-chips" role="group" aria-label="${escapeHtml(label)}">${html}</div>`;
+    // One unit per filter (label + its chips). Units FLOW (Forge's FacetRows):
+    // side by side while they fit, one per line in a narrow popup, so a wide
+    // popup has no dead half and a narrow one stacks them.
+    const row = (label, html) => `<div class="opts-unit"><span class="opts-facet-label">${escapeHtml(label)}</span><div class="opts-facet-chips" role="group" aria-label="${escapeHtml(label)}">${html}</div></div>`;
     const facets = Search.OPTION_FACETS.map((def, r) => row(def.label, def.options.map((opt, i) => {
       const probe = opt.prompt ? { kind: opt.token.kind } : opt.token;
       const state = Search.facetTokenState(parsed, probe);

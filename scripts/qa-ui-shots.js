@@ -573,6 +573,27 @@ const STEPS = [
     await c.popup.waitFor(`document.getElementById('search').value.includes('is:url')`, 'facet applied', 5000);
     await qa.sleep(300);
     await c.shot(c.popup, 'popup-options-panel-facet');
+    // A wide popup (the owner's 667 px): the filter units flow side by side,
+    // so the panel has no dead half and takes fewer lines.
+    const POP = `__qa.electron.BrowserWindow.getAllWindows().find((x) => /index\\.html/.test(x.webContents.getURL()))`;
+    const narrow = await c.sb.mainEval(`${POP}.getBounds()`);
+    try {
+      await c.sb.mainEval(`(${POP}.setBounds({ ...${POP}.getBounds(), width: 667 }), true)`);
+      await qa.sleep(400);
+      const flow = await c.popup.eval(`(() => {
+        const units = [...document.querySelectorAll('#searchOpts .opts-unit')];
+        const lines = new Set(units.map((u) => Math.round(u.getBoundingClientRect().top))).size;
+        const box = document.querySelector('#searchOpts .opts-facets').getBoundingClientRect();
+        const right = Math.max(...units.map((u) => u.getBoundingClientRect().right));
+        return { units: units.length, lines, emptyRight: Math.round(box.right - right) };
+      })()`);
+      c.note('popup-options-panel-wide', flow);
+      await c.shot(c.popup, 'popup-options-panel-wide');
+      if (!(flow.lines < flow.units)) throw new Error(`a wide popup should put filter units side by side: ${J(flow)}`);
+    } finally {
+      await c.sb.mainEval(`(${POP}.setBounds(${J(narrow)}), true)`);
+      await qa.sleep(200);
+    }
     await escape(c.popup);
   } },
   { name: 'popup-multiselect', popup: true, run: async (c) => {

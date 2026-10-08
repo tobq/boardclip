@@ -234,7 +234,7 @@
         settingsCloseBtn: "demo-settings-close",
       },
       settingsNote: "Demo",
-      headerActionsHtml: '<button class="icon-btn accent" id="demo-new-note" type="button" title="New note" aria-label="New note"><span class="mi">edit_note</span></button>',
+      headerActionsHtml: '<button class="icon-btn" id="demo-new-note" type="button" title="New note" aria-label="New note"><span class="mi">edit_note</span></button>',
       settingsBodyHtml: Core.renderSettingsBody(),
     });
     // Toast + lightbox live INSIDE the demo window so they inherit the popup
@@ -825,7 +825,14 @@
         renderClips();
       },
       editClip: (id, _itemEl, options) => openDemoEditor(id, { ...(state.query ? { find: state.query, regex: state.regex } : {}), ...(options || {}) }),
-      setClipTitle: (id, title) => { const t = (title || "").trim(); clips = clips.map((item) => Core.itemId(item) === id ? { ...item, title: t || undefined, titleUpdatedAt: Date.now() } : item); },
+      // The open editor's title field is authoritative for its clip (it rides
+      // every commit), so a rename from its menu goes through it, as in the app.
+      setClipTitle: (id, title) => {
+        if (demoEditor && id === demoEditorClipId) { demoEditor.setTitle(title); demoEditor.commit(); return; }
+        const t = (title || "").trim(); clips = clips.map((item) => Core.itemId(item) === id ? { ...item, title: t || undefined, titleUpdatedAt: Date.now() } : item);
+      },
+      // The editor menu's "Revert to original": the editor's own revert (Undo in its toast).
+      revertClip: () => { if (demoEditor) demoEditor.revert(); },
       openImage: (item) => { if (item && item.imageSrc) openLightbox(item.imageSrc); },
       openImageExternal: (item) => { if (item && item.imageSrc) window.open(item.imageSrc, "_blank"); },
       // A web page cannot hand the OS a file: drag the image's URL (most apps
@@ -861,6 +868,8 @@
       renderSelection: (selState, opts) => demoList.paintSelection(selState, opts),
       deleteClips: (ids) => {
         const set = new Set(ids);
+        // Deleting the open editor's clip closes it (no closing commit), as the app's window does.
+        if (demoEditor && set.has(demoEditorClipId)) closeDemoEditor();
         const snaps = clips.filter((clip) => set.has(Core.itemId(clip))).map((clip) => ({ ...clip }));
         clips = clips.filter((clip) => !set.has(Core.itemId(clip)));
         return snaps;
@@ -1009,6 +1018,15 @@
     // existing clip commits in place; a null id is a new note that becomes a
     // clip on first commit. One editor open at a time in the demo.
     const demoEditorOverlay = document.getElementById("demo-editor-overlay");
+    // Right-click on the editor chrome (not the text, where the browser menu
+    // belongs) opens the same clip menu as its "...", like the app editor window.
+    demoEditorOverlay.addEventListener("contextmenu", (event) => {
+      if (!demoEditor || demoEditorClipId == null || !event.target.closest(".bc-editor")) return;
+      if (event.target.closest(".bc-editor-area, input, textarea")) return;
+      event.preventDefault();
+      event.stopPropagation();
+      controller.openClipMenu(demoEditorClipId, event.clientX, event.clientY, "editor");
+    });
     let demoEditor = null;
     let demoEditorClipId = null; // current clip behind the open editor (null = uncommitted new note)
     function closeDemoEditor() {
@@ -1067,6 +1085,10 @@
           renderClips();
         },
         onClose: closeDemoEditor,
+        toastEl: demoToast,
+        // "..." (and a right-click on the bar) = the app editor's clip menu,
+        // through the popup's controller in the editor context.
+        ...(id != null ? { onMenu: (x, y) => { if (demoEditorClipId != null) controller.openClipMenu(demoEditorClipId, x, y, "editor"); } } : {}),
       });
       demoEditorOverlay.appendChild(demoEditor.el);
       demoEditorOverlay.classList.add("show");
@@ -1195,6 +1217,7 @@
         accentColor: mode === "custom" ? demoLook.accentCustom || null : mode === "system" ? demoSystemAccent : null,
         uiDensity: demoLook.uiDensity,
         uiCorners: demoLook.uiCorners,
+        glassScope: demoLook.glassScope,
       };
     }
     const demoSettingsUi = Core.mountSettings(settingsPanel, {
@@ -1211,12 +1234,8 @@
     });
     demoSettingsUi.update({ ...demoLook, systemAccent: demoSystemAccent, glassSupported: true });
     Core.applyAppearance(demoWindowEl, demoAppearance());
-    function syncTheme() {
-      document.documentElement.dataset.systemTheme = themeQuery.matches ? "dark" : "light";
-      applyDemoTheme();
-    }
-    themeQuery.addEventListener("change", syncTheme);
-    syncTheme();
+    themeQuery.addEventListener("change", applyDemoTheme);
+    applyDemoTheme();
     setDownload(detectedDownloadOS());
     setInstallMode(location.hash === "#update" ? "cli" : "installer");
     setCommand("install", detectedOS);

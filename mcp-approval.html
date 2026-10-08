@@ -18,10 +18,9 @@
      plain sentence with the consequence), WHY it is asking, WHICH clip (facts),
      the text only as a labelled preview, then the decision: [Deny] [Allow
      once], with "for this session" / "always" as quiet options above it. */
-  :root:not([data-surface="glass"]) body { background:var(--surface); }
   body { user-select:none; }
-  .bar { -webkit-app-region:drag; height:var(--ctl-md); display:flex; align-items:center; padding:0 var(--gutter); }
-  .wrap { padding:var(--sp-1) var(--sp-8) var(--sp-6); display:flex; flex-direction:column; gap:var(--sp-4); }
+  /* The bar is the shared window bar (.bc-bar: drag region, --bar-h, the title in sentence case). */
+  .wrap { padding:var(--sp-5) var(--gutter) var(--sp-6); display:flex; flex-direction:column; gap:var(--sp-4); }
   .who { font-size:var(--fs-meta); line-height:var(--lh-ui); color:var(--text-dim); }
   .who b { color:var(--text); font-weight:var(--fw-strong); }
   .head { display:flex; gap:var(--sp-5); align-items:center; }
@@ -48,7 +47,7 @@
   .acts { display:flex; justify-content:flex-end; gap:var(--sp-4); }
 </style></head>
 <body>
-  <div class="bar overline">BoardClip - AI action</div>
+  <div class="bc-bar"><span class="bc-bar-title">AI action</span></div>
   <div class="wrap" id="wrap">
     <div class="who" id="who" title="Asked through BoardClip's AI access (its MCP connection). You can turn AI access off in Settings."><b id="client">An AI assistant</b> wants BoardClip to:</div>
     <div class="head">
@@ -84,7 +83,7 @@
   // group, edit_note = edit).
   const ICONS = {
     delete_clip:'delete', edit_clip:'edit_note', copy_to_clipboard:'content_copy', paste_clip:'content_paste_go',
-    add_clip:'add', pin_clip:'star', set_numpad:'dialpad', assign_group:'sell',
+    add_clip:'add', pin_clip:'star', set_numpad:'tag', assign_group:'sell',
     create_group:'new_label', delete_group:'label_off', read_clip:'visibility',
     search_all:'search', image_path:'image',
   };

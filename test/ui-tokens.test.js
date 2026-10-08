@@ -559,9 +559,18 @@ const rules = (css) => [...stripComments(css).matchAll(/([^{}]+)\{([^{}]*)\}/g)]
   // Accent AS TEXT reads --accent-text everywhere (an active chip, the current
   // numpad key, Accept, a zoom step, the clipboard status, link-like buttons);
   // --accent stays for fills, glyphs, the focus ring and switches.
-  for (const sel of ['.qh-prefix', '.search-hint-fix', '.filter-tag.active', '.list-newest:hover', '.np-btn.current', '.shortcut-btn.recording', '.bc-editor-clip.on', '.bc-zoom .btn.quiet.active', '.bc-merge-head .bc-head-accept', '.bc-merge-note button', '.toast-action']) {
+  for (const sel of ['.qh-prefix', '.btn.quiet.accent', '.filter-tag.active', '.list-newest:hover', '.np-btn.current', '.shortcut-btn.recording', '.bc-editor-clip.on', '.bc-zoom .btn.quiet.active']) {
     const own = rules(popupCss).filter((x) => x.sel.split(/,\s*/).includes(sel) && /(^|[;{\s])color:/.test(x.body));
     assert.ok(own.length && own.every((r) => /(^|[;{\s])color: var\(--accent-text\)/.test(r.body)), `${sel} is accent TEXT: it must use --accent-text (4.5:1), not --accent`);
+  }
+  // ONE accent text action: Undo, "Did you mean", a pane head's Accept and the
+  // merge note's action are the shared .btn.quiet.sm.accent, with no colour,
+  // weight or radius of their own.
+  for (const needle of ["btn.className = 'btn quiet sm accent toast-action'", "fix.className = 'btn quiet sm accent search-hint-fix'", 'class="btn quiet sm accent bc-head-accept"', '<button type="button" class="btn quiet sm accent" data-x="showws">']) {
+    assert.ok(coreSrc.includes(needle), `the shared accent text action is missing: ${needle}`);
+  }
+  for (const r of rules(popupCss).filter((x) => /toast-action|search-hint-fix|bc-head-accept|bc-merge-note \.btn/.test(x.sel))) {
+    assert.ok(!/(^|[;{\s])(color|font-weight|border-radius|background):/.test(r.body), `${r.sel}: an accent text action takes its look from .btn.quiet.sm.accent`);
   }
 }
 

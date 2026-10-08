@@ -46,3 +46,7 @@ Re-apply these when re-vendoring a newer codemirror.
    ("12 unchanged lines").
 10. `drawConnectorsForChunk`: `chunkState` may also return `'conflict'`, which
     adds `bc-conflict-connect` to the connector (drawn red like its lines).
+11. `MergeView` constructor `onResize`: redraws the connectors and gutter buttons a
+    second time 160 ms after a window resize, once CodeMirror (100 ms debounce)
+    has re-measured its lines; the first, immediate redraw used the old line
+    positions, so an arrow sat beside a different line than its chunk.

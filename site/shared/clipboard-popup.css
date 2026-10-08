@@ -67,13 +67,29 @@
 .btn.quiet { background: transparent; color: var(--text-dim); }
 .btn.quiet:hover { background: var(--hover); color: var(--text); }
 .btn.sm { height: var(--ctl-sm); padding: 0 var(--sp-3); font-size: var(--fs-meta); }
+/* An accent text action (Undo in a toast, "Did you mean", a pane head's
+   Accept, the merge note's "Show them"): a quiet button in the accent TEXT
+   colour, the accent tint on hover. */
+.btn.quiet.accent, .btn.quiet.accent:hover { color: var(--accent-text); }
+.btn.quiet.accent:hover { background: var(--accent-bg); }
+/* A default button whose action throws something away (Remove conflict): the
+   menu's danger cue on hover / focus, never a second button family. */
+.btn.discard:hover, .btn.discard:focus-visible { background: var(--red-bg); color: var(--red); }
 .btn:disabled, .btn:disabled:hover { background: var(--ctl-fill); color: var(--text-dim); cursor: not-allowed; }
 .btn.quiet:disabled, .btn.quiet:disabled:hover { background: transparent; }
 
-/* ONE overline: the small uppercase label over a settings section, a list or
-   a pane. Window titles are NOT overlines. */
+/* ONE overline: the small uppercase heading over a SECTION (a settings
+   section, the approval prompt's clip card, the demo's note). Window titles
+   are NOT overlines (they are .bc-bar-title, sentence case). */
 .overline, .settings-note, .settings-section h3 {
   font-size: var(--fs-meta); font-weight: var(--fw-strong); line-height: var(--lh-ui); letter-spacing: .06em; text-transform: uppercase; color: var(--text-dim);
+}
+/* ONE small label, sentence case: names a group of controls or a pane inside
+   a section (an options-panel row, a list in a settings section, a merge
+   pane head, a syntax group). Deliberately not an overline: it sits beside
+   controls, where an uppercase heading would shout. */
+.bc-label, .opts-facet-label, .settings-list-title, .bc-head-label {
+  font-size: var(--fs-meta); font-weight: var(--fw-regular); line-height: var(--lh-ui); color: var(--text-dim);
 }
 
 /* ONE scrollbar for every BoardClip surface: the app windows (data-theme on
@@ -90,6 +106,10 @@
   :where(:root[data-theme], .bc-popup) * { scrollbar-width: thin; scrollbar-color: var(--scrollbar-thumb) transparent; }
 }
 
+/* ONE text-selection colour (typed text, a find match left selected, any
+   selectable copy), in every window and the demo. */
+:is(:root[data-theme], .bc-popup) ::selection { background: var(--accent-bg-strong); }
+
 /* Filled text fields: a fill, never a border; focus (and a recording shortcut
    field) draws an inset accent edge, which never shifts layout. The popup's
    search field and the clip windows' title / find fields are the flat
@@ -101,11 +121,14 @@
 
 .main-view { display: flex; flex-direction: column; flex: 1; min-height: 0; height: 100%; }
 .main-view.hidden { display: none; }
-.sticky { flex-shrink: 0; background: var(--surface); padding-bottom: var(--sp-2); z-index: 10; position: relative; }
+/* The popup is ONE sheet: the window (body, or the demo's frame) paints the
+   surface, the header and the list sit on it, so there is no seam and, under
+   glass, no second frost band. */
+.sticky { flex-shrink: 0; background: transparent; padding-bottom: var(--sp-2); z-index: 10; position: relative; }
 /* The header (and the settings header) are NOT -webkit-app-region: drag: that
    swallowed every click and double-click-maximised. Core.attachWindowDrag owns
    them: a click focuses the search, a press-and-move past 4 px moves the window. */
-.sticky header { display: flex; align-items: center; padding: var(--sp-4) var(--sp-4) 0 var(--gutter); gap: var(--sp-3); }
+.sticky header { display: flex; align-items: center; padding: var(--sp-4) var(--edge-ctl) 0 var(--gutter); gap: var(--sp-3); }
 .count { font-size: var(--fs-meta); color: var(--text-dim); flex: 1; }
 /* .close-btn is only a hook now: every close is <span class="mi">close</span>
    inside a plain .icon-btn. */
@@ -113,8 +136,7 @@
             width: var(--ctl-md); height: var(--ctl-md); display: flex; align-items: center; justify-content: center;
             transition: background-color var(--dur) var(--ease), color var(--dur) var(--ease); padding: 0; }
 .icon-btn:hover { color: var(--text); background: var(--hover); }
-.icon-btn.accent:hover { color: var(--accent); }
-.icon-btn.danger:hover { color: var(--red); }
+.icon-btn.danger:hover, .icon-btn.danger:focus-visible { color: var(--red); background: var(--red-bg); }
 .icon-btn:disabled { opacity: .45; cursor: not-allowed; }
 .icon-btn:disabled:hover { color: var(--text-dim); background: none; }
 .icon-btn .mi { font-size: var(--icon-md); }
@@ -162,7 +184,11 @@
    ::placeholder inherits that fill, so it must set its own. */
 .search-live::placeholder { -webkit-text-fill-color: var(--text-dim); }
 .search-row .icon-btn { flex-shrink: 0; }
-.rx-btn { font-family: var(--font-mono); font-size: var(--fs-ui); }
+/* The last in-field button's glyph (tune, in the tools reveal: open whenever
+   any in-field button is) ends on the gutter with the header's gear and the
+   selection bar's close, the underline under it. */
+.search-row > .bc-reveal[data-reveal="tools"] { transition: grid-template-columns var(--dur) var(--ease), margin-right var(--dur) var(--ease); }
+.search-row > .bc-reveal[data-reveal="tools"].open { margin-right: calc(var(--edge-ctl) - var(--gutter)); } /* closed, the field keeps the whole row */
 /* A toggled in-field control: regex on, Recent order, the options panel open
    (or a filter it owns in the query). */
 .rx-btn.active, .sort-btn.active, .opts-btn.active { color: var(--accent); background: var(--accent-bg); }
@@ -194,10 +220,8 @@
 .search-hint-clip { min-height: 0; overflow: hidden; }
 .search-hint-row { display: flex; align-items: baseline; gap: var(--sp-2); padding: 0 0 var(--sp-2); font-size: var(--fs-meta); line-height: var(--lh-ui); color: var(--text-dim); }
 .search-hint-row > .mi { font-size: var(--icon-sm); color: var(--red); align-self: center; }
-.search-hint-fix { margin-left: var(--sp-1); padding: 0 var(--sp-2); height: var(--ctl-sm); border: 0; border-radius: var(--r-1); background: transparent; color: var(--accent-text);
-                   font: inherit; cursor: pointer; transition: background-color var(--dur) var(--ease); }
+.search-hint-fix { margin-left: var(--sp-1); } /* the shared .btn.quiet.sm.accent */
 .search-hint-fix code { font-family: var(--font-mono); }
-.search-hint-fix:hover { background: var(--hover); }
 
 /* Autocomplete dropdown for the token being typed. */
 /* .search-suggest shares the floating-surface bg/shadow/radius rule (top of file); only its
@@ -222,11 +246,18 @@
 .search-opts-scroll { max-height: var(--opts-h, 240px); overflow-y: auto; padding: var(--sp-2) var(--gutter) var(--sp-4); }
 .search-opts.resizing .search-opts-scroll { max-height: none; height: var(--opts-h, 240px); }
 .opts-facets { display: grid; grid-template-columns: max-content 1fr; gap: var(--sp-2) var(--sp-5); align-items: center; padding-bottom: var(--sp-5); }
-.opts-facet-label { font-size: var(--fs-meta); color: var(--text-dim); }
 .opts-facet-chips { display: flex; flex-wrap: wrap; gap: var(--sp-1); }
 .opts-syntax { display: grid; grid-template-columns: fit-content(45%) 1fr; gap: var(--sp-2) var(--sp-6); align-items: baseline; }
 .opts-syntax code { font-family: var(--font-mono); font-size: var(--fs-meta); line-height: var(--lh-ui); color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
 .opts-syntax span { font-size: var(--fs-meta); line-height: var(--lh-ui); color: var(--text-dim); }
+/* A syntax group's heading (Match / Filter / Range / Order, the shared
+   .bc-label) spans both columns; the foot line says how it all combines. */
+.opts-syntax .opts-syntax-head { grid-column: 1 / -1; padding-top: var(--sp-4); color: var(--text-dim); }
+.opts-syntax .opts-syntax-head:first-child { padding-top: 0; }
+.opts-syntax .opts-syntax-foot { grid-column: 1 / -1; padding-top: var(--sp-4); }
+/* An example as a chip (the one chip spec): a click puts it in the query. */
+.opts-example { min-height: var(--ctl-sm); margin-left: var(--sp-2); vertical-align: baseline; }
+.opts-example code { font-family: var(--font-mono); font-size: var(--fs-meta); color: var(--text); white-space: pre; }
 /* Bottom edge: the resize handle (Forge's ResizeHandle: a chrome-less strip,
    accent while hovered or dragged) over the panel's divider line. */
 .search-opts-resize { position: relative; flex-shrink: 0; height: var(--sp-3); cursor: row-resize; touch-action: none; }
@@ -298,16 +329,16 @@
    content: similar = dotted --text-dim, pin = --pin (wins over similar),
    multi-select = --accent (wins over both). No state changes a row's size. */
 .item::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 2px; background: var(--row-edge, transparent); pointer-events: none; }
-.item.similar { background: color-mix(in srgb, var(--hover) 60%, transparent); --row-edge: repeating-linear-gradient(to bottom, var(--text-dim) 0 3px, transparent 3px 6px); }
+.item.similar { background: color-mix(in srgb, var(--hover) var(--similar-mix), transparent); --row-edge: repeating-linear-gradient(to bottom, var(--text-dim) 0 3px, transparent 3px 6px); }
 .item.has-pin { --row-edge: var(--pin); }
 .item:hover { background: var(--hover); }
 .item.selected { background: var(--accent-bg); }
 /* No flex gap: the space after the star is its own margin, so a closed
    actions track at the end of the row takes exactly 0 px. */
 .item-row { display: flex; align-items: flex-start; }
-.pin-area { position: relative; flex-shrink: 0; display: flex; align-items: center; margin-right: var(--sp-4); padding-top: var(--sp-1); }
-.star { background: none; border: none; color: var(--text-dim); cursor: pointer; padding: var(--sp-1); transition: color var(--dur) var(--ease); line-height: 1; }
-.star .mi { font-size: var(--icon-lg); }
+.pin-area { position: relative; flex-shrink: 0; display: flex; align-items: center; margin-right: var(--sp-4); margin-top: calc((var(--fs-ui) * var(--lh-ui) - var(--ctl-md)) / 2); }
+.star { display: flex; align-items: center; justify-content: center; width: var(--ctl-md); height: var(--ctl-md); background: none; border: none; color: var(--text-dim); cursor: pointer; padding: 0;
+        transition: color var(--dur) var(--ease); line-height: 1; }
 .star.active, .star:hover { color: var(--pin); }
 /* The keypad (renderKeypadMenu) as a block inside a floating surface: the
    clip menu's Numpad submenu and a row's # popover. Real numpad formation:
@@ -315,12 +346,17 @@
    aligned with the menu rows' icon column. Neutral keys; the clip's own key is
    the accent (the selection colour); a key another clip holds carries a dot. */
 .numpad-picker { display: flex; flex-direction: column; gap: var(--sp-1); padding: var(--sp-1) var(--sp-3); }
+/* The keypad alone (a clip with no key yet): the same inset on all four
+   sides; the icon-column alignment only matters beside menu rows. */
+.numpad-picker:only-child { padding: var(--sp-1); }
 .np-row { display: grid; grid-template-columns: repeat(3, var(--ctl-md)); gap: var(--sp-1); justify-content: start; }
-.np-btn { position: relative; width: var(--ctl-md); height: var(--ctl-md); display: flex; align-items: center; justify-content: center; padding: 0; border: none; border-radius: var(--r-ctl);
+.np-btn { position: relative; width: var(--ctl-md); height: var(--ctl-md); display: flex; align-items: center; justify-content: center; padding: 0 0 var(--sp-1); border: none; border-radius: var(--r-ctl);
           background: var(--ctl-fill); color: var(--text); font-family: inherit; font-size: var(--fs-ui); line-height: 1; font-variant-numeric: tabular-nums;
           cursor: pointer; transition: background-color var(--dur) var(--ease), color var(--dur) var(--ease); }
 .np-btn:hover { background: var(--ctl-fill-hover); }
-.np-btn.taken::after { content: ""; position: absolute; left: 0; right: 0; bottom: var(--sp-1); width: var(--sp-1); height: var(--sp-1); margin: 0 auto;
+/* A key another clip holds: a dot under the digit (every digit sits a step
+   high, so the dot keeps its clearance). */
+.np-btn.taken::after { content: ""; position: absolute; left: 0; right: 0; bottom: 1px; width: var(--sp-2); height: var(--sp-2); margin: 0 auto;
                        border-radius: var(--r-chip); background: var(--text-dim); }
 .np-btn.current { background: var(--accent-bg); color: var(--accent-text); font-weight: var(--fw-strong); }
 .np-btn.current:hover { background: var(--accent-bg-strong); }
@@ -399,12 +435,20 @@
 .meta-time, .meta-size, .meta-np { flex-shrink: 0; }
 .meta-np, .meta-tag, .meta-ghost { height: var(--meta-h); padding: 0 var(--sp-1); border: 0; border-radius: var(--r-1); background: transparent; color: inherit;
                                    font: inherit; line-height: 1; cursor: pointer; transition: background-color var(--dur) var(--ease), color var(--dur) var(--ease); }
+/* The badge and the names pad their hover fill but pull it back out of the
+   flow, so every text-to-text gap on the line is the one --sp-3. */
+.meta-np, .meta-tag { margin-inline: calc(-1 * var(--sp-1)); }
 .meta-np { color: var(--text); }
 /* The group names show whole or not at all, never as fragments: they wrap onto
    a second line the fixed-height box clips away, so a name that does not fit
    is left out whole (each name's own title still names it on hover); only a
    name alone on the line ellipsizes. The + picker lists every membership. */
-.meta-tags { display: flex; flex-wrap: wrap; align-content: flex-start; column-gap: var(--sp-3); flex: 0 1 auto; min-width: 0; height: var(--meta-h); overflow: hidden; }
+.meta-tags { display: flex; flex-wrap: wrap; align-content: flex-start; column-gap: var(--sp-3); flex: 0 1 auto; min-width: 0; height: var(--meta-h); overflow: hidden;
+              padding-inline: var(--sp-1); margin-inline: calc(-1 * var(--sp-1)); /* room for the names' hover fill */ }
+/* Hover (or focus, or a held row): the names that would not fit beside the
+   ghosts are set aside whole (Core.fitMetaTags marks them), so the box ends
+   at the last name and the + follows it instead of the box's far edge. */
+.item:hover .meta-tag.meta-cut, .item:focus-within .meta-tag.meta-cut, .item.actions-held .meta-tag.meta-cut { display: none; }
 .meta-tag { display: block; flex: 0 1 auto; min-width: 0; max-width: 140px; overflow: hidden; text-overflow: ellipsis; }
 .meta-np:hover, .meta-tag:hover, .meta-ghost:hover { color: var(--text); background: var(--hover); }
 .meta-ghost { display: inline-flex; align-items: center; justify-content: center; width: var(--meta-h); padding: 0; }
@@ -430,7 +474,10 @@
 
 .settings-view { display: none; flex-direction: column; height: 100%; color: var(--text); background: var(--surface); }
 .settings-view.show { display: flex; }
-.settings-hdr { display: flex; align-items: center; padding: var(--sp-4); gap: var(--sp-3); border-bottom: 1px solid var(--line); }
+.settings-hdr { display: flex; align-items: center; flex-shrink: 0; height: var(--bar-h); padding: 0 var(--edge-ctl); gap: var(--sp-3);
+                 box-shadow: inset 0 -1px 0 transparent; transition: box-shadow var(--dur) var(--ease); }
+/* The divider shows only while the body is scrolled (attachScrollFade marks it). */
+.settings-view:has(> .settings-body.is-scrolled) > .settings-hdr { box-shadow: inset 0 -1px 0 var(--line); }
 .settings-hdr h2 { font-size: var(--fs-ui); font-weight: var(--fw-strong); flex: 1; margin: 0; color: var(--text); }
 .settings-body { flex: 1; min-height: 0; overflow-y: auto; padding: var(--sp-6) var(--gutter); }
 /* Settings (Core.renderSettingsBody, Core.renderSettingsItem): ONE row grid and
@@ -445,7 +492,6 @@
 .setting-text, .si-text { grid-column: 1; display: flex; flex-direction: column; gap: var(--sp-1); min-width: 0; }
 .setting-control, .setting-row > .switch, .si-control { grid-column: 2; justify-self: end; display: inline-flex; align-items: center; gap: var(--sp-2); min-width: 0; }
 .setting-reset, .si-action { grid-column: 3; display: inline-flex; justify-content: center; }
-.setting-reset .mi, .si-action .mi { font-size: var(--icon-sm); }
 .setting-label { color: var(--text); }
 /* One-line help / status under a label; an empty one takes no space. */
 .setting-help { font-size: var(--fs-meta); color: var(--text-dim); overflow-wrap: anywhere; }
@@ -494,7 +540,7 @@ input:disabled + .switch { opacity: .55; }
    columns nor the hairline move). */
 .settings-item.clickable { cursor: pointer; }
 .settings-item.clickable:hover { background: var(--hover); box-shadow: calc(-1 * var(--sp-3)) 0 0 var(--hover), var(--sp-3) 0 0 var(--hover); }
-.settings-list-title { padding: var(--sp-4) 0 var(--sp-1); font-size: var(--fs-meta); color: var(--text-dim); }
+.settings-list-title { padding: var(--sp-4) 0 var(--sp-1); } /* type from the shared .bc-label rule */
 /* A quiet text button under a list ("Show all clients"): its label lines up
    with the rows' text. */
 .settings-more { margin-top: var(--sp-2); margin-left: calc(-1 * var(--sp-3)); }
@@ -603,17 +649,17 @@ mark { background: var(--mark-bg); color: var(--mark-fg); border-radius: var(--r
    lights' inset on the left (macOS, --wc-left from main), the caption
    buttons' width on the right (Windows, the Window Controls Overlay env()). */
 .bc-bar { -webkit-app-region: drag; display: flex; align-items: center; gap: var(--sp-3); height: var(--bar-h); flex-shrink: 0;
-          padding: 0 var(--sp-3) 0 var(--gutter); border-bottom: 1px solid var(--line); background: transparent; color: var(--text); }
+          padding: 0 var(--edge-ctl) 0 var(--gutter); border-bottom: 1px solid var(--line); background: transparent; color: var(--text); }
 :root[data-window-controls="left"] .bc-bar { padding-left: var(--wc-left, var(--gutter)); }
 :root[data-window-controls="right"] { --wc-right: calc(100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw)); }
-:root[data-window-controls="right"] .bc-bar { padding-right: max(var(--sp-3), calc(var(--wc-right) + var(--sp-2))); }
+:root[data-window-controls="right"] .bc-bar { padding-right: max(var(--edge-ctl), calc(var(--wc-right) + var(--sp-2))); }
 .bc-bar-title { flex: 0 1 auto; min-width: 0; font-size: var(--fs-ui); font-weight: var(--fw-strong); line-height: var(--lh-ui); color: var(--text);
                 white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* The editable title (editor, merge): a flat field sized to its text (the
    rest of the bar stays draggable), underline on hover / focus like the
    search field. An untitled clip's placeholder is its first line, dim and
    regular weight, as an untitled row reads in the list. */
-input.bc-bar-title { -webkit-app-region: no-drag; field-sizing: content; min-width: 6ch; max-width: 60%; height: var(--ctl-md); margin-left: calc(-1 * var(--sp-2)); text-overflow: clip;
+input.bc-bar-title { -webkit-app-region: no-drag; field-sizing: content; min-width: 6ch; max-width: 60%; height: var(--ctl-md); margin-left: calc(-1 * var(--sp-2)); text-overflow: ellipsis;
                      padding: 0 var(--sp-2); background: transparent; border: none; border-radius: 0; font-family: inherit; outline: none;
                      box-shadow: inset 0 -1px 0 transparent; transition: box-shadow var(--dur) var(--ease); }
 input.bc-bar-title:hover { box-shadow: inset 0 -1px 0 var(--line); }
@@ -639,13 +685,16 @@ input.bc-bar-title::placeholder { color: var(--text-dim); font-weight: var(--fw-
 .bc-tag-strip[hidden] { display: none; }
 .bc-tag-strip .filter-tag { flex: 0 0 auto; cursor: default; }
 .bc-tag-strip .tag-add-btn { flex: 0 0 auto; }
-/* Find: flat like the popup's search field (no fill, an underline that turns
-   accent on focus). */
-.bc-find { -webkit-app-region: no-drag; display: flex; align-items: center; gap: var(--sp-1); padding: var(--sp-2) var(--sp-3) var(--sp-2) var(--gutter); flex-shrink: 0; background: transparent; }
+/* Find: flat like the popup's search field: ONE hairline under the field AND
+   its buttons (the regex toggle, count, arrows, close), accent while anything
+   in it has the focus; the close's glyph ends on the gutter. */
+.bc-find { -webkit-app-region: no-drag; display: flex; align-items: center; gap: var(--sp-1); margin: var(--sp-2) var(--gutter); padding: 0; flex-shrink: 0; background: transparent;
+           box-shadow: inset 0 -1px 0 var(--line); transition: box-shadow var(--dur) var(--ease); }
+.bc-find:focus-within { box-shadow: inset 0 -1px 0 var(--accent); }
 .bc-find[hidden] { display: none; }
+.bc-find > :last-child { margin-right: calc(var(--edge-ctl) - var(--gutter)); }
 .bc-find-input { flex: 1; min-width: 0; height: var(--ctl-md); background: transparent; border: none; border-radius: 0; color: var(--text); font: inherit; font-size: var(--fs-text);
-                 padding: 0; margin-right: var(--sp-2); outline: none; box-shadow: inset 0 -1px 0 var(--line); transition: box-shadow var(--dur) var(--ease); }
-.bc-find-input:focus { box-shadow: inset 0 -1px 0 var(--accent); }
+                 padding: 0; margin-right: var(--sp-2); outline: none; }
 .bc-find-input::placeholder { color: var(--text-dim); }
 .bc-find-count { font-size: var(--fs-meta); color: var(--text-dim); min-width: 34px; text-align: right; font-variant-numeric: tabular-nums; margin-right: var(--sp-2); }
 .bc-editor-area { flex: 1; min-height: 0; width: 100%; resize: none; border: 0; outline: none; background: transparent; color: var(--text); }
@@ -666,10 +715,13 @@ input.bc-bar-title::placeholder { color: var(--text-dim); font-weight: var(--fw-
 .bc-editor-hl mark.cur { background: var(--mark-bg-current); }
 /* Footer: stats left; the clipboard follow state, the live save state (or the
    viewer's zoom controls) right. */
-.bc-editor-foot { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-5); padding: 0 var(--sp-3) 0 var(--gutter); height: var(--ctl-lg); flex-shrink: 0;
+.bc-editor-foot { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-5); padding: 0 var(--gutter); height: var(--ctl-lg); flex-shrink: 0;
                   border-top: 1px solid var(--line); background: transparent; font-size: var(--fs-meta); color: var(--text-dim); }
 .bc-editor-foot > [data-x="stats"], .bc-editor-foot > [data-x="dims"] { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bc-editor-foot-end { display: flex; align-items: center; gap: var(--sp-5); flex-shrink: 0; }
+/* Text ends on the gutter: a trailing quiet button (the viewer's 100%) pulls
+   in by its own padding. */
+.bc-editor-foot-end > .btn.sm:last-child { margin-right: calc(-1 * var(--sp-3)); }
 .bc-save-state { white-space: nowrap; }
 .bc-save-state.failed { color: var(--red); }
 /* Clipboard follow status: "On clipboard" (accent) / a Copy button / a brief notice. */
@@ -690,8 +742,8 @@ input.bc-bar-title::placeholder { color: var(--text-dim); font-weight: var(--fw-
    scrim show through; every band in them is already transparent. */
 :root[data-surface="glass"] .bc-editor,
 :root[data-surface="glass"] .bc-reconcile,
-.bc-popup[data-surface="glass"] .bc-editor,
-.bc-popup[data-surface="glass"] .bc-reconcile { background: transparent; }
+.bc-popup[data-surface="glass"][data-glass-scope="all"] .bc-editor,
+.bc-popup[data-surface="glass"][data-glass-scope="all"] .bc-reconcile { background: transparent; }
 /* In-app image viewer: same window chrome as the editor (the .bc-bar + foot on
    the one surface); the stage is the image's matte, centres the image and
    hosts zoom/pan (transform-positioned <img>). */
@@ -699,12 +751,15 @@ input.bc-bar-title::placeholder { color: var(--text-dim); font-weight: var(--fw-
 .bc-viewer-stage { position: relative; flex: 1; min-height: 0; overflow: hidden; background: var(--bg); }
 .bc-viewer-img { position: absolute; left: 0; top: 0; transform-origin: 0 0; user-select: none; image-rendering: auto; }
 :root[data-surface="glass"] .bc-viewer, :root[data-surface="glass"] .bc-viewer-stage { background: transparent; }
-/* Demo overlay host: the editor floats over the demo popup window. It needs an
-   opaque background: in glass mode .bc-editor is transparent (so the app's OS
-   acrylic shows through in the editor *window*), but the demo mounts the editor
-   as an overlay on top of the clip list — without a solid host, the list bleeds
-   through. --bg stays fully opaque in every surface mode. */
-.bc-editor-overlay { position: absolute; inset: 0; z-index: 40; display: none; background: var(--bg); }
+/* Demo overlay host: the editor floats over the demo popup, standing in for
+   the app's editor WINDOW, so it follows "Glass on" (data-glass-scope on the
+   popup, Core.applyVariants) like the app does: Popup only = a solid window
+   (it re-takes the solid surface tokens the popup's glass overrides, so it
+   paints exactly the app editor's --surface); All windows = one frosted
+   layer over the list (the window roots inside go transparent above). */
+.bc-editor-overlay { position: absolute; inset: 0; z-index: 40; display: none; background: var(--surface); }
+.bc-popup:not([data-glass-scope="all"]) .bc-editor-overlay { --surface: var(--surface-solid); --surface2: var(--surface2-solid); --input: var(--input-solid); }
+.bc-popup[data-surface="glass"][data-glass-scope="all"] .bc-editor-overlay { background: var(--glass-tint); -webkit-backdrop-filter: var(--glass-blur); backdrop-filter: var(--glass-blur); }
 .bc-editor-overlay.show { display: block; }
 .bc-editor-overlay .bc-editor { box-shadow: 0 8px 30px var(--shadow); }
 /* IntelliJ-style merge (CodeMirror 5 merge addon, skinned with our tokens):
@@ -725,20 +780,20 @@ input.bc-bar-title::placeholder { color: var(--text-dim); font-weight: var(--fw-
 .bc-merge-heads.bc-heads-2 > .bc-merge-heads-gap { width: 6%; }
 .bc-merge-heads.bc-heads-3 > .bc-merge-head { width: 31%; }
 .bc-merge-heads.bc-heads-3 > .bc-merge-heads-gap { width: 3.5%; }
-.bc-head-label { flex-shrink: 0; font-size: var(--fs-meta); font-weight: var(--fw-strong); color: var(--text-dim); white-space: nowrap; }
+.bc-head-label { flex-shrink: 0; white-space: nowrap; } /* type from the shared .bc-label rule */
 .bc-head-title { flex: 0 1 auto; min-width: 6ch; height: var(--ctl-sm); padding: 0 var(--sp-2); border: none; border-radius: var(--r-ctl); background: transparent; color: var(--text);
                  font-family: inherit; font-size: var(--fs-meta); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer;
                  transition: background-color var(--dur) var(--ease); }
 .bc-head-title:hover { background: var(--hover); }
-.bc-merge-head .bc-head-accept { margin-left: auto; flex-shrink: 0; color: var(--accent-text); }
-.bc-merge-head .bc-head-accept:hover { color: var(--accent-text); background: var(--accent-bg); }
-/* A narrow head gives the title pick the room: the accept keeps its glyph
-   (the tooltip names it). Without a pick it keeps its label until the head
-   cannot hold label + accept at all. */
-@container bc-head (max-width: 299px) {
+.bc-merge-head .bc-head-accept { margin-left: auto; flex-shrink: 0; } /* the shared .btn.quiet.sm.accent */
+/* The accept says only "Accept" (its head names the side; the tooltip and
+   aria-label the whole action), and a title pick ellipsizes first, so the
+   default 3-pane window keeps the word. Only a head too narrow for label +
+   pick + "Accept" drops to the glyph. */
+@container bc-head (max-width: 179px) {
   .bc-merge-head:has(.bc-head-title) .bc-accept-label { display: none; }
 }
-@container bc-head (max-width: 189px) {
+@container bc-head (max-width: 139px) {
   .bc-accept-label { display: none; }
 }
 /* ONE counter in the bar ("2 of 5 resolved", a text button to the next open
@@ -747,7 +802,7 @@ input.bc-bar-title::placeholder { color: var(--text-dim); font-weight: var(--fw-
 .bc-chg-progress { height: var(--ctl-sm); padding: 0 var(--sp-2); border: none; border-radius: var(--r-ctl); background: transparent; color: var(--text-dim);
                    font-family: inherit; font-size: var(--fs-meta); cursor: pointer; transition: background-color var(--dur) var(--ease), color var(--dur) var(--ease); }
 .bc-chg-progress:hover { color: var(--text); background: var(--hover); }
-.bc-conflict-chip { border: none; background: var(--red-bg); color: var(--red); font-size: var(--fs-meta); font-family: inherit; font-weight: var(--fw-strong); height: var(--ctl-sm); padding: 0 var(--sp-3); border-radius: var(--r-chip); cursor: pointer; }
+.bc-conflict-chip { border: none; background: var(--red-bg); color: var(--red); font-size: var(--fs-meta); font-family: inherit; height: var(--ctl-sm); padding: 0 var(--sp-3); border-radius: var(--r-chip); cursor: pointer; }
 /* --- CodeMirror skin: tokens only, no stock palette. --- */
 .bc-merge-host { flex: 1; min-height: 0; position: relative; }
 /* Full-height chain: the addon's default is a fixed 350px and its panes have
@@ -814,9 +869,9 @@ input.bc-bar-title::placeholder { color: var(--text-dim); font-weight: var(--fw-
 .bc-merge-host .CodeMirror-merge-collapsed-widget { background: transparent; border: none; border-radius: var(--r-ctl); color: var(--text-dim); font-family: var(--font-sans); font-size: var(--fs-meta); padding: 0 var(--sp-3); cursor: pointer; }
 .bc-merge-host .CodeMirror-merge-collapsed-widget:hover { color: var(--text); background: var(--hover); }
 .bc-merge-host .CodeMirror-merge-collapsed-widget:before { content: "\22EF\00A0"; }
-.bc-merge-note { flex-shrink: 0; display: flex; align-items: center; gap: var(--sp-3); padding: var(--sp-2) var(--sp-5); background: var(--accent-bg); color: var(--text); font-size: var(--fs-ui); border-bottom: 1px solid var(--line); }
+.bc-merge-note { flex-shrink: 0; display: flex; align-items: center; gap: var(--sp-3); padding: var(--sp-2) var(--gutter); background: var(--accent-bg); color: var(--text); font-size: var(--fs-ui); border-bottom: 1px solid var(--line); }
 .bc-merge-note[hidden] { display: none; }
-.bc-merge-note button { flex-shrink: 0; white-space: nowrap; border: none; background: transparent; color: var(--accent-text); font: inherit; font-weight: var(--fw-strong); cursor: pointer; padding: 0; }
+.bc-merge-note .btn { flex-shrink: 0; } /* the shared .btn.quiet.sm.accent */
 /* Footer: ONE row in every mode (unify, conflict, 2- or 3-pane), centred:
    Keep both, Remove conflict (conflicts only), the primary. The whole-side
    accepts live in the pane heads, so nothing here jumps between modes.
@@ -846,7 +901,7 @@ input.bc-bar-title::placeholder { color: var(--text-dim); font-weight: var(--fw-
 .chip-row { display: grid; min-height: max(var(--ctl-md), calc(var(--ctl-sm) + 2 * var(--sp-1))); }
 .chip-row > .group-filters, .chip-row > .selection-bar { grid-area: 1 / 1; }
 .chip-row:has(> .selection-bar:not(.hidden)) > .group-filters { visibility: hidden; }
-.selection-bar { display: flex; align-items: center; gap: var(--sp-3); min-height: var(--ctl-md); padding: 0 var(--sp-4) 0 var(--gutter); z-index: 31; }
+.selection-bar { display: flex; align-items: center; gap: var(--sp-3); min-height: var(--ctl-md); padding: 0 var(--edge-ctl) 0 var(--gutter); z-index: 31; }
 .selection-bar.hidden { display: none; }
 .selection-count { flex: 1; font-size: var(--fs-ui); font-weight: var(--fw-strong); color: var(--text); }
 .selection-actions { display: flex; align-items: center; gap: var(--sp-1); }
@@ -894,11 +949,9 @@ input.bc-bar-title::placeholder { color: var(--text-dim); font-weight: var(--fw-
 .bc-menu .tag-menu-node:hover > .bc-menu-item, .bc-menu .tag-menu-node.open > .bc-menu-item { background: var(--menu-hover); } /* the row whose submenu is out */
 .bc-menu .tag-menu-node:not(.open):not(:hover) > .tag-submenu { display: none; }
 
-/* --- Undo toast action: an accent text button. The toast itself ignores the
-   pointer (it floats over the last row); the action opts back in only while
-   the toast is shown (hidden, it still sits over the last row). --- */
-.toast-action { display: inline-flex; align-items: center; height: var(--ctl-sm); padding: 0 var(--sp-3); margin-right: calc(-1 * var(--sp-3));
-                background: none; border: none; border-radius: var(--r-ctl); color: var(--accent-text); font: inherit; font-weight: var(--fw-strong);
-                cursor: pointer; transition: background-color var(--dur) var(--ease); }
+/* --- Undo toast action: the shared accent text action (.btn.quiet.sm.accent),
+   pulled in by its own padding. The toast itself ignores the pointer (it
+   floats over the last row); the action opts back in only while the toast is
+   shown (hidden, it still sits over the last row). --- */
+.toast-action { margin-right: calc(-1 * var(--sp-3)); }
 .toast.show .toast-action { pointer-events: auto; }
-.toast-action:hover { background: var(--accent-bg); }

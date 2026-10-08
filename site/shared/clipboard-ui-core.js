@@ -598,6 +598,44 @@
       + '<button class="meta-ghost" type="button" data-action="tag-add" title="Add to group" aria-label="Add to group"><span class="mi">add</span></button>';
     return `${html}<span class="bc-reveal meta-reveal"><span class="bc-reveal-inner">${ghosts}</span></span>`;
   }
+  // The meta line's group names when a row opens its ghosts (# / +, the
+  // reveal at the line's end): a wrapping names box keeps the width it had, so
+  // the + would sit at its far edge with a gap after the last name that still
+  // shows. Instead the names that would not fit beside the open ghosts are
+  // marked .meta-cut (hidden whole only while the reveal is open, CSS) and the
+  // box shrinks to the rest. Worked out from the closed row (the ghosts' open
+  // width is the meta line's height per ghost plus the gaps), one row per
+  // hover, so it costs nothing on the typing path. The first name is never set
+  // aside (alone on the line it ellipsizes).
+  function fitMetaTags(row) {
+    const box = row && row.querySelector ? row.querySelector('.meta-tags') : null;
+    if (!box || typeof getComputedStyle !== 'function') return;
+    const tags = Array.from(box.children);
+    for (const t of tags) t.classList.remove('meta-cut');
+    const meta = box.parentElement;
+    const inner = meta && meta.querySelector('.meta-reveal > .bc-reveal-inner');
+    if (!inner || tags.length < 2) return;
+    const ghosts = Array.from(inner.children);
+    const metaStyle = getComputedStyle(meta);
+    const metaRect = meta.getBoundingClientRect();
+    const px = (v) => parseFloat(v) || 0;
+    // Room the open reveal takes after the names box: its own gap (the line's
+    // gap is cancelled by the reveal's negative margin) and the ghosts.
+    const revealStyle = getComputedStyle(inner.parentElement);
+    const ghostGap = px(getComputedStyle(inner).columnGap);
+    const open = px(metaStyle.columnGap) + px(revealStyle.marginLeft) + (ghosts.length ? px(getComputedStyle(ghosts[0]).marginInlineStart) : 0)
+      + ghosts.length * metaRect.height + Math.max(0, ghosts.length - 1) * ghostGap;
+    const boxStyle = getComputedStyle(box);
+    const limit = metaRect.right - open;
+    const tagMargin = px(getComputedStyle(tags[0]).marginLeft) + px(getComputedStyle(tags[0]).marginRight);
+    const nameGap = px(boxStyle.columnGap);
+    let x = box.getBoundingClientRect().left + px(boxStyle.paddingLeft);
+    tags.forEach((t, i) => {
+      const right = x + t.getBoundingClientRect().width + tagMargin;
+      if (i > 0 && right > limit + 0.5) { for (const rest of tags.slice(i)) rest.classList.add('meta-cut'); x = Infinity; }
+      else x = right + nameGap;
+    });
+  }
   // One row. opts: { query, regex, matchIndex, highlight(text), highlightTitle(text),
   // imageSrc(item), actionsHtml (Core.renderClipActions), selection (the
   // controller's selection(): paints the cursor, checked, held and similar
@@ -791,9 +829,9 @@
       <div class="sticky">
         <header>
           <span class="count" id="${esc(ids.count)}"></span>
-          ${opts.showSyncButton === false ? '' : `<button class="icon-btn accent" id="${esc(ids.syncHeaderBtn)}" type="button" title="Sync now" aria-label="Sync now"><span class="mi">sync</span></button>`}
+          ${opts.showSyncButton === false ? '' : `<button class="icon-btn" id="${esc(ids.syncHeaderBtn)}" type="button" title="Sync now" aria-label="Sync now"><span class="mi">sync</span></button>`}
           ${headerActionsHtml}
-          <button class="icon-btn accent" id="${esc(ids.settingsBtn)}" type="button" title="Settings" aria-label="Settings" aria-expanded="false" aria-controls="${esc(ids.settingsView)}"><span class="mi">settings</span></button>
+          <button class="icon-btn" id="${esc(ids.settingsBtn)}" type="button" title="Settings" aria-label="Settings" aria-expanded="false" aria-controls="${esc(ids.settingsView)}"><span class="mi">settings</span></button>
           <button class="icon-btn close-btn${closeCls}" id="${esc(ids.closeBtn)}" type="button" title="Close (Esc)" aria-label="Close"><span class="mi">close</span></button>
         </header>
         <div class="search-row">
@@ -801,7 +839,7 @@
           <span class="bc-reveal" data-reveal="clear"><span class="bc-reveal-inner"><button class="icon-btn search-clear" id="${esc(ids.searchClear)}" type="button" tabindex="-1" title="Clear search" aria-label="Clear search"><span class="mi">close</span></button></span></span>
           <span class="bc-reveal" data-reveal="sort"><span class="bc-reveal-inner"><button class="icon-btn sort-btn" id="${esc(ids.sortBtn)}" type="button" title="Sort results" aria-label="Sort results"><span class="mi">sort</span></button></span></span>
           <span class="bc-reveal" data-reveal="tools"><span class="bc-reveal-inner">
-            <button class="icon-btn rx-btn" id="${esc(ids.regexBtn)}" type="button" title="Regex search" aria-label="Regex search">.*</button>
+            <button class="icon-btn rx-btn" id="${esc(ids.regexBtn)}" type="button" title="Regex search" aria-label="Regex search"><span class="mi">regular_expression</span></button>
             <button class="icon-btn opts-btn" id="${esc(ids.searchOptsBtn)}" type="button" title="Search options" aria-label="Search options" aria-expanded="false" aria-controls="${esc(ids.searchOpts)}"><span class="mi">tune</span></button>
           </span></span>
         </div>
@@ -924,9 +962,9 @@
     const I = CLIP_ACTION_ICONS;
     let html = '';
     if (isImage) {
-      html += `<button class="icon-btn accent" data-action="open-img" data-id="${escapeHtml(id)}" title="Open image"><span class="mi">${I['open-img']}</span></button><button class="icon-btn accent" data-action="save-img" data-id="${escapeHtml(id)}" title="Copy to Downloads"><span class="mi">${I['save-img']}</span></button>`;
+      html += `<button class="icon-btn" data-action="open-img" data-id="${escapeHtml(id)}" title="Open image"><span class="mi">${I['open-img']}</span></button><button class="icon-btn" data-action="save-img" data-id="${escapeHtml(id)}" title="Copy to Downloads"><span class="mi">${I['save-img']}</span></button>`;
     } else {
-      html += `<button class="icon-btn accent" data-action="edit" data-id="${escapeHtml(id)}" title="Open in editor"><span class="mi">${I.edit}</span></button>`;
+      html += `<button class="icon-btn" data-action="edit" data-id="${escapeHtml(id)}" title="Open in editor"><span class="mi">${I.edit}</span></button>`;
     }
     html += `<button class="icon-btn" data-action="clip-menu" data-id="${escapeHtml(id)}" title="More actions" aria-label="More actions"><span class="mi">more_horiz</span></button>`;
     return html;
@@ -1054,11 +1092,11 @@
     // only find and the menu).
     if (context === 'editor' && !isImage) html += row('revert', 'Revert to original');
     html += submenuNodeHtml({ icon: 'sell', label: 'Add to group' }, clipGroupTreeHtml(groups, item));
-    html += submenuNodeHtml({ icon: 'dialpad', label: 'Numpad', hint: numpadOf(item) ? String(numpadOf(item)) : '' }, renderKeypadMenu(item, items, nmap), 'bc-keypad');
+    html += submenuNodeHtml({ icon: 'tag', label: 'Numpad', hint: numpadOf(item) ? String(numpadOf(item)) : '' }, renderKeypadMenu(item, items, nmap), 'bc-keypad');
     // opts.similarCount: a number (0 = no row) or null while it is being
     // counted (a disabled placeholder the controller fills in); absent = never.
     if (opts.similarCount === null) {
-      html += row('select-similar', 'Looking for similar clips...', '', { disabled: true, attrs: { 'aria-busy': 'true' } });
+      html += row('select-similar', 'Finding similar clips', '', { disabled: true, attrs: { 'aria-busy': 'true' } });
     } else if (opts.similarCount > 0) {
       html += row('select-similar', similarLabel(opts.similarCount));
     }
@@ -1240,10 +1278,14 @@
     // Write only a changed value: this runs on every scroll frame.
     const written = {};
     const put = (prop, value) => { if (written[prop] === value) return; written[prop] = value; el.style.setProperty(prop, value); };
+    let scrolled = null;
     const update = () => {
       const v = resolveFadeVars(el, sizes);
       put('--fade-top', `${v.top}px`);
       put('--fade-bottom', `${v.bottom}px`);
+      // .is-scrolled while content is hidden above (the settings header's divider).
+      const now = el.scrollTop > 0;
+      if (now !== scrolled) { scrolled = now; el.classList.toggle('is-scrolled', now); }
     };
     // Coalesced into one frame; a hidden page produces no frames, so it updates
     // at once there (the popup is laid out while hidden).
@@ -1369,8 +1411,23 @@
       return `<span class="opts-facet-label">${escapeHtml(row.label)}</span><div class="opts-facet-chips" role="group" aria-label="${escapeHtml(row.label)}">${chips}</div>`;
     }).join('');
   }
+  // The syntax reference: SYNTAX_HELP's rows under their group headings (Match /
+  // Filter / Range / Order), each description the same string the autocomplete
+  // shows (FIELD_INFO), an example as a chip that puts it in the query, and the
+  // one line on how everything combines.
   function renderSearchSyntax() {
-    return ((Search && Search.SYNTAX_HELP) || []).map((h) => `<code>${escapeHtml(h.token)}</code><span>${escapeHtml(h.desc)}</span>`).join('');
+    const rows = (Search && Search.SYNTAX_HELP) || [];
+    let group = null;
+    let html = '';
+    for (const h of rows) {
+      if (h.group && h.group !== group) { group = h.group; html += `<span class="bc-label opts-syntax-head">${escapeHtml(group)}</span>`; }
+      const example = h.example
+        ? renderChip({ tag: 'button', cls: 'opts-example', attrs: { 'data-insert': h.example, title: `Add ${h.example} to the search` }, html: `<code>${escapeHtml(h.example)}</code>` })
+        : '';
+      html += `<code>${escapeHtml(h.token)}</code><span>${escapeHtml(h.desc)}${example}</span>`;
+    }
+    if (Search && Search.SYNTAX_FOOT) html += `<span class="opts-syntax-foot">${escapeHtml(Search.SYNTAX_FOOT)}</span>`;
+    return html;
   }
   function renderSearchOptions(query) {
     return `<div class="opts-facets">${renderSearchFacets(query)}</div><div class="opts-syntax" aria-label="Search syntax">${renderSearchSyntax()}</div>`;
@@ -1499,7 +1556,7 @@
       if (problem.didYouMean) {
         const fix = document.createElement('button');
         fix.type = 'button';
-        fix.className = 'search-hint-fix';
+        fix.className = 'btn quiet sm accent search-hint-fix';
         fix.innerHTML = `Did you mean <code>${escapeHtml(problem.didYouMean)}</code>?`;
         const neg = problem.token[0] === '-' && problem.token.length > 1 ? '-' : '';
         fix.dataset.from = String(problem.kind === 'unknown-key' ? problem.start + neg.length : problem.start);
@@ -1698,6 +1755,16 @@
       commitValue(Search.applyFacet(value, opt.token, single ? 'include' : intent));
     }
     const onPanelClick = (e) => {
+      // A syntax example: added to the query (a space before it), the field keeps typing.
+      const example = e.target.closest('.opts-example');
+      if (example && example.dataset.insert) {
+        e.preventDefault();
+        e.stopPropagation();
+        const base = inputEl.value.replace(/\s+$/, '');
+        commitValue(`${base}${base ? ' ' : ''}${example.dataset.insert}`);
+        inputEl.focus();
+        return;
+      }
       const hit = facetFromEvent(e);
       if (!hit) return;
       e.preventDefault();
@@ -2217,7 +2284,7 @@
     if (o.actionLabel && typeof o.onAction === 'function') {
       const btn = document.createElement('button');
       btn.type = 'button';
-      btn.className = 'toast-action';
+      btn.className = 'btn quiet sm accent toast-action';
       btn.textContent = o.actionLabel;
       btn.addEventListener('click', () => { hide(); o.onAction(); });
       toastEl.appendChild(btn);
@@ -2345,7 +2412,7 @@
     const numpad = settingSectionHtml('Quick paste and numpad',
       switchRowHtml({ id: 'quickPasteRestore', label: 'Restore the clipboard afterwards', help: [[null, 'Puts back what you had copied before the paste']] })
       + '<div class="settings-list" id="numpadSlots"></div>'
-      + settingRowHtml({ cls: 'note', help: [['numpadHelp', 'Give a clip a key from its # button or its menu.']] }));
+      + settingRowHtml({ cls: 'note', help: [['numpadHelp', 'Give a clip a key from its # button or its menu']] }));
     const groups = settingSectionHtml('Groups',
       '<div class="settings-list" id="groupSlots"></div>'
       + settingRowHtml({ cls: 'note', control: '<button class="btn" id="addGroupBtn" type="button"><span class="mi sm">add</span>New group</button>' }));
@@ -2642,6 +2709,9 @@
     setOrClear('data-density', o.uiDensity, 'normal');
     setOrClear('data-corners', o.uiCorners, 'soft');
     setOrClear('data-borders', o.uiBorders, 'bordered');
+    // Glass scope: only the demo reads it (its editor overlay stands in for the
+    // app's editor window, solid unless 'all'); main resolves the app's windows.
+    setOrClear('data-glass-scope', o.glassScope, 'popup');
   }
   // ---- Accent colour: System / Custom -------------------------------------
   // A System or Custom accent can be any colour, so the applier derives what
@@ -3272,6 +3342,14 @@
     }
 
     if (listEl) {
+      // Entering a row (pointer or keyboard) opens its meta ghosts: fit its names first.
+      const onEnterRow = (e) => {
+        const row = e.target && e.target.closest ? e.target.closest('.item') : null;
+        const from = e.relatedTarget && e.relatedTarget.closest ? e.relatedTarget.closest('.item') : null;
+        if (row && row !== from) fitMetaTags(row);
+      };
+      listEl.addEventListener('pointerover', onEnterRow);
+      listEl.addEventListener('focusin', onEnterRow);
       listEl.addEventListener('scroll', () => {
         if (!ids.length) return;
         const h = listEl.clientHeight;
@@ -4073,11 +4151,13 @@
       });
     }
     // Public entry for hosts without clip rows (the standalone editor/viewer
-    // windows): open the shared clip menu for `id` at x,y.
-    function openClipMenuAt(id, x, y) {
+    // windows): open the shared clip menu for `id` at x,y. `context` overrides
+    // the adapter's menuContext (the demo's editor overlay shares the popup's
+    // controller but shows the editor's menu).
+    function openClipMenuAt(id, x, y, context) {
       const item = a.itemById(id);
       if (!item) return;
-      menu.open({ id, x, y, html: renderClipMenu(item, { items: allItems(), groups: groupNames(), numpadMap: a.numpadMap ? a.numpadMap() : {}, context: a.menuContext }) });
+      menu.open({ id, x, y, html: renderClipMenu(item, { items: allItems(), groups: groupNames(), numpadMap: a.numpadMap ? a.numpadMap() : {}, context: context || a.menuContext }) });
     }
     // The one-clip group picker: the title-bar strip's + and a row's meta +
     // (same clipGroupTreeHtml checklist as the clip menu's submenu, same
@@ -4665,7 +4745,8 @@
   // revert-to-original (the clip menu), Tab-inserts-tab. The title is edited
   // in place in the shared .bc-bar. The host owns persistence; this owns UI.
   //   opts: { initialText, initialTitle, initialFocusTitle, idleMs, nativeControls,
-  //           onInput(payload), onCommit(payload), onClose(), onMenu(x, y), clipboard }
+  //           onInput(payload), onCommit(payload), onClose(), onMenu(x, y), clipboard,
+  //           toastEl (the host's .toast: Revert offers Undo there) }
   // nativeControls: the window has the OS's own close (no close in the bar).
   function createEditor(opts) {
     if (typeof document === 'undefined') return null;
@@ -4685,7 +4766,7 @@
       })}
       <div class="bc-find" data-x="findbar" hidden>
         <input class="bc-find-input" type="text" placeholder="Find" spellcheck="false" autocomplete="off" data-x="findinput">
-        <button class="icon-btn rx-btn" type="button" data-x="findregex" title="Regex find" aria-label="Regex find">.*</button>
+        <button class="icon-btn rx-btn" type="button" data-x="findregex" title="Regex find" aria-label="Regex find"><span class="mi">regular_expression</span></button>
         <span class="bc-find-count" data-x="findcount"></span>
         <button class="icon-btn" type="button" data-x="findprev" title="Previous (Shift+Enter)"><span class="mi">keyboard_arrow_up</span></button>
         <button class="icon-btn" type="button" data-x="findnext" title="Next (Enter)"><span class="mi">keyboard_arrow_down</span></button>
@@ -4968,8 +5049,16 @@
     const menuBtn = q('menu');
     if (menuBtn) menuBtn.onclick = (e) => { e.stopPropagation(); const r = menuBtn.getBoundingClientRect(); o.onMenu(r.right, r.bottom + 2); };
     // Back to the text and title the editor opened with (the clip menu's
-    // "Revert to original").
-    const revert = () => { area.value = originalText; titleInput.value = originalTitle; updateStats(); updateTitleHint(); emitInput(); commit(); area.focus(); };
+    // "Revert to original"), committed at once. Setting the textarea's value
+    // drops its own undo history, so the toast offers the Undo: the text and
+    // title from just before, committed again.
+    const setContent = (text, title) => { area.value = text; titleInput.value = title; updateStats(); updateTitleHint(); emitInput(); commit(); area.focus(); };
+    const revert = () => {
+      const before = { text: area.value, title: titleInput.value };
+      if (before.text === originalText && cleanTitle(before.title) === originalTitle) return;
+      setContent(originalText, originalTitle);
+      if (o.toastEl) showActionToast(o.toastEl, { message: 'Reverted to the original', actionLabel: 'Undo', onAction: () => setContent(before.text, before.title) });
+    };
     const closeBtn = q('close');
     if (closeBtn) closeBtn.onclick = () => { commit(); if (o.onClose) o.onClose(); };
     root.addEventListener('keydown', (e) => {
@@ -5378,7 +5467,7 @@
     const headCell = (label, side, title, accept, tip) => `<div class="bc-merge-head"${side ? ` data-side="${side}"` : ''}>`
       + `<span class="bc-head-label"${tip ? ` title="${escapeHtml(tip)}"` : ''}>${label}</span>`
       + (titlesDiffer && side ? `<button type="button" class="bc-head-title" data-title-pick="${escapeHtml(title)}" title="${escapeHtml(`Use this title: ${title || 'Untitled'}`)}">${escapeHtml(title || 'Untitled')}</button>` : '')
-      + (accept ? `<button type="button" class="btn quiet sm bc-head-accept" data-x="${side}" title="${escapeHtml(`${accept.label}: ${accept.tip}`)}" aria-label="${escapeHtml(accept.label)}"><span class="mi sm">done_all</span><span class="bc-accept-label">${accept.label}</span></button>` : '')
+      + (accept ? `<button type="button" class="btn quiet sm accent bc-head-accept" data-x="${side}" title="${escapeHtml(`${accept.label}: ${accept.tip}`)}" aria-label="${escapeHtml(accept.label)}"><span class="mi sm">done_all</span><span class="bc-accept-label">Accept</span></button>` : '')
       + '</div>';
     const gap = '<span class="bc-merge-heads-gap"></span>';
     const takeCurrent = { label: 'Accept current', tip: 'finish with the current text as it is, without the incoming changes' };
@@ -5406,7 +5495,7 @@
       <div class="bc-reconcile-actions" data-x="actions">
         ${step ? `<span class="bc-step" data-x="step">Step ${Number(step.at)} of ${Number(step.of)}</span>` : ''}
         <button type="button" class="btn" data-x="both" title="Keep both sides of every change">Keep both</button>
-        ${record.unify ? '' : '<button type="button" class="btn" data-x="remove" title="Dismiss this conflict and leave the clip as it is">Remove conflict</button>'}
+        ${record.unify ? '' : '<button type="button" class="btn discard" data-x="remove" title="Dismiss this conflict and leave the clip as it is">Remove conflict</button>'}
         <button type="button" class="btn primary" data-x="save">${escapeHtml(record.saveLabel || 'Save merged')}</button>
       </div>`;
     const q = (name) => root.querySelector(`[data-x="${name}"]`);
@@ -5583,7 +5672,7 @@
       const wsHidden = !info.changes && ignoreWs && (result !== rightText || (threeWay && result !== leftText));
       note.hidden = !wsHidden;
       if (wsHidden) {
-        note.innerHTML = 'Same text on both sides: the only differences are whitespace, hidden while Ignore whitespace is on. <button type="button" data-x="showws">Show them</button>';
+        note.innerHTML = 'Same text on both sides: the only differences are whitespace, hidden while Ignore whitespace is on. <button type="button" class="btn quiet sm accent" data-x="showws">Show them</button>';
         q('showws').onclick = () => q('ws').click();
       }
       // Line paint: quiet chunks lose the green chunk background on both panes;
@@ -5978,6 +6067,7 @@
     renderNumpadSlotRows,
     renderGroupRows,
     setSettingHelp,
+    fitMetaTags,
     mountSettings,
     queryMatchIndex,
     collapsedPreviewText,

@@ -4,6 +4,9 @@
    editor.html, viewer.html, mcp-approval.html. Window-only rules
    live here so no window keeps its own copy: the reset, html/body
    sizing, the body font + background, and the glass scrim.
+   ONE sheet per window: the body paints the window surface (--surface,
+   the colour main gives the native window too); --bg is only a well
+   inside it (an expanded preview, the viewer's matte, a card).
    NOT loaded by the website demo (a .bc-popup inside a page whose
    own reset/body must not be touched); everything the demo shares,
    the one scrollbar included, lives in clipboard-popup.css.
@@ -17,7 +20,7 @@ body {
   font-weight: var(--fw-regular);
   line-height: var(--lh-ui);
   color: var(--text);
-  background: var(--bg);
+  background: var(--surface);
 }
 
 /* Glass: the OS provides the real blur (macOS vibrancy / Windows 11 acrylic)

@@ -135,6 +135,7 @@ window.editorApi.onInit((init) => {
     initialFindRegex: !!init.findRegex,
     initialFocusTitle: !!init.focusTitle,
     nativeControls: true,
+    toastEl: document.getElementById('toast'), // Revert to original offers Undo here
     onInput: (payload) => window.editorApi.draft(payload),     // live crash-safe draft, every keystroke
     // idle / Ctrl+S / close -> write the clip. The commit changes the content-
     // addressed id, so refresh the title-bar tag strip once the write lands

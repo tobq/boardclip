@@ -290,14 +290,17 @@ const STEPS = [
       const box = el.querySelector('.meta-tags').getBoundingClientRect();
       const tags = [...el.querySelectorAll('.meta-tag')].map((t) => {
         const r = t.getBoundingClientRect();
-        return { text: t.textContent, shown: r.bottom <= box.bottom + 0.5 && r.right <= box.right + 0.5, cut: t.scrollWidth > t.clientWidth + 1 };
+        return { text: t.textContent, shown: r.width > 0 && r.bottom <= box.bottom + 0.5 && r.right <= box.right + 0.5, cut: t.scrollWidth > t.clientWidth + 1, right: r.right };
       });
       const meta = el.querySelector('.meta');
       // Laid-out overflow past the meta box (scrollWidth also counts the closed
       // reveal's clip margin, an invisible 4 px: not a measure of what shows).
+      // Margin boxes: the badge and the names box pull their hover padding back
+      // out of the flow with a negative margin, which never pushes anything.
       const right = meta.getBoundingClientRect().right;
-      const overflow = Math.max(0, ...[...meta.children].map((k) => k.getBoundingClientRect().right - right));
-      return { tags, overflow, ghosts: el.querySelector('.meta-reveal').getBoundingClientRect().width, h: el.getBoundingClientRect().height };
+      const overflow = Math.max(0, ...[...meta.children].map((k) => k.getBoundingClientRect().right + (parseFloat(getComputedStyle(k).marginRight) || 0) - right));
+      const ghost = el.querySelector('.meta-reveal .meta-ghost');
+      return { tags, overflow, ghosts: el.querySelector('.meta-reveal').getBoundingClientRect().width, plusLeft: ghost ? ghost.getBoundingClientRect().left : null, h: el.getBoundingClientRect().height };
     })()`);
     const rest = await measure();
     await c.popup.hover('.item[data-id="qa:many"] .content');
@@ -310,6 +313,9 @@ const STEPS = [
       if (m.overflow > 0.5) throw new Error(`${state}: the meta line overflows by ${m.overflow} px`);
     }
     if (!(hover.ghosts > 4)) throw new Error(`the ghost # / + did not slide in: ${J(hover)}`);
+    // The ghosts follow the last name that shows (Core.fitMetaTags), never the names box's far edge.
+    const lastShown = hover.tags.filter((t) => t.shown).pop();
+    if (lastShown && hover.plusLeft - lastShown.right > 12) throw new Error(`the ghosts sit ${Math.round(hover.plusLeft - lastShown.right)} px after the last name: ${J(hover)}`);
     if (Math.abs(rest.h - hover.h) > 0.5) throw new Error(`the row height changed on hover ${rest.h} -> ${hover.h}`);
     c.note('metaManyGroups', { rest: rest.tags.filter((t) => t.shown).map((t) => t.text), hover: hover.tags.filter((t) => t.shown).map((t) => t.text) });
     await c.shot(c.popup, 'popup-meta-many-groups');
@@ -541,6 +547,15 @@ const STEPS = [
       click(${J(c.ids.url)}); click(${J(c.ids.fox)});
       return document.querySelectorAll('.item.multi-selected').length;
     })()`);
+    // One right edge for the stacked icon columns: the header's gear, the
+    // search row's tune and the selection bar's close all end on the gutter.
+    const edges = await c.popup.eval(`(() => {
+      const x = (sel) => { const e = document.querySelector(sel); if (!e) return null; const r = e.getBoundingClientRect(); return r.width ? Math.round((r.left + r.width / 2) * 10) / 10 : null; };
+      return { gear: x('#settingsBtn .mi'), tune: x('#searchOptsBtn .mi'), close: x('#selectionBar .selection-actions > :last-child .mi') };
+    })()`);
+    c.note('popup-icon-columns', edges);
+    if (edges.gear == null || edges.tune == null || edges.close == null) throw new Error(`icon columns not found: ${J(edges)}`);
+    if (Math.max(edges.gear, edges.tune, edges.close) - Math.min(edges.gear, edges.tune, edges.close) > 1) throw new Error(`the stacked icon columns do not line up: ${J(edges)}`);
     await c.shot(c.popup, 'popup-multiselect');
     const at = await c.popup.centerOf('.item.multi-selected .content');
     if (!at) throw new Error('no multi-selected row');
@@ -723,6 +738,25 @@ const STEPS = [
     await qa.sleep(500);
     await c.sb.mainEval(`(__qa.electron.BrowserWindow.getAllWindows().filter((w) => /editor\\.html/.test(w.webContents.getURL())).forEach((w) => w.close()), true)`);
   } },
+  // Glass popup: ONE sheet, ONE frost: nothing in the popup paints over the
+  // window's scrim (the header used to add a second --surface band).
+  { name: 'glass-popup', popup: true, run: async (c) => {
+    await c.popup.eval(`window.api.saveSettings({ surface_style: 'glass' })`);
+    try {
+      await c.popup.waitFor(`document.documentElement.dataset.surface === 'glass'`, 'popup is glass', 8000);
+      await qa.sleep(300);
+      const p = await c.popup.eval(`(() => {
+        const paint = (sel) => [...document.querySelectorAll(sel)].map((el) => getComputedStyle(el).backgroundColor).filter((bg) => bg !== 'rgba(0, 0, 0, 0)' && bg !== 'transparent');
+        return { surface: document.documentElement.dataset.surface, painted: ['body', '.main-view', '.sticky', '.sticky header', '.search-row', '.chip-row', '.group-filters', '.list-wrap', '.list'].flatMap((sel) => paint(sel).map((bg) => sel + ' ' + bg)) };
+      })()`);
+      c.note('glass-popup', p);
+      await c.shot(c.popup, 'glass-popup');
+      if (p.painted.length) throw new Error(`a popup band paints its own layer under glass: ${J(p.painted)}`);
+    } finally {
+      await c.popup.eval(`window.api.saveSettings({ surface_style: 'solid' })`); // the seed's look
+      await c.popup.waitFor(`document.documentElement.dataset.surface === 'solid'`, 'popup back to solid', 8000);
+    }
+  } },
   // "Glass on: All windows": the editor and the unify window get the glass,
   // and each has ONE frosted layer (every band transparent over the scrim).
   { name: 'glass-all', run: async (c) => {
@@ -813,6 +847,49 @@ const STEPS = [
     await qa.sleep(300);
     const r = await page.eval(`(() => { const e = document.querySelector('.bc-popup').getBoundingClientRect(); return { x: e.x, y: e.y, width: e.width, height: e.height }; })()`);
     await c.shot(page, 'site-editor', { clip: { ...r, scale: 1 } });
+  } },
+  // The demo editor on a clip IS the app editor: its "..." opens the editor
+  // clip menu (Revert to original, no "Open in editor"), Revert offers Undo in
+  // the toast, and under "Glass on: Popup only" it paints the app editor
+  // window's solid --surface (not the page --bg, not the popup's frost).
+  { name: 'site-editor-menu', run: async (c) => {
+    const page = await c.sb.openWindow(c.site.url, { theme: c.theme });
+    await page.waitFor(`document.readyState === 'complete' && !!document.querySelector('.bc-popup .item [data-action="edit"]')`, 'site loaded');
+    await page.fontsReady();
+    const got = await page.eval(`(async () => {
+      const pop = document.querySelector('.bc-popup');
+      const edit = pop.querySelector('.item [data-action="edit"]');
+      const id = edit.dataset.id;
+      edit.click();
+      const overlay = document.getElementById('demo-editor-overlay');
+      overlay.scrollIntoView({ block: 'center' });
+      const area = overlay.querySelector('.bc-editor-area');
+      const original = area.value;
+      area.value = original + ' EDITED';
+      area.dispatchEvent(new Event('input', { bubbles: true }));
+      const surface = getComputedStyle(overlay.querySelector('.bc-editor')).backgroundColor;
+      const menuBtn = overlay.querySelector('[data-x="menu"]');
+      if (!menuBtn) return { id, menuBtn: false, surface, glass: pop.dataset.surface, scope: pop.dataset.glassScope || 'popup' };
+      menuBtn.click();
+      await new Promise((r) => setTimeout(r, 120));
+      const menu = pop.querySelector('.bc-menu');
+      const rows = menu ? [...menu.querySelectorAll('[data-action]')].map((b) => b.dataset.action) : [];
+      const revert = menu && menu.querySelector('[data-action="revert"]');
+      if (revert) revert.click();
+      await new Promise((r) => setTimeout(r, 120));
+      const afterRevert = area.value;
+      const undo = pop.querySelector('.toast.show .toast-action');
+      const undoClass = undo ? undo.className : null;
+      if (undo) undo.click();
+      await new Promise((r) => setTimeout(r, 120));
+      return { id, menuBtn: true, rows, reverted: afterRevert === original, undoClass, undone: area.value === original + ' EDITED', surface, glass: pop.dataset.surface, scope: pop.dataset.glassScope || 'popup' };
+    })()`);
+    c.note('site-editor-menu', got);
+    const want = c.theme === 'dark' ? 'rgb(20, 23, 27)' : 'rgb(255, 255, 255)';
+    if (got.surface !== want) throw new Error(`demo editor paints ${got.surface}, the app editor window paints ${want}: ${J(got)}`);
+    if (!got.menuBtn || !got.rows.includes('revert') || got.rows.includes('edit')) throw new Error(`demo editor menu is not the editor's: ${J(got)}`);
+    if (!got.reverted || !/btn quiet sm accent/.test(got.undoClass || '') || !got.undone) throw new Error(`Revert / Undo: ${J(got)}`);
+    await page.eval(`(() => { const x = document.querySelector('#demo-editor-overlay [data-x="close"]'); if (x) x.click(); return true; })()`);
   } },
   { name: 'site', run: async (c) => {
     const page = await c.sb.openWindow(c.site.url, { theme: c.theme });

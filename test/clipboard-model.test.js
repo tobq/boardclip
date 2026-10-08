@@ -514,6 +514,25 @@ function text(text, extra = {}) {
   assert.strictEqual(merged.tombstones.length, 1);
 }
 
+// Resolving a sync conflict: what gets written back. 'Keep both' sends the
+// union text and must SAVE it (it used to drop the record and write nothing,
+// exactly like 'Remove conflict').
+{
+  const record = conflictModel.createConflictRecord({ kind: 'text', left: { id: 'L', text: 'left text', title: 'Left' }, right: { id: 'R', text: 'right text' } }, { now: 1000 });
+  const both = conflictModel.conflictResolutionWrite(record, { action: 'keep_both', text: 'left text\nright text', title: 'Merged' });
+  assert.deepStrictEqual(both, { snapshot: null, text: 'left text\nright text', title: 'Merged' }, 'keep_both writes the union text like save');
+  assert.deepStrictEqual(conflictModel.conflictResolutionWrite(record, { action: 'save', text: 'edited', title: '' }), { snapshot: null, text: 'edited', title: '' });
+  assert.strictEqual(conflictModel.conflictResolutionWrite(record, { text: 'x' }).text, 'x', 'no action = save');
+  const left = conflictModel.conflictResolutionWrite(record, { action: 'accept_left', text: 'ignored' });
+  assert.strictEqual(left.text, 'left text', 'accept_left = that side verbatim, never the payload text');
+  assert.strictEqual(left.snapshot.id, 'L');
+  assert.strictEqual(conflictModel.conflictResolutionWrite(record, { action: 'accept_right' }).text, 'right text');
+  assert.strictEqual(conflictModel.conflictResolutionWrite(record, { action: 'remove', text: 'x' }), null, 'remove writes nothing');
+  assert.strictEqual(conflictModel.conflictResolutionWrite({ left: null, right: null }, { action: 'accept_left' }), null, 'a missing side writes nothing');
+  const mainSrc = fs.readFileSync(require('path').join(__dirname, '..', 'main.js'), 'utf8');
+  assert.ok(/function applyConflictResolution\(resolution\) \{[\s\S]{0,400}conflictModel\.conflictResolutionWrite\(record, payload\)/.test(mainSrc), 'main resolves through conflictResolutionWrite');
+}
+
 {
   const base = [
     { id: 'a', type: 'text', text: 'alpha invoice', ts: 10, pin: { groups: ['work'] } },

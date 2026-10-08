@@ -823,21 +823,24 @@
 
   // ── what each filter and value means: ONE table, keyed by prefix AND value.
   // The autocomplete rows read it (each row its own hint, never one hint
-  // repeated down the list), and the "Did you mean" / valid-values feedback
-  // lists its values. `short` = the short alias (PREFIX_ALIASES has them all).
+  // repeated down the list), the "Did you mean" / valid-values feedback lists
+  // its values, and the options panel's syntax reference (SYNTAX_HELP, below)
+  // is built from it, so a hint reads the same in both places. `short` = the
+  // short alias (PREFIX_ALIASES has them all); `group` = the reference's
+  // heading; `example` = a chip there that puts it in the query.
   const FIELD_INFO = {
-    title: { desc: 'match the clip title', short: 't' },
-    text: { desc: 'match the clip body', short: 'b' },
-    group: { desc: 'in a group (and its sub-groups)', short: 'g' },
-    is: { desc: 'kind of clip', values: { pinned: 'starred (pinned) clips', image: 'a picture', text: 'text, not a picture', numpad: 'on a numpad key', url: 'the clip is a link', multiline: 'spans several lines', rich: 'has HTML or RTF formatting' } },
-    num: { desc: 'numpad slot 1-9', short: 'n' },
-    since: { desc: 'newer than', short: 's', values: { '1h': 'the last hour', '24h': 'the last day', '7d': 'the last week', '30d': 'the last month' } },
-    before: { desc: 'older than', short: 'bf', values: { '1h': 'an hour ago', '24h': 'a day ago', '7d': 'a week ago', '30d': 'a month ago' } },
-    len: { desc: 'character count (len:>100, len:50-200)', short: 'l' },
-    lines: { desc: 'line count (lines:>3)', short: 'ln' },
-    words: { desc: 'word count (words:<20)', short: 'wd' },
-    id: { desc: 'clip id prefix' },
-    sort: { desc: 'result order', short: 'o', values: { new: 'newest first', best: 'best match first' } },
+    title: { desc: 'match the clip title only', short: 't', group: 'Match', example: 't:todo' },
+    text: { desc: 'match the clip body only', short: 'b', group: 'Match', example: 'b:"api key"' },
+    group: { desc: 'in a group (and its sub-groups)', short: 'g', group: 'Filter', example: 'g:Work' },
+    is: { desc: 'kind of clip', group: 'Filter', values: { pinned: 'starred (pinned) clips', image: 'a picture', text: 'text, not a picture', numpad: 'on a numpad key', url: 'the clip is a link', multiline: 'spans several lines', rich: 'has HTML or RTF formatting' } },
+    num: { desc: 'on numpad key 1-9', short: 'n', group: 'Filter', example: 'n:3' },
+    since: { desc: 'newer than (1h, 7d or a date)', short: 's', group: 'Range', example: 's:24h', values: { '1h': 'the last hour', '24h': 'the last day', '7d': 'the last week', '30d': 'the last month' } },
+    before: { desc: 'older than (1h, 7d or a date)', short: 'bf', group: 'Range', example: 'bf:2026-01-31', values: { '1h': 'an hour ago', '24h': 'a day ago', '7d': 'a week ago', '30d': 'a month ago' } },
+    len: { desc: 'character count (>100, 50-200)', short: 'l', group: 'Range', example: 'len:>500' },
+    lines: { desc: 'line count (>3)', short: 'ln', group: 'Range', example: 'lines:>10' },
+    words: { desc: 'word count (<20)', short: 'wd', group: 'Range', example: 'wd:<5' },
+    id: { desc: 'clip id starts with', group: 'Filter' },
+    sort: { desc: 'order results: newest or best match first', short: 'o', group: 'Order', example: 'o:best', values: { new: 'newest first', best: 'best match first' } },
   };
   const IS_SUGGESTIONS = IS_VALUES.map((v) => 'is:' + v);
   const SINCE_PRESETS = Object.keys(FIELD_INFO.since.values);
@@ -847,24 +850,30 @@
   const PREFIX_SHORT = Object.fromEntries(Object.entries(FIELD_INFO).filter(([, f]) => f.short).map(([k, f]) => [`${k}:`, `${f.short}:`]));
 
   // The user-facing syntax reference (the search options panel renders exactly
-  // this). ONE table, next to the parser, so help can never drift from grammar.
-  const SYNTAX_HELP = [
-    { token: 'word  "a phrase"', desc: 'match anywhere (title, body, groups); several words = all must match', example: 'invoice "q3 report"' },
-    { token: '-word  -group:x', desc: 'exclude: put - in front of any word or filter', example: 'meeting -group:Work' },
-    { token: 'title:  t:', desc: 'match the clip title only', example: 't:todo' },
-    { token: 'text:  b:', desc: 'match the clip body only', example: 'b:"api key"' },
-    { token: 'group:  g:', desc: 'in a group (and its sub-groups)', example: 'g:Work/Docs' },
-    { token: 'is:pinned  is:image  is:text  is:numpad', desc: 'kind of clip', example: 'is:pinned -is:image' },
-    { token: 'is:url  is:multiline  is:rich', desc: 'body is a link / spans several lines / has HTML or RTF formatting', example: 'is:url since:7d' },
-    { token: 'num:1-9  n:', desc: 'in a numpad quick-paste slot', example: 'n:3' },
-    { token: 'since:  s:   before:  bf:', desc: 'time window: 1h 24h 7d 30d or a date (2026-01-31)', example: 's:24h bf:1h' },
-    { token: 'len:  l:', desc: 'character count: >N <N >=N <=N or a range N-M', example: 'len:>500  len:20-80' },
-    { token: 'lines:  ln:', desc: 'line count, same comparators', example: 'lines:>10' },
-    { token: 'words:  wd:', desc: 'word count, same comparators', example: 'wd:<5' },
-    { token: 'id:', desc: 'clip id starts with', example: 'id:txt:9f' },
-    { token: 'sort:new  sort:best  o:', desc: 'order results by recency or relevance', example: 'o:best' },
-    { token: '.*  (button)', desc: 'treat free text and title:/text: values as regular expressions', example: '\\d{3}-\\d{4}' },
-  ];
+  // this, under its group headings). Built from FIELD_INFO next to the parser:
+  // one row per field (num: and the is: values spelled out), plus the rows for
+  // what is not a field (free words, exclusion, the regex toggle), so help can
+  // never drift from the grammar or from the autocomplete's own hints.
+  const SYNTAX_GROUPS = ['Match', 'Filter', 'Range', 'Order'];
+  const SYNTAX_EXTRA = {
+    Match: [
+      { token: 'word  "a phrase"', desc: 'match anywhere (title, body, groups)', example: '"q3 report"' },
+      { token: '-word  -group:x', desc: 'exclude: put - in front of any word or filter', example: '-is:image' },
+    ],
+    MatchEnd: [{ token: '.*  (button)', desc: 'words and title: / text: values as regular expressions' }],
+  };
+  function fieldSyntaxRows(name, f) {
+    const short = f.short ? `  ${f.short}:` : '';
+    if (name === 'is') return Object.entries(f.values).map(([v, d]) => ({ group: f.group, token: `is:${v}`, desc: d }));
+    if (name === 'num') return [{ group: f.group, token: `num:1-9${short}`, desc: f.desc, example: f.example }];
+    return [{ group: f.group, token: `${name}:${short}`, desc: f.desc, example: f.example }];
+  }
+  const SYNTAX_HELP = SYNTAX_GROUPS.flatMap((group) => [
+    ...(SYNTAX_EXTRA[group] || []).map((r) => ({ group, ...r })),
+    ...Object.entries(FIELD_INFO).filter(([, f]) => f.group === group).flatMap(([name, f]) => fieldSyntaxRows(name, f)),
+    ...(group === 'Match' ? SYNTAX_EXTRA.MatchEnd.map((r) => ({ group, ...r })) : []),
+  ]);
+  const SYNTAX_FOOT = 'Words and filters combine with AND: a clip must match all of them';
   // The search options panel's facet rows: the less-used filters, one click each.
   // Chips write tokens through applyFacet (the query text stays the single source
   // of truth) and paint their state from facetTokenState. `prompt` options insert
@@ -1483,7 +1492,7 @@
     fuzzyMatch, fuzzyFloor,
     lexQuery, suggestQuery,
     BUILTIN_TO_IS, IS_TO_BUILTIN, IS_VALUES, RECOGNIZED_PREFIXES, NON_FILTER_SCHEMES,
-    SYNTAX_HELP, PREFIX_HINTS, OPTION_FACETS, facetTokenText, optionFacetsActive,
+    SYNTAX_HELP, SYNTAX_FOOT, PREFIX_HINTS, OPTION_FACETS, facetTokenText, optionFacetsActive,
     FIELD_INFO, facetKey, applySuggestion, ghostCompletion, uniqueCompletion,
     validateQuery, describeProblem, problemRanges, levenshtein,
     facetCensus, facetOptionVerdict, structuralReason, censusKey, FAILURE_CAP,

@@ -619,9 +619,19 @@
     if (right) right.registerEvents(left)
 
 
+    // BOARDCLIP PATCH: CodeMirror re-measures its lines on its own 100 ms
+    // debounce after a window resize, so connectors drawn at once keep the old
+    // line positions (an arrow ends up beside the wrong chunk). Draw again
+    // once it has re-measured.
+    var resizeRedraw = null;
     var onResize = function() {
       if (left) makeConnections(left);
       if (right) makeConnections(right);
+      clearTimeout(resizeRedraw);
+      resizeRedraw = setTimeout(function() {
+        if (left) makeConnections(left);
+        if (right) makeConnections(right);
+      }, 160);
     };
     CodeMirror.on(window, "resize", onResize);
     var resizeInterval = setInterval(function() {

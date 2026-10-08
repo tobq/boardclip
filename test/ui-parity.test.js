@@ -949,4 +949,43 @@ const siteCss = read('site/styles.css');
   assert.ok(!/accentVariant:\s*'accent_mode'|uiDensity: 'ui_density'/.test(appHtml), 'the app no longer saves accent / density through the debug switcher');
 }
 
+// 18) Final review pass (UI overhaul): one sheet per window, one label, one
+//     numpad glyph, one icon hover, the demo editor = the app editor window.
+{
+  const coreSrc = read('site/shared/clipboard-ui-core.js');
+  const tokensCss = read('site/shared/clipboard-tokens.css');
+  const windowCss = read('site/shared/clipboard-window.css');
+  const approvalHtml = read('mcp-approval.html');
+  const stripComments = (css) => css.replace(/\/\*[\s\S]*?\*\//g, '');
+  const rules = (css) => [...stripComments(css).matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((m) => ({ sel: m[1].trim(), body: m[2] }));
+  const ruleOf = (sel) => rules(popupCss).find((r) => r.sel === sel);
+  // The popup is ONE sheet: the window paints --surface, the header nothing.
+  assert.ok(/body \{[^}]*background: var\(--surface\);/.test(stripComments(windowCss)), 'every window body paints --surface (--bg is a well)');
+  assert.ok(/background: transparent/.test(ruleOf('.sticky').body), 'the popup header paints no second band (no seam, one frost under glass)');
+  // The demo's editor overlay is the app editor WINDOW: solid --surface unless Glass on: All windows.
+  for (const theme of ['dark', 'light']) {
+    const block = (tokensCss.match(new RegExp(`:root\\[data-theme="${theme}"\\], \\.bc-popup\\[data-theme="${theme}"\\] \\{([^}]*)\\}`)) || [])[1] || '';
+    assert.ok(/--surface: var\(--surface-solid\);/.test(block) && /--surface-solid:/.test(block), `${theme}: --surface is the solid surface the overlay can re-take`);
+  }
+  assert.ok(/--surface: var\(--surface-solid\)/.test(ruleOf('.bc-popup:not([data-glass-scope="all"]) .bc-editor-overlay').body), 'the demo editor (Glass on: Popup only) paints the app editor\'s solid surface');
+  assert.ok(/background: var\(--surface\)/.test(ruleOf('.bc-editor-overlay').body) && !/var\(--bg\)/.test(ruleOf('.bc-editor-overlay').body), 'the overlay host is the window surface, not the page --bg');
+  assert.ok(/setOrClear\('data-glass-scope', o\.glassScope, 'popup'\)/.test(coreSrc) && /glassScope: demoLook\.glassScope/.test(siteHtml), 'the demo passes Glass on to its window');
+  assert.ok(/onMenu: \(x, y\) => \{[^}]*controller\.openClipMenu\(demoEditorClipId, x, y, "editor"\)/.test(siteHtml) && /revertClip: \(\) => \{ if \(demoEditor\) demoEditor\.revert\(\); \}/.test(siteHtml), 'the demo editor has the app editor\'s clip menu, Revert included');
+  assert.ok(/toastEl: document\.getElementById\('toast'\)/.test(read('editor.html')) && /toastEl: demoToast/.test(siteHtml) && /showActionToast\(o\.toastEl, \{ message: 'Reverted to the original', actionLabel: 'Undo'/.test(coreSrc), 'Revert to original offers Undo, app and demo');
+  // One numpad glyph ('#'), one icon-button hover (no accent hover), the regex toggle a Material glyph.
+  for (const [name, src] of [['core', coreSrc], ['mcp-approval.html', approvalHtml]]) assert.ok(!/dialpad/.test(src), `${name}: the numpad is the # (tag) glyph everywhere`);
+  assert.ok(!rules(popupCss).some((r) => /\.icon-btn\.accent/.test(r.sel)) && !/icon-btn accent/.test(coreSrc + appHtml + siteHtml), 'icon buttons hover --text + --hover (accent is not a hover colour)');
+  assert.ok(!/>\.\*<\/button>/.test(coreSrc) && (coreSrc.match(/class="icon-btn rx-btn"[^>]*><span class="mi">regular_expression<\/span>/g) || []).length === 2, 'the regex toggles are the regular_expression glyph');
+  assert.ok(!rules(popupCss).some((r) => /\.star \.mi/.test(r.sel) && /--icon-lg/.test(r.body)), 'the row star is --icon-md like every row icon');
+  // Labels: the overline is a section heading; the small sentence-case label is one rule.
+  const label = rules(popupCss).find((r) => r.sel.split(/,\s*/).includes('.bc-label'));
+  assert.ok(label && ['.opts-facet-label', '.settings-list-title', '.bc-head-label'].every((s) => label.sel.includes(s)) && /font-weight: var\(--fw-regular\)/.test(label.body), 'one small label rule, one weight');
+  assert.ok(/<div class="bc-bar"><span class="bc-bar-title">AI action<\/span><\/div>/.test(approvalHtml) && !/class="bar overline"/.test(approvalHtml), 'the approval window uses the shared window bar, title in sentence case');
+  // A menu row ending in "..." opens a dialog; settings help lines carry no period.
+  assert.ok(!/'Looking for similar clips\.\.\.'/.test(coreSrc), 'a progress row never ends in "..."');
+  for (const m of coreSrc.matchAll(/help: \[\['\w+', '([^']*)'\]\]/g)) assert.ok(!/\.$/.test(m[1]), `settings help "${m[1]}" ends with a period`);
+  // The settings divider shows only once the body is scrolled.
+  assert.ok(!/border-bottom/.test(ruleOf('.settings-hdr').body) && /el\.classList\.toggle\('is-scrolled', now\)/.test(coreSrc) && ruleOf('.settings-view:has(> .settings-body.is-scrolled) > .settings-hdr'), 'settings header hairline only while scrolled');
+}
+
 console.log('ui-parity.test.js: all parity guards passed');

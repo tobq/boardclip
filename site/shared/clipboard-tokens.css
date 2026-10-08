@@ -117,6 +117,11 @@
      surface (popup, settings, an opaque dialog, glass). */
   --ctl-fill: color-mix(in srgb, var(--text) 9%, transparent);
   --ctl-fill-hover: color-mix(in srgb, var(--text) 15%, transparent);
+  /* A trailing control's edge: an icon button at the end of a bar or field
+     sits this far in, so its GLYPH (not its hover box) lands on the gutter
+     with the text above and below it. Here (not on :root) so it follows a
+     .bc-popup density override of --gutter / --ctl-md. */
+  --edge-ctl: calc(var(--gutter) - (var(--ctl-md) - var(--icon-md)) / 2);
 }
 
 /* (b) SEMANTIC - the ONLY colour names components reference. Keep names
@@ -128,9 +133,12 @@
 :root[data-theme="dark"], .bc-popup[data-theme="dark"] {
   color-scheme: dark;
   --bg: var(--g-950);
-  --surface: var(--g-850);
-  --surface2: var(--g-800);
-  --input: var(--g-900);
+  --surface-solid: var(--g-850);
+  --surface2-solid: var(--g-800);
+  --input-solid: var(--g-900);
+  --surface: var(--surface-solid);
+  --surface2: var(--surface2-solid);
+  --input: var(--input-solid);
   --menu: var(--g-800);                   /* floating menus/dialogs - stays OPAQUE under glass */
   --menu-hover: var(--g-700);             /* menu-item hover - a step lighter than --menu so it reads */
   --menu-edge: rgba(255, 255, 255, .15);  /* soft 1px ring so menus separate from the backdrop */
@@ -140,6 +148,7 @@
   --line-strong: var(--g-700);
   --line-faint: var(--g-900);
   --hover: color-mix(in srgb, var(--g-100) 6%, transparent);
+  --similar-mix: 60%;                     /* a similar row's wash, as a share of --hover (.item.similar) */
   --accent: var(--blue-500);
   --accent-hover: var(--blue-400);
   --accent-text: var(--blue-400);         /* accent AS TEXT: 4.5:1 on the surface and on --accent-bg */
@@ -162,9 +171,12 @@
 :root[data-theme="light"], .bc-popup[data-theme="light"] {
   color-scheme: light;
   --bg: var(--g-050);
-  --surface: var(--white);
-  --surface2: var(--g-050);
-  --input: color-mix(in srgb, var(--g-900) 6%, var(--white)); /* a fill that reads on white without a border */
+  --surface-solid: var(--white);
+  --surface2-solid: var(--g-050);
+  --input-solid: color-mix(in srgb, var(--g-900) 6%, var(--white)); /* a fill that reads on white without a border */
+  --surface: var(--surface-solid);
+  --surface2: var(--surface2-solid);
+  --input: var(--input-solid);
   --menu: var(--white);                   /* floating menus/dialogs - stays OPAQUE under glass */
   --menu-hover: var(--g-100);             /* menu-item hover - light grey on the white menu */
   --menu-edge: rgba(24, 27, 31, .16);     /* soft 1px ring (dark, since white is invisible on white) */
@@ -173,7 +185,8 @@
   --line: var(--g-100);
   --line-strong: var(--g-200);
   --line-faint: color-mix(in srgb, var(--g-900) 8%, transparent); /* was invisible on white */
-  --hover: color-mix(in srgb, var(--g-900) 5%, transparent);
+  --hover: color-mix(in srgb, var(--g-900) 7%, transparent); /* reads on white (the popup list, settings) */
+  --similar-mix: 35%;                     /* on white 60% sat too close to hover; hover stays the strongest neutral row state */
   --accent: var(--blue-600);
   --accent-hover: var(--blue-500);
   --accent-text: var(--blue-700);         /* blue-600 is 4.0:1 on its own tint */

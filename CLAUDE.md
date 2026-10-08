@@ -229,11 +229,14 @@ Otherwise the key passes through so normal numpad typing works. Main thread call
   `base_text_matches` so a fork's cause is readable from the log. RULE: never `await` between a
   `foldRemoteState` and the `history` replacement without re-folding the live history.
 - **Search facets (2026-09-03)**: `len:` accepts ranges (`len:50-200`), plus `lines:`/`ln:` and
-  `words:`/`wd:` with the same comparators, and `is:url` / `is:multiline` / `is:rich`. The
-  user-facing reference is `SYNTAX_HELP` in clip-search.js (ONE table next to the parser),
-  rendered in the search OPTIONS PANEL (the `tune` toggle, see "Popup header" below; the "?"
-  hover popover is gone). Add a facet = parser + `SYNTAX_HELP` + `PREFIX_HINTS`/`PREFIX_SHORT`
-  (+ an `OPTION_FACETS` row if it deserves a one-click chip), nothing else.
+  `words:`/`wd:` with the same comparators, and `is:url` / `is:multiline` / `is:rich`. ONE
+  table describes every field: `FIELD_INFO` in clip-search.js (`desc`, `short` alias, per-value
+  hints, `group` Match/Filter/Range/Order, `example`). The autocomplete hints, `PREFIX_HINTS` /
+  `PREFIX_SHORT` and the options panel's `SYNTAX_HELP` (+ `SYNTAX_FOOT`, the AND line) are all
+  DERIVED from it, so a hint reads the same everywhere (only free words, exclusion and the regex
+  toggle are hand rows). The panel shows group headings and each example as a chip that appends
+  it to the query. Add a facet = parser + a `FIELD_INFO` entry (+ an `OPTION_FACETS` row if it
+  deserves a one-click chip), nothing else.
 - **Popup header + search field + options panel (2026-10-07, UI overhaul B)**: the popup header
   and the settings header are NOT `-webkit-app-region: drag` (it ate clicks, double-click
   maximised): `Core.attachWindowDrag(el, {onClick, move})` captures a press on a non-control
@@ -354,7 +357,7 @@ build could re-trigger the race.
 
 ## UI Patterns
 
-- **`icon-btn` base class** — all small clickable icons share 24x24 rounded style. Variants: `.accent` (accent hover), `.danger` (red hover); every close is `<span class="mi">close</span>` (`.close-btn` is a hook only; the clip windows have no page close, the OS controls replace it)
+- **`icon-btn` base class** — all small clickable icons share 24x24 rounded style. Every one hovers `--text` + `--hover` (the `.accent` hover variant is gone: accent is selection / primary / focus / active, never hover); `.danger` hovers red on `--red-bg`; every close is `<span class="mi">close</span>` (`.close-btn` is a hook only; the clip windows have no page close, the OS controls replace it)
 - **Null-guard `it.text`** — always use `(it.text||'')` in templates
 - **Filter tags**: shared app/site UI. Left click includes a filter, right click excludes it, and the global clear X resets search plus include/exclude filters.
 - **Confirm dialog** shared between numpad reassign, group delete, and clear all
@@ -659,11 +662,21 @@ clear-all). All popup CSS + theme variables live in `site/shared/clipboard-popup
   Editor title renames ride the session commit (`editor.setTitle`+`commit`, not a separate
   clip write); editor delete sets `session.suppressCommit` so the close-commit can't
   resurrect the clip from the draft. `ui-parity.test.js` #12 guards the viewer/menu contexts.
-- **QA harness**: an isolated instance via `BOARDCLIP_DATA_DIR` + **`BOARDCLIP_ISOLATED=1`**
-  + `--user-data-dir` + CDP, seeded with cloud paths pre-disabled plus p2p/AI off so a
-  throwaway instance cannot touch real synced data. The hidden tray popup's `requestAnimation
-  Frame` never fires, so a CDP driver must call `rerenderList()` directly after dispatching
-  input (don't wait on rAF). Detect real providers with `require('./lib/cloud-accounts')()`.
+  The editor menu holds "Revert to original" (`editor.revert()` commits at once and, given
+  `toastEl`, offers Undo: assigning the textarea drops its native undo). The demo editor overlay
+  gets the SAME menu: `controller.openClipMenu(id, x, y, 'editor')` (the 4th arg overrides the
+  adapter's menuContext) + `revertClip` / `setClipTitle` routed through the open editor.
+- **QA harness = `scripts/lib/qa-sandbox.js` (2026-10-07), never a hand-rolled launch**: one
+  isolated instance per run (own `BOARDCLIP_DATA_DIR` + `--user-data-dir`,
+  `BOARDCLIP_ISOLATED=1` = no cloud probing / keyboard hook / shortcuts / tray / updater, its own
+  `BOARDCLIP_MCP_PIPE_TAG`, CDP + inspector on port 0, so several runs can go in parallel),
+  windows CLOAKED (never shown or focused), a `-r` main preload + page stub so no page or window
+  reaches the OS clipboard, kill limited to its own sandbox dir. Used by `qa-popup-sandbox`
+  (`QA_PERF=1` = owner-scale keystroke p50/p90, 13.9k clips; noise between runs is ~+-5 ms, run
+  it alone, not beside other sandboxes), `qa-popup-header`, `qa-app-pentest`, `qa-appearance`,
+  `qa-approval-shot`, `qa-approval-hold` and `qa-ui-shots.js` (every surface, light + dark:
+  `--only a,b` `--theme` `--out`; JSON summary on stdout). The hidden popup's
+  `requestAnimationFrame` never fires, so a driver calls `rerenderList()` after input.
 
 ## Multi-select + bulk actions (Ctrl/Shift-click, bulk Paste/Group/Unify/Delete)
 
@@ -726,12 +739,18 @@ clear-all). All popup CSS + theme variables live in `site/shared/clipboard-popup
   IntelliJ-style EXPLICITLY in Codex session 019f0e67 2026-06-28; two hand-rolled
   attempts fell short — don't hand-roll a third): Current (read-only) | **Result
   (fully editable)** | Incoming (read-only), gutter arrows pull chunks into the
-  middle, `connect:'align'` aligns + syncs panes, `collapseIdentical` folds
-  unchanged stretches, `ignoreWhitespace` on by default (bar toggle rebuilds the
+  middle (Material `arrow_forward`/`arrow_back` + `close` glyphs, BOARDCLIP patch), the
+  addon's default SVG connectors (`connect:'align'` is OFF and ui-parity forbids it), scroll lock
+  always on (its unexplained toggle hidden), `collapseIdentical` folds unchanged stretches, `ignoreWhitespace` on by default (bar toggle rebuilds the
   view, preserving Result text). Vendored in `site/shared/vendor/cm5/`
   (codemirror@5.65 lib + merge addon + diff-match-patch browser shim; see its
   README) and loaded by BOTH `editor.html` and the demo — guarded by ui-parity #8.
-  Skinned entirely with tokens in clipboard-popup.css (`.bc-merge-host` block).
+  Skinned entirely with tokens in clipboard-popup.css (`.bc-merge-host` block). GOTCHA: the
+  vendored merge.css draws chunk start/end borders unless zeroed (the skin does). The addon's
+  window-resize redraw ran before CodeMirror's 100 ms re-measure (arrows beside the wrong
+  chunk): patched to redraw again at 160 ms. Footer "Keep both" saves the union text through
+  `conflictModel.conflictResolutionWrite` (it used to save NOTHING on a sync conflict, like
+  "Remove conflict"); "Remove conflict" is `.btn.discard` (red on hover).
 - **The wrapper (`createReconciliationView`) adds**: change count + prev/next nav,
   red-tinted **conflict** regions (Current & Incoming disagreeing with EACH OTHER,
   computed seed-independently: touching left/right chunk pairs, or a two-sided
@@ -793,13 +812,9 @@ clear-all). All popup CSS + theme variables live in `site/shared/clipboard-popup
   and `MergeView.bcRecollapse()` re-folds after a merge/decline (wired into the
   wrapper's forceRecompute). Verify collapse with a doc that's identical except
   blank-line spacing — it must fold to a widget, not scroll.
-- **Real-app pen-test harness**: `node scripts/qa-app-pentest.js` boots a sandbox
-  instance (temp `BOARDCLIP_DATA_DIR` + own `--user-data-dir` + CDP port, driven
-  over raw WebSocket CDP — Node ≥21). SAFETY: it pre-disables every detected
-  cloud provider in the sandbox settings (else the sandbox would default-enable
-  sync and merge QA data into the user's REAL synced folders), p2p + AI off, and
-  never triggers `pasteMany` (would Ctrl+V into the focused window). Kills only
-  electron processes whose cmdline contains its temp dir.
+- **Real-app pen-test**: `node scripts/qa-app-pentest.js` (32 checks: unify, conflicts, bulk
+  actions) on the shared qa-sandbox harness above; never triggers `pasteMany` (would Ctrl+V into
+  the focused window).
 - **Chord routing when search is always-focused**: Ctrl/Cmd+A and Ctrl/Cmd+Z route
   by whether the focused field HAS TEXT (text → native field behavior; empty →
   clip select-all / delete-undo). Don't gate purely on `isTypingTarget` — the app's
@@ -840,6 +855,46 @@ clear-all). All popup CSS + theme variables live in `site/shared/clipboard-popup
   the old purple (`#a78bfa/#7c3aed/#8b5cf6`) is gone (a `ui-tokens.test.js` guard
   fails if it returns). Dark `--active-fg` is DARK ink (`--g-950`) because black
   on `--blue-500` (5.7:1) beats white (3.7:1); light uses white on `--blue-600`.
+- **The canon (UI overhaul, 2026-10-07/08, `UI-OVERHAUL-PLAN.md`)**: ROLE tokens size everything:
+  type `--fs-meta` 11 / `--fs-ui` 12 / `--fs-text` 13 (typed into) / `--fs-display` 18 (site),
+  `--lh-ui`/`--lh-text`, two weights `--fw-regular`/`--fw-strong`, controls `--ctl-sm/md/lg`
+  20/24/28, radii `--r-ctl`/`--r-chip`/`--r-panel`, `--gutter` 14 on every bar/content edge,
+  `--bar-h`, lines `--line` / `--line-faint` / `--menu-edge` only, `--edge-ctl` (a trailing icon
+  button's inset so its GLYPH lands on the gutter: popup header, search row, selection bar,
+  settings header, `.bc-bar`, find bar). ONE of each: `.btn` (default / primary / danger / quiet
+  / `.sm`; `.btn.quiet.sm.accent` = every accent text action: Undo, "Did you mean", Accept, the
+  merge note; `.btn.discard` = red on hover), `.icon-btn` (hovers `--text` + `--hover`, `.danger`
+  = red + `--red-bg`; accent is never a hover colour), `.bc-menu-item` (every menu / submenu /
+  picker / suggest row), `.filter-tag` chip, `.overline` (uppercase SECTION heading) vs `.bc-label`
+  (sentence-case label for a control group / pane: options rows, settings list titles, merge
+  heads), `.bc-bar` window bar (every clip window + the approval prompt), one scrollbar, one
+  `::selection`, one floating-surface rule, and `clipboard-window.css` = the window base sheet
+  (body paints `--surface`, glass scrim) every window links. GOTCHAS: Chromium 121+ IGNORES
+  `::-webkit-scrollbar` on an element that sets `scrollbar-width`/`scrollbar-color` (only the
+  `@supports not` fallback may set them); a ROLE token resolved on `:root` misses a `.bc-popup`
+  variant override of the primitive it points at (density/corners remap the role tokens
+  themselves; derived tokens like `--edge-ctl` live in the `[data-theme]` block for that reason).
+- **ONE sheet per window**: the popup body and the demo frame paint `--surface`, the header
+  (`.sticky`) and the list sit on it transparent (no seam; under glass the scrim is the only
+  frost); `--bg` is only a well (expanded preview, viewer matte, approval card). Light `--hover`
+  is 7 % so it reads on white; `.item.similar` = `--similar-mix` of `--hover` (60 % dark, 35 %
+  light), so hover stays the strongest neutral row state. The theme blocks keep the solid values
+  as `--surface-solid`/`--surface2-solid`/`--input-solid` (glass overrides `--surface`): the
+  demo's editor overlay re-takes them under "Glass on: Popup only" (`data-glass-scope` on the
+  demo popup via `applyVariants`), so it paints exactly the app editor window's surface.
+- **Rows (`Core.renderClipItem`)**: one anatomy (primary line: a real title at `--fw-strong`, an
+  untitled clip's first line regular; dim mono preview; meta line), star = pin only (`--icon-md`
+  in a `--ctl-md` box centred on the first line), row buttons on the shared `.bc-reveal` (held
+  while the menu is open / dragged / focus inside), image rows' buttons on a frosted chip over the
+  picture (no row ever changes height on hover). Meta line (`renderClipMeta`): time, size, `#N`
+  badge and group names as plain text, every text gap `--sp-3` (badge + names pull their hover
+  padding back out with a negative margin), hover ghosts `#` (only without a key) and `+` on the
+  reveal -> the keypad / group picker popovers. `Core.fitMetaTags` (on row pointer/focus entry,
+  `createClipList`) marks names that would not fit beside the open ghosts `.meta-cut` so the `+`
+  follows the last shown name. One numpad glyph: `tag` (#) in the chip bar, meta and menu.
+  Similar-clip tint: `Core.similarClipIds` (cached per hovered id until the history revision
+  changes, sliced off the typing path) + "Select N similar". Empty states: `Core.renderEmptyState`
+  (`emptyStateKind`: no clips / no match / filtered / empty group), same in app and demo.
 - **Appearance variants** are `data-*` attributes on the same root that carries
   `data-theme`, swapping a small disjoint token set (see the tier-(c) blocks):
   `data-surface` (glass/solid), `data-accent` (blue/teal/mono), `data-density`
@@ -962,7 +1017,12 @@ Desktop app distribution has TWO consistent paths, both driven by `main`:
   (a parked popup IS visible); (2) MOVE the cloaked window first, uncloak second (the reverse flashed one
   frame at the last spot); (3) hide hands focus back (`setForegroundWindow(saved)`, else `blur()`), a
   cloaked window keeps it otherwise; (4) cross-DPI move waits one renderer frame before the reveal.
-  Failures log `popup.park_failed` / `popup.unpark_failed` and fall back to hide/show. macOS untouched.
+  Failures log `popup.park_failed` / `popup.unpark_failed` and fall back to hide/show.
+  Open motion = `popupOpenMotion()`: Windows + glass = the one-frame uncloak + 10 px slide;
+  Windows + Solid = fade + slide (layered alpha, then WS_EX_LAYERED cleared; kill switch
+  `BOARDCLIP_SOLID_FADE=0`); macOS = fade + slide (window alpha, vibrancy survives); reduced
+  motion = none. Fading glass on Windows was tried and rejected (layered alpha shows the content
+  with NO blur during the fade, and a none->acrylic backdrop switch paints an opaque slab first).
   Verify by recording the open (frame N empty, frame N+1 complete) with the popup parked ELSEWHERE first.
 - **Popup renders but paints NOTHING on Windows (2026-09-20, ~40h uptime): Chromium native
   window occlusion.** The popup is `show:false` + hidden on every blur, the pattern

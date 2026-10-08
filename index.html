@@ -25,7 +25,7 @@
 const Core = window.BoardClipCore;
 document.getElementById('popupShell').innerHTML = Core.renderPopupShell({
   settingsBodyHtml: Core.renderSettingsBody(),
-  headerActionsHtml: '<button class="icon-btn accent" id="newNoteBtn" type="button" title="New note" aria-label="New note"><span class="mi">edit_note</span></button>',
+  headerActionsHtml: '<button class="icon-btn" id="newNoteBtn" type="button" title="New note" aria-label="New note"><span class="mi">edit_note</span></button>',
 });
 const listEl = document.getElementById('list');
 const toast = document.getElementById('toast');
@@ -658,21 +658,36 @@ function syncProviderLabel(p) {
   return 'cloud folder';
 }
 
+// The buttons (header + Settings) carry the live step in their tooltip and
+// spin; the Settings help line under "Cloud folders" says only "Syncing..."
+// while a pass runs, then goes back to its standing status (or "Sync failed").
+let syncStandingStatus = null; // [text, state] the Settings render last wrote
+function setSyncStanding(text, state) {
+  syncStandingStatus = [text, state];
+  Core.setSettingHelp(document.getElementById('syncStatus'), text, state);
+}
 window.api.onSyncProgress && window.api.onSyncProgress((p) => {
   const buttons = [document.getElementById('syncHeaderBtn'), document.getElementById('syncNow')].filter(Boolean);
   const syncStatus = document.getElementById('syncStatus');
-  const setText = (text, spinning) => {
+  const setButtons = (text, spinning) => {
     for (const button of buttons) {
       button.title = text;
       button.setAttribute('aria-label', text);
       button.classList.toggle('syncing', !!spinning);
     }
-    if (syncStatus && syncStatus.classList.contains('active')) syncStatus.textContent = text;
   };
-  if (p.phase === 'start') setText('Syncing\u2026', true);
-  else if (p.phase === 'read') setText(`Syncing ${p.index}/${p.total} \u2014 ${syncProviderLabel(p.path)}\u2026`, true);
-  else if (p.phase === 'write') setText('Syncing \u2014 writing cloud\u2026', true);
-  else if (p.phase === 'done') setText(p.ok ? 'Sync now' : 'Sync failed \u2014 retry', false);
+  // Background passes run every 30 s: the help line only moves while a cloud
+  // folder is on (its standing status is then 'active').
+  const showsSync = syncStatus && syncStandingStatus && syncStandingStatus[1] === 'active';
+  if (p.phase === 'start') setButtons('Syncing...', true);
+  else if (p.phase === 'read') setButtons(`Syncing ${p.index} of ${p.total}: ${syncProviderLabel(p.path)}...`, true);
+  else if (p.phase === 'write') setButtons('Syncing: writing the cloud folders...', true);
+  else if (p.phase === 'done') setButtons(p.ok ? 'Sync now' : 'Sync failed - retry', false);
+  if (!showsSync || manualSyncInFlight) return; // a manual sync writes its own result
+  if (p.phase === 'done') {
+    if (p.ok) Core.setSettingHelp(syncStatus, syncStandingStatus[0], syncStandingStatus[1]);
+    else Core.setSettingHelp(syncStatus, 'Sync failed', 'error');
+  } else if (p.phase === 'start') Core.setSettingHelp(syncStatus, 'Syncing...', 'active');
 });
 
 async function runManualSync({ showSettingsStatus = false } = {}) {
@@ -902,7 +917,7 @@ document.getElementById('addSyncFolder').addEventListener('click', async () => {
   Core.setSettingHelp(syncStatus, 'Choose a folder...');
   const result = await window.api.chooseSyncFolder();
   if (!result || result.canceled) {
-    syncStatus.textContent = '';
+    if (syncStandingStatus) Core.setSettingHelp(syncStatus, syncStandingStatus[0], syncStandingStatus[1]);
     return;
   }
   await refresh();
@@ -1085,7 +1100,7 @@ async function openSettings() {
     toggle: { checked: !!acc.enabled, label: `Sync with ${syncAccountLabel(acc)}`, attrs: { 'data-sync-path': acc.path } },
   })).join('');
   const enabledAccounts = accounts.filter(acc => acc.enabled);
-  Core.setSettingHelp(document.getElementById('syncStatus'), accounts.length
+  setSyncStanding(accounts.length
     ? `${enabledAccounts.length} of ${accounts.length} on, syncs on every change and every 30 s`
     : 'No cloud folders found', enabledAccounts.length ? 'active' : '');
   const p2pEnabledEl = document.getElementById('p2pEnabled');

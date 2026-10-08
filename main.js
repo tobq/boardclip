@@ -5616,14 +5616,12 @@ function applyConflictResolution(resolution) {
   const conflictId = String(payload.id || '');
   const record = conflicts.records.find(conflict => conflict.id === conflictId);
   if (!record) return { ok: false, reason: 'not_found' };
-  const action = payload.action || 'save';
-  let snapshot = null;
-  if (action === 'accept_left') snapshot = record.left;
-  else if (action === 'accept_right') snapshot = record.right;
-
-  if (action === 'save' || snapshot) {
-    const text = snapshot ? String(snapshot.text || '') : String(payload.text || '');
-    const title = snapshot ? titleOf(snapshot) : clipboardModel.titleOf({ title: payload.title });
+  // keep_both saves the view's union text like save (conflictResolutionWrite).
+  const write = conflictModel.conflictResolutionWrite(record, payload);
+  if (write) {
+    const snapshot = write.snapshot;
+    const text = write.text;
+    const title = snapshot ? titleOf(snapshot) : clipboardModel.titleOf({ title: write.title });
     const targetId = record.targetId || snapshot && snapshot.id || record.right && record.right.id || record.left && record.left.id || '';
     const target = findHistoryItem(targetId);
     if (target && target.type !== 'image') {

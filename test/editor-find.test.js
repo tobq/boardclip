@@ -42,11 +42,11 @@ const ui = require('../site/shared/clipboard-ui-core');
 {
   assert.deepStrictEqual(ui.editorFindFor(''), {});
   assert.deepStrictEqual(ui.editorFindFor('group:work is:text'), {}, 'filters are not text in the clip');
-  assert.deepStrictEqual(ui.editorFindFor('invoice group:work'), { find: 'invoice', findMode: 'basic' });
-  assert.deepStrictEqual(ui.editorFindFor('"a b" group:work'), { find: 'a b', findMode: 'basic' });
-  assert.deepStrictEqual(ui.editorFindFor('/inv(oice)?/'), { find: 'inv(oice)?', findMode: 'regex' });
-  assert.deepStrictEqual(ui.editorFindFor('foo a.b'), { find: 'foo|a\\.b', findMode: 'regex' }, 'several terms: one alternation, every term found');
-  assert.deepStrictEqual(ui.editorFindFor('foo -bar title:x'), { find: 'foo', findMode: 'basic' }, 'excluded and title-only terms are left out');
+  assert.deepStrictEqual(ui.editorFindFor('invoice group:work'), { find: 'invoice', findRegex: false });
+  assert.deepStrictEqual(ui.editorFindFor('"a b" group:work'), { find: 'a b', findRegex: false });
+  assert.deepStrictEqual(ui.editorFindFor('/inv(oice)?/'), { find: 'inv(oice)?', findRegex: true });
+  assert.deepStrictEqual(ui.editorFindFor('foo a.b'), { find: 'foo|a\\.b', findRegex: true }, 'several terms: one alternation, every term found');
+  assert.deepStrictEqual(ui.editorFindFor('foo -bar title:x'), { find: 'foo', findRegex: false }, 'excluded and title-only terms are left out');
 }
 
 // countWords: footer word count.

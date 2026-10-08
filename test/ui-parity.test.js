@@ -254,7 +254,9 @@ const siteCss = read('site/styles.css');
     assert.ok(/\.setQuery\(/.test(html) && !/(searchEl|search)\.value = (query|state\.query)/.test(html), `${name} must set the query through searchBox.setQuery, never the input`);
     assert.ok(!/(searchEl|search)\.addEventListener\(['"]input['"]/.test(html), `${name} must read the query from the box's onChange, not the input event`);
     assert.ok(/saveRegex:/.test(html) && !/saveMode:|setMode\(|getMode\(|search_mode/.test(html), `${name} keeps the Regex toggle (per device) and no search mode`);
-    assert.ok(/getQuery: \(\) =>/.test(html), `${name} gives the controller the query (the chip row's or / and rewrites it)`);
+    assert.ok(/getQuery: \(\) =>/.test(html) && /applyFacet: \(token, intent\) =>/.test(html) && /setConnective: \(dim, conn\) =>/.test(html), `${name} gives the controller the query and the remembered or / and (the controller turns chip clicks into text)`);
+    assert.ok(!/setFilterIntent/.test(html), `${name} re-introduced its own chip -> query code (the controller owns it)`);
+    assert.ok(/createCensusCache\(\{[^}]*joins: \(\) =>/.test(html), `${name} keys the census on the remembered or / and`);
     assert.ok(/Core\.flipChildren\(/.test(html), `${name} glides the chip row through the shared Core.flipChildren`);
     assert.ok(/editorFindFor\(/.test(html), `${name} hands the editor its search words through the shared editorFindFor (never the raw query)`);
     assert.ok(!/activeFilters\s*=\s*new Set|excludedFilters\s*=\s*new Set/.test(html),
@@ -269,12 +271,15 @@ const siteCss = read('site/styles.css');
   // The Regex toggle + the find bar's Regex and case: per device (never
   // synced); the hour-old search_mode folds back into the toggle and is stripped.
   const mainSrc = read('main.js');
-  assert.ok(/LOCAL_ONLY_SETTING_KEYS = new Set\(\[[^\]]*'regex_search', 'find_mode', 'find_case'/.test(mainSrc), 'the search toggles save without a revision bump');
-  for (const key of ['regex_search', 'find_mode', 'find_case']) assert.ok(mainSrc.includes(`delete remoteSave.${key};`), `${key} never syncs`);
+  assert.ok(/LOCAL_ONLY_SETTING_KEYS = new Set\(\[[^\]]*'regex_search', 'facet_joins', 'find_regex', 'find_case'/.test(mainSrc), 'the search toggles save without a revision bump');
+  for (const key of ['regex_search', 'facet_joins', 'find_regex', 'find_case']) assert.ok(mainSrc.includes(`delete remoteSave.${key};`), `${key} never syncs`);
+  assert.ok(/settings\.facet_joins = clipSearch\.normalizeJoins\(body\.facet_joins\)/.test(mainSrc), 'main keeps only a valid remembered or / and');
   assert.ok(/REMOVED_SETTING_KEYS = \[[^\]]*'search_mode'/.test(mainSrc) && /promoted\.search_mode === 'regex' && promoted\.regex_search !== true\) merged\.regex_search = true/.test(mainSrc), 'a saved Regex search mode loads as the Regex toggle on');
   assert.ok(!/SEARCH_MODE_VALUES|body\.search_mode/.test(mainSrc), 'main takes no search mode');
   // The chip row's selection cluster leads with its or / and, the panel's Type row too.
-  assert.ok(/connToggleHtml\('group', Search\.dimConnective\(/.test(uiCore) && /connToggleHtml\(def\.dim, Search\.dimConnective\(parsed, def\.dim\)/.test(uiCore), 'one or / and toggle component for the chip row and the Type row');
+  assert.ok(uiCore.includes("connToggleHtml('group', Search.dimConnective(Search.parseQuery(query), 'group', options.joins)") && uiCore.includes('connToggleHtml(def.dim, Search.dimConnective(parsed, def.dim, joins)'),
+    'one or / and toggle component for the chip row and the Type row, shown for a lone value under a remembered "and" (the way back to "or")');
+  assert.ok(/joins: (searchBox|demoSearchBox)\.getJoins\(\)/.test(appHtml) && /joins: demoSearchBox\.getJoins\(\)/.test(siteHtml), 'both chip rows get the remembered join');
   assert.ok(/\.conn-toggle\[data-dim\]/.test(uiCore) && /Search\.setDimConnective\(/.test(uiCore), 'the controller flips it through the engine');
 }
 
@@ -681,15 +686,22 @@ const siteCss = read('site/styles.css');
   assert.ok(/class="meta-ghost"[^>]*data-action="numpad-open"/.test(single), 'meta: an unset key shows the ghost # on the reveal');
   assert.ok(/\.meta \{[^}]*white-space:\s*nowrap/.test(stripComments(popupCss)) && /\.meta \{[^}]*height:\s*var\(--meta-h\)/.test(stripComments(popupCss)), 'the meta line is one fixed-height line (the ghosts never wrap it)');
   assert.ok(/\[data-action="numpad-open"\][\s\S]{0,700}openNumpadPickerAt\(/.test(coreSrc), 'the badge / ghost # opens the keypad popover');
-  // Row buttons: text rows on the reveal, image rows floating over the picture.
+  // Row buttons: at the row's top right either way; text rows on the reveal,
+  // image rows floating there, backed only when the picture reaches under them.
   assert.ok(/<span class="bc-reveal row-actions"><span class="bc-reveal-inner">[^]*data-action="clip-menu"/.test(titled), "a text row's buttons ride the shared reveal");
   const image = row({ id: 'i', type: 'image', image: 'a.png', width: 400, height: 100 });
-  assert.ok(/<span class="preview-img"[^>]*><img [^>]*><span class="img-actions-anchor"><span class="img-actions">[^]*data-action="open-img"/.test(image) && !image.includes('row-actions'),
-    "an image row's buttons float over the picture (no actions column)");
+  assert.ok(/<span class="preview-img"[^>]*><img [^>]*><\/span>/.test(image) && /<\/div><span class="img-actions">[^]*data-action="open-img"[^]*<\/span><\/div><\/div>$/.test(image) && !image.includes('row-actions'),
+    "an image row's buttons sit at the row's end (where a text row's are), never inside the picture");
   for (const want of ['.item:hover .bc-reveal.row-actions', '.item:focus-within .bc-reveal.row-actions', '.item.actions-held .bc-reveal.row-actions']) {
     assert.ok(rules(popupCss).some((r) => r.sel.split(/,\s*/).includes(want) && /grid-template-columns:\s*1fr/.test(r.body)), `row buttons open on ${want}`);
   }
-  assert.ok(rules(popupCss).some((r) => r.sel === '.img-actions' && /backdrop-filter/.test(r.body) && /var\(--menu\)/.test(r.body)), 'the image chip is frosted, on the opaque menu colour');
+  assert.ok(rules(popupCss).some((r) => r.sel === '.img-under .img-actions' && /backdrop-filter/.test(r.body) && /var\(--menu\)/.test(r.body)) && !rules(popupCss).some((r) => r.sel === '.img-actions' && /backdrop-filter|background/.test(r.body)),
+    'the image buttons are plain, and frosted on the opaque menu colour only over the picture');
+  // A clip window's idle title is header (the popup search field's rule): drag moves, click renames.
+  assert.ok(coreSrc.split("attachWindowDrag(titleInput, { field: 'idle', move: o.windowDrag })").length === 3
+    && read('editor.html').split('windowDrag: window.editorApi.windowDrag').length === 3
+    && read('editor-preload.js').includes("windowDrag: (phase, dx, dy) => ipcRenderer.send('window-drag'"), 'the editor and merge titles drag the window while idle');
+  assert.ok(/markImageUnder\(row\)/.test(coreSrc) && /new ResizeObserver/.test(coreSrc), 'the backing follows the picture (row entry, zoom, resize)');
   assert.ok(/el\.classList\.toggle\('actions-held', id === state\.heldId\)/.test(coreSrc) && /onClose: releaseOnClose\(id\)/.test(coreSrc), "a row's buttons are held while its menu is open");
   assert.ok(/holdWhileDragging\(row\.dataset\.id\)/.test(coreSrc), "and while it is dragged");
   // Closing a mouse-opened row menu / popover (Esc, a scroll) hands focus back
@@ -873,8 +885,14 @@ const siteCss = read('site/styles.css');
   assert.ok(/title="Nope - No clips in this group yet"/.test(bar), 'the greyed chip says why in its tooltip');
   assert.ok(!/is-disabled/.test(ui.renderFilterBar({ items: [], groups: ['Nope'], query: '', census })), 'with no other filter an empty group stays a live chip');
   // A group chip's dropdown holds the shared menu rows, filtering like chips.
-  const dd = ui.renderFilterBar({ items: [], groups: ['Work', 'Work/Clients'], excludedFilters: new Set(['Work/Clients']), query: '' });
-  assert.ok(/<button class="bc-menu-item group-filter-row excluded"[^>]*data-group="Work\/Clients"/.test(dd) && !/<span class="filter-tag[^"]*"[^>]*data-group="Work\/Clients"/.test(dd), 'a chip dropdown row is the shared menu row, not a chip');
+  const dd = ui.renderFilterBar({ items: [], groups: ['Work', 'Work/Clients'], query: '' });
+  assert.ok(/<button class="bc-menu-item group-filter-row"[^>]*data-group="Work\/Clients"/.test(dd) && !/<span class="filter-tag[^"]*"[^>]*data-group="Work\/Clients"/.test(dd), 'a chip dropdown row is the shared menu row, not a chip');
+  // The cluster holds exactly the values in the query: a selected or excluded
+  // sub-group is its own chip there, under its full name (its parent stays with
+  // the rest, and the parent's dropdown row shows the same state).
+  const sub = ui.renderFilterBar({ items: [], groups: ['Work', 'Work/Clients'], excludedFilters: new Set(['Work/Clients']), query: '-group:Work/Clients' });
+  assert.ok(/<span class="filter-tag[^"]*"[^>]*data-group="Work\/Clients"[^>]*>[^]*?Work\/Clients/.test(sub) && /<button class="bc-menu-item group-filter-row excluded"[^>]*data-group="Work\/Clients"/.test(sub),
+    'an excluded sub-group is a cluster chip with its full name, and its row in the parent dropdown is excluded too');
   assert.ok(/FILTER_TARGET = [^;]*\.group-filter-row\[data-group\]/.test(coreSrc), 'dropdown rows filter like chips (click includes, right-click excludes)');
   const tiers = rules(popupCss);
   assert.ok(tiers.some((r) => /\.filter-tag\.is-disabled\b/.test(r.sel) && /opacity:\s*\.4/.test(r.body)) && tiers.some((r) => r.sel === '.filter-tag.is-disabled.dis-structural' && /opacity:\s*\.25/.test(r.body)),
@@ -1005,7 +1023,7 @@ const siteCss = read('site/styles.css');
   // One numpad glyph ('#'), one icon-button hover (no accent hover), ONE toggle component (search + find).
   for (const [name, src] of [['core', coreSrc], ['mcp-approval.html', approvalHtml]]) assert.ok(!/dialpad/.test(src), `${name}: the numpad is the # (tag) glyph everywhere`);
   assert.ok(!rules(popupCss).some((r) => /\.icon-btn\.accent/.test(r.sel)) && !/icon-btn accent/.test(coreSrc + appHtml + siteHtml), 'icon buttons hover --text + --hover (accent is not a hover colour)');
-  assert.ok(!/>\.\*<\/button>/.test(coreSrc) && !/attachModeChip|mode-btn|initialFindRegex|prepareQuery|matchesQuery/.test(coreSrc + popupCss + read('editor.html')), 'the mode chips and the dead whole-query matcher are gone');
+  assert.ok(!/>\.\*<\/button>/.test(coreSrc) && !/attachModeChip|mode-btn|initialFindMode|findMode|prepareQuery|matchesQuery/.test(coreSrc + popupCss + read('editor.html')), 'the mode chips, the find bar\'s mode string and the dead whole-query matcher are gone');
   assert.strictEqual((coreSrc.match(/class="icon-btn rx-btn"/g) || []).length, 2, 'two Regex toggles: the search box and the find bar');
   assert.ok((coreSrc.match(/attachToggle\(/g) || []).length >= 4 && (coreSrc.match(/function attachToggle\(/g) || []).length === 1, 'one toggle component (Regex in the search box, Regex + case in the find bar)');
   assert.ok(/data-x="findcase"/.test(coreSrc) && /saveFindPrefs/.test(read('editor.html')) && /saveFindPrefs/.test(siteHtml), 'the find bar has match case and keeps its Regex, app and demo');

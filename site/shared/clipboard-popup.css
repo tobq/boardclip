@@ -304,8 +304,7 @@
 .group-filters::-webkit-scrollbar { display: none; }
 .group-filters > * { flex-shrink: 0; }
 .group-filters.expanded { flex-wrap: wrap; overflow: visible; }
-.group-filters.strip-moving { overflow: hidden; transition: height var(--dur) var(--ease); }
-.group-filters.strip-moving > * { transition: transform var(--dur) var(--ease); }
+.group-filters.strip-moving { overflow: hidden; }
 /* ONE chip (Core.renderChip): the chip bar's icon facets and group chips and
    the options panel's facet chips. Idle = dim text, no fill, no border; hover
    = text + the hover overlay; active (include) = the accent tint with a filled
@@ -325,7 +324,6 @@
 .filter-tag:disabled, .filter-tag.is-disabled { opacity: .4; cursor: default; }
 .filter-tag.is-disabled.dis-structural { opacity: .25; }
 .filter-tag:disabled:hover, .filter-tag.is-disabled:hover { background: transparent; color: var(--text-dim); }
-.filter-tag.clear-filter { width: var(--ctl-sm); padding: 0; }
 /* The selection at the front of the chip row (Core.renderFilterBar): the
    selected groups (then the excluded ones), led by their or / and when two or
    more are joined, a hairline either side. The panel's Type row leads with
@@ -439,17 +437,20 @@
 .preview-img[style*="--ar"] { width: min(100%, calc(var(--img-h) * var(--ar)), var(--nw)); }
 .preview-img img { display: block; max-width: 100%; max-height: var(--img-h); height: auto; border-radius: var(--r-1); }
 .preview-img[style*="--ar"] img { width: 100%; max-height: none; }
-/* An image row's buttons float over the picture's top-right corner on a
-   frosted chip (the picture never resizes, the row never grows). A picture
-   narrower than the chip lets it run on to the right (safe alignment), never
-   left over the star. The chip is the opaque menu colour, frosted, so it
-   reads on any picture in both themes and every accent. */
-.img-actions-anchor { position: absolute; top: var(--sp-2); left: var(--sp-2); right: var(--sp-2); display: flex; justify-content: safe flex-end; pointer-events: none; }
-.img-actions { display: flex; align-items: center; gap: var(--sp-1); flex-shrink: 0; padding: var(--sp-1); border-radius: var(--r-panel); pointer-events: auto;
-               background: color-mix(in srgb, var(--menu) 78%, transparent); -webkit-backdrop-filter: blur(10px) saturate(1.3); backdrop-filter: blur(10px) saturate(1.3);
-               box-shadow: 0 1px 6px var(--shadow); opacity: 0; visibility: hidden;
+/* An image row's buttons sit where a text row's do (the row's top right, on
+   the first line), floating so the picture never resizes and the row never
+   grows. Plain like a text row's; only while the picture reaches under them
+   (.img-under, Core.markImageUnder) do they get a frosted chip in the opaque
+   menu colour, which reads on any picture in both themes and every accent.
+   The chip's padding is cancelled by its margin, so the buttons never move. */
+.item-row { position: relative; }
+.img-actions { position: absolute; top: calc((var(--fs-ui) * var(--lh-ui) - var(--ctl-md)) / 2); right: 0; display: flex; align-items: center; gap: var(--sp-1);
+               border-radius: var(--r-panel); opacity: 0; visibility: hidden;
                transition: opacity var(--dur) var(--ease), visibility var(--dur) var(--ease); }
-.img-actions .icon-btn { color: var(--text); }
+.img-under .img-actions { padding: var(--sp-1); margin: calc(-1 * var(--sp-1));
+               background: color-mix(in srgb, var(--menu) 78%, transparent); -webkit-backdrop-filter: blur(10px) saturate(1.3); backdrop-filter: blur(10px) saturate(1.3);
+               box-shadow: 0 1px 6px var(--shadow); }
+.img-under .img-actions .icon-btn { color: var(--text); }
 /* A text row's buttons ride the shared reveal at the row's end: closed = 0 px
    (the text runs the full width), open while the row is hovered, holds focus,
    has its menu open or is being dragged (.actions-held); the text's ellipsis

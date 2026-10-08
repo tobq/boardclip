@@ -125,8 +125,9 @@ if (window.api.getSettings) window.api.getSettings().then(s => {
   applyAppearance({ ...(rt.appearance || {}), surfaceStyle: rt.surface_style || 'solid' });
   if (s.image_preview_height != null) imageZoom.load(s.image_preview_height);
   searchBox.setOptionsHeight(s.options_panel_height);
-  // The saved Regex toggle applies from the first open.
+  // The saved Regex toggle and or / and apply from the first open.
   searchBox.setRegex(!!s.regex_search, { load: true });
+  searchBox.setJoins(s.facet_joins);
 }).catch(() => {});
 if (window.api.onSurfaceChanged) window.api.onSurfaceChanged((style) => applyAppearance({ surfaceStyle: style === 'solid' ? 'solid' : 'glass' }));
 if (window.api.onAppearanceChanged) window.api.onAppearanceChanged(applyAppearance);
@@ -215,7 +216,7 @@ function numpadMap() {
 // filters) is cached on the filters, the history (searchDocs) and the minute:
 // typing words never recomputes it. One cache for the chip bar AND the
 // options panel.
-const censusCache = Core.createCensusCache({ docs: () => searchDocs, groups: () => groups, onUpdate: () => renderGroupFilters() });
+const censusCache = Core.createCensusCache({ docs: () => searchDocs, groups: () => groups, joins: () => searchBox.getJoins(), onUpdate: () => renderGroupFilters() });
 let filterBarKey = '';
 let lastCensusId = 0;
 function renderGroupFilters() {
@@ -230,7 +231,7 @@ function renderGroupFilters() {
   if (key === filterBarKey) return;
   filterBarKey = key;
   // A chip that joins or leaves the selection glides to its place.
-  Core.flipChildren(el, () => { el.innerHTML = Core.renderFilterBar({ items, groups, activeFilters: fs.active, excludedFilters: fs.excluded, query, builtinCounts, groupCounts, census }); });
+  Core.flipChildren(el, () => { el.innerHTML = Core.renderFilterBar({ items, groups, activeFilters: fs.active, excludedFilters: fs.excluded, query, builtinCounts, groupCounts, census, joins: searchBox.getJoins() }); });
   recordRendererPerf('filters.render_bar', startedAt, { groups: groups.length }, 40);
 }
 
@@ -351,16 +352,11 @@ const appAdapter = {
   itemById: (id) => itemById(id),
   numpadMap: () => numpadMap(),
   protectedGroups: () => new Set([aiGroupName]),
-  // A chip/tag click rewrites the query TEXT (bar is source of truth). filter is a builtin
-  // id (__pinned__/__images__/__numbered__) or a group name; intent is include|exclude.
+  // The query TEXT is the source of truth: a chip click rewrites it through the
+  // controller (Search.applyFacet with the remembered or / and).
   getQuery: () => query,
-  setFilterIntent: (filter, intent) => {
-    const token = String(filter).startsWith('__') ? { kind: 'builtin', value: filter } : { kind: 'group', value: filter };
-    query = Core.search.applyFacet(query, token, intent);
-    if (typeof searchBox !== 'undefined' && searchBox) searchBox.setQuery(query);
-    updateClearControls();
-    if (controller) controller.onQueryChange();
-  },
+  applyFacet: (token, intent) => searchBox.applyFacet(token, intent),
+  setConnective: (dim, conn) => searchBox.setConnective(dim, conn),
   clearFilters: () => clearSearchAndFilters(),
   // The empty-result nudge rewrites the whole query (one filter dropped).
   setQuery: (next) => {
@@ -509,6 +505,8 @@ const searchClear = document.getElementById('searchClear');
 // Shared query-state change path (typed input AND autocomplete-applied tokens).
 function onQueryChanged(v) {
   query = v;
+  // The Best / Recent override ends with the search (an emptied box, however it was emptied).
+  if (!v.trim()) sortMode = null;
   if (controller) controller.onQueryChange();
   updateClearControls();
   updateSortButton();
@@ -521,8 +519,9 @@ const searchBox = Core.attachSearchBox(searchEl, {
   getGroups: () => groups,
   getCensus: (parsed) => censusCache.get(parsed),
   onChange: onQueryChanged,
-  // The Regex toggle: per device (local-only setting, never synced).
+  // The Regex toggle and the remembered or / and: per device (local-only, never synced).
   saveRegex: (on) => window.api.saveSettings({ regex_search: on }),
+  saveJoins: (joins) => window.api.saveSettings({ facet_joins: joins }),
   // The options panel's height: per machine (dragged on its bottom edge).
   saveOptionsHeight: (px) => window.api.saveSettings({ options_panel_height: px }),
 });

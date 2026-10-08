@@ -15,6 +15,9 @@
   --demo-w: 460px;               /* the app popup's default size */
   --demo-h: 520px;
   --section-gap: calc(var(--sp-12) * 3);
+  /* The one size past the role scale: the hero headline, derived from the
+     display role (no independent type scale). */
+  --fs-hero: calc(var(--fs-display) * 2);
 }
 
 *, *::before, *::after { box-sizing: border-box; }
@@ -29,7 +32,11 @@ body {
   font-weight: var(--fw-regular);
   line-height: var(--lh-text);
   color: var(--text);
-  background: var(--bg);
+  /* A low accent light over the top of the page, so it is not a flat sheet. */
+  background:
+    radial-gradient(1100px 560px at 72% -12%, color-mix(in srgb, var(--accent) 13%, transparent), transparent 70%) no-repeat,
+    var(--bg);
+  overflow-x: clip; /* the demo's glow may spill past a narrow viewport */
 }
 
 .wrap {
@@ -82,15 +89,20 @@ body {
   padding-block: calc(var(--sp-12) * 2) var(--section-gap);
 }
 .hero-copy { min-width: 0; max-width: 480px; }
+.eyebrow { margin: 0 0 var(--sp-5); color: var(--accent-text); }
 .hero h1 {
   margin: 0;
-  font-size: var(--fs-display);
+  font-size: var(--fs-hero);
   font-weight: var(--fw-strong);
   line-height: var(--lh-ui);
+  letter-spacing: -0.02em;
+  text-wrap: balance;
 }
+.hero-accent { color: var(--accent-text); }
 .lede {
-  margin: var(--sp-4) 0 0;
+  margin: var(--sp-6) 0 0;
   color: var(--text-dim);
+  text-wrap: pretty;
 }
 .dim { color: var(--text-dim); }
 
@@ -102,6 +114,7 @@ body {
   padding: 0 var(--sp-3);
   border-radius: var(--r-1);
   background: var(--ctl-fill);
+  box-shadow: inset 0 -1px 0 var(--line);
   color: var(--text);
   font: inherit;
   font-size: var(--fs-ui);
@@ -198,9 +211,37 @@ body {
 
 /* ---------- The live demo: the app popup at its default size ---------- */
 .demo {
+  position: relative;
   min-width: 0;
   display: grid;
-  gap: var(--sp-6);
+  gap: var(--sp-8);
+}
+/* min-width 0: a grid item otherwise grows to the popup's one-line chip row. */
+.demo-stage { --glow: 46%; position: relative; isolation: isolate; min-width: 0; }
+:root[data-theme="light"] .demo-stage { --glow: 30%; }
+.demo-stage::before,
+.demo-stage::after {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  pointer-events: none;
+}
+/* The light the window sits in (two soft accent pools; stronger on dark, where
+   the same mix reads dimmer). */
+.demo-stage::before {
+  inset: -18% -22%;
+  background:
+    radial-gradient(closest-side at 40% 38%, color-mix(in srgb, var(--accent) var(--glow), transparent), transparent),
+    radial-gradient(closest-side at 80% 84%, color-mix(in srgb, var(--accent) calc(var(--glow) / 2), transparent), transparent);
+  filter: blur(32px);
+}
+/* A faint dotted desktop under it, fading out at the edges. */
+.demo-stage::after {
+  inset: -10% -12%;
+  background-image: radial-gradient(color-mix(in srgb, var(--text) 20%, transparent) 1px, transparent 1.5px);
+  background-size: var(--sp-8) var(--sp-8);
+  -webkit-mask-image: radial-gradient(closest-side, var(--white) 55%, transparent);
+  mask-image: radial-gradient(closest-side, var(--white) 55%, transparent);
 }
 /* The window frame. Inside it everything comes from clipboard-popup.css; the
    base text settings and the zero margin/padding reset mirror the app's window
@@ -220,9 +261,71 @@ body {
   color: var(--text);
   background: var(--canvas);
   border-radius: var(--r-panel);
-  box-shadow: 0 8px 24px var(--shadow), 0 0 0 1px var(--menu-edge);
+  box-shadow: 0 28px 64px -18px var(--shadow), 0 10px 24px -8px var(--shadow), 0 0 0 1px var(--menu-edge);
 }
 :where(.demo-window, .demo-window *) { margin: 0; padding: 0; }
+
+/* The guide cursor (the tour in the page script): a pointer with a tip under
+   it, gliding over the demo; it never takes a click. */
+.demo-guide {
+  --cursor-edge: var(--bg);
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 3;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  opacity: 0;
+  pointer-events: none;
+  transition: transform 900ms cubic-bezier(.2, .8, .2, 1), opacity var(--dur) var(--ease);
+}
+:root[data-theme="light"] .demo-guide { --cursor-edge: var(--text); }
+.demo-guide.show { opacity: 1; }
+.demo-guide.jump { transition: none; }
+.demo-guide-cursor {
+  display: block;
+  width: 20px;
+  height: 27px;
+  margin: -2px 0 0 -3px;
+  fill: var(--white);
+  stroke: var(--cursor-edge);
+  stroke-width: 1.6px;
+  stroke-linejoin: round;
+  filter: drop-shadow(0 4px 8px var(--shadow));
+}
+.demo-guide-tip {
+  margin-top: var(--sp-10);
+  padding: var(--sp-1) var(--sp-4);
+  border-radius: var(--r-chip);
+  background: var(--text);
+  color: var(--bg);
+  font-size: var(--fs-ui);
+  font-weight: var(--fw-strong);
+  line-height: var(--lh-ui);
+  white-space: nowrap;
+  box-shadow: 0 6px 16px var(--shadow);
+}
+.demo-guide-tip:empty { display: none; }
+/* A click: a ring that opens out from the tip of the cursor. */
+.demo-guide-pulse {
+  position: absolute;
+  left: -10px;
+  top: -10px;
+  width: 20px;
+  height: 20px;
+  border: 2px solid var(--accent);
+  border-radius: var(--r-chip);
+  opacity: 0;
+}
+.demo-guide.click .demo-guide-pulse { animation: guide-pulse 520ms var(--ease) forwards; }
+@keyframes guide-pulse {
+  from { opacity: .9; transform: scale(.4); }
+  to { opacity: 0; transform: scale(1.8); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .demo-guide { display: none; }
+}
 /* Glass: --canvas is the glass tint, so blurring the page behind stands in
    for the OS acrylic / vibrancy the real window sits on. */
 .demo-window[data-surface="glass"] { backdrop-filter: var(--glass-blur); -webkit-backdrop-filter: var(--glass-blur); }
@@ -280,8 +383,23 @@ body {
   padding: var(--sp-8) 0 var(--sp-10);
   border-top: 1px solid var(--line);
 }
-.spec dt { font-weight: var(--fw-strong); }
-.spec dd { margin: var(--sp-2) 0 0; color: var(--text-dim); max-width: 64ch; }
+.spec dt {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+  font-weight: var(--fw-strong);
+}
+.spec-icon {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: var(--ctl-lg);
+  height: var(--ctl-lg);
+  border-radius: var(--r-ctl);
+  background: var(--accent-bg);
+  color: var(--accent-text);
+}
+.spec dd { margin: var(--sp-2) 0 0 calc(var(--ctl-lg) + var(--sp-6)); color: var(--text-dim); max-width: 64ch; }
 .tries { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin-top: var(--sp-4); }
 .update .get { max-width: 560px; margin-top: var(--sp-6); }
 
@@ -306,9 +424,13 @@ body {
   .demo { max-width: var(--demo-w); }
 }
 @media (max-width: 640px) {
-  :root { --site-pad: var(--sp-8); --demo-h: 480px; --section-gap: calc(var(--sp-12) * 2); }
+  :root { --site-pad: var(--sp-8); --demo-h: 480px; --section-gap: calc(var(--sp-12) * 2); --fs-hero: calc(var(--fs-display) * 1.5); }
   .nav a[href="#features"] { display: none; }
   .spec { grid-template-columns: minmax(0, 1fr); }
   .get-row a { width: 100%; }
   .command-line code { white-space: pre-wrap; overflow-wrap: anywhere; }
+  /* The demo fills the column: its light and dots stay inside it (nothing
+     spills past a phone's edge). */
+  .demo-stage::before { inset: -12% 0; }
+  .demo-stage::after { inset: -8% 0; }
 }

@@ -43,8 +43,10 @@ async function main() {
   for (let i = 0; i < 40; i += 1) history.push({ type: 'text', text: i % 5 === 0 ? `https://example.com/page/${i}` : `qa header clip ${i}`, ts: now - i * 60 });
   for (const it of history) it.id = qa.txtId(it.text);
   // Groups for the chip row's cluster checks: Work used most, Old least.
-  history.forEach((it, i) => { const g = i < 6 ? 'Work' : i < 9 ? 'Ideas' : i >= 30 && i < 32 ? 'Old' : ''; if (g) it.pin = { groups: [g] }; });
-  const sb = await qa.launch({ name: 'header', history, settings: { surface_style: 'solid', groups: ['Old', 'Ideas', 'Work'] } });
+  // Work/Clients is a sub-group (the family checks); clip 30 is in Old AND Ideas
+  // (a remembered "and" of the two still shows something, so it is not greyed).
+  history.forEach((it, i) => { const g = i === 5 ? ['Work/Clients'] : i < 6 ? ['Work'] : i < 9 ? ['Ideas'] : i === 30 ? ['Old', 'Ideas'] : i === 31 ? ['Old'] : null; if (g) it.pin = { groups: g }; });
+  const sb = await qa.launch({ name: 'header', history, settings: { surface_style: 'solid', groups: ['Old', 'Ideas', 'Work', 'Work/Clients'] } });
   let ok = false;
   try {
     // Block Google Fonts for the whole session BEFORE the popup page loads its
@@ -96,7 +98,7 @@ async function main() {
     await sleep(350);
     const focused = await fieldState();
     check('header click focuses the search', focused.focused, J(focused));
-    check('field focused: "Search..." placeholder, mode + options revealed', focused.placeholder === 'Search...' && focused.tools && !focused.clear && !focused.sort, J(focused));
+    check('field focused: "Search..." placeholder, Regex + options revealed', focused.placeholder === 'Search...' && focused.tools && !focused.clear && !focused.sort, J(focused));
     check('field idle -> focused: the input gave up width for the revealed buttons', focused.inputW < idle.inputW, `${idle.inputW} -> ${focused.inputW}`);
     await popup.eval(`(() => { const s = document.getElementById('search'); s.value = 'clip'; s.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`);
     await sleep(250);
@@ -477,7 +479,8 @@ async function main() {
 
     // --- the Regex toggle types /regex/ terms; the field stays the one query ----
     const typeIt = (v) => popup.eval(`(() => { const s = document.getElementById('search'); s.focus(); s.value = ${J(v)}; s.setSelectionRange(s.value.length, s.value.length); s.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText' })); return true; })()`);
-    const keyCode = (k) => (k === '/' ? 'Slash' : k === ' ' ? 'Space' : `Key${k.toUpperCase()}`);
+    const PUNCT_CODES = { '/': 'Slash', ' ': 'Space', '-': 'Minus', '(': 'Digit9', ')': 'Digit0', '"': 'Quote', ':': 'Semicolon', '[': 'BracketLeft' };
+    const keyCode = (k) => PUNCT_CODES[k] || `Key${k.toUpperCase()}`;
     const typeKeys = async (text) => {
       for (const k of text) {
         await popup.send('Input.dispatchKeyEvent', { type: 'keyDown', key: k, code: keyCode(k), text: k, unmodifiedText: k });
@@ -544,13 +547,48 @@ async function main() {
     await sleep(900);
     const rxHint = await popup.eval(`(() => { const h = document.querySelector('.search-hint'); return { show: h.classList.contains('show'), text: h.textContent }; })()`);
     check('a broken pattern shows its error once typing pauses', rxHint.show && /regular expression/.test(rxHint.text), J(rxHint));
+    // The language still types with Regex on, key by key.
+    const fresh = async (keys) => { await popup.eval(`(clearSearchAndFilters(), document.getElementById('search').focus(), true)`); await typeKeys(keys); return rxState(); };
+    rs = await fresh('-x');
+    check('Regex on: "-" is typed as usual, then the term is an excluded /regex/', rs.field === '-/x/' && rs.caret === 3, J(rs));
+    rs = await fresh('(x');
+    check('Regex on: "(" is typed as usual, then the term opens inside it', rs.field === '(/x/' && rs.caret === 3, J(rs));
+    rs = await fresh('"ab');
+    check('Regex on: a quote types a phrase as usual', rs.field === '"ab', J(rs));
+    rs = await fresh('group:');
+    check('Regex on: a filter key typed in full is a filter again (/group/ + ":" = group:)', rs.field === 'group:' && rs.caret === 6, J(rs));
+    await typeIt('foo bar');
+    await popup.eval(`(document.getElementById('search').setSelectionRange(4, 7), true)`);
+    await typeKeys('z');
+    rs = await rxState();
+    check('Regex on: typing over a selection starts the term where it was', rs.field === 'foo /z/' && rs.caret === 6, J(rs));
+    rs = await fresh('c');
+    const ctrlZ = async () => {
+      await popup.send('Input.dispatchKeyEvent', { type: 'rawKeyDown', modifiers: 2, key: 'z', code: 'KeyZ', windowsVirtualKeyCode: 90 });
+      await popup.send('Input.dispatchKeyEvent', { type: 'keyUp', modifiers: 2, key: 'z', code: 'KeyZ', windowsVirtualKeyCode: 90 });
+      await sleep(150);
+    };
+    await ctrlZ();
+    const undone = await rxState();
+    check('Ctrl+Z takes a wrap back in one step', rs.field === '/c/' && undone.field === '' && undone.app === '', J({ before: rs.field, after: undone }));
+    // IME / a macOS dead key: the composed run commits as one insert, wrapped.
+    await popup.eval(`(clearSearchAndFilters(), document.getElementById('search').focus(), true)`);
+    await popup.send('Input.imeSetComposition', { text: 'é', selectionStart: 1, selectionEnd: 1 });
+    await popup.send('Input.insertText', { text: 'é' });
+    await sleep(150);
+    rs = await rxState();
+    check('Regex on: a composed character (IME, dead key) starts a /regex/ too', rs.field === '/é/' && rs.caret === 2, J(rs));
+    rs = await fresh('/');
+    await altR();
+    const offPair = await rxState();
+    check('Regex off with the caret in an empty // takes the pair away', rs.field === '//' && !offPair.on && offPair.field === '', J({ before: rs.field, after: offPair }));
     await popup.eval(`(clearSearchAndFilters(), searchBox.setRegex(false), true)`);
     await sleep(150);
 
     // --- the chip row's selection cluster: [or|and][selected][excluded] ------
     const chipRow = () => popup.eval(`(() => {
       const el = document.getElementById('groupFilters');
-      const order = [...el.children].map((c) => {
+      const order = [...el.children].filter((c) => !c.classList.contains('flip-ghost')).map((c) => {
         if (c.classList.contains('cluster-sep')) return '|';
         if (c.classList.contains('conn-toggle')) return 'conn:' + c.dataset.conn;
         const chip = c.matches('[data-group], [data-filter]') ? c : c.querySelector('[data-group], [data-filter]');
@@ -579,6 +617,45 @@ async function main() {
     await sleep(250);
     cr = await chipRow();
     check('the or / and flips to "and" (side by side in the text)', cr.order[1] === 'conn:and' && !/ OR /.test(cr.query) && /group:Old/.test(cr.query) && /group:Ideas/.test(cr.query) && /-group:Work/.test(cr.query), J(cr));
+    // The flip is remembered per device: the next two picks join with "and".
+    check('the or / and is remembered (local setting)', J(await popup.eval(`window.api.getSettings().then((s) => s.facet_joins)`)) === J({ group: 'and' }));
+    await popup.eval(`(clearSearchAndFilters(), true)`);
+    await clickGroup('Old');
+    await sleep(150);
+    await clickGroup('Ideas');
+    await sleep(250);
+    cr = await chipRow();
+    check('a remembered "and" joins the next pick that way', /group:Old/.test(cr.query) && /group:Ideas/.test(cr.query) && !/ OR /.test(cr.query) && cr.order[1] === 'conn:and', J(cr));
+    await popup.click('#groupFilters .conn-toggle');
+    await sleep(250);
+    check('flipping back to "or" is remembered too', J(await popup.eval(`window.api.getSettings().then((s) => s.facet_joins)`)) === J({}), J(await chipRow()));
+    // One group family, one choice: a parent absorbs its selected sub-group, a
+    // sub-group drills down from its parent.
+    await popup.eval(`(clearSearchAndFilters(), true)`);
+    await clickGroup('Work/Clients');
+    await sleep(200);
+    const fam1 = (await chipRow()).query;
+    await clickGroup('Work');
+    await sleep(200);
+    const fam2 = (await chipRow()).query;
+    await clickGroup('Work/Clients');
+    await sleep(200);
+    const fam3 = (await chipRow()).query;
+    check('a parent absorbs its selected sub-group; a sub-group drills down from its parent', fam1 === 'group:Work/Clients' && fam2 === 'group:Work' && fam3 === 'group:Work/Clients', J([fam1, fam2, fam3]));
+    // A chip that leaves the row fades out where it was (an inert, unkeyed ghost) and is gone after.
+    const ghost = await popup.eval(`(() => {
+      clearSearchAndFilters(); appAdapter.setQuery('group:Ideas OR group:Old'); renderGroupFilters();
+      document.querySelector('#groupFilters [data-group="Ideas"]').dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+      renderGroupFilters();
+      const g = [...document.querySelectorAll('#groupFilters .flip-ghost')];
+      return { n: g.length, conn: g.some((x) => x.classList.contains('conn-toggle')), keyed: g.some((x) => x.matches('[data-dim], [data-group], [data-filter]') || !!x.querySelector('[data-group], [data-filter]')), inert: g.every((x) => x.inert), query };
+    })()`);
+    await sleep(600);
+    const gone = await popup.eval(`document.querySelectorAll('#groupFilters .flip-ghost').length`);
+    check('a chip that leaves fades out where it was (an inert ghost), then is gone', ghost.n >= 1 && ghost.conn && !ghost.keyed && ghost.inert && gone === 0 && ghost.query === 'group:Old', J({ ghost, gone }));
+    await popup.eval(`(clearSearchAndFilters(), appAdapter.setQuery('group:Ideas OR group:Old -group:Work'), renderGroupFilters(), true)`);
+    await sleep(200);
+    cr = await chipRow();
     // The glide: a chip that changes place animates (none under reduced motion).
     const glide = await popup.eval(`(() => {
       const el = document.getElementById('groupFilters');

@@ -233,8 +233,8 @@
       sort: null,             // 'new' | 'best'
       unknown: [],            // unrecognized prefixes (for the "not a filter" hint)
       // The tree parts no flat field can hold. anyOf: a top-level OR of one
-      // filter's values (group:A OR group:B), the pill with an or/and
-      // connective. compound: any other top-level OR or group (a OR b,
+      // filter's values (group:A OR group:B: the chip row's or / and toggle
+      // flips it). compound: any other top-level OR or group (a OR b,
       // -(a b), group:A OR is:image), evaluated as a tree; a chip whose value
       // sits inside one is greyed ("part of a custom filter").
       anyOf: [],              // { dim, field, values, members: [{ value, text, start, end }], start, end }
@@ -426,7 +426,7 @@
     return null;
   }
   // A top-level OR whose sides are all positive values of ONE OR dimension
-  // (group:A OR group:B): the anyOf pill. null for any other OR.
+  // (group:A OR group:B): an anyOf (the chip row's or / and). null for any other OR.
   function anyOfGroup(node) {
     let dim = null;
     let field = null;
@@ -443,7 +443,7 @@
   }
 
   // Tokens -> expression: juxtaposition is AND; OR binds tighter (Gmail's
-  // rule, so `x a OR b` = x AND (a OR b) and an OR pill sits beside other terms
+  // rule, so `x a OR b` = x AND (a OR b) and an OR of filter values sits beside other terms
   // without brackets); `-` negates a term or a group. Nodes: { type: 'leaf',
   // leaf, text } | { type: 'or', children } | { type: 'and', neg, children },
   // each with its source range. A dangling OR or an unclosed '(' is recorded in
@@ -554,7 +554,7 @@
   // Canonical serialization: the content terms first, as typed (their `raw`
   // token) and in the typed order, then the facets in ONE fixed order
   // (FACET_ORDER, then value: groups by name, is: by IS_VALUES, slots
-  // ascending), then the OR pills and the custom expressions as typed.
+  // ascending), then the ORs of filter values and the custom expressions as typed.
   // facetKey uses it; a chip never re-serializes the query (see applyFacet: it
   // edits only the tokens it changes).
   const byName = (a, b) => a.localeCompare(b, undefined, { sensitivity: 'base', numeric: true }) || (a < b ? -1 : a > b ? 1 : 0);
@@ -641,8 +641,8 @@
   // unknown prefix, the order the user typed, a custom (a OR b) - stays exactly
   // as typed. A value joins an OR dimension (groups, kinds of clip, numpad keys)
   // with OR when it holds one value or an OR already (group:A -> group:A OR
-  // group:B); two values side by side (the pill's "and") take a third the same
-  // way. Only the top level is edited: a value inside a custom expression is
+  // group:B), unless the device remembered "and" for that kind (opts.joins);
+  // two values side by side (an "and") take a third the same way. Only the top level is edited: a value inside a custom expression is
   // left alone (its chip is greyed).
   const SINGLE_FACETS = ['since', 'before', 'len', 'lines', 'words', 'id'];
   const BOUND_FACETS = ['len', 'lines', 'words'];
@@ -702,7 +702,12 @@
     const out = applyEdits(text, edits);
     return out && /\s$/.test(text) && !/\s$/.test(out) ? `${out} ` : out; // a trailing space (mid-typing) stays
   }
-  function applyFacet(query, token, intent) {
+  // opts.joins: how a second value of a kind joins the first ({ group, type }:
+  // 'or' | 'and', JOIN_DIMS; the device remembers the last or / and the user
+  // picked, normalizeJoins). A value joins an existing OR or AND the way it is
+  // written; the remembered join only decides when one value is there.
+  function applyFacet(query, token, intent, opts) {
+    const joins = normalizeJoins(opts && opts.joins);
     const text = String(query == null ? '' : query);
     const p = parseQuery(text);
     if (SINGLE_FACETS.includes(token.kind)) {
@@ -721,6 +726,25 @@
     const pos = p.items.filter((item) => isLeaf(item, false));
     const negs = p.items.filter((item) => isLeaf(item, true));
     const holding = p.items.filter((item) => item.kind === 'any' && item.any.field === field && item.any.values.includes(value));
+    // One group family, one choice (group:Work already holds Work/Clients):
+    // a group picked replaces its selected parents and sub-groups (the last
+    // click wins: a parent widens, a sub-group drills down); an excluded group
+    // drops its selected sub-groups (they would show nothing). The selection
+    // keeps the join it had.
+    if (field === 'group' && !pos.length && !holding.length && !negs.length) {
+      const kin = (v) => v !== value && (tagMatchesFilter(v, value) || (intent !== 'exclude' && tagMatchesFilter(value, v)));
+      const family = p.items.filter((item) => (item.kind === 'leaf' && item.leaf.field === 'group' && !item.leaf.neg && kin(item.leaf.value))
+        || (item.kind === 'any' && item.any.field === 'group' && item.any.values.some(kin)));
+      if (family.length) {
+        const stripped = editFacets(text, p, ({ remove, rewriteAny }) => {
+          for (const item of family) {
+            if (item.kind === 'leaf') remove(item);
+            else rewriteAny(item, item.any.members.filter((m) => !kin(m.value)));
+          }
+        });
+        return applyFacet(stripped, token, intent, { joins: { ...joins, group: dimConnective(p, 'group') || joins.group } });
+      }
+    }
     return editFacets(text, p, ({ remove, rewriteAny, insertPart, edits }) => {
       const dropValue = () => {
         pos.forEach(remove);
@@ -739,7 +763,7 @@
         const order = field === 'group' ? byName : field === 'num' ? byNum : byIs;
         const anyItem = p.items.find((item) => item.kind === 'any' && item.any.dim === dim);
         const ones = p.items.filter((item) => item.kind === 'leaf' && !item.leaf.neg && facetDim(item.leaf.field, item.leaf.value) === dim);
-        const members = anyItem ? anyItem.any.members : ones.length === 1 ? [{ value: ones[0].leaf.value, start: ones[0].start, end: ones[0].end }] : null;
+        const members = anyItem ? anyItem.any.members : ones.length === 1 && joins[dim] !== 'and' ? [{ value: ones[0].leaf.value, start: ones[0].start, end: ones[0].end }] : null;
         if (members) {
           const next = members.find((m) => order(m.value, value) > 0);
           if (next) edits.push({ start: next.start, end: next.start, text: `${part} OR ` });
@@ -769,23 +793,6 @@
     const p = parseQuery(text);
     return editFacets(text, p, ({ remove }) => { for (const item of p.items) if (item.kind === 'leaf' && item.leaf.field === kind) remove(item); });
   }
-  // Add one token (a pill's text, title:"a b") to the query: a filter at its
-  // canonical place, anything else after the words.
-  function addToken(query, tokenText) {
-    const text = String(query == null ? '' : query);
-    const t = String(tokenText || '').trim();
-    if (!t) return text;
-    const p = parseQuery(text);
-    const one = parseQuery(t);
-    const part = one.items.length === 1 && one.items[0].kind === 'leaf' ? leafPart(one.items[0].leaf) : null;
-    return editFacets(text, p, ({ insertPart, edits }) => {
-      if (part) { insertPart(t); return; }
-      const lastContent = [...p.items].reverse().find((item) => item.kind === 'leaf' && item.leaf.field === 'content');
-      if (lastContent) edits.push({ start: lastContent.end, end: lastContent.end, text: ` ${t}` });
-      else insertPart(t);
-    });
-  }
-
   // One facet token's state in a parsed query: 'include' | 'exclude' | null. A
   // single-valued token without a value ({ kind: 'before' }) asks "is that facet
   // set at all". The options panel paints its chips from this.
@@ -854,9 +861,6 @@
   // to filters only?
   function hasSearchTerms(parsed) {
     return !!((parsed.content && parsed.content.length) || (parsed.terms && parsed.terms.length) || (parsed.compound && parsed.compound.some((n) => !nodeHasFilter(n))));
-  }
-  function isEmptyQuery(parsed) {
-    return !parsed.content.length && !anyFilterActive(parsed) && !parsed.sort && !(parsed.compound && parsed.compound.length);
   }
 
   // ── time-spec resolution (mirrors Forge resolveTimeMs) ──
@@ -997,7 +1001,7 @@
     const all = node.children.every((k) => evalNode(k, doc, hayLower, now));
     return node.neg ? !all : all;
   }
-  // Strict filter: every top-level term, filter, OR pill and custom expression
+  // Strict filter: every top-level term, filter, OR of filter values and custom expression
   // must hold. `opts`: { now, searchText? (precomputed combined haystack,
   // LOWERCASED), matchers? (compileContent of this query) }.
   function matchDoc(doc, parsed, opts) {
@@ -1387,10 +1391,8 @@
   // An example value per key a prompt chip types (its tooltip).
   const FIELD_EXAMPLE = { since: '3d, 12h or 2026-01-31', before: '3d, 12h or 2026-01-31', len: '>200, <80 or 50-200', lines: '>10, <3 or 2-5', words: '>100, <20 or 10-50' };
   const SINCE_PRESETS = Object.keys(FIELD_INFO.since.values);
-  // Derived views of FIELD_INFO (kept as exports): 'title:' -> its description /
-  // its short alias ('t:').
+  // A derived view of FIELD_INFO (an export): 'title:' -> its description.
   const PREFIX_HINTS = Object.fromEntries(Object.entries(FIELD_INFO).map(([k, f]) => [`${k}:`, f.desc]));
-  const PREFIX_SHORT = Object.fromEntries(Object.entries(FIELD_INFO).filter(([, f]) => f.short).map(([k, f]) => [`${k}:`, `${f.short}:`]));
 
   // The search options panel's facet rows: the less-used filters, one click each.
   // Chips write tokens through applyFacet (the query text stays the single source
@@ -1836,12 +1838,14 @@
     return docHasIs(doc, v);
   }
   // The OR dimensions whose next value goes in with an OR (applyFacet's rule:
-  // one value there, or an OR pill already): dim -> the check dim the census
+  // one value there under the default "or", or an OR already): dim -> the check dim the census
   // holds open for that dimension's options ('any:group').
-  function openDims(parsed) {
+  function openDims(parsed, joins) {
     const open = new Map();
+    const j = normalizeJoins(joins);
     for (const dim of OR_DIMS) {
       if ((parsed.anyOf || []).some((g) => g.dim === dim)) { open.set(dim, `any:${dim}`); continue; }
+      if (j[dim] === 'and') continue; // the next value would AND in: the lone value is a plain filter
       const n = dim === 'group' ? parsed.groups.length : dim === 'num' ? parsed.nums.length : parsed.is.filter((v) => TYPE_IS.has(v)).length;
       if (n === 1) open.set(dim, `any:${dim}`);
     }
@@ -1853,9 +1857,9 @@
   // A custom expression is one check, never relaxed (no tokens), and last, so
   // the failure cap usually stops before it is evaluated. hay: the lowercased
   // haystacks, by doc index (a custom expression may hold words).
-  function facetChecks(parsed, now, hay) {
+  function facetChecks(parsed, now, hay, joins) {
     const checks = [];
-    const open = openDims(parsed);
+    const open = openDims(parsed, joins);
     const anyDims = new Set((parsed.anyOf || []).map((g) => g.dim));
     const lone = (dim, own) => (open.has(dim) && !anyDims.has(dim) ? open.get(dim) : own);
     for (const g of parsed.groups) checks.push({ dim: lone('group', `group:${g}`), ok: (d) => docInGroup(d, g), label: `group:${quoteToken(g)}`, tokens: [[{ kind: 'group', value: g }, 'include']] });
@@ -1898,13 +1902,13 @@
   // The dim an option belongs to under this query (null = none held open):
   // an excluded value its own, a value of an open OR dimension that
   // dimension's (selecting it would OR it in), a selected value its own.
-  function optionDim(parsed, token) {
+  function optionDim(parsed, token, joins) {
     const k = token.kind;
     if (SINGLE_FACETS.includes(k)) return k;
     const { field, value } = tokenFieldValue(token);
     const neg = field === 'group' ? parsed.negGroups : field === 'num' ? parsed.negNums : parsed.negIs;
     if (neg.includes(value)) return `-${field}:${value}`;
-    const open = openDims(parsed);
+    const open = openDims(parsed, joins);
     const dim = facetDim(field, value);
     if (open.has(dim)) return open.get(dim);
     const pos = field === 'group' ? parsed.groups : field === 'num' ? parsed.nums : parsed.is;
@@ -1939,7 +1943,7 @@
         options.push({ key, token: t, test });
       }
     }
-    for (const o2 of options) o2.dim = optionDim(parsed, o2.token);
+    for (const o2 of options) o2.dim = optionDim(parsed, o2.token, o.joins);
     // Groups: bumped from each doc's own groups (and their parents), not tested
     // one by one against every group.
     const groupKeys = new Set();
@@ -1948,11 +1952,11 @@
       for (let i = 1; i <= parts.length; i += 1) groupKeys.add(parts.slice(0, i).join('/'));
     }
     const groupDim = new Map();
-    for (const g of groupKeys) groupDim.set(g, optionDim(parsed, { kind: 'group', value: g }));
+    for (const g of groupKeys) groupDim.set(g, optionDim(parsed, { kind: 'group', value: g }, o.joins));
     const counts = new Map();
     const present = new Map();
     const bump = (m, key) => m.set(key, (m.get(key) || 0) + 1);
-    const checks = facetChecks(parsed, now, o.searchTextLower);
+    const checks = facetChecks(parsed, now, o.searchTextLower, o.joins);
     const failed = [];
     const seen = new Set();
     for (let i = 0; i < list.length; i += 1) {
@@ -1985,30 +1989,34 @@
       permissive,
       total: list.length,
       groupWeights: groupWeights(list, now),
+      open: openDims(parsed, o.joins),
       count: (key) => counts.get(key) || 0,
       present: (key) => (present.get(key) || 0) > 0,
     };
   }
   // Why an option can never match together with the active filters, whatever
   // the history holds (structural), or null. An image has no text: no length,
-  // no lines, no link; a link is one line; a numpad clip is pinned.
-  function structuralReason(parsed, token) {
+  // no lines, no link; a link is one line; a numpad clip is pinned. open: the
+  // census's open dimensions (openDims): a kind of clip picked while the kinds
+  // join with OR is OR'ed in, so the kinds already picked never block it.
+  function structuralReason(parsed, token, open) {
     const k = token.kind;
     const v = k === 'builtin' || k === 'is' ? (BUILTIN_TO_IS[token.value] || token.value) : null;
     const blocker = (text) => `Never matches with ${text}`;
-    const imageOnly = parsed.is.includes('image') ? 'is:image' : parsed.negIs.includes('text') ? '-is:text' : null;
-    const textOnly = ['text', 'url', 'multiline', 'rich'].map((x) => (parsed.is.includes(x) ? `is:${x}` : null)).find(Boolean)
+    const is = v && TYPE_IS.has(v) && open && open.has('type') ? parsed.is.filter((x) => !TYPE_IS.has(x)) : parsed.is;
+    const imageOnly = is.includes('image') ? 'is:image' : parsed.negIs.includes('text') ? '-is:text' : null;
+    const textOnly = ['text', 'url', 'multiline', 'rich'].map((x) => (is.includes(x) ? `is:${x}` : null)).find(Boolean)
       || (parsed.negIs.includes('image') ? '-is:image' : null)
       || BOUND_FACETS.map((b) => (parsed[b] && !lenSatisfies(0, parsed[b]) ? `${b}:${serializeBound(parsed[b])}` : null)).find(Boolean);
     const linesAllow = (n) => !parsed.lines || lenSatisfies(n, parsed.lines);
     if (v === 'image' && textOnly) return blocker(textOnly);
     if (['text', 'url', 'multiline', 'rich'].includes(v) && imageOnly) return blocker(imageOnly);
     if (v === 'url') {
-      if (parsed.is.includes('multiline')) return blocker('is:multiline');
+      if (is.includes('multiline')) return blocker('is:multiline');
       if (!linesAllow(1)) return blocker(`lines:${serializeBound(parsed.lines)}`);
     }
     if (v === 'multiline') {
-      if (parsed.is.includes('url')) return blocker('is:url');
+      if (is.includes('url')) return blocker('is:url');
       const L = parsed.lines;
       const most = !L ? Infinity : L.op === '<' ? L.n - 1 : (L.op === '<=' || L.op === '=') ? L.n : L.op === 'range' ? L.m : Infinity;
       if (most < 2) return blocker(`lines:${serializeBound(L)}`);
@@ -2040,7 +2048,7 @@
     if (!census || census.permissive) return { enabled: true, count };
     const categorical = token.kind === 'builtin' || token.kind === 'is';
     if (categorical && !census.present(key)) return { enabled: false, hidden: true, count: 0 };
-    const structural = structuralReason(parsed, token);
+    const structural = structuralReason(parsed, token, census.open);
     if (structural) return { enabled: false, kind: 'structural', reason: structural, count: 0 };
     // A group with no clips stays a live chip while nothing else filters (its
     // click lands on the "No clips in X yet" state, which says what to do); it
@@ -2114,16 +2122,31 @@
     const c = p.content[0];
     return p.items.length === 1 && p.content.length === 1 && !c.neg && !c.regex && c.scope === 'any' && c.value === word && !p.unknown.length && !p.syntax.length;
   }
-  // Text -> one /regex/ term: its unescaped slashes escaped.
-  function regexToQuery(text) {
-    const s = String(text || '');
-    if (!s.trim()) return '';
+  // Slashes escaped for a /regex/ (ONE rule for the toggle and the typing): an
+  // escaped \/ stays as it is (opts.escaped: the text follows an open
+  // backslash, so its first character is escaped already); complete text (a
+  // paste, a wrapped word) has a trailing lone backslash doubled, so it can
+  // never escape the closing slash. A single typed '\' stays one: the next key
+  // completes it.
+  function escapeSlashes(text, opts) {
+    const s = String(text);
+    const o = opts || {};
     let out = '';
-    for (let i = 0; i < s.length; i += 1) {
-      if (s[i] === '\\') { out += s.slice(i, i + 2); i += 1; continue; }
+    let i = 0;
+    if (o.escaped && s.length) { out += s[0]; i = 1; }
+    for (; i < s.length; i += 1) {
+      if (s[i] === '\\') {
+        if (i + 1 < s.length) { out += s.slice(i, i + 2); i += 1; } else out += o.complete ? '\\\\' : '\\';
+        continue;
+      }
       out += s[i] === '/' ? '\\/' : s[i];
     }
-    return `/${out}/`;
+    return out;
+  }
+  // Text -> one /regex/ term.
+  function regexToQuery(text) {
+    const s = String(text || '');
+    return s.trim() ? `/${escapeSlashes(s, { complete: true })}/` : '';
   }
   // A pattern as plain text: its escaped slashes back to slashes.
   function regexText(pattern) { return String(pattern || '').replace(/\\\//g, '/'); }
@@ -2133,12 +2156,14 @@
     return null;
   }
   const CONTENT_KEY_BEFORE = /(?:^|[\s(])-?(?:title|t|text|b|body):$/i;
-  const escapeSlashes = (s) => String(s).replace(/\//g, '\\/');
   // What typing `typed` at a collapsed caret does with the toggle on:
   // { text, caret }, or null (the field inserts it as usual). Inside a /regex/
-  // a typed '/' is escaped, and at the closing slash it steps over it; at a
-  // fresh spot (after a space, a '(', a lone '-', a title: / text: key, or
-  // right after another regex) the text starts a new /.../ term.
+  // a typed '/' is escaped, and at the closing slash it steps over it; a ':'
+  // that ends a filter key (/group/ + ':') turns the term back into that key,
+  // so filters are typed as always. At a fresh spot (after a space, a '(', a
+  // lone '-', a title: / text: key, or right after another regex) the text
+  // starts a new /.../ term; a lone '-', '(', ')' or '"' typed there is the
+  // language's own (exclude, a bracket, a phrase), so it is typed as usual.
   function regexTypingEdit(text, caret, typed) {
     const s = String(text || '');
     const t = String(typed || '');
@@ -2146,13 +2171,17 @@
     const tok = termAt(s, caret);
     if (tok && tok.regex && caret > tok.regex.open && caret <= tok.regex.close) {
       if (t === '/' && caret === tok.regex.close) return { text: s, caret: caret + 1 };
+      const pattern = tok.regex.pattern;
+      const key = t === ':' && caret === tok.regex.close && tok.regex.scope === 'any' ? KEY_TOKEN_RE.exec(`${pattern}:`) : null;
+      if (key && !key[2] && RECOGNIZED_PREFIXES.has(key[1].toLowerCase())) {
+        return { text: s.slice(0, tok.regex.open) + pattern + ':' + s.slice(tok.regex.close + 1), caret: tok.regex.open + pattern.length + 1 };
+      }
       let slashes = 0;
       for (let k = caret - 1; k >= 0 && s[k] === '\\'; k -= 1) slashes += 1;
-      if (!t.includes('/') || (t === '/' && slashes % 2 === 1)) return null;
-      const ins = escapeSlashes(t);
-      return { text: s.slice(0, caret) + ins + s.slice(caret), caret: caret + ins.length };
+      const ins = escapeSlashes(t, { escaped: slashes % 2 === 1, complete: t.length > 1 && caret === tok.regex.close });
+      return ins === t ? null : { text: s.slice(0, caret) + ins + s.slice(caret), caret: caret + ins.length };
     }
-    if (/^\s+$/.test(t)) return null;
+    if (/^\s+$/.test(t) || ['-', '(', ')', '"'].includes(t)) return null;
     let before = s.slice(0, caret);
     const after = s.slice(caret);
     if (insideQuote(s, caret)) return null;
@@ -2164,7 +2193,7 @@
     if (!fresh || (after && !/^[\s)]/.test(after))) return null;
     if (afterRegex) before += ' ';
     // A typed '/' opens an empty pair (the next key goes inside).
-    const term = body === '/' ? '//' : `/${escapeSlashes(body)}/`;
+    const term = body === '/' ? '//' : `/${escapeSlashes(body, { complete: t.length > 1 })}/`;
     const next = before + lead + term + after;
     return { text: next, caret: before.length + lead.length + term.length - 1 };
   }
@@ -2179,9 +2208,12 @@
   // The toggle on the word at the caret: on wraps a plain word in /.../ (the
   // text as typed, now read as a pattern; title:foo -> title:/foo/), off
   // unwraps a /regex/ to its text (quoted where it would read as syntax).
-  // { text, caret }, or null when the caret is on no such word.
+  // { text, caret }, or null when the caret is on no such word. Off with the
+  // caret in an empty // pair (a '/' just typed) takes the pair away.
   function toggleRegexAt(text, caret, on) {
     const s = String(text || '');
+    const pair = on ? null : regexBackspaceEdit(s, caret);
+    if (pair) return pair;
     const tok = termAt(s, caret);
     if (!tok) return null;
     const neg = tok.neg ? '-' : '';
@@ -2219,12 +2251,23 @@
   }
   // ── the or / and of one OR dimension (groups, kinds of clip, numpad keys):
   // the chip row's leading toggle and the panel's ──
+  // The kinds whose or / and the device remembers. Numpad keys are not one
+  // (a clip has one key: "and" always shows nothing).
+  const JOIN_DIMS = ['group', 'type'];
+  function normalizeJoins(joins) {
+    const out = {};
+    for (const dim of JOIN_DIMS) if (joins && joins[dim] === 'and') out[dim] = 'and';
+    return out;
+  }
   // 'or' (an OR of its values), 'and' (two or more side by side), or null
-  // (fewer than two values to join).
-  function dimConnective(parsed, dim) {
+  // (nothing to join). With joins, ONE value under a remembered "and" reads
+  // 'and' too: that join greys what it would empty, so the toggle shows (and
+  // a click on it is the way back to "or").
+  function dimConnective(parsed, dim, joins) {
     const any = (parsed.anyOf || []).filter((g) => g.dim === dim);
     const leaves = (parsed.items || []).filter((it) => it.kind === 'leaf' && !it.leaf.neg && facetDim(it.leaf.field, it.leaf.value) === dim);
     const n = any.reduce((sum, g) => sum + g.values.length, 0) + leaves.length;
+    if (n === 1 && !any.length && normalizeJoins(joins)[dim] === 'and') return 'and';
     if (n < 2) return null;
     return any.length ? 'or' : 'and';
   }
@@ -2255,21 +2298,25 @@
     if (anyFilterActive(p) || p.sort || p.compound.length || p.content.some((c) => c.scope !== 'any' || c.regex || c.neg)) return null;
     return `"${collapsed.replace(/"/g, '')}"`;
   }
-  // Is position `at` inside an open quote (an odd number of quotes before it)?
+  // Is position `at` inside an open quote? Asked of the scanner's term there
+  // (a plain term with an odd number of quotes before `at`), so a quote inside
+  // a /regex/ or an earlier term never counts.
   function insideQuote(text, at) {
-    const s = String(text || '').slice(0, at);
+    const s = String(text || '');
+    const tok = termAt(s, at);
+    if (!tok || tok.regex) return false;
     let n = 0;
-    for (let i = 0; i < s.length; i += 1) if (s[i] === '"') n += 1;
+    for (let i = tok.start; i < at; i += 1) if (s[i] === '"') n += 1;
     return n % 2 === 1;
   }
 
   return {
     clipToDoc, docSearchText, normalizeTagName, tagMatchesFilter, docInGroup,
-    tokenizeQuery, quoteToken, parseQuery, scanQuery, serializeQuery, applyFacet, stripFacet, clearFacet, addToken, facetState, facetTokenState,
-    anyFilterActive, hasSearchTerms, isEmptyQuery, resolveTimeMs,
+    tokenizeQuery, quoteToken, parseQuery, scanQuery, serializeQuery, applyFacet, stripFacet, clearFacet, facetState, facetTokenState,
+    anyFilterActive, hasSearchTerms, resolveTimeMs,
     matchDoc, relevanceScore, recencyScore, decayWeight, groupWeights, compareGroupUse, rankMode, filterRankIndexes, bodyIndexOf,
     compileTerm, escapeRegExp, termSpans, firstMatchIndex,
-    regexTypingEdit, regexBackspaceEdit, toggleRegexAt, legacyRegexQuery, dimConnective, setDimConnective,
+    regexTypingEdit, regexBackspaceEdit, toggleRegexAt, legacyRegexQuery, dimConnective, setDimConnective, normalizeJoins,
     promptOptionState, promptOptionLabel, FIELD_EXAMPLE,
     fuzzyMatch, fuzzyFloor,
     lexQuery, suggestQuery,

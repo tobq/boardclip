@@ -31,9 +31,13 @@ const tsAt = (list) => (i) => ts[list[i]];
   assert.deepStrictEqual(r({ anchor: { id: 'n4', offset: 37, ts: 300 }, prevMode: 'none', nextMode: 'none' }), { index: 3, offset: 37, reason: 'kept' });
   // Unscrolled with no cursor: stays at the top so new clips show.
   assert.strictEqual(r({ anchor: { id: 'n1', offset: 0, ts: 600, atTop: true }, prevMode: 'none', nextMode: 'none' }).index, -1);
-  // Starting a search (or flipping to Best) begins at the best match.
-  assert.deepStrictEqual(r({ anchor: { id: 'n4', offset: 10, ts: 300 }, prevMode: 'none', nextMode: 'best' }).reason, 'search-start');
-  assert.strictEqual(r({ anchor: { id: 'n4', offset: 10, ts: 300 }, prevMode: 'new', nextMode: 'best' }).index, -1);
+  // Starting a search (typing into an empty box) begins at the best match...
+  assert.deepStrictEqual(r({ anchor: { id: 'n4', offset: 10, ts: 300 }, prevMode: 'none', nextMode: 'best', started: true }).reason, 'search-start');
+  // ...any other edit keeps the clip while it matches: Recent -> Best, a word typed after a chip,
+  // and a chip clicked from an empty box (a filter, not a search).
+  assert.deepStrictEqual(r({ anchor: { id: 'n4', offset: 10, ts: 300 }, prevMode: 'new', nextMode: 'best' }), { index: 3, offset: 10, reason: 'kept' });
+  assert.deepStrictEqual(r({ anchor: { id: 'n4', offset: 10, ts: 300 }, prevMode: 'none', nextMode: 'best' }), { index: 3, offset: 10, reason: 'kept' });
+  assert.deepStrictEqual(r({ anchor: { id: 'n4', offset: 10, ts: 300 }, prevMode: 'none', nextMode: 'none', started: true }), { index: 3, offset: 10, reason: 'kept' });
   // Clearing lands on the clip you were on, in full history, EVEN unscrolled.
   const cleared = r({ anchor: { id: 'n3', offset: 0, ts: 400, atTop: true }, prevMode: 'best', nextMode: 'none', cleared: true });
   assert.deepStrictEqual(cleared, { index: 2, offset: 0, reason: 'kept' });

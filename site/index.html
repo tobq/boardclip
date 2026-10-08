@@ -50,7 +50,8 @@
   <main>
     <section class="hero wrap" aria-labelledby="hero-title">
       <div class="hero-copy">
-        <h1 id="hero-title">Clipboard history for Windows and macOS</h1>
+        <p class="overline eyebrow">Clipboard history for Windows and macOS</p>
+        <h1 id="hero-title">Everything you copy, <span class="hero-accent">one keystroke away.</span></h1>
         <p class="lede">BoardClip keeps the text and images you copy in a small popup you can search and paste from. It is free, open source, and your history stays on your own disk.</p>
 
         <dl class="keys" aria-label="Keys">
@@ -113,7 +114,14 @@
       </div>
 
       <div class="demo" aria-label="Interactive BoardClip demo">
-        <div class="demo-window bc-popup" id="demo-window"></div>
+        <div class="demo-stage">
+          <div class="demo-window bc-popup" id="demo-window"></div>
+        </div>
+        <div class="demo-guide" id="demo-guide" aria-hidden="true">
+          <span class="demo-guide-pulse"></span>
+          <svg class="demo-guide-cursor" viewBox="0 0 24 32"><path d="M3 2.5v24l6.2-6.1 4.2 8.7 4.4-2.1-4.2-8.3h8.8L3 2.5Z"/></svg>
+          <span class="demo-guide-tip" id="demo-guide-tip"></span>
+        </div>
         <p class="demo-caption">The real popup, running in this page with sample clips. Right-click a clip for its menu, open Settings, or try a search:
           <button class="try" type="button" data-try="invoice">invoice</button>
           <button class="try" type="button" data-try="group:work">group:work</button>
@@ -126,7 +134,7 @@
       <h2 class="overline" id="features-title">What it does</h2>
       <dl class="spec">
         <div>
-          <dt>Search with filters</dt>
+          <dt><span class="mi spec-icon" aria-hidden="true">search</span>Search with filters</dt>
           <dd>Plain words match titles and text, exactly as typed. Filters narrow the list, and a right-click excludes one. Turn on Regex and what you type becomes a /pattern/; OR, brackets and every filter work as text too.
             <span class="tries">
               <button class="try" type="button" data-try="group:work">group:work</button>
@@ -138,31 +146,31 @@
             </span></dd>
         </div>
         <div>
-          <dt>Numpad quick-paste</dt>
+          <dt><span class="mi spec-icon" aria-hidden="true">tag</span>Numpad quick-paste</dt>
           <dd>Give up to nine clips a numpad slot from their menu. Pressing the key pastes that clip straight into the app you are in, and whatever was on your clipboard is put back afterwards.</dd>
         </div>
         <div>
-          <dt>Pins, groups and titles</dt>
+          <dt><span class="mi spec-icon" aria-hidden="true">star</span>Pins, groups and titles</dt>
           <dd>Pinned clips never expire. Groups nest with a slash, like work/api, and any clip can carry a title, so a snippet you keep reads as a note rather than a fragment.</dd>
         </div>
         <div>
-          <dt>Images</dt>
+          <dt><span class="mi spec-icon" aria-hidden="true">image</span>Images</dt>
           <dd>Screenshots and copied images are kept next to your text. Open one in the image viewer, or drag it out of the list into another app as a file.</dd>
         </div>
         <div>
-          <dt>Editor and Unify</dt>
+          <dt><span class="mi spec-icon" aria-hidden="true">edit_note</span>Editor and Unify</dt>
           <dd>Text clips open in a built-in editor that saves as you go. Select a few near-identical clips and Unify folds them into one, with a three-pane merge view for the parts that differ.</dd>
         </div>
         <div>
-          <dt>Sync between your computers</dt>
+          <dt><span class="mi spec-icon" aria-hidden="true">sync</span>Sync between your computers</dt>
           <dd>Computers on the same network, or on the same Tailscale network, sync with each other directly over an encrypted connection. A Google Drive, OneDrive or iCloud folder you already use carries changes too. There is no BoardClip account and no BoardClip server.</dd>
         </div>
         <div>
-          <dt>AI access, off by default</dt>
+          <dt><span class="mi spec-icon" aria-hidden="true">lock</span>AI access, off by default</dt>
           <dd>Turn it on and AI apps such as Claude, Cursor or VS Code can read the groups you choose to share, through an MCP server that runs on your own computer. Reading anything else, editing or deleting asks you first.</dd>
         </div>
         <div>
-          <dt>Windows and macOS</dt>
+          <dt><span class="mi spec-icon" aria-hidden="true">devices</span>Windows and macOS</dt>
           <dd>Windows, and macOS on Apple Silicon and Intel. A Linux AppImage is built from the same source. MIT licensed; your history is plain files in the app's folder.</dd>
         </div>
       </dl>
@@ -556,7 +564,7 @@
       if (demoDocsFor !== clips) { demoDocs = clips.map(Core.search.clipToDoc); demoDocsFor = clips; }
       return demoDocs;
     }
-    const demoCensus = Core.createCensusCache({ docs: demoSearchDocs, groups: () => labels });
+    const demoCensus = Core.createCensusCache({ docs: demoSearchDocs, groups: () => labels, joins: () => demoSearchBox.getJoins() });
     function renderFilterChips() {
       const fs = facetState();
       // A chip that joins or leaves the selection glides to its place.
@@ -568,6 +576,7 @@
           excludedFilters: fs.excluded,
           query: state.query,
           census: demoCensus.get(state.query),
+          joins: demoSearchBox.getJoins(),
         });
       });
     }
@@ -766,13 +775,8 @@
       numpadMap: () => Core.numpadMap(clips),
       protectedGroups: () => new Set(),
       getQuery: () => state.query,
-      setFilterIntent: (filter, intent) => {
-        const token = String(filter).startsWith("__") ? { kind: "builtin", value: filter } : { kind: "group", value: filter };
-        state.query = Core.search.applyFacet(state.query, token, intent);
-        if (typeof demoSearchBox !== "undefined" && demoSearchBox) demoSearchBox.setQuery(state.query);
-        updateClearControls();
-        controller.onQueryChange();
-      },
+      applyFacet: (token, intent) => demoSearchBox.applyFacet(token, intent),
+      setConnective: (dim, conn) => demoSearchBox.setConnective(dim, conn),
       clearFilters: () => clearSearchAndFilters(),
       // The empty-result nudge rewrites the whole query (one filter dropped).
       setQuery: (next) => {
@@ -945,21 +949,35 @@
 
     // The shared search box, same as the app popup: live highlighting,
     // autocomplete, the options panel and the Regex toggle (it types /.../ for
-    // you). The panel height and the Regex toggle are kept per visitor in
-    // localStorage (the app keeps them per device).
+    // you). The panel height, the Regex toggle and the remembered or / and are
+    // kept per visitor in localStorage (the app keeps them per device).
     const DEMO_OPTIONS_HEIGHT_KEY = "boardclip-demo-options-height";
     const DEMO_REGEX_KEY = "boardclip-demo-regex";
+    const DEMO_JOINS_KEY = "boardclip-demo-joins";
     const DEMO_FIND_PREFS_KEY = "boardclip-demo-find";
     let demoOptionsHeight = 0;
     let demoRegex = false;
+    let demoJoins = null;
     try { demoOptionsHeight = Number(localStorage.getItem(DEMO_OPTIONS_HEIGHT_KEY)) || 0; } catch {}
-    try { demoRegex = localStorage.getItem(DEMO_REGEX_KEY) === "1"; } catch {}
+    try {
+      // The hour-old search mode folds into the Regex toggle (then goes).
+      const oldMode = localStorage.getItem("boardclip-demo-search-mode");
+      if (oldMode !== null) {
+        if (oldMode === "regex" && localStorage.getItem(DEMO_REGEX_KEY) === null) localStorage.setItem(DEMO_REGEX_KEY, "1");
+        localStorage.removeItem("boardclip-demo-search-mode");
+      }
+      demoRegex = localStorage.getItem(DEMO_REGEX_KEY) === "1";
+      demoJoins = JSON.parse(localStorage.getItem(DEMO_JOINS_KEY) || "null");
+    } catch {}
     const demoSearchBox = Core.attachSearchBox(search, {
       regex: demoRegex,
       saveRegex: (on) => { try { localStorage.setItem(DEMO_REGEX_KEY, on ? "1" : "0"); } catch {} },
+      joins: demoJoins,
+      saveJoins: (joins) => { try { localStorage.setItem(DEMO_JOINS_KEY, JSON.stringify(joins)); } catch {} },
       getGroups: () => labels,
       getCensus: (parsed) => demoCensus.get(parsed),
-      onChange: (v) => { state.query = v; controller.onQueryChange(); renderClips(); },
+      // The Best / Recent override ends with the search (an emptied box, however it was emptied).
+      onChange: (v) => { state.query = v; if (!v.trim()) state.sortMode = null; controller.onQueryChange(); renderClips(); },
       optionsHeight: demoOptionsHeight,
       saveOptionsHeight: (px) => { try { localStorage.setItem(DEMO_OPTIONS_HEIGHT_KEY, String(px)); } catch {} },
     });
@@ -1021,11 +1039,12 @@
     function closeDemoEditor() {
       demoEditorOverlay.classList.remove("show");
       demoEditorOverlay.innerHTML = "";
+      if (demoEditor) demoEditor.destroy();
       demoEditor = null;
       demoEditorClipId = null;
       search.focus();
     }
-    // Title-bar tag strip on the demo editor — same shared strip as the app's
+    // Title-bar tag strip on the demo editor - same shared strip as the app's
     // editor window; commit-on-add works because ensureClipId (below) commits
     // the draft through the same shared editor commit path.
     function refreshDemoEditorTags() {
@@ -1042,13 +1061,15 @@
       const sourceGroups = id == null ? Core.sourceGroupsFromFilters(facetState().active) : [];
       sourceGroups.forEach((group) => { if (!labels.includes(group)) labels.push(group); });
       demoEditorOverlay.innerHTML = "";
+      if (demoEditor) demoEditor.destroy();
       demoEditorClipId = id;
       demoEditor = Core.createEditor({
         initialText: currentText,
         initialTitle: currentTitle,
         initialFind: options.find || "",
-        initialFindMode: options.findMode,
-        findPrefs: (() => { try { return JSON.parse(localStorage.getItem(DEMO_FIND_PREFS_KEY) || "{}") || {}; } catch { return {}; } })(),
+        initialFindRegex: options.findRegex,
+        // (a visitor's old { mode: 'regex' } reads as Regex on)
+        findPrefs: (() => { try { const p = JSON.parse(localStorage.getItem(DEMO_FIND_PREFS_KEY) || "{}") || {}; return { regex: !!p.regex || p.mode === "regex", caseSensitive: !!p.caseSensitive }; } catch { return {}; } })(),
         saveFindPrefs: (prefs) => { try { localStorage.setItem(DEMO_FIND_PREFS_KEY, JSON.stringify(prefs)); } catch {} },
         menuHost: demoWindowEl,
         initialFocusTitle: !!options.focusTitle,
@@ -1160,7 +1181,7 @@
 
     const detectedOS = detectOS();
     const themeQuery = matchMedia("(prefers-color-scheme: dark)");
-    let demoThemeMode = "system"; // system | light | dark — chosen via Settings > Theme
+    let demoThemeMode = "system"; // system | light | dark - chosen via Settings > Theme
     function applyDemoTheme() {
       Core.applyTheme(demoWindowEl, demoThemeMode, themeQuery.matches);
       Core.setActiveThemeSeg(document.getElementById("themeMode"), demoThemeMode);
@@ -1235,6 +1256,110 @@
     if (location.hash === "#update") {
       requestAnimationFrame(() => document.getElementById("update")?.scrollIntoView());
     }
+    // ── The guide: the first time a visitor moves the mouse while the demo is
+    // in view, a cursor shows it working (types a search, clicks a filter,
+    // right-clicks a clip for its menu, clears it) through the demo's own
+    // controls, so what it shows is what a click does. It plays once, and any
+    // input of the visitor's (or any click it did not make) stops it for good.
+    // No tour on touch screens or under reduced motion.
+    const demoColumn = document.querySelector(".demo");
+    const demoGuide = document.getElementById("demo-guide");
+    const demoGuideTip = document.getElementById("demo-guide-tip");
+    const tour = { timer: 0, wake: null, started: false, stopped: false, acting: false, inView: false, left: "" };
+    const tourAllowed = () => !matchMedia("(prefers-reduced-motion: reduce)").matches && matchMedia("(hover: hover) and (pointer: fine)").matches;
+    const tourWait = (ms) => new Promise((resolve) => { tour.wake = resolve; tour.timer = setTimeout(resolve, ms); }).then(() => !tour.stopped);
+    // Glide the cursor to a point of el (at: offset in el, else its centre), with
+    // a tip under it; returns that point in viewport coordinates.
+    function guideTo(el, tip, at) {
+      const host = demoColumn.getBoundingClientRect();
+      const r = el.getBoundingClientRect();
+      const x = r.left + (at ? at.x : r.width / 2);
+      const y = r.top + (at ? at.y : r.height / 2);
+      demoGuide.style.transform = `translate(${Math.round(x - host.left)}px, ${Math.round(y - host.top)}px)`;
+      demoGuideTip.textContent = tip;
+      return { x, y };
+    }
+    function guideClick(run) {
+      demoGuide.classList.remove("click");
+      void demoGuide.offsetWidth; // restart the pulse
+      demoGuide.classList.add("click");
+      tour.acting = true;
+      try { run(); } finally { tour.acting = false; }
+      tour.left = state.query; // what the tour has left in the demo
+    }
+    // Hand over: the cursor goes, and a demo the tour left mid-way (a half-typed
+    // search, a filter, an open menu) is put back, so the visitor's own input
+    // lands on a clean demo. Their input runs after this (a capture listener).
+    function stopTour() {
+      if (tour.stopped) return;
+      tour.stopped = true;
+      clearTimeout(tour.timer);
+      if (tour.wake) tour.wake();
+      demoGuide.classList.remove("show");
+      if (tour.left && state.query === tour.left) {
+        tour.acting = true;
+        try { controller.closeMenu(); clearSearchAndFilters(); } finally { tour.acting = false; }
+      }
+    }
+    async function runTour(from) {
+      // Appear where the visitor's mouse is (kept inside the demo column), then glide.
+      const host = demoColumn.getBoundingClientRect();
+      demoGuide.classList.add("jump");
+      demoGuide.style.transform = `translate(${Math.round(Math.min(Math.max(from.x - host.left, 0), host.width - 40))}px, ${Math.round(Math.min(Math.max(from.y - host.top, 0), host.height - 40))}px)`;
+      demoGuideTip.textContent = "";
+      void demoGuide.offsetWidth;
+      demoGuide.classList.remove("jump");
+      demoGuide.classList.add("show");
+      if (!(await tourWait(200))) return;
+      guideTo(search, "Type to search", { x: 30, y: search.getBoundingClientRect().height / 2 });
+      if (!(await tourWait(1100))) return;
+      let typed = "";
+      for (const ch of "group:work") {
+        typed += ch;
+        guideClick(() => { search.value = typed; search.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: ch })); });
+        if (!(await tourWait(90))) return;
+      }
+      if (!(await tourWait(1300))) return;
+      const chip = document.querySelector('#filter-chips [data-filter="__images__"]:not([aria-disabled="true"])');
+      if (chip) {
+        guideTo(chip, "Click a filter");
+        if (!(await tourWait(1000))) return;
+        guideClick(() => chip.click());
+        if (!(await tourWait(1500))) return;
+      }
+      const row = document.querySelector("#clip-list .item");
+      if (row) {
+        const at = guideTo(row, "Right-click a clip for its menu", { x: Math.min(150, row.getBoundingClientRect().width / 2), y: 20 });
+        if (!(await tourWait(1100))) return;
+        guideClick(() => row.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2, clientX: at.x, clientY: at.y })));
+        demoGuideTip.textContent = ""; // the menu opens under the cursor: the tip would cover it
+        if (!(await tourWait(2200))) return;
+        guideClick(() => controller.closeMenu());
+      }
+      guideTo(clearSearch, "Now you try");
+      if (!(await tourWait(1000))) return;
+      guideClick(() => clearSearchAndFilters()); // the X's own action, minus its focus (the tour never takes the keyboard)
+      if (!(await tourWait(1600))) return;
+      tour.stopped = true;
+      demoGuide.classList.remove("show");
+    }
+    new IntersectionObserver((entries) => { tour.inView = entries.some((e) => e.isIntersecting); }, { threshold: 0.6 }).observe(demoWindowEl);
+    window.addEventListener("pointermove", (event) => {
+      if (tour.started || tour.stopped || !event.isTrusted || event.pointerType !== "mouse" || !tour.inView || !tourAllowed()) return;
+      tour.started = true;
+      const from = { x: event.clientX, y: event.clientY };
+      tour.timer = setTimeout(() => runTour(from), 600);
+    }, { passive: true });
+    // Hands off: the visitor's own input in the demo (or on an example search),
+    // any click the tour did not make, or leaving the page.
+    for (const type of ["pointerdown", "keydown", "contextmenu", "click", "wheel", "focusin"]) {
+      document.addEventListener(type, (event) => {
+        if (tour.acting || tour.stopped) return;
+        const inDemo = demoColumn.contains(event.target) || !!(event.target.closest && event.target.closest("[data-try]"));
+        if (inDemo || (tour.started && type !== "wheel" && type !== "focusin")) stopTour();
+      }, { capture: true, passive: true });
+    }
+    document.addEventListener("visibilitychange", () => { if (document.hidden && tour.started) stopTour(); });
     renderClips();
   </script>
 </body>

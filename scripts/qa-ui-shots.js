@@ -163,7 +163,33 @@ const focused = (page) => page.eval(`(() => {
 const STEPS = [
   { name: 'popup-list', popup: true, run: (c) => c.shot(c.popup, 'popup-list') },
   { name: 'popup-row-hover', popup: true, run: async (c) => { await c.popup.hover(`${row(c.ids.json)} .content`); await c.shot(c.popup, 'popup-row-hover'); } },
-  { name: 'popup-image-row-hover', popup: true, run: async (c) => { await c.popup.hover(`${row(c.ids.wide)} img`); await c.shot(c.popup, 'popup-image-row-hover'); } },
+  { name: 'popup-image-row-hover', popup: true, run: async (c) => {
+    // The buttons sit where a text row's do; a picture short of them leaves them plain.
+    await c.popup.hover(`${row(c.ids.wide)} img`);
+    await qa.sleep(250);
+    const plain = await c.popup.eval(`document.querySelector(${J(row(c.ids.wide))}).classList.contains('img-under')`);
+    if (plain) throw new Error('a picture that ends before the buttons should leave them unbacked');
+    await c.shot(c.popup, 'popup-image-row-hover');
+  } },
+  { name: 'popup-image-row-under', popup: true, run: async (c) => {
+    // Zoomed up, the picture reaches under the buttons: they get the frosted chip,
+    // and stay exactly where they were.
+    const at = () => c.popup.eval(`(() => { const r = document.querySelector(${J(row(c.ids.wide))}).querySelector('.img-actions > :first-child').getBoundingClientRect(); return [Math.round(r.left), Math.round(r.top - document.querySelector(${J(row(c.ids.wide))}).getBoundingClientRect().top)]; })()`);
+    await c.popup.hover(`${row(c.ids.wide)} img`);
+    await qa.sleep(250);
+    const before = await at();
+    await c.popup.eval(`(imageZoom.load(240), true)`);
+    await qa.sleep(400);
+    await c.popup.eval(`(document.querySelector(${J(row(c.ids.wide))}).scrollIntoView({ block: 'start' }), true)`);
+    await c.popup.hover(`${row(c.ids.wide)} .meta`);
+    await qa.sleep(350);
+    const under = await c.popup.eval(`document.querySelector(${J(row(c.ids.wide))}).classList.contains('img-under')`);
+    const after = await at();
+    if (!under) throw new Error('a picture under the buttons should back them');
+    if (before[0] !== after[0] || before[1] !== after[1]) throw new Error(`the buttons moved when backed: ${J(before)} -> ${J(after)}`);
+    await c.shot(c.popup, 'popup-image-row-under');
+    await c.popup.eval(`(imageZoom.load(60), true)`);
+  } },
   // Rows: hover each kind (titled, untitled multi-line, single-line short and
   // long, image,
   // with tags + numpad badge). A text row's buttons slide in on the reveal, an
@@ -581,10 +607,10 @@ const STEPS = [
     await c.shot(c.popup, 'popup-search-regex-typing');
     await c.popup.eval(`(searchBox.setRegex(false, { load: true }), true)`);
   } },
-  { name: 'popup-search-advanced-or', popup: true, run: async (c) => {
+  { name: 'popup-search-or-groups', popup: true, run: async (c) => {
     await setQuery(c, 'group:Work OR group:Ideas (plan OR notes) -/draft\\d+/');
     await qa.sleep(300);
-    await c.shot(c.popup, 'popup-search-advanced-or');
+    await c.shot(c.popup, 'popup-search-or-groups');
   } },
   // The options panel (the tune toggle), opened by a real press, then with a
   // facet chip applied (it writes the token into the query and lights the toggle).
@@ -741,6 +767,31 @@ const STEPS = [
     await ed.waitFor(`!!document.querySelector('textarea, .bc-editor')`, 'editor ready');
     await ed.fontsReady();
     await c.shot(ed, 'editor');
+    // The idle title is header (the popup search field's rule): a drag moves the
+    // window and selects nothing, a click starts a rename with the caret there.
+    // CDP has no screen coordinates: one (+40, +30) move is a (+40, +30) screen
+    // delta while the window has not moved yet (qa-popup-header's method).
+    const edBounds = () => c.sb.mainEval(`(() => { const w = __qa.electron.BrowserWindow.getAllWindows().find((x) => /editor\\.html/.test(x.webContents.getURL())); return w.getBounds(); })()`);
+    const tt = await ed.centerOf('.bc-bar-title');
+    const b0 = await edBounds();
+    await ed.mouse('mouseMoved', tt.x, tt.y);
+    await ed.mouse('mousePressed', tt.x, tt.y, { button: 'left', buttons: 1, clickCount: 1 });
+    await ed.mouse('mouseMoved', tt.x + 2, tt.y + 1, { button: 'left', buttons: 1 });
+    await ed.mouse('mouseMoved', tt.x + 40, tt.y + 30, { button: 'left', buttons: 1 });
+    await qa.sleep(250);
+    const b1 = await edBounds();
+    await ed.mouse('mouseReleased', tt.x + 40, tt.y + 30, { button: 'left', buttons: 0, clickCount: 1 });
+    await qa.sleep(200);
+    const afterDrag = await ed.eval(`({ titleFocused: document.activeElement === document.querySelector('.bc-bar-title'), selected: getSelection().toString() })`);
+    if (b1.x - b0.x !== 40 || b1.y - b0.y !== 30 || afterDrag.titleFocused) throw new Error(`a drag on the idle title should move the window and not edit: ${J({ b0, b1, afterDrag })}`);
+    const tt2 = await ed.centerOf('.bc-bar-title');
+    await ed.mouse('mousePressed', tt2.x, tt2.y, { button: 'left', buttons: 1, clickCount: 1 });
+    await ed.mouse('mouseReleased', tt2.x, tt2.y, { button: 'left', buttons: 0, clickCount: 1 });
+    await qa.sleep(200);
+    const afterClick = await ed.eval(`(() => { const t = document.querySelector('.bc-bar-title'); return { focused: document.activeElement === t, at: t.selectionStart, len: t.value.length }; })()`);
+    if (!afterClick.focused || !(afterClick.at > 0 && afterClick.at < afterClick.len)) throw new Error(`a click on the idle title should start a rename with the caret where it was clicked: ${J(afterClick)}`);
+    c.note('editorTitleDrag', { moved: [b1.x - b0.x, b1.y - b0.y], caret: afterClick });
+    await ed.eval(`(document.querySelector('textarea').focus(), true)`);
     // The bar's own find button, as a user opens it; a step that never shows
     // the bar must be reported as skipped, not shot as the plain editor.
     await ed.click('.bc-bar [data-x="find"]');
@@ -839,7 +890,7 @@ const STEPS = [
       const p = await c.popup.eval(`(() => {
         const paint = (sel) => [...document.querySelectorAll(sel)].map((el) => getComputedStyle(el).backgroundColor).filter((bg) => bg !== 'rgba(0, 0, 0, 0)' && bg !== 'transparent');
         const alpha = (bg) => { const i = bg.lastIndexOf('/'); if (i >= 0) return parseFloat(bg.slice(i + 1)); if (bg.indexOf('rgba(') === 0) return parseFloat(bg.slice(bg.lastIndexOf(',') + 1)); return 1; };
-        const blurred = [...document.querySelectorAll('*')].filter((el) => { const b = getComputedStyle(el).backdropFilter; return b && b !== 'none' && !el.closest('.img-actions'); /* the image rows' frosted chip frosts the picture, not the window */ }).map((el) => el.className || el.tagName);
+        const blurred = [...document.querySelectorAll('*')].filter((el) => { const b = getComputedStyle(el).backdropFilter; return b && b !== 'none' && !el.closest('.img-actions'); /* an image row's buttons, over the picture, frost the picture, not the window */ }).map((el) => el.className || el.tagName);
         const band = getComputedStyle(document.querySelector('.sticky')).backgroundColor;
         return { surface: document.documentElement.dataset.surface, band, bandAlpha: alpha(band), blurred,
           painted: ['body', '.main-view', '.sticky header', '.search-row', '.chip-row', '.group-filters', '.list-wrap', '.list'].flatMap((sel) => paint(sel).map((bg) => sel + ' ' + bg)) };

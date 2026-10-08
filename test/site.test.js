@@ -39,7 +39,10 @@ assert.ok(marketing.length > 1000, 'the demo scripts load from relative shared/ 
   assert.ok(!/color-scheme\s*:/.test(stripComments(siteCss)), 'site/styles.css locks a color-scheme (the token tier sets it per theme)');
   assert.ok(!/#[0-9a-f]{3,8}\b|rgba?\(|hsla?\(/i.test(stripComments(siteCss)), 'site/styles.css hard-codes a colour (use the semantic tokens)');
   assert.ok(!/var\(--(?:g|blue|teal|green|red|amber)-\d/.test(siteCss), 'site/styles.css reaches for a primitive colour (use the semantic tier)');
-  for (const v of decls(siteCss, 'font-size')) assert.ok(/^var\(--fs-(?:meta|ui|text|display)\)$/.test(v), `site font-size "${v}" is not a role token`);
+  for (const v of decls(siteCss, 'font-size')) assert.ok(/^var\(--fs-(?:meta|ui|text|display|hero)\)$/.test(v), `site font-size "${v}" is not a role token`);
+  // The hero headline is the one size past the role scale, and it is derived
+  // from the display role (never an independent scale).
+  for (const v of decls(siteCss, '--fs-hero')) assert.ok(/^calc\(var\(--fs-display\) \* [\d.]+\)$/.test(v), `--fs-hero "${v}" must derive from --fs-display`);
   for (const v of decls(siteCss, 'font-weight')) assert.ok(/^var\(--fw-(?:regular|strong)\)$/.test(v), `site font-weight "${v}" is not --fw-regular/--fw-strong`);
   for (const v of decls(siteCss, 'border-radius')) assert.ok(/^var\(--r-(?:1|ctl|chip|panel)\)$/.test(v), `site border-radius "${v}" is not a radius token`);
   for (const v of decls(siteCss, 'line-height')) assert.ok(/^(?:var\(--lh-(?:ui|text)\)|1)$/.test(v), `site line-height "${v}" is not a role token`);
@@ -66,15 +69,22 @@ assert.ok(marketing.length > 1000, 'the demo scripts load from relative shared/ 
   assert.ok(!/method-tab|os-tab|download-button|github-button/.test(siteHtml + siteCss), 'a retired site tab/button component is back (use .seg / .btn)');
 }
 
-// 5) The demo is the app popup: its default size, no footer strip, no ghost
-//    cursor, and the Appearance rows the app shows without the debug flag.
+// 5) The demo is the app popup: its default size, no footer strip, and the
+//    Appearance rows the app shows without the debug flag. The guide cursor is
+//    back (owner, 8 Oct 2026: "what happen to the moving cursor we had before?"):
+//    ONE tour that drives the demo's own controls, never takes a click, plays
+//    once, stops on the visitor's input, and is off under reduced motion and on
+//    touch screens.
 {
   const winW = Number((mainJs.match(/^const WIN_W = (\d+);/m) || [])[1]);
   const winH = Number((mainJs.match(/^const WIN_H = (\d+);/m) || [])[1]);
   assert.ok(new RegExp(`--demo-w:\\s*${winW}px`).test(siteCss) && new RegExp(`--demo-h:\\s*${winH}px`).test(siteCss),
     `the demo frame must be the app popup's default ${winW}x${winH}`);
   assert.ok(!/afterListHtml/.test(siteHtml), 'the demo passes afterListHtml (the app popup has no footer strip)');
-  assert.ok(!/demo-foot|random-query|demo-guide|runGuide|guideTimer/.test(siteHtml + siteCss), 'the demo footer strip or the ghost cursor is back');
+  assert.ok(!/demo-foot|random-query/.test(siteHtml + siteCss), 'the demo footer strip is back');
+  assert.strictEqual((siteHtml.match(/async function runTour\(/g) || []).length, 1, 'one guide tour');
+  assert.ok(/prefers-reduced-motion: reduce\)"\)\.matches && matchMedia\("\(hover: hover\) and \(pointer: fine\)"\)/.test(siteHtml), 'the tour is off under reduced motion and on touch screens');
+  assert.ok(/\.demo-guide \{[^}]*pointer-events: none/.test(stripComments(siteCss)) && /prefers-reduced-motion: reduce\) \{\s*\.demo-guide \{ display: none; \}/.test(siteCss), 'the guide never takes a click and is hidden under reduced motion');
   // The Appearance rows come from the shared settings body and are bound by the
   // shared Core.mountSettings on both sides; the demo paints them through the
   // same Core.applyAppearance. Only the audit-only Borders axis stays out.

@@ -132,11 +132,12 @@ window.editorApi.onInit((init) => {
     initialText: init.text || '',
     initialTitle: init.noteTitle || '',
     initialFind: init.find || '',
-    initialFindMode: init.findMode,
+    initialFindRegex: init.findRegex,
     findPrefs: init.findPrefs,
     saveFindPrefs: (prefs) => window.editorApi.saveFindPrefs && window.editorApi.saveFindPrefs(prefs),
     initialFocusTitle: !!init.focusTitle,
     nativeControls: true,
+    windowDrag: window.editorApi.windowDrag,
     toastEl: document.getElementById('toast'), // Revert to original offers Undo here
     onInput: (payload) => window.editorApi.draft(payload),     // live crash-safe draft, every keystroke
     // idle / Ctrl+S / close -> write the clip. The commit changes the content-
@@ -177,7 +178,7 @@ if (window.editorApi.onFind) {
   window.editorApi.onFind((find) => {
     if (!editor || !find) return;
     if (find.focusTitle && editor.focusTitle) editor.focusTitle();
-    else if (find.query) editor.openFind(find.query, find.findMode);
+    else if (find.query) editor.openFind(find.query, find.findRegex);
   });
 }
 
@@ -190,6 +191,7 @@ if (window.editorApi.onConflict) {
     editor = null;
     reconcileView = Core.createReconciliationView({
       record,
+      windowDrag: window.editorApi.windowDrag,
       onResolve: async (resolution) => {
         if (record.unify && window.editorApi.unifyStep) {
           const next = await window.editorApi.unifyStep(resolution);

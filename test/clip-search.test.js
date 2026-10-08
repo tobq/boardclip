@@ -263,6 +263,31 @@ const idsOf = (items, parsed, opts) => S.filterRankIndexes(items, parsed, opts).
   // The old regex flag (AI tools): the plain words as ONE regex.
   assert.strictEqual(S.legacyRegexQuery('\\d+ foo group:A'), '/\\d+ foo/ group:A');
   assert.strictEqual(S.legacyRegexQuery('group:A'), 'group:A');
+  // The language still types with Regex on: '-', '(', ')' and a quote are its
+  // own at a fresh spot, and a ':' ending a filter key turns the term back into it.
+  for (const ch of ['-', '(', ')', '"']) assert.strictEqual(type('a ', 2, ch), null, `'${ch}' at a fresh spot is typed as usual`);
+  assert.deepStrictEqual(type('a (', 3, 'x'), { text: 'a (/x/', caret: 5 });
+  assert.strictEqual(type('"', 1, 'a'), null, 'a phrase is typed as usual');
+  assert.deepStrictEqual(type('/group/', 6, ':'), { text: 'group:', caret: 6 }, 'a filter key unwraps');
+  assert.deepStrictEqual(type('x -/is/', 6, ':'), { text: 'x -is:', caret: 6 });
+  assert.strictEqual(type('group:', 6, 'w'), null, 'its value is typed as usual');
+  assert.deepStrictEqual(type('/title/', 6, ':'), { text: 'title:', caret: 6 });
+  assert.deepStrictEqual(type('title:', 6, 'x'), { text: 'title:/x/', caret: 8 }, 'a title: value is still a /regex/');
+  assert.strictEqual(type('/foo/', 4, ':'), null, 'a word that is not a filter key keeps its colon in the pattern');
+  assert.strictEqual(type('/gro/', 2, ':'), null, 'only at the end of the pattern');
+  // An open quote is the scanner's: a quote inside a /regex/ never counts.
+  assert.ok(!S.insideQuote('/a"b/ x', 7) && S.insideQuote('foo "ab c', 9) && !S.insideQuote('"ab" c', 6));
+  assert.deepStrictEqual(type('/a"b/ ', 6, 'x'), { text: '/a"b/ /x/', caret: 8 });
+  // Off in an empty // pair takes the pair away.
+  assert.deepStrictEqual(S.toggleRegexAt('a //', 3, false), { text: 'a ', caret: 2 });
+  // ONE escape-aware slash rule: an escaped \/ stays, a trailing lone backslash of
+  // complete text is doubled, a single typed backslash waits for its next key.
+  assert.deepStrictEqual(S.toggleRegexAt('a\\/b', 1, true), { text: '/a\\/b/', caret: 5 });
+  assert.deepStrictEqual(S.toggleRegexAt('a\\', 1, true), { text: '/a\\\\/', caret: 4 });
+  assert.deepStrictEqual(type('', 0, '\\'), { text: '/\\/', caret: 2 });
+  assert.strictEqual(type('/\\/', 2, 'd'), null, 'then \\d completes it');
+  assert.strictEqual(type('/ab/', 2, 'x\\/y'), null, 'a pasted \\/ is already escaped');
+  assert.deepStrictEqual(type('/ab/', 3, 'c\\'), { text: '/abc\\\\/', caret: 6 }, 'a paste ending in a backslash cannot escape the closing slash');
 }
 
 // ── the or / and of an OR dimension (the chip row's leading toggle, the panel's Type row) ──
@@ -275,6 +300,33 @@ const idsOf = (items, parsed, opts) => S.filterRankIndexes(items, parsed, opts).
   assert.strictEqual(S.setDimConnective('group:A x group:B', 'group', 'or'), 'group:A OR group:B x');
   assert.strictEqual(S.setDimConnective('is:text OR is:url', 'type', 'and'), 'is:text is:url');
   assert.strictEqual(S.setDimConnective('group:A', 'group', 'and'), 'group:A');
+}
+
+// ── the remembered or / and, and one choice per group family ──
+{
+  const g = (v) => ({ kind: 'group', value: v });
+  const and = { joins: { group: 'and', type: 'and' } };
+  assert.strictEqual(S.applyFacet('group:A', g('B'), 'include'), 'group:A OR group:B', 'default: either');
+  assert.strictEqual(S.applyFacet('group:A', g('B'), 'include', and), 'group:A group:B', 'a remembered and joins the second value');
+  assert.strictEqual(S.applyFacet('group:A OR group:B', g('C'), 'include', and), 'group:A OR group:B OR group:C', 'a written OR keeps its join');
+  assert.strictEqual(S.applyFacet('is:text', { kind: 'is', value: 'url' }, 'include', and), 'is:text is:url');
+  assert.strictEqual(S.applyFacet('num:1', { kind: 'num', value: 2 }, 'include', { joins: { num: 'and' } }), 'num:1 OR num:2', 'numpad keys are never remembered as and (a clip has one key)');
+  assert.deepStrictEqual(S.normalizeJoins({ group: 'and', type: 'or', num: 'and', x: 'and' }), { group: 'and' });
+  assert.deepStrictEqual(S.normalizeJoins(null), {});
+  // A parent absorbs its selected sub-groups; a sub-group drills down from its parent.
+  assert.strictEqual(S.applyFacet('x group:Work/Clients', g('Work'), 'include'), 'x group:Work');
+  assert.strictEqual(S.applyFacet('group:Work', g('Work/Clients'), 'include'), 'group:Work/Clients');
+  assert.strictEqual(S.applyFacet('group:Ideas OR group:Work/Clients', g('Work'), 'include'), 'group:Ideas OR group:Work', 'an OR keeps its join');
+  assert.strictEqual(S.applyFacet('group:Ideas group:Work/Clients', g('Work'), 'include'), 'group:Ideas group:Work', 'an AND keeps its join');
+  assert.strictEqual(S.applyFacet('group:Work/Clients', g('Work'), 'exclude'), '-group:Work', 'excluding a parent drops its selected sub-groups');
+  assert.strictEqual(S.applyFacet('group:Work', g('Work/Clients'), 'exclude'), 'group:Work -group:Work/Clients', 'Work except Clients');
+  assert.strictEqual(S.applyFacet('-group:Work/Clients', g('Work'), 'include'), 'group:Work -group:Work/Clients');
+  assert.strictEqual(S.applyFacet('group:Workshop', g('Work'), 'include'), 'group:Work OR group:Workshop', 'a name prefix is not a family');
+  // The census greys by the remembered join: with A selected, B counts A and B.
+  const docs = [['A'], ['B'], ['A', 'B']].map((groups, i) => S.clipToDoc({ id: `t${i}`, type: 'text', text: `c${i}`, ts: 1, pin: { groups } }));
+  const p = S.parseQuery('group:A');
+  assert.strictEqual(S.facetCensus(docs, p, { groups: ['A', 'B'] }).count('group:B'), 2, 'or: what B adds');
+  assert.strictEqual(S.facetCensus(docs, p, { groups: ['A', 'B'], joins: { group: 'and' } }).count('group:B'), 1, 'and: what A and B share');
 }
 
 // ── autocomplete + highlight of the one language ──
@@ -481,8 +533,14 @@ const idsOf = (items, parsed, opts) => S.filterRankIndexes(items, parsed, opts).
   assert.deepStrictEqual([v.enabled, v.kind], [false, 'structural'], 'an image has no length');
   assert.ok(/is:image/.test(v.reason), 'the structural reason names the blocking filter');
   assert.strictEqual(verdict('lines:>3', { kind: 'builtin', value: '__images__' }).kind, 'structural', 'is:image with lines:>3 can never match');
-  assert.strictEqual(verdict('is:multiline', { kind: 'is', value: 'url' }).kind, 'structural', 'a link is one line');
-  assert.strictEqual(verdict('is:url', { kind: 'is', value: 'multiline' }).kind, 'structural');
+  // Kinds join with OR by default: a picked kind never blocks another (either can match);
+  // under a remembered "and" the pair that can never meet is structural.
+  const andVerdict = (q, token) => S.facetOptionVerdict(S.facetCensus(docs, S.parseQuery(q), { now: NOW, groups: [], joins: { type: 'and' } }), S.parseQuery(q), token);
+  assert.notStrictEqual(verdict('is:multiline', { kind: 'is', value: 'url' }).kind, 'structural', 'or: a multi-line clip or a link');
+  assert.notStrictEqual(verdict('is:text', { kind: 'builtin', value: '__images__' }).kind, 'structural', 'or: text or an image');
+  assert.strictEqual(andVerdict('is:multiline', { kind: 'is', value: 'url' }).kind, 'structural', 'and: a link is one line');
+  assert.strictEqual(andVerdict('is:url', { kind: 'is', value: 'multiline' }).kind, 'structural');
+  assert.strictEqual(andVerdict('is:text', { kind: 'builtin', value: '__images__' }).kind, 'structural', 'and: an image has no text');
   assert.strictEqual(verdict('-is:pinned', { kind: 'builtin', value: '__numbered__' }).kind, 'structural', 'a numpad clip is pinned');
   assert.ok(verdict('is:image', { kind: 'len', value: '<80' }).enabled, 'len:<80 still fits an image (length 0)');
   v = verdict('', { kind: 'is', value: 'rich' });

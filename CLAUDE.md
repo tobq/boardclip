@@ -231,7 +231,7 @@ Otherwise the key passes through so normal numpad typing works. Main thread call
 - **Search facets (2026-09-03)**: `len:` accepts ranges (`len:50-200`), plus `lines:`/`ln:` and
   `words:`/`wd:` with the same comparators, and `is:url` / `is:multiline` / `is:rich`. ONE
   table describes every field: `FIELD_INFO` in clip-search.js (`desc`, `short` alias, per-value
-  hints). The autocomplete hints, `PREFIX_HINTS` / `PREFIX_SHORT` and the options panel's key
+  hints). The autocomplete hints, `PREFIX_HINTS` and the options panel's key
   chips' tooltips are all DERIVED from it, so a hint reads the same everywhere. Add a facet =
   parser + a `FIELD_INFO` entry (+ an `OPTION_FACETS` row if it deserves a one-click chip).
 - **Options panel = Forge's model, NO syntax table (2026-10-08, owner: "u learn the format from
@@ -254,8 +254,9 @@ Otherwise the key passes through so normal numpad typing works. Main thread call
   header too (drag moves, click focuses it: nothing to select); with text, a drag selects text.
   The chip row (`.group-filters`, `Core.attachChipStrip`) is ONE line that scrolls sideways
   under the sideways fade (`attachSideScroll` = `attachScrollFade(el, preset, {axis:'x'})` + a
-  plain wheel scrolls it) and shows every chip, wrapped, while the options panel is open (FLIP
-  glide both ways, instant under reduced motion or a hidden page). Its top-level group submenus
+  plain wheel scrolls it) and shows every chip, wrapped, while the options panel is open (the
+  chips glide through the ONE `Core.flipChildren`, the strip's height is its own WAAPI glide;
+  instant under reduced motion or a hidden page). Its top-level group submenus
   are `popover="manual"` shown in the TOP LAYER by `installSubmenuAutoflip`
   (`placeTopLayerSubmenu`): a scrolling, masked strip would clip a nested absolute submenu, and a
   mask clips every descendant, fixed ones included. They follow their chip when the strip scrolls
@@ -405,7 +406,9 @@ build could re-trigger the race.
   (windowed: ~60 rows around the kept place, grown both ways on scroll; `update({ids, tsAt, mode,
   queryKey})` per rebuild). The PURE `Core.resolveListAnchor` decides where a rebuild sits: anchor = the
   cursor row if on screen else the top visible row, restored to the same pixel offset; starting a search
-  or flipping to Best = top; leaving a search (clear / text removed) keeps the clip even unscrolled;
+  (typing into an EMPTY box, `started`) = top, any other edit (a chip, a word after a chip, Recent ->
+  Best) keeps the clip while it matches; the Best/Recent override ends when the box empties (by any
+  route); leaving a search (clear / text removed) keeps the clip even unscrolled;
   refine keeps it if it still matches, else nearest-in-time for time-ordered lists (`Search.rankMode`
   'none'/'new') or top for Best; unscrolled with no cursor stays at the top. A query change clears the
   multi-select at once (`controller.onQueryChange`) and keeps the cursor only if it was the on-screen
@@ -538,7 +541,9 @@ clear-all). All popup CSS + theme variables live in `site/shared/clipboard-popup
 - **The search bar TEXT is the single source of truth.** Facets (`group:`/`is:`/`num:`/
   `since:`…) live as tokens INSIDE the query string; the chip bar's active/excluded state
   is DERIVED via `facetState(parseQuery(q))`. There is NO separate `activeFilters`/
-  `excludedFilters` Set anymore (that dual-model was the drift Forge killed). A chip click
+  `excludedFilters` Set anymore (that dual-model was the drift Forge killed; its last helpers,
+  `filterStateFrom`/`applyFilterIntent`/`matchesFilter`/`clearFilterState`, went 2026-10-08:
+  `filterItemIndexes` and `hasActiveFilters` read only `state.query`). A chip click
   rewrites query tokens through `Core.search.applyFacet(query, token, intent)`; deleting a
   group strips its `group:`/`-group:` tokens. `ui-parity.test.js` #11 guards that neither
   consumer reintroduces filter Sets.
@@ -571,24 +576,51 @@ clear-all). All popup CSS + theme variables live in `site/shared/clipboard-popup
   usual (`Search.regexTypingEdit` / `regexBackspaceEdit`, wired in `attachSearchBox`'s
   `beforeinput`). Flipping the toggle wraps / unwraps the word at the caret (`toggleRegexAt`).
   `attachSearchBox` owns the query (`getQuery`/`setQuery`, onChange); one toggle component
-  `Core.attachToggle` = the search box's Regex and the find bar's Regex + case (Alt+C).
+  `Core.attachToggle` = the search box's Regex and the find bar's Regex + case (Alt+C); every
+  toggle chord goes through ONE document listener and the innermost scope holding the focus takes it
+  (the demo's editor overlay sits inside its popup; the search box's scope is its `.main-view`).
+  Regex typing (key by key, QA'd): a fresh `-` `(` `)` `"` types natively, `:` after a recognised
+  key unwraps `/group/` to `group:`, typing over a selection and IME/dead-key compositions go
+  through the same edit, and every edit is undoable (`insertText`, one Ctrl/Cmd+Z per wrap).
   **Chip row = [builtins] | [or/and][selected][excluded] | [usable by use][greyed]**
-  (`renderFilterBar`): the selection moves to the front between `.cluster-sep` hairlines, led by a
-  `.conn-toggle` once two or more of the dimension are joined (`Search.dimConnective`; a click =
+  (`renderFilterBar`): the cluster holds EXACTLY the values in the query (a sub-group is its own
+  chip there under its full name, work/api; its parent stays with the rest), between `.cluster-sep`
+  hairlines (keyed, so they fade too), led by a `.conn-toggle` once two or more of the dimension are
+  joined, or ONE under a remembered "and" (`Search.dimConnective(parsed, dim, joins)`: the visible
+  way back to "or"; a click =
   `setDimConnective`, written `group:A OR group:B` vs side by side); the options panel's Type row
   leads with the same `connToggleHtml`. Chips glide on every repaint (`Core.flipChildren`, FLIP via
-  `element.animate`, keyed by data-group / data-filter / data-dim; instant under reduced motion).
-  A second chip of an OR dimension ORs in (at its value order: chips in any order write the same
-  text); a click on a value in an OR takes it out; right-click excludes. "And" of disjoint groups
-  shows nothing, so the census greys every other chip (correct, not a bug). Key / "Since..."
+  `element.animate`, keyed by data-group / data-filter / data-dim; a new one fades in, one that left
+  fades out where it was as an inert, unkeyed `.flip-ghost` (owner: "so it doesn't feel like it
+  crashed"); instant under reduced motion). Every chip goes through the SEARCH BOX
+  (`searchBox.applyFacet(token, intent)` / `setConnective`, which own the remembered join; the
+  controller's `filterIntent` reads the chip's own data-filter / data-group; adapters pass
+  `applyFacet`/`setConnective` through, no per-consumer chip code). A second chip
+  of a kind joins the first the way the user LAST flipped that kind's or/and (`facet_joins`
+  {group, type}, per device; numpad keys never "and": a clip has one key); an existing OR / AND
+  keeps the join it is written with. The census is keyed on it (`createCensusCache({ joins })`,
+  `openDims`): under a remembered "and" a lone value is a plain filter, so a chip "and" would
+  empty is greyed, never a click that returns nothing (seed QA groups that OVERLAP). Kinds of clip
+  picked under the default "or" never block each other structurally (`structuralReason` reads the
+  census's `open` dims: is:text then the Images chip = "text or image"). One choice
+  per group FAMILY (`group:Work` already holds `Work/Clients`): a picked group replaces its
+  selected parents and sub-groups (last click wins: a parent widens, a sub-group drills down,
+  the join kept), excluding a parent drops its selected sub-groups, an excluded sub-group under
+  an included parent stays ("Work except Clients"). A click on a value in an OR takes it out;
+  right-click excludes. Key / "Since..."
   chips write their prefix into the field (the autocomplete offers values; `FIELD_EXAMPLE` is the
-  tooltip example). Settings: `regex_search`, `find_mode`, `find_case` are LOCAL-ONLY (never
-  synced); the hour-old `search_mode: 'regex'` migrates to `regex_search: true` and is stripped.
+  tooltip example). Settings: `regex_search`, `facet_joins`, `find_regex`, `find_case` are
+  LOCAL-ONLY (never synced); the hour-old `search_mode: 'regex'` migrates to `regex_search: true`
+  and the old `find_mode: 'regex'` to `find_regex: true`, both keys stripped (the demo's
+  `boardclip-demo-search-mode` key and `{mode}` find prefs likewise). The find bar's saved Regex
+  changes only by its toggle; a popup hand-off (`editorFindFor` -> `findRegex`) sets it for that
+  search only.
   The editor hand-off is `Core.editorFindFor(query)` (its words and patterns, never its filters;
   several terms = one regex alternation). MCP `search_clips` takes the whole language; legacy
   `regex: true` = `legacyRegexQuery` (the free words as ONE /regex/). QA: `qa-popup-header`
-  (regex typing, Alt+R wrap/unwrap, the cluster + or/and + exclude + glide, the Type row),
-  `qa-ui-shots` `popup-chips-cluster` / `popup-search-regex-typing` / `-advanced-or` /
+  (regex typing, Alt+R wrap/unwrap, the cluster + or/and + exclude + glide + fade-out ghost, the
+  remembered join, the group family, the Type row),
+  `qa-ui-shots` `popup-chips-cluster` / `popup-search-regex-typing` / `popup-search-or-groups` /
   `editor-find-regex`.
 - **Group usage = ONE decayed score (2026-10-08, owner)**: `Search.groupWeights(list)` = each
   group's clips weighted by `decayWeight(age, 14 d)` (ts moves on every use; parents count their
@@ -725,7 +757,10 @@ clear-all). All popup CSS + theme variables live in `site/shared/clipboard-popup
   never duplicate a picker or mutation path. New notes supply `ensureClipId`: pin, # and + all
   commit first, re-query the id, then act; measure the anchor rect *before* awaiting (the commit
   refresh replaces the button). The old chip strip with an x (`renderClipTagChips`, `.gtag-x`,
-  `untag`) is gone.
+  `untag`) is gone. The editor's and merge view's TITLE field is header while idle (the popup
+  search field's rule, `attachWindowDrag(titleInput, { field: 'idle', move: o.windowDrag })`): a drag
+  moves the window (`window-drag` IPC, a maximised window stays put), a click starts a rename with
+  the caret where it was clicked (`caretIndexAtX`); while it is being edited a drag selects text.
 - **The popup opens at the REAL cursor** (`getCursorScreenPoint`): a QA check that compares two
   opens must pin it in the sandbox main (`qa-popup-header` stubs `screen.getCursorScreenPoint`
   for its slide/drag runs), or the owner moving the mouse fails it.
@@ -981,8 +1016,12 @@ clear-all). All popup CSS + theme variables live in `site/shared/clipboard-popup
 - **Rows (`Core.renderClipItem`)**: one anatomy (primary line: a real title at `--fw-strong`, an
   untitled clip's first line regular; dim mono preview; meta line), star = pin only (`--icon-md`
   in a `--ctl-md` box centred on the first line), row buttons on the shared `.bc-reveal` (held
-  while the menu is open / dragged / focus inside), image rows' buttons on a frosted chip over the
-  picture (no row ever changes height on hover). Meta line (`renderClipMeta`): time, size, `#N`
+  while the menu is open / dragged / focus inside), image rows' buttons at the SAME place (the row's
+  top right) but floating, so the picture never resizes; plain like a text row's, frosted
+  (`.img-under`) only while the picture reaches under them (`Core.markImageUnder` on row entry, a
+  ResizeObserver while open: zoom / resize), the chip's padding cancelled by its margin so the
+  buttons never move (owner 2026-10-08: "on the image corner instead of content corner feels dumb";
+  no row ever changes height on hover). Meta line (`renderClipMeta`): time, size, `#N`
   badge and group names as plain text, every text gap `--sp-3` (badge + names pull their hover
   padding back out with a negative margin), hover ghosts `#` (only without a key) and `+` on the
   reveal -> the keypad / group picker popovers. `Core.fitMetaTags` (on row pointer/focus entry,
@@ -997,7 +1036,8 @@ clear-all). All popup CSS + theme variables live in `site/shared/clipboard-popup
   (normal/compact), `data-corners` (soft/sharp), `data-borders`
   (bordered/borderless). EVERY window (popup, editor/unify/conflict, viewer, approval)
   and the demo paint main's payload (`appearanceVariantPayload` + the window's surface,
-  `lib/appearance.js` validates/syncs) through ONE `Core.applyAppearance(root, look)`
+  `lib/appearance.js` validates/syncs: theme, accent, density and corners are stamped synced
+  groups, the newest change wins on every device) through ONE `Core.applyAppearance(root, look)`
   (2026-10-08): `applyVariants` plus a System/Custom colour as `data-accent="custom"` +
   six inline vars (`Core.accentShades`: per theme the colour, or the nearest shade
   reaching 3:1 on the theme surfaces with an ink at 4.5:1, plus a TEXT shade; tokens pick

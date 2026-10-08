@@ -23,6 +23,7 @@ const getCloudAccounts = require('./lib/cloud-accounts');
 const blobStore = require('./lib/blob-store');
 const backupStore = require('./lib/backup');
 const clipboardModel = require('./lib/clipboard-model');
+const clipSearch = require('./site/shared/clip-search');
 const clipRevisionCheck = require('./lib/clip-revision');
 const clipboardCapture = require('./lib/clipboard-capture');
 const textBlobStore = require('./lib/text-blob-store');
@@ -499,7 +500,7 @@ async function writeInPlace(filePath, data) {
 // plaintext API key). In-app AI search was removed 2026-09-02; search_mode (a
 // three-way picker that lived for an hour on 2026-10-08) folds back into the
 // Regex toggle (regex_search, now per device).
-const REMOVED_SETTING_KEYS = ['ai_search_endpoint', 'ai_search_key', 'ai_search_model', 'ai_search_scope', 'search_mode'];
+const REMOVED_SETTING_KEYS = ['ai_search_endpoint', 'ai_search_key', 'ai_search_model', 'ai_search_scope', 'search_mode', 'find_mode'];
 
 function loadSettings() {
   try {
@@ -512,6 +513,8 @@ function loadSettings() {
     const promoted = appearance.migrateAppearanceSettings(loaded, { debugVariants: debugVariantsEnabled() });
     const merged = { ...DEFAULT_SETTINGS, ...(promoted && typeof promoted === 'object' ? promoted : {}) };
     if (promoted && promoted.search_mode === 'regex' && promoted.regex_search !== true) merged.regex_search = true;
+    // The find bar's Regex, once a 'basic' | 'regex' string, is a boolean like the search box's.
+    if (promoted && promoted.find_mode === 'regex' && promoted.find_regex !== true) merged.find_regex = true;
     for (const key of REMOVED_SETTING_KEYS) delete merged[key];
     return merged;
   } catch {
@@ -1180,7 +1183,7 @@ function mergeGroups(local, remote) {
 // Settings the save-settings IPC may write without touching history or sync
 // (per-machine display knobs; the window surface reaches the windows through
 // its own broadcast).
-const LOCAL_ONLY_SETTING_KEYS = new Set(['image_preview_height', 'options_panel_height', 'surface_style', 'glass_scope', 'regex_search', 'find_mode', 'find_case']);
+const LOCAL_ONLY_SETTING_KEYS = new Set(['image_preview_height', 'options_panel_height', 'surface_style', 'glass_scope', 'regex_search', 'facet_joins', 'find_regex', 'find_case']);
 
 function remoteSettingsPayload() {
   const remoteSave = {
@@ -1216,7 +1219,8 @@ function remoteSettingsPayload() {
   // The search field's Regex toggle and the editor find's Regex + match case:
   // per device (each machine keeps the way it searches).
   delete remoteSave.regex_search;
-  delete remoteSave.find_mode;
+  delete remoteSave.facet_joins;
+  delete remoteSave.find_regex;
   delete remoteSave.find_case;
   // AI Access: per-machine, never synced. (groups_shared_with_ai DOES sync - it
   // is user curation that should travel between machines.)
@@ -5371,9 +5375,9 @@ function createEditorWindow(session, presentOptions = {}) {
         noteTitle: session.baseTitle,
         clipboardFollowing: !!(session.follow && session.follow.isFollowing()),
         find: session.initialFind || '',
-        findMode: session.initialFindMode,
+        findRegex: session.initialFindRegex,
         // The find bar's own mode + match case, kept per device (Ctrl+F with no hand-off).
-        findPrefs: { mode: settings.find_mode === 'regex' ? 'regex' : 'basic', caseSensitive: !!settings.find_case },
+        findPrefs: { regex: !!settings.find_regex, caseSensitive: !!settings.find_case },
         focusTitle: !!session.initialFocusTitle,
         title: session.isNew ? 'New clip' : 'Edit clip',
         isNew: session.isNew,
@@ -5440,7 +5444,7 @@ function openEditor(id, options = {}) {
       if (s && s.win && !s.win.isDestroyed()) {
         try {
           presentSecondaryWindow(s.win, options);
-          if (options && options.find) s.win.webContents.send('editor-find', { query: options.find, findMode: options.findMode === 'regex' ? 'regex' : 'basic' });
+          if (options && options.find) s.win.webContents.send('editor-find', { query: options.find, findRegex: !!options.findRegex });
           if (options && options.focusTitle) s.win.webContents.send('editor-find', { focusTitle: true });
         } catch {}
         return;
@@ -5483,7 +5487,7 @@ function openEditor(id, options = {}) {
     draftTitle: baseTitle,
     inConflict: false,
     initialFind: options && options.find ? String(options.find) : '',
-    initialFindMode: options && options.findMode === 'regex' ? 'regex' : 'basic',
+    initialFindRegex: !!(options && options.findRegex),
     initialFocusTitle: !!(options && options.focusTitle),
     // Tag the draft with the base-content hash (the chain anchor) so its lineage
     // is explicit and recoverable straight from the filename.
@@ -6747,6 +6751,7 @@ function setupIPC() {
     if (!w || w.isDestroyed()) return;
     if (phase === 'start') {
       if (w === win) settlePopupSlide(); // a drag never fights the open slide
+      if (w.isMaximized() || w.isFullScreen()) return; // a maximised clip window stays put (no start = no moves)
       windowDragStarts.set(w, w.getBounds());
       return;
     }
@@ -6804,16 +6809,16 @@ function setupIPC() {
     if (body.max_age_days !== undefined) settings.max_age_days = Math.max(1, parseInt(body.max_age_days));
     if (body.max_size_gb !== undefined) settings.max_size_gb = Math.max(0.1, parseFloat(body.max_size_gb));
     if (body.regex_search !== undefined) settings.regex_search = !!body.regex_search;
-    if (body.find_mode !== undefined && ['basic', 'regex'].includes(body.find_mode)) settings.find_mode = body.find_mode;
+    if (body.facet_joins !== undefined) settings.facet_joins = clipSearch.normalizeJoins(body.facet_joins);
+    if (body.find_regex !== undefined) settings.find_regex = !!body.find_regex;
     if (body.find_case !== undefined) settings.find_case = !!body.find_case;
-    if (body.theme_mode !== undefined && ['system', 'light', 'dark'].includes(body.theme_mode)) settings.theme_mode = body.theme_mode;
     if (body.diagnostics_enabled !== undefined) settings.diagnostics_enabled = !!body.diagnostics_enabled;
     if (body.quick_paste_restore !== undefined) settings.quick_paste_restore = !!body.quick_paste_restore;
     if (body.quick_paste_restore_delay_ms !== undefined) {
       settings.quick_paste_restore_delay_ms = Math.min(2000, Math.max(0, parseInt(body.quick_paste_restore_delay_ms) || 0));
     }
-    // Appearance (lib/appearance.js validates): the accent choice, density and
-    // corners sync, stamped so the newest change wins on every device; the
+    // Appearance (lib/appearance.js validates): the theme, the accent choice,
+    // density and corners sync, stamped so the newest change wins on every device; the
     // surface, the glass scope and the audit-only borders stay on this machine.
     const look = appearance.applyAppearanceSettings(settings, body);
     const surfaceChanged = look.changed.includes('surface_style') || look.changed.includes('glass_scope');

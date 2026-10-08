@@ -306,7 +306,9 @@ const siteCss = read('site/styles.css');
   // A row's # popover reuses the same keypad renderer inside the shared menu.
   const coreSrc = read('site/shared/clipboard-ui-core.js');
   const popover = coreSrc.slice(coreSrc.indexOf('function openNumpadPickerAt('), coreSrc.indexOf('function openNumpadPickerAt(') + 1200);
-  assert.ok(/renderNumpadButtons\(item/.test(popover) && /menu\.open\(/.test(popover), "a row's keypad popover = renderNumpadButtons in the shared createMenu");
+  assert.ok(/renderKeypadMenu\(item/.test(popover) && /menu\.open\(/.test(popover), "a row's keypad popover = renderKeypadMenu in the shared createMenu");
+  const keypadSub = ui.renderClipMenu({ id: 'x', type: 'text', text: 'a' }, { items: [], groups: [], numpadMap: {} });
+  assert.ok(/<div class="tag-submenu bc-keypad" role="menu"><div class="numpad-picker"/.test(keypadSub), "the clip menu's Numpad submenu is the same renderKeypadMenu block");
 }
 
 // 13) Title-bar tag strip: ONE shared renderer (renderClipTagChips) + ONE
@@ -434,7 +436,14 @@ const siteCss = read('site/styles.css');
   const searchRow = rules(popupCss).find((r) => r.sel === '.search-row');
   assert.ok(searchRow && /background:\s*transparent/.test(searchRow.body) && /border:\s*none/.test(searchRow.body) && /box-shadow:\s*inset 0 -1px 0 var\(--line\)/.test(searchRow.body),
     'the search field is flat: no fill, no border, a --line hairline underline');
-  assert.ok(rules(popupCss).some((r) => r.sel === '.search-row:focus-within' && /box-shadow:\s*inset 0 -1px 0 var\(--accent\)/.test(r.body)), 'the search underline turns accent while focused');
+  // The accent underline and the placeholder follow ONE focus state (the field
+  // focused AND the window focused): a class attachSearchBox sets, never a bare
+  // :focus-within that stays lit in an unfocused window beside "Click here...".
+  assert.ok(rules(popupCss).some((r) => r.sel === '.search-row.is-focused' && /box-shadow:\s*inset 0 -1px 0 var\(--accent\)/.test(r.body)), 'the search underline turns accent while focused');
+  assert.ok(!rules(popupCss).some((r) => /\.search-row:focus-within/.test(r.sel)), 'no :focus-within underline (it ignores window focus)');
+  const coreText = read('site/shared/clipboard-ui-core.js');
+  assert.ok(/row\.classList\.toggle\('is-focused', focusInside\)/.test(coreText) && /inputEl\.placeholder = focusInside \?/.test(coreText) && /document\.hasFocus\(\)/.test(coreText),
+    'attachSearchBox sets the underline class and the placeholder from the SAME value (incl. window focus; Tab onto a field button keeps both)');
   // ONE reveal primitive (grid 0fr -> 1fr width track with both belts).
   const revealTracks = rules(popupCss).filter((r) => /grid-template-columns:\s*0fr/.test(r.body));
   assert.deepStrictEqual(revealTracks.map((r) => r.sel), ['.bc-reveal'], 'ONE reveal primitive (.bc-reveal) owns the 0fr width track');
@@ -585,6 +594,164 @@ const siteCss = read('site/styles.css');
   // so the selection bar never pushes the list down.
   const chipRow = cssRules.find((r) => r.sel === '.chip-row');
   assert.ok(chipRow && /min-height:\s*max\(var\(--ctl-md\),\s*calc\(var\(--ctl-sm\) \+ 2 \* var\(--sp-1\)\)\)/.test(chipRow.body), 'the chip row reserves the bar height when the chip bar is empty');
+}
+
+// 16) Menus, pickers, dialogs, approval (UI overhaul E): ONE menu row type
+//     (.bc-menu-item) behind every menu, submenu, group checklist and "New
+//     group..."; membership is the accent check glyph (a dash for "some"),
+//     never a colour fill; createMenu owns the keyboard; destructive dialogs
+//     never confirm on a bare Enter; the approval prompt never allows on Enter
+//     and never takes focus.
+{
+  const coreSrc = read('site/shared/clipboard-ui-core.js');
+  const approvalHtml = read('mcp-approval.html');
+  const mainSrc = read('main.js');
+  const rules = (css) => [...css.replace(/\/\*[\s\S]*?\*\//g, '').matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((m) => ({ sel: m[1].trim(), body: m[2] }));
+  // One row type: the old .gp-btn row (and its fills) is gone everywhere.
+  for (const [name, src] of [['clipboard-ui-core.js', coreSrc], ['clipboard-popup.css', popupCss], ['index.html', appHtml], ['site/index.html', siteHtml]]) {
+    assert.ok(!/gp-btn/.test(src), `${name} still uses the retired .gp-btn row`);
+  }
+  assert.ok(!/\.(assigned|available|partial)\b/.test(popupCss), 'no membership colour states in the shared sheet');
+  const work = { id: 'txt:w', type: 'text', text: 'w', pin: { groups: ['Work'], number: 4 } };
+  const surfaces = {
+    clipMenu: ui.renderClipMenu(work, { items: [work], groups: ['Work', 'AI', 'Work/Clients'] }),
+    bulkMenu: ui.renderBulkMenu({ count: 2, hasImage: false }, { groups: ['Work', 'AI'], selectedItems: [work, { id: 'txt:o', type: 'text', text: 'o' }] }),
+    groupPicker: ui.clipGroupTreeHtml(['Work', 'AI'], work),
+    bulkGroups: ui.bulkGroupTreeHtml(['Work', 'AI'], [work]),
+    keypad: ui.renderKeypadMenu(work, [work], ui.numpadMap([work])),
+  };
+  for (const [name, html] of Object.entries(surfaces)) {
+    // Every clickable row is a .bc-menu-item <button> with an icon column; the
+    // only other menu items are the keypad's keys.
+    for (const m of html.matchAll(/<(\w+)[^>]*role="(menuitem\w*)"[^>]*>/g)) {
+      assert.ok(m[1] === 'button' && (/class="bc-menu-item/.test(m[0]) || /class="np-btn/.test(m[0])), `${name}: menu item is not the shared row: ${m[0]}`);
+    }
+    for (const m of html.matchAll(/<button class="bc-menu-item[^>]*>(.*?)<\/button>/g)) {
+      assert.ok(/^<span class="mi[ "]/.test(m[1]), `${name}: a row without the icon column: ${m[0].slice(0, 120)}`);
+    }
+  }
+  // "New group..." is a normal row (icon column + label), after a separator.
+  for (const name of ['clipMenu', 'bulkMenu', 'groupPicker', 'bulkGroups']) {
+    assert.ok(/<div class="bc-menu-sep" role="separator"><\/div><button class="bc-menu-item"[^>]*data-action="(bulk-)?add-group"><span class="mi" aria-hidden="true">add<\/span><span class="bc-menu-label">New group\.\.\.<\/span>/.test(surfaces[name]), `${name}: "New group..." must be a normal row after a separator`);
+  }
+  assert.ok(!/<div class="bc-menu-sep"/.test(ui.clipGroupTreeHtml([], { id: 'x', type: 'text', text: 'x' })), 'no separator above "New group..." when there are no groups');
+  // Membership: check glyph + aria-checked; labels never coloured by state.
+  assert.ok(/data-group="Work" aria-checked="true"[^>]*><span class="mi bc-menu-check" aria-hidden="true">check<\/span>/.test(surfaces.groupPicker), 'a member group carries the check glyph');
+  assert.ok(/data-group="AI" aria-checked="false"[^>]*><span class="mi bc-menu-check" aria-hidden="true"><\/span>/.test(surfaces.groupPicker), 'a non-member group has an empty icon column');
+  assert.ok(/data-group="Work" aria-checked="mixed"[^>]*><span class="mi bc-menu-check" aria-hidden="true">remove<\/span>/.test(ui.bulkGroupTreeHtml(['Work'], [work, { id: 'txt:o', type: 'text', text: 'o' }])), 'bulk "some" = the dash glyph, aria-checked mixed');
+  assert.ok(rules(popupCss).some((r) => r.sel === '.bc-menu-item > .bc-menu-check' && /color:\s*var\(--accent\)/.test(r.body)), 'the membership glyph is the accent');
+  // Group rows with child tags open a submenu (aria-haspopup) and still toggle.
+  assert.ok(/data-action="toggle-group" data-group="Work" aria-checked="true" title="Work" aria-haspopup="menu"/.test(surfaces.clipMenu), 'a parent tag row toggles and opens its children');
+  // Keypad: neutral keys, the clip's own key in the accent, a taken key a dot.
+  assert.ok(/class="np-btn current"[^>]*aria-checked="true"[^>]*data-n="4"/.test(surfaces.keypad) && /data-action="numpad-unassign" data-slot="4"/.test(surfaces.keypad), 'keypad: the current key is checked, and it can be removed');
+  const npRules = rules(popupCss).filter((r) => /\.np-btn/.test(r.sel));
+  assert.ok(npRules.some((r) => r.sel === '.np-btn' && /background: var\(--ctl-fill\)/.test(r.body) && /color: var\(--text\)/.test(r.body)), 'keys are neutral (--text on --ctl-fill)');
+  assert.ok(npRules.some((r) => r.sel === '.np-btn.current' && /var\(--accent-bg\)/.test(r.body) && /color: var\(--accent\)/.test(r.body)), 'the current key is the accent');
+  assert.ok(!npRules.some((r) => /--green|--line-strong/.test(r.body)) && !/\.np-btn\.free\s*\{/.test(popupCss), 'no green / link-coloured / line-dependent key states');
+  // Distinct glyphs for the image menu's open / open externally / save.
+  const imgMenu = ui.renderClipMenu({ id: 'img:a.png', type: 'image', image: 'a.png' }, { items: [], groups: [] });
+  const glyph = (action) => (new RegExp(`data-action="${action}"[^>]*><span class="mi" aria-hidden="true">([a-z_]+)<`).exec(imgMenu) || [])[1];
+  const glyphs = ['open-img', 'open-img-ext', 'save-img'].map(glyph);
+  assert.ok(glyphs.every(Boolean) && new Set(glyphs).size === 3, `image menu actions need distinct glyphs: ${glyphs}`);
+  // One rename wording (dialog-opening rows end with "..."); Revert is in the editor menu.
+  for (const ctx of ['popup', 'editor', 'viewer']) {
+    for (const it of [work, { id: 'img:a.png', type: 'image', image: 'a.png' }]) {
+      assert.ok(/<span class="bc-menu-label">Rename\.\.\.<\/span>/.test(ui.renderClipMenu(it, { items: [], groups: [], context: ctx })), `${ctx} menu: "Rename..."`);
+    }
+  }
+  assert.ok(/data-action="revert"/.test(ui.renderClipMenu(work, { items: [], groups: [], context: 'editor' })) && !/data-action="revert"/.test(surfaces.clipMenu), 'Revert is an editor-menu row only');
+  assert.ok(read('editor.html').includes('revertClip:') && /t\.closest\('\[data-action="revert"\]'\)/.test(coreSrc) && /a\.revertClip\(/.test(coreSrc), 'the editor wires the menu Revert to its own revert');
+  // Keyboard: createMenu handles the keys (pure model unit-tested here).
+  const createMenuSrc = coreSrc.slice(coreSrc.indexOf('function createMenu('), coreSrc.indexOf('function fitSubmenu('));
+  for (const key of ['ArrowDown', 'ArrowUp', 'ArrowLeft', 'ArrowRight', 'Home', 'End', 'Enter', 'Escape', 'Tab']) {
+    assert.ok(createMenuSrc.includes(`'${key}'`), `createMenu must handle ${key}`);
+  }
+  assert.ok(/back\.focus\(/.test(createMenuSrc) && /role', 'menu'/.test(createMenuSrc), 'createMenu returns focus to the opener and is a role=menu');
+  const off = (set) => (i) => set.includes(i);
+  assert.strictEqual(ui.menuNavIndex(4, -1, 'ArrowDown'), 0, 'Down from nothing = first');
+  assert.strictEqual(ui.menuNavIndex(4, -1, 'ArrowUp'), 3, 'Up from nothing = last');
+  assert.strictEqual(ui.menuNavIndex(4, 3, 'ArrowDown'), 0, 'Down wraps');
+  assert.strictEqual(ui.menuNavIndex(4, 0, 'ArrowDown', off([1, 2])), 3, 'Down skips disabled rows');
+  assert.strictEqual(ui.menuNavIndex(4, 3, 'ArrowUp', off([2])), 1, 'Up skips disabled rows');
+  assert.strictEqual(ui.menuNavIndex(4, 2, 'Home', off([0])), 1, 'Home = first enabled');
+  assert.strictEqual(ui.menuNavIndex(4, 0, 'End', off([3])), 2, 'End = last enabled');
+  assert.strictEqual(ui.menuNavIndex(3, 0, 'ArrowDown', off([0, 1, 2])), -1, 'nothing enabled = nothing');
+  assert.deepStrictEqual([0, 4, 8].map((p) => ui.keypadStep(p, 'ArrowRight')), [1, 5, null], 'keypad Right');
+  assert.deepStrictEqual([0, 4, 6].map((p) => ui.keypadStep(p, 'ArrowLeft')), ['left', 3, 'left'], 'keypad Left (the left edge closes a submenu)');
+  assert.deepStrictEqual([1, 4, 7].map((p) => ui.keypadStep(p, 'ArrowDown')), [4, 7, 'down'], 'keypad Down');
+  assert.deepStrictEqual([1, 4].map((p) => ui.keypadStep(p, 'ArrowUp')), ['up', 1], 'keypad Up');
+  // The menu key / Shift+F10 opens the cursor row's menu from the keyboard.
+  assert.ok(/event\.key === 'ContextMenu' \|\| \(event\.key === 'F10' && event\.shiftKey/.test(coreSrc), 'controller opens the row menu from the keyboard');
+  // Dialogs: Cancel then confirm; a destructive confirm never runs on a bare
+  // Enter (it opens on Cancel); Esc cancels.
+  const dialogsSrc = coreSrc.slice(coreSrc.indexOf('function createDialogs('), coreSrc.indexOf('function confirm(opts)'));
+  assert.ok(/<button type="button" class="btn" data-x="no"><\/button><button type="button" class="btn primary" data-x="yes">/.test(dialogsSrc), 'dialog buttons: Cancel, then the confirm');
+  assert.ok(/if \(!danger\) onYes\(\);/.test(dialogsSrc) && /e\.key === 'Escape'\) \{[^}]*onNo\(\)/.test(dialogsSrc), 'Enter confirms only a non-destructive dialog; Esc cancels');
+  assert.ok(/q\(confirmEl, o\.danger \? 'no' : 'yes'\), !!o\.danger\)/.test(coreSrc), 'a destructive confirm opens with Cancel focused');
+  // Approval: Enter / Esc deny, allowing takes a click or Ctrl/Cmd+Enter, the
+  // allow buttons arm after a delay, and the window never takes focus.
+  assert.ok(/<script src="site\/shared\/clipboard-ui-core\.js"><\/script>/.test(approvalHtml) && /const Core = window\.BoardClipCore;/.test(approvalHtml), 'approval: loads the shared core and binds Core (its applyLook throws without it, and a throwing IPC listener starves the next one)');
+  const keyHandler = approvalHtml.slice(approvalHtml.indexOf("window.addEventListener('keydown'"), approvalHtml.indexOf("window.addEventListener('keyup'"));
+  assert.ok(/e\.key === 'Escape'\) \{[^}]*decide\('deny'\)/.test(keyHandler), 'approval: Esc denies');
+  assert.ok(/if \(\(e\.ctrlKey \|\| e\.metaKey\) && !e\.altKey && !e\.shiftKey\) decide\('once'\);\s*else decide\('deny'\);/.test(keyHandler), 'approval: Enter denies; only Ctrl/Cmd+Enter allows once');
+  assert.ok(!/decide\('(session|always)'\)/.test(keyHandler), 'approval: no key ever allows for the session / always');
+  assert.ok(/\}, true\);/.test(keyHandler), 'approval: the key handler runs in the capture phase (a focused Allow never sees Enter first)');
+  assert.ok(/if \(choice !== 'deny' && choice !== 'timeout' && !armed\(\)\) return;/.test(approvalHtml), 'approval: allow is ignored until the buttons arm');
+  assert.ok(/class="btn" id="deny"[\s\S]{0,120}class="btn primary" id="allowOnce"/.test(approvalHtml), 'approval: one action row, [Deny] [Allow once]');
+  assert.ok(/class="btn quiet sm" id="allowSession"/.test(approvalHtml) && /class="btn quiet sm" id="allowAlways"/.test(approvalHtml), 'approval: session / always are quiet secondary options');
+  const approvalFn = mainSrc.slice(mainSrc.indexOf('function requestApproval('), mainSrc.indexOf('function buildApprovalRequest('));
+  assert.ok(/ready-to-show', \(\) => \{ try \{ presentSecondaryWindow\(modal, \{ keepPopup: true \}\); \} catch \{\} \}\)/.test(approvalFn), 'approval is shown inactive (presentSecondaryWindow keepPopup = showInactive)');
+  assert.ok(!/modal\.(show|focus)\(\)/.test(approvalFn), 'approval never calls show()/focus() (focus stealing)');
+  assert.ok(/acceptFirstMouse: true/.test(approvalFn), 'macOS: the first click on the inactive prompt reaches it');
+}
+
+// 30) Search behaviour from Forge (phase 4), ONE implementation for the app and
+//     the demo: availability-greyed chips are inert, one hint line, a ghost in
+//     the mirror, suggest rows are menu rows, the census + nudge + setQuery are
+//     wired on BOTH sides.
+{
+  const coreSrc = read('site/shared/clipboard-ui-core.js');
+  const strip = (css) => css.replace(/\/\*[\s\S]*?\*\//g, '');
+  const rules = (css) => [...strip(css).matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((m) => ({ sel: m[1].trim(), body: m[2] }));
+  // Disabled chips: inert to click AND right-click (the controller), panel chips
+  // are disabled buttons whose contextmenu is swallowed too.
+  assert.ok(/ftag && ftag\.getAttribute\('aria-disabled'\) === 'true'\) \{ event\.stopPropagation\(\); return true; \}/.test(coreSrc), 'a greyed chip-bar chip ignores clicks');
+  assert.ok(/if \(ftag\.getAttribute\('aria-disabled'\) === 'true'\) return true;/.test(coreSrc), 'a greyed chip-bar chip ignores right-clicks');
+  assert.ok(/closest\('\.facet-opt:disabled'\)\) \{ e\.preventDefault\(\); e\.stopPropagation\(\); return; \}/.test(coreSrc), 'a greyed panel chip ignores right-clicks');
+  const census = ui.search.facetCensus([ui.search.clipToDoc({ id: 'txt:a', type: 'text', text: 'hello', ts: 1 })], ui.search.parseQuery('is:text'), {});
+  const bar = ui.renderFilterBar({ items: [], groups: ['Nope'], query: 'is:text', census });
+  assert.ok(/class="filter-tag group-tag[^"]*is-disabled[^"]*"[^>]*aria-disabled="true"/.test(bar), 'the chip bar greys a group with nothing behind it (aria-disabled, inert)');
+  assert.ok(/title="Nope - No clips in this group yet"/.test(bar), 'the greyed chip says why in its tooltip');
+  assert.ok(!/is-disabled/.test(ui.renderFilterBar({ items: [], groups: ['Nope'], query: '', census })), 'with no other filter an empty group stays a live chip');
+  // A group chip's dropdown holds the shared menu rows, filtering like chips.
+  const dd = ui.renderFilterBar({ items: [], groups: ['Work', 'Work/Clients'], excludedFilters: new Set(['Work/Clients']), query: '' });
+  assert.ok(/<button class="bc-menu-item group-filter-row excluded"[^>]*data-group="Work\/Clients"/.test(dd) && !/<span class="filter-tag[^"]*"[^>]*data-group="Work\/Clients"/.test(dd), 'a chip dropdown row is the shared menu row, not a chip');
+  assert.ok(/FILTER_TARGET = [^;]*\.group-filter-row\[data-group\]/.test(coreSrc), 'dropdown rows filter like chips (click includes, right-click excludes)');
+  const tiers = rules(popupCss);
+  assert.ok(tiers.some((r) => /\.filter-tag\.is-disabled\b/.test(r.sel) && /opacity:\s*\.4/.test(r.body)) && tiers.some((r) => r.sel === '.filter-tag.is-disabled.dis-structural' && /opacity:\s*\.25/.test(r.body)),
+    'two disabled tiers: transient .4, structural .25');
+  // ONE hint line: created by attachSearchBox, a rows fold with nothing reserved.
+  assert.ok(/hint\.className = 'search-hint'/.test(coreSrc), 'attachSearchBox owns the one hint line');
+  assert.ok(tiers.some((r) => r.sel === '.search-hint' && /grid-template-rows:\s*0fr/.test(r.body)) && tiers.some((r) => r.sel === '.search-hint.show' && /grid-template-rows:\s*1fr/.test(r.body)),
+    'the hint line folds (0 px when there is no hint)');
+  assert.ok(tiers.some((r) => r.sel === '.qh-unknown' && /wavy/.test(r.body) && /var\(--red\)/.test(r.body)), 'an invalid key / value is red with a wavy underline');
+  // Ghost completion painted in the highlight mirror.
+  assert.ok(/class="qh-ghost"/.test(coreSrc) && tiers.some((r) => r.sel === '.qh-ghost'), 'the ghost is painted in the mirror');
+  // Suggest rows ARE menu rows; their hints come from one table.
+  assert.ok(/class="bc-menu-item search-suggest-item/.test(coreSrc), 'suggest rows use the shared menu-row look');
+  assert.ok(!/PREFIX_HINTS\['is:'\]/.test(read('site/shared/clip-search.js')), 'no single hint repeated down the is: rows');
+  // Both consumers: the census (chip bar + panel), the nudge, setQuery.
+  for (const [name, src] of [['index.html', appHtml], ['site/index.html', siteHtml]]) {
+    assert.ok(/Core\.createCensusCache\(/.test(src), `${name}: one census cache`);
+    assert.ok(/getCensus:/.test(src), `${name}: the options panel reads the census`);
+    assert.ok(/renderFilterBar\(\{[\s\S]{0,300}census/.test(src), `${name}: the chip bar reads the census`);
+    assert.ok(/Core\.renderRelaxNudge\(Core\.search\.bestRelaxation\(/.test(src), `${name}: the empty state shows the relax nudge`);
+    assert.ok(/setQuery: \(next\) =>/.test(src), `${name}: the adapter applies the nudge's query`);
+  }
+  assert.ok(/data-action="apply-query"\]'\)/.test(coreSrc) && /a\.setQuery\(/.test(coreSrc), 'the controller dispatches the nudge');
+  // Paste auto-quote + the raw-paste chord live in the shared box.
+  assert.ok(/inputEl\.addEventListener\('paste', onPaste\)/.test(coreSrc) && /Search\.quotePastedText\(/.test(coreSrc) && /e\.shiftKey && \(e\.key === 'v' \|\| e\.key === 'V'\)/.test(coreSrc),
+    'a multi-word paste is quoted (Ctrl/Cmd+Shift+V pastes raw)');
 }
 
 console.log('ui-parity.test.js: all parity guards passed');

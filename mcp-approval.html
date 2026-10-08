@@ -5,31 +5,33 @@
 </script>
 <link rel="stylesheet" href="site/shared/clipboard-popup.css">
 <link rel="stylesheet" href="site/shared/clipboard-window.css">
+<!-- The shared core: its applyTheme / applyVariants render the appearance
+     payload exactly as every other window does. -->
+<script src="site/shared/clip-search.js"></script>
+<script src="site/shared/clipboard-ui-core.js"></script>
 <style>
-  /* Tokens, the .mi icon spec, the .overline label, the focus ring and the
-     scrollbar come from the shared clipboard-popup.css; the window base (reset,
-     font, glass scrim) from clipboard-window.css, so the modal can never drift
-     from the app. Only the modal's own layout lives here, on the same role
-     tokens (type, weight, radius) and borderless buttons as the popup.
-     Layout answers, top to bottom: WHAT happens (title + one plain sentence with
-     the consequence), WHY it is asking, WHICH clip (facts), then the text only
-     as a labelled preview. The old layout showed the clip text under "What it
-     will do" for every action, which explained nothing. */
-  html, body { background:var(--surface); }
+  /* Tokens, the .mi icon spec, the .overline label, the .btn set, the focus
+     ring and the scrollbar come from the shared clipboard-popup.css; the
+     window base (reset, font, glass scrim) from clipboard-window.css, so the
+     modal can never drift from the app. Only the modal's own layout lives here.
+     Layout answers, top to bottom: WHO is asking, WHAT happens (title + one
+     plain sentence with the consequence), WHY it is asking, WHICH clip (facts),
+     the text only as a labelled preview, then the decision: [Deny] [Allow
+     once], with "for this session" / "always" as quiet options above it. */
+  :root:not([data-surface="glass"]) body { background:var(--surface); }
   body { user-select:none; }
-  .bar { -webkit-app-region:drag; height:24px; display:flex; align-items:center; padding:0 var(--gutter); }
+  .bar { -webkit-app-region:drag; height:var(--ctl-md); display:flex; align-items:center; padding:0 var(--gutter); }
   .wrap { padding:var(--sp-1) var(--sp-8) var(--sp-6); display:flex; flex-direction:column; gap:var(--sp-4); }
-  .head { display:flex; gap:var(--sp-5); align-items:flex-start; }
-  .badge { width:34px; height:34px; border-radius:var(--r-panel); flex-shrink:0; display:flex; align-items:center; justify-content:center;
+  .who { font-size:var(--fs-meta); line-height:var(--lh-ui); color:var(--text-dim); }
+  .who b { color:var(--text); font-weight:var(--fw-strong); }
+  .head { display:flex; gap:var(--sp-5); align-items:center; }
+  .badge { width:var(--ctl-lg); height:var(--ctl-lg); border-radius:var(--r-panel); flex-shrink:0; display:flex; align-items:center; justify-content:center;
            background:var(--accent-bg); color:var(--accent); }
-  .badge .mi { font-size:var(--icon-lg); }
   .badge.danger { background:var(--red-bg); color:var(--red); }
   h1 { font-size:var(--fs-ui); font-weight:var(--fw-strong); line-height:var(--lh-ui); }
-  .who { font-size:var(--fs-meta); color:var(--text-dim); margin-top:var(--sp-1); line-height:var(--lh-ui); }
-  .who b { color:var(--text); font-weight:var(--fw-strong); }
   .explain { font-size:var(--fs-ui); line-height:var(--lh-text); color:var(--text); }
   .why { font-size:var(--fs-meta); line-height:var(--lh-ui); color:var(--text-dim); display:flex; gap:var(--sp-2); align-items:flex-start; }
-  .why .mi { font-size:var(--icon-sm); flex-shrink:0; }
+  .why .mi { flex-shrink:0; }
   .facts { display:grid; grid-template-columns:auto 1fr; gap:var(--sp-1) var(--sp-4); font-size:var(--fs-meta); }
   .facts dt { color:var(--text-dim); }
   .facts dd { color:var(--text); word-break:break-word; }
@@ -37,36 +39,24 @@
   .card .overline { margin-bottom:var(--sp-2); }
   .detail { font-family:var(--font-mono); font-size:var(--fs-ui); line-height:var(--lh-text); color:var(--text);
             white-space:pre-wrap; word-break:break-word; max-height:88px; overflow:auto; }
+  /* The countdown is information, not a warning: neutral, whatever the action. */
   .meter { height:3px; border-radius:var(--r-chip); background:var(--line); overflow:hidden; }
-  .meter > span { display:block; height:100%; width:100%; background:var(--accent); transition:width 1s linear; }
-  .meter.danger > span { background:var(--red); }
+  .meter > span { display:block; height:100%; width:100%; background:var(--text-dim); transition:width 1s linear; }
   .meter.paused > span { opacity:.45; }
   .countdown { font-size:var(--fs-meta); color:var(--text-dim); display:flex; justify-content:space-between; margin-top:var(--sp-3); }
-  .acts { display:flex; flex-direction:column; gap:var(--sp-3); margin-top:var(--sp-1); }
-  .row2 { display:flex; gap:var(--sp-3); }
-  button { font:inherit; border:none; border-radius:var(--r-ctl); cursor:pointer; transition:background-color var(--dur) var(--ease), color var(--dur) var(--ease); background:var(--ctl-fill); color:var(--text); }
-  .primary { padding:var(--sp-4); font-size:var(--fs-ui); font-weight:var(--fw-strong); background:var(--accent); color:var(--active-fg); }
-  .primary:hover { background:var(--accent-hover); }
-  .primary.danger { background:var(--red); color:var(--danger-fg); }
-  .primary.danger:hover { background:color-mix(in srgb, var(--red) 86%, var(--text)); }
-  .row2 button { flex:1; padding:var(--sp-3); font-size:var(--fs-ui); color:var(--text-dim); }
-  .row2 button:hover { background:var(--ctl-fill-hover); color:var(--text); }
-  .deny { padding:var(--sp-3); font-size:var(--fs-ui); color:var(--text-dim); }
-  .deny:hover { color:var(--red); background:var(--red-bg); }
-  .hint { font-size:var(--fs-meta); color:var(--text-dim); text-align:center; }
+  .later { display:flex; flex-wrap:wrap; gap:var(--sp-2); margin:0 calc(-1 * var(--sp-3)); }
+  .acts { display:flex; justify-content:flex-end; gap:var(--sp-4); }
 </style></head>
 <body>
   <div class="bar overline">BoardClip - AI action</div>
   <div class="wrap" id="wrap">
+    <div class="who" id="who" title="Asked through BoardClip's AI access (its MCP connection). You can turn AI access off in Settings."><b id="client">An AI assistant</b> wants BoardClip to:</div>
     <div class="head">
-      <div class="badge" id="badge"><span class="mi" id="badgeIcon">smart_toy</span></div>
-      <div>
-        <h1 id="title">An AI assistant wants to act</h1>
-        <div class="who"><b id="client">an AI assistant</b> asked for this through BoardClip's MCP server.</div>
-      </div>
+      <div class="badge" id="badge"><span class="mi lg" id="badgeIcon">smart_toy</span></div>
+      <h1 id="title">Act on your clips</h1>
     </div>
     <div class="explain" id="explain"></div>
-    <div class="why" id="whyRow"><span class="mi">info</span><span id="why"></span></div>
+    <div class="why" id="whyRow"><span class="mi sm">info</span><span id="why"></span></div>
     <dl class="facts" id="facts"></dl>
     <div class="card" id="detailCard">
       <div class="label overline" id="detailLabel">Clip text</div>
@@ -76,24 +66,26 @@
       <div class="meter" id="meter"><span id="meterBar"></span></div>
       <div class="countdown"><span id="countLabel">Denies automatically if you don't respond</span><span id="countNum"></span></div>
     </div>
+    <div class="later">
+      <button type="button" class="btn quiet sm" id="allowSession" data-allow>Allow for this session</button>
+      <button type="button" class="btn quiet sm" id="allowAlways" data-allow>Always allow</button>
+    </div>
     <div class="acts">
-      <button class="primary" id="allowOnce">Allow once</button>
-      <div class="row2">
-        <button id="allowSession" title="Allow this kind of action until BoardClip restarts">Allow for this session</button>
-        <button id="allowAlways" title="Never ask again for this kind of action">Always allow</button>
-      </div>
-      <div class="hint" id="hint"></div>
-      <button class="deny" id="deny">Deny</button>
+      <button type="button" class="btn" id="deny" title="Deny (Enter or Esc)">Deny</button>
+      <button type="button" class="btn primary" id="allowOnce" data-allow>Allow once</button>
     </div>
   </div>
 
 <script>
+  const Core = window.BoardClipCore;
   const $ = id => document.getElementById(id);
-  let current = null, remaining = 60, timer = null, decided = false, paused = false;
+  let current = null, remaining = 60, timer = null, decided = false, paused = false, armedAt = Infinity;
+  // Glyphs match the ones the app uses for the same action (star = pin, sell =
+  // group, edit_note = edit).
   const ICONS = {
-    delete_clip:'delete', edit_clip:'edit', copy_to_clipboard:'content_paste', paste_clip:'content_paste_go',
-    add_clip:'add', pin_clip:'push_pin', set_numpad:'dialpad', assign_group:'folder',
-    create_group:'create_new_folder', delete_group:'folder_delete', read_clip:'lock_open',
+    delete_clip:'delete', edit_clip:'edit_note', copy_to_clipboard:'content_copy', paste_clip:'content_paste_go',
+    add_clip:'add', pin_clip:'star', set_numpad:'dialpad', assign_group:'sell',
+    create_group:'new_label', delete_group:'label_off', read_clip:'visibility',
     search_all:'search', image_path:'image',
   };
   const KIND = {
@@ -102,21 +94,25 @@
     create_group:'group changes', delete_group:'group changes', read_clip:'reading private clips',
     search_all:'searching private clips', image_path:'revealing image paths',
   };
+  // The prompt never takes focus (main shows it inactive) and never allows by
+  // accident: Enter and Esc deny; allowing takes a click, or Ctrl+Enter
+  // (Cmd+Enter on macOS) once the window has focus. The allow buttons arm a
+  // moment after the prompt appears, so a click already on its way to
+  // whatever was under the pointer cannot land on them.
+  const ARM_MS = 800;
+  const MOD = /Mac/i.test(navigator.platform) ? 'Cmd' : 'Ctrl';
+  const armed = () => Date.now() >= armedAt;
+  const allowButtons = () => [...document.querySelectorAll('[data-allow]')];
 
-  // The appearance payload every window gets (main's appearanceVariantPayload):
-  // with the request, then again on any change while the prompt is up.
+  // The appearance payload every window gets (main's windowAppearance): with
+  // the request (plus main's resolved theme), then again on any change.
   function applyLook(look) {
     const root = document.documentElement;
-    const setv = (attr, val, def) => { if (val && val !== def) root.setAttribute(attr, val); else root.removeAttribute(attr); };
-    setv('data-accent', look.accentVariant, 'blue');
-    setv('data-density', look.uiDensity, 'normal');
-    setv('data-corners', look.uiCorners, 'soft');
-    setv('data-borders', look.uiBorders, 'bordered');
+    if (look.theme === 'light' || look.theme === 'dark') root.dataset.theme = look.theme;
+    else if (look.themeMode) Core.applyTheme(root, look.themeMode, matchMedia('(prefers-color-scheme: dark)').matches);
+    Core.applyVariants(root, look);
   }
-  if (window.approval.onSettings) window.approval.onSettings(s => {
-    if (s.theme === 'light' || s.theme === 'dark') document.documentElement.dataset.theme = s.theme;
-    applyLook(s);
-  });
+  if (window.approval.onSettings) window.approval.onSettings(applyLook);
   if (window.approval.onAppearanceChanged) window.approval.onAppearanceChanged(applyLook);
 
   function fit() {
@@ -125,6 +121,7 @@
   }
   function decide(choice) {
     if (decided || !current) return;
+    if (choice !== 'deny' && choice !== 'timeout' && !armed()) return;
     decided = true;
     if (timer) clearInterval(timer);
     window.approval.decide(current.id, choice);
@@ -154,12 +151,17 @@
     current = req;
     remaining = req.timeoutSec || 60;
     const danger = !!req.danger;
-    $('title').textContent = req.title || 'An AI assistant wants to act';
-    $('client').textContent = req.client || 'an AI assistant';
+    const kind = KIND[req.tool] || req.tool;
+    $('title').textContent = req.title || 'Act on your clips';
+    $('client').textContent = req.client || 'An AI assistant';
     $('badgeIcon').textContent = ICONS[req.tool] || 'smart_toy';
     $('badge').classList.toggle('danger', danger);
-    $('meter').classList.toggle('danger', danger);
     $('allowOnce').classList.toggle('danger', danger);
+    $('allowOnce').classList.toggle('primary', !danger);
+    $('allowOnce').title = `Allow once (${MOD}+Enter). Enter and Esc deny.`;
+    $('allowSession').title = `Allow ${kind} until BoardClip restarts`;
+    $('allowAlways').textContent = `Always allow ${kind}`;
+    $('allowAlways').title = `Never ask again before ${kind} (Settings > AI access lists what is always allowed)`;
     $('explain').textContent = req.explain || req.summary || '';
     $('why').textContent = req.why || '';
     $('whyRow').style.display = req.why ? '' : 'none';
@@ -174,10 +176,11 @@
     const preview = req.preview && req.preview.text ? req.preview : (req.detail ? { label: 'Clip text', text: req.detail } : null);
     if (preview) { $('detailLabel').textContent = preview.label || 'Clip text'; $('detail').textContent = preview.text.trim(); $('detailCard').style.display = ''; }
     else { $('detailCard').style.display = 'none'; }
-    const kind = KIND[req.tool] || req.tool;
-    $('hint').textContent = `"Always allow" and "Allow for this session" apply to ${kind} only, not to other actions.`;
     $('countNum').textContent = remaining + 's';
     timer = setInterval(tick, 1000);
+    for (const b of allowButtons()) b.disabled = true;
+    armedAt = Date.now() + ARM_MS;
+    setTimeout(() => { if (!decided) for (const b of allowButtons()) b.disabled = false; }, ARM_MS);
     requestAnimationFrame(fit);
     // Opened under a resting cursor: no mouseenter fires, so ask directly.
     requestAnimationFrame(() => { if (document.documentElement.matches(':hover')) setPaused(true); });
@@ -187,6 +190,20 @@
   $('allowSession').onclick = () => decide('session');
   $('allowAlways').onclick = () => decide('always');
   $('deny').onclick = () => decide('deny');
-  window.addEventListener('keydown', e => { if (e.key === 'Escape') decide('deny'); if (e.key === 'Enter') decide('once'); });
+  // Capture phase, so a focused button never gets the key first: Enter on a
+  // focused Allow still denies, and Space cannot press an allow button.
+  window.addEventListener('keydown', e => {
+    if (e.key === 'Escape') { e.preventDefault(); decide('deny'); return; }
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey) decide('once');
+      else decide('deny');
+      return;
+    }
+    if (e.key === ' ' && e.target && e.target.closest && e.target.closest('[data-allow]')) e.preventDefault();
+  }, true);
+  window.addEventListener('keyup', e => {
+    if (e.key === ' ' && e.target && e.target.closest && e.target.closest('[data-allow]')) e.preventDefault();
+  }, true);
 </script>
 </body></html>

@@ -68,16 +68,18 @@ const read = (rel) => fs.readFileSync(path.join(__dirname, '..', rel), 'utf8');
   assert.ok(painted, 'renderSelection hook was driven');
 }
 
-// 3) Bulk group tree renders tri-state classes (all -> assigned, some -> partial).
+// 3) Bulk group checklist renders the tri-state membership glyph (all -> check,
+//    some -> dash), never a colour state.
 {
   const sel = [
     { id: 'a', pin: { groups: ['Work'] } },
     { id: 'b', pin: { groups: ['Work', 'Ideas'] } },
   ];
   const menu = ui.renderBulkMenu({ count: 2, hasImage: false }, { groups: ['Work', 'Ideas'], selectedItems: sel });
-  assert.ok(menu.includes('assigned'), 'Work is in ALL selected -> assigned (check) state');
-  assert.ok(menu.includes('partial'), 'Ideas is in SOME selected -> partial (dash) state');
+  assert.ok(/data-group="Work" aria-checked="true"[^>]*><span class="mi bc-menu-check" aria-hidden="true">check</.test(menu), 'Work is in ALL selected -> checked, check glyph');
+  assert.ok(/data-group="Ideas" aria-checked="mixed"[^>]*><span class="mi bc-menu-check" aria-hidden="true">remove</.test(menu), 'Ideas is in SOME selected -> mixed, dash glyph');
   assert.ok(menu.includes('data-action="bulk-group" data-group="Work"'), 'bulk group nodes carry data-action + data-group');
+  assert.ok(!/assigned|partial|available/.test(menu), 'membership is the glyph, not a state class');
 }
 
 // 4) diffLineHunks: the shared line diff behind the IntelliJ-style merge panes.
@@ -424,7 +426,7 @@ const read = (rel) => fs.readFileSync(path.join(__dirname, '..', rel), 'utf8');
     const menuFor = (count) => ui.renderClipMenu(items[0], { items, groups: [], numpadMap: {}, similarCount: count });
     assert.ok(/data-action="select-similar"[^>]*>.*Select 2 similar/.test(menuFor(2)), 'menu: Select N similar');
     assert.ok(!menuFor(0).includes('select-similar') && !menuFor(undefined).includes('select-similar'), 'menu: no row when there are none (or for images / other windows)');
-    assert.ok(/data-action="select-similar"[^>]*disabled aria-busy="true"/.test(menuFor(null)), 'menu: a disabled placeholder while counting');
+    assert.ok(/<button(?=[^>]*data-action="select-similar")(?=[^>]* disabled[ >])(?=[^>]*aria-busy="true")[^>]*>/.test(menuFor(null)), 'menu: a disabled placeholder while counting');
     // The hover / cursor target paints the set on the next selection paint.
     c.clearSelection();
     c.moveFocus(1); // keyboard cursor onto the first visible row ('a')

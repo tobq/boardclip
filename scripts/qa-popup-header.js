@@ -292,7 +292,9 @@ async function main() {
     const sugAfter = await suggestRows();
     check('opening the panel closes the autocomplete (it would cover the chip rows)', sugBefore > 0 && sugAfter === 0 && (await panel()).open && (await activeDesc()) === 'search', J({ sugBefore, sugAfter }));
     await popup.eval(`(() => { const s = document.getElementById('search'); s.value = ''; s.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`);
-    await popup.send('Input.insertText', { text: '-is:image' });
+    // A finished value offers nothing (Forge rule), so the stale list is the one
+    // for a key still being typed after it.
+    await popup.send('Input.insertText', { text: '-is:image ti' });
     await sleep(250);
     const sugStale = await suggestRows();
     await popup.click('.facet-opt[title="is:url"]');
@@ -356,6 +358,10 @@ async function main() {
     const ramp = await popup.eval(`(() => {
       const r = document.querySelector('.bc-reveal[data-reveal="tools"]');
       document.getElementById('search').focus();
+      // The inner's content-visibility (allow-discrete) is visible for every
+      // moment after the start; settle it so the frozen width ramp measures
+      // the contents, as every real frame after the first does.
+      for (const x of r.querySelector('.bc-reveal-inner').getAnimations()) if (x.transitionProperty === 'content-visibility') x.finish();
       const a = r.getAnimations().find((x) => x.transitionProperty === 'grid-template-columns');
       if (!a) return { animation: false };
       a.pause();

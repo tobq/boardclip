@@ -6230,6 +6230,10 @@ function requestApproval(request, { signal } = {}) {
       show: false,
       skipTaskbar: false,
       title: 'BoardClip - approve AI action',
+      // Shown without taking focus (below), so on macOS the first click on
+      // the inactive window must reach the page, as it does on Windows (the
+      // modal arms its allow buttons only after a short delay).
+      acceptFirstMouse: true,
       ...secondaryWindowSurfaceOptions(),
       icon: APP_ICON_PATH,
       webPreferences: {
@@ -6242,7 +6246,10 @@ function requestApproval(request, { signal } = {}) {
     modal.setAlwaysOnTop(true, 'screen-saver');
     pendingApprovals.set(id, { finish, hold });
     modal.loadFile(path.join(SCRIPT_DIR, 'mcp-approval.html'));
-    modal.once('ready-to-show', () => { try { modal.show(); modal.focus(); } catch {} });
+    // Never steal focus: whatever the user is typing into keeps the keyboard
+    // (a keystroke meant for it must not answer a security prompt). Shown on
+    // top without activating, like the mouse-opened editor windows.
+    modal.once('ready-to-show', () => { try { presentSecondaryWindow(modal, { keepPopup: true }); } catch {} });
     modal.webContents.on('did-finish-load', () => {
       try {
         // The same payload every window gets (it used to send the raw settings,

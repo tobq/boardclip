@@ -469,6 +469,8 @@ async function main() {
       const real = appAdapter.dragImages;
       const calls = [];
       appAdapter.dragImages = (ids, event) => { event.preventDefault(); calls.push(ids); return true; };
+      // The list renders about two screenfuls: scroll until two image rows exist.
+      for (let k = 0; k < 20 && document.querySelectorAll('#list > .item[data-id^="img:"]').length < 2; k += 1) __qa.scrollBy(document.getElementById('list').clientHeight);
       const fire = (el) => { const dt = new DataTransfer(); const ev = new DragEvent('dragstart', { bubbles: true, cancelable: true, dataTransfer: dt }); el.dispatchEvent(ev); return { prevented: ev.defaultPrevented, text: dt.getData('text/plain') }; };
       const rows = [...document.querySelectorAll('#list > .item')];
       const textRow = rows.find((r) => r.dataset.id.startsWith('txt:') && r.dataset.id !== rows[0].dataset.id);
@@ -525,6 +527,134 @@ async function main() {
     check('viewer zoomed in: drag pans, nothing leaves', !viewer.zoomDraggable && viewer.zoomOuts === 1, JSON.stringify({ d: viewer.zoomDraggable, outs: viewer.zoomOuts }));
     check('viewer zoomed in + Alt: drag pulls the image out', viewer.altDraggable && viewer.altOuts === 2, JSON.stringify({ d: viewer.altDraggable, outs: viewer.altOuts }));
     check('viewer title-bar handle always drags out', viewer.handle && viewer.handleOuts === 3, JSON.stringify({ h: viewer.handle, outs: viewer.handleOuts }));
+
+    // 16b. Search behaviour from Forge (phase 4), in the real popup: greyed +
+    //      inert chips, invalid token + hint (+ its one-click fix), a regex
+    //      error, ghost + unique auto-fill, Esc parking, the empty-result
+    //      nudge, paste quoting, and the ONE focus state (underline + placeholder).
+    const pinTarget = await cdp.eval(`(() => { const it = items.find((x) => x.type === 'text'); return { id: it.id, rev: it.rev }; })()`);
+    await cdp.eval(`window.api.pin(${JSON.stringify(pinTarget.id)}, ${JSON.stringify(pinTarget.rev)})`);
+    await qa.waitFor(() => cdp.eval(`!!(items.find((x) => x.id === ${JSON.stringify(pinTarget.id)}) || {}).pin`), 'pin applied', 10000);
+    const sbx = await cdp.eval(`(async () => {
+      const tick = () => new Promise((r) => setTimeout(r, 30));
+      const type = async (v, caret) => { searchEl.focus(); searchEl.value = v; const c = caret == null ? v.length : caret; searchEl.setSelectionRange(c, c); searchEl.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText' })); rerenderList(); await tick(); };
+      const key = (k, extra) => { const ev = new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: k, ...(extra || {}) }); searchEl.dispatchEvent(ev); return ev.defaultPrevented; };
+      const hl = () => [...document.querySelectorAll('.search-hl span')].map((s) => s.className + ':' + s.textContent);
+      const hint = () => { const h = document.querySelector('.search-hint'); return { show: h.classList.contains('show'), text: h.textContent, h: h.getBoundingClientRect().height }; };
+      const r = {};
+      __qa.clear(); resetPopupState(); await tick();
+      // Greyed chips: with is:image, the pinned chip (a text clip) has nothing behind it.
+      await type('is:image'); await new Promise((res) => setTimeout(res, 80)); rerenderList();
+      const pinChip = document.querySelector('#groupFilters [data-filter="__pinned__"]');
+      r.pinChip = pinChip ? { dis: pinChip.getAttribute('aria-disabled'), cls: pinChip.className, title: pinChip.title } : null;
+      if (pinChip) { pinChip.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true })); pinChip.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2 })); }
+      await tick();
+      r.afterInertClicks = searchEl.value;
+      searchBox.openOptions(); await tick();
+      const opt = (label) => [...document.querySelectorAll('.facet-opt')].find((b) => b.textContent.trim() === label);
+      const over500 = opt('Over 500 chars');
+      r.over500 = over500 ? { disabled: over500.disabled, cls: over500.className, title: over500.title } : null;
+      const last24 = opt('Last 24h');
+      r.last24 = last24 ? { disabled: last24.disabled } : null;
+      r.richHidden = !opt('Rich');
+      searchBox.closeOptions({ instant: true });
+      // Invalid token: only the key is painted, ONE hint line, the fix rewrites it.
+      await type('titel:foo');
+      r.invalidHl = hl();
+      r.invalidHint = hint();
+      const fix = document.querySelector('.search-hint-fix');
+      if (fix) fix.click();
+      await tick();
+      r.afterFix = searchEl.value;
+      await type('is:pin');
+      r.validPrefixHint = hint().show;
+      // Regex error (regex mode, a finished token).
+      regexBtn.click(); await tick();
+      await type('(ab x');
+      r.regexHint = hint();
+      regexBtn.click(); await tick();
+      await type('');
+      r.noHint = hint();
+      // Ghost: a key being typed shows its rest; Tab takes it.
+      await type('ti');
+      r.ghost = (document.querySelector('.search-hl .qh-ghost') || {}).textContent || '';
+      r.ghostTab = key('Tab');
+      r.afterGhost = searchEl.value;
+      // Unique value: filled in with the inserted part selected; Space keeps it.
+      await type('is:mu');
+      r.autoFill = { value: searchEl.value, sel: [searchEl.selectionStart, searchEl.selectionEnd] };
+      key(' ');
+      r.afterSpace = searchEl.value;
+      // Esc parks the list until the text changes.
+      await type('is:');
+      r.openBeforeEsc = searchBox.isSuggestOpen();
+      r.escConsumed = key('Escape');
+      r.openAfterEsc = searchBox.isSuggestOpen();
+      searchEl.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: 'ArrowLeft' }));
+      r.stillParked = !searchBox.isSuggestOpen();
+      await type('is:t');
+      r.unparked = searchBox.isSuggestOpen() || searchEl.value === 'is:text';
+      // Empty-result nudge.
+      await type('qa clip mk1 is:image');
+      const nudge = document.querySelector('.list-empty .empty-nudge-btn');
+      r.nudge = nudge ? nudge.textContent : null;
+      if (nudge) nudge.click();
+      await tick(); rerenderList();
+      r.afterNudge = { value: searchEl.value, rows: clipList.ids().length };
+      // Paste: a multi-word plain text becomes one phrase; Ctrl+Shift+V pastes raw.
+      await type('');
+      const paste = (text) => { const dt = new DataTransfer(); dt.setData('text/plain', text || 'hello big world'); const ev = new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: dt }); searchEl.dispatchEvent(ev); return ev.defaultPrevented; };
+      r.pasteQuoted = paste(); r.pasteValue = searchEl.value;
+      await type('');
+      // A multi-line paste stays raw (a phrase could not match across the line break).
+      r.multiLinePrevented = paste('hello big\\nworld'); r.multiLineValue = searchEl.value;
+      await type('');
+      key('V', { ctrlKey: true, shiftKey: true });
+      r.rawPastePrevented = paste(); r.rawPasteValue = searchEl.value;
+      await type('');
+      __qa.clear(); resetPopupState();
+      return r;
+    })()`);
+    check('greyed chip: nothing behind it under the other filters (aria-disabled + reason)', sbx.pinChip && sbx.pinChip.dis === 'true' && /is-disabled/.test(sbx.pinChip.cls) && /No matches with the current filters/.test(sbx.pinChip.title), JSON.stringify(sbx.pinChip));
+    check('greyed chip is inert (click and right-click change nothing)', sbx.afterInertClicks === 'is:image', sbx.afterInertClicks);
+    check('panel: a structurally impossible option is greyed fainter with a reason', sbx.over500 && sbx.over500.disabled && /dis-structural/.test(sbx.over500.cls) && /is:image/.test(sbx.over500.title), JSON.stringify(sbx.over500));
+    check('panel: an option that still matches stays enabled; an absent kind is hidden', sbx.last24 && !sbx.last24.disabled && sbx.richHidden, JSON.stringify({ last24: sbx.last24, richHidden: sbx.richHidden }));
+    check('invalid token: only the bad key is painted', JSON.stringify(sbx.invalidHl).includes('qh-unknown:titel:') && !sbx.invalidHl.some((s) => s.startsWith('qh-unknown:foo')), JSON.stringify(sbx.invalidHl));
+    check('invalid token: one hint line with "Did you mean"', sbx.invalidHint.show && /Did you mean title:\?/.test(sbx.invalidHint.text), JSON.stringify(sbx.invalidHint));
+    check('the hint\'s fix rewrites the key', sbx.afterFix === 'title:foo', sbx.afterFix);
+    check('a valid prefix is never flagged while typed', !sbx.validPrefixHint);
+    check('regex mode: a broken regex shows its error', sbx.regexHint.show && /regular expression/.test(sbx.regexHint.text), JSON.stringify(sbx.regexHint));
+    check('no hint = the line takes 0 px', !sbx.noHint.show, JSON.stringify(sbx.noHint));
+    check('ghost completion painted in the mirror; Tab takes it', sbx.ghost === 'tle:' && sbx.ghostTab && sbx.afterGhost === 'title:', JSON.stringify({ g: sbx.ghost, v: sbx.afterGhost }));
+    check('a unique value auto-fills with the inserted part selected; Space keeps it', sbx.autoFill.value === 'is:multiline' && sbx.autoFill.sel[0] === 5 && sbx.autoFill.sel[1] === 12 && sbx.afterSpace === 'is:multiline ', JSON.stringify(sbx.autoFill) + ' ' + JSON.stringify(sbx.afterSpace));
+    check('Esc closes the list and parks it until the text changes', sbx.openBeforeEsc && sbx.escConsumed && !sbx.openAfterEsc && sbx.stillParked && sbx.unparked, JSON.stringify({ b: sbx.openBeforeEsc, c: sbx.escConsumed, a: sbx.openAfterEsc, p: sbx.stillParked, u: sbx.unparked }));
+    check('empty result: the nudge names the blocker (no second "No matches") and one click drops it', /^is:image: \d+ outside this filter/.test(sbx.nudge || '') && sbx.afterNudge.value === 'qa clip mk1' && sbx.afterNudge.rows > 0, JSON.stringify({ n: sbx.nudge, a: sbx.afterNudge }));
+    check('a multi-word paste is quoted as one phrase', sbx.pasteQuoted && sbx.pasteValue === '"hello big world"', sbx.pasteValue);
+    check('a multi-line paste is not quoted', !sbx.multiLinePrevented && sbx.multiLineValue === '', JSON.stringify(sbx.multiLineValue));
+    check('Ctrl+Shift+V pastes raw (no quoting)', !sbx.rawPastePrevented && sbx.rawPasteValue === '', JSON.stringify(sbx.rawPasteValue));
+    // The ONE focus state: an unfocused window shows neither the accent line nor
+    // "Search..."; a focused one shows both.
+    // The sandbox window's OS focus is not ours to take, so the window's focus
+    // is stood in for (document.hasFocus) and announced with window blur/focus.
+    const focusPair = async (win, target) => cdp.eval(`(async () => {
+      document.hasFocus = () => ${win ? 'true' : 'false'};
+      const el = ${target || 'searchEl'};
+      if (el !== searchEl) regexBtn.closest('.bc-reveal').classList.add('open'); // the tools show while the row is focused
+      el.focus();
+      window.dispatchEvent(new Event('${win ? 'focus' : 'blur'}'));
+      const row = document.querySelector('.search-row');
+      const out = { hasFocus: document.hasFocus(), active: document.activeElement === el, lit: row.classList.contains('is-focused'), ph: searchEl.placeholder };
+      await new Promise((r) => setTimeout(r, 250)); // past the underline's colour transition
+      out.line = getComputedStyle(row).boxShadow;
+      delete document.hasFocus;
+      return out;
+    })()`);
+    const unfocused = await focusPair(false);
+    const focusedWin = await focusPair(true);
+    check('focus state: window unfocused = no accent line AND the idle placeholder', !unfocused.hasFocus && !unfocused.lit && unfocused.ph === 'Click here to search...' && unfocused.line !== focusedWin.line, JSON.stringify(unfocused));
+    check('focus state: field + window focused = accent line AND "Search..."', focusedWin.hasFocus && focusedWin.lit && focusedWin.ph === 'Search...', JSON.stringify(focusedWin));
+    const onTool = await focusPair(true, 'regexBtn');
+    check('focus state: Tab onto a field button keeps the accent line AND "Search..." together', onTool.active && onTool.lit && onTool.ph === 'Search...', JSON.stringify(onTool));
 
     // 17. Navigation guard (LAST: a failure would replace the popup page): a
     //     renderer navigation, as a file dropped on the window triggers, is refused.

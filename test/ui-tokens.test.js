@@ -86,8 +86,9 @@ const approvalHtml = read('mcp-approval.html');
         && /onAppearanceChanged\(\(look\) => \{[\s\S]{0,240}Core\.applyVariants\(document\.documentElement, look\);/.test(src), `${file} renders from the init payload, then every appearance-changed`);
     }
     const approvalSrc = fs.readFileSync(path.join(__dirname, '..', 'mcp-approval.html'), 'utf8');
-    assert.ok(/setv\('data-accent', look\.accentVariant, 'blue'\);[\s\S]{0,200}setv\('data-borders', look\.uiBorders, 'bordered'\);/.test(approvalSrc)
-      && approvalSrc.includes('window.approval.onAppearanceChanged(applyLook)'), 'the approval modal renders from the same payload');
+    assert.ok(/function applyLook\(look\) \{[\s\S]{0,400}Core\.applyVariants\(root, look\);/.test(approvalSrc)
+      && approvalSrc.includes('window.approval.onSettings(applyLook)') && approvalSrc.includes('window.approval.onAppearanceChanged(applyLook)')
+      && !/setAttribute\('data-(accent|density|corners|borders)'/.test(approvalSrc), 'the approval modal renders the same payload through the shared Core.applyVariants');
     // The app's switcher writes the real accent setting (no retired key).
     assert.ok(/accentVariant: 'accent_mode'/.test(appSrc) && !/accent_variant/.test(appSrc), "the app's switcher saves accent_mode");
   }
@@ -324,7 +325,10 @@ const rules = (css) => [...stripComments(css).matchAll(/([^{}]+)\{([^{}]*)\}/g)]
   // Text on red uses --danger-fg (per theme), never the accent's ink: an accent
   // variant (Mono, Custom) redefines --active-fg for ITS fill, not for red.
   assert.ok(/\.btn\.danger \{[^}]*color: var\(--danger-fg\)/.test(popupCss), '.btn.danger text is var(--danger-fg)');
-  assert.ok(/\.primary\.danger \{[^}]*color:\s*var\(--danger-fg\)/.test(approvalHtml), 'the approval danger button text is var(--danger-fg)');
+  // The approval modal's buttons are the shared .btn set (its danger allow is
+  // .btn.danger), with no button styling of its own.
+  assert.ok(/class="btn primary" id="allowOnce"/.test(approvalHtml) && /\$\('allowOnce'\)\.classList\.toggle\('danger', danger\)/.test(approvalHtml), 'the approval allow button is the shared .btn (.danger when destructive)');
+  assert.ok(!rules(styleBlocks(approvalHtml)).some((r) => /\bbutton\b|\.primary|\.deny|\.row2/.test(r.sel)), 'mcp-approval.html styles no buttons of its own (the shared .btn set does)');
   assert.strictEqual((tokensCss.match(/--danger-fg:/g) || []).length, 2, '--danger-fg is defined once per theme and never by an accent variant');
 }
 
@@ -353,7 +357,7 @@ const rules = (css) => [...stripComments(css).matchAll(/([^{}]+)\{([^{}]*)\}/g)]
 {
   const controls = ['.btn', '.icon-btn', '.filter-tag', '.seg', '.seg-btn', '.search-row', '.setting-row input', '.prompt-input', '.shortcut-btn',
     '.bc-note-title', '.bc-find-input', '.sync-account', '.settings-action-card', '.setting-row code', '.bc-chip', '.list-newest', '.switch',
-    '.toast', '.dialog', '.toast-action', '.np-btn', '.gp-btn', '.bc-menu-item'];
+    '.toast', '.dialog', '.toast-action', '.np-btn', '.bc-menu-item'];
   for (const r of rules(popupCss)) {
     const hit = r.sel.split(/,\s*/).some((sel) => controls.some((c) => sel === c || sel.startsWith(c + '.') || sel.startsWith(c + ':')));
     if (!hit || /::-webkit-scrollbar/.test(r.sel)) continue;
@@ -414,7 +418,9 @@ const rules = (css) => [...stripComments(css).matchAll(/([^{}]+)\{([^{}]*)\}/g)]
     for (const value of decls(css, 'transition')) {
       if (name === 'mcp-approval.html <style>' && value === 'width 1s linear') continue;
       for (const part of value.split(/,\s*/)) {
-        assert.ok(/^[a-z-]+ var\(--dur\) var\(--ease\)$/.test(part) && !/^all /.test(part),
+        // allow-discrete only for the discrete properties it exists for (the
+        // reveal's content-visibility, which skips laying out a closed reveal).
+        assert.ok((/^[a-z-]+ var\(--dur\) var\(--ease\)$/.test(part) || /^(content-visibility|display) var\(--dur\) var\(--ease\) allow-discrete$/.test(part)) && !/^all /.test(part),
           `${name}: transition "${part}" must be "<property> var(--dur) var(--ease)"`);
       }
     }

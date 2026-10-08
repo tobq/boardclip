@@ -184,38 +184,55 @@
     const isFilter = mode === 'filter';
     const group = normalizeTagName(node && node.name);
     if (!group) return '';
+    // Picker mode (a clip's group checklist) is the shared menu row tree.
+    if (!isFilter) {
+      const itemGroups = asFilterSet(opts.itemGroups);
+      return renderGroupChecklist([node], (g) => (itemGroups.has(g) ? 'all' : 'none'), 'toggle-group');
+    }
     const activeFilters = asFilterSet(opts.activeFilters || opts.filters);
     const excludedFilters = asFilterSet(opts.excludedFilters);
-    const itemGroups = asFilterSet(opts.itemGroups);
-    const label = escapeHtml(group);
     const text = escapeHtml(node.label || group);
     const hasChildren = !!(node.children && node.children.length);
-    const baseClass = isFilter ? 'filter-tag group-tag' : 'gp-btn';
-    const stateClass = isFilter
-      ? (activeFilters.has(group) ? ' active' : excludedFilters.has(group) ? ' excluded' : '')
-      : (itemGroups.has(group) ? ' assigned' : ' available');
     const treeClass = `${hasChildren ? ' has-children' : ''}${node.stored ? '' : ' virtual'}`;
-    const count = isFilter ? groupFilterCount(opts.items || [], group) : 0;
-    const title = isFilter
-      ? (excludedFilters.has(group)
-        ? `Excluding ${group}`
-        : `${group} - ${count} item${count !== 1 ? 's' : ''}`)
-      : group;
-    const caret = hasChildren
-      ? `<span class="tag-caret mi" aria-hidden="true">${isFilter && depth === 0 ? 'expand_more' : 'chevron_right'}</span>`
-      : '';
+    // opts.verdict(group): the availability census's word on this chip (its
+    // count under the other filters; greyed + inert when it would show nothing).
+    const v = opts.verdict ? opts.verdict({ kind: 'group', value: group }) : null;
+    const count = v ? v.count : groupFilterCount(opts.items || [], group);
+    const disabled = !!(v && !v.enabled);
+    const title = excludedFilters.has(group)
+      ? `Excluding ${group}`
+      : disabled ? `${group} - ${v.reason}` : `${group} - ${count} item${count !== 1 ? 's' : ''}`;
+    const state = activeFilters.has(group) ? 'include' : excludedFilters.has(group) ? 'exclude' : '';
+    // Inside a chip's dropdown a group is the shared menu row (menuRowHtml):
+    // the include check / exclude glyph in the icon column, the count as its
+    // hint, the label struck through while excluded. Click includes and
+    // right-click excludes (the controller's FILTER_TARGET); a greyed row is
+    // inert like a greyed chip (aria-disabled, never `disabled`, which would
+    // swallow the events the guard reads).
+    if (depth > 0) {
+      const row = {
+        icon: state === 'include' ? 'check' : state === 'exclude' ? 'block' : '',
+        check: state === 'include',
+        label: node.label || group,
+        hint: disabled ? '' : String(count),
+        cls: `group-filter-row${state === 'exclude' ? ' excluded' : ''}${disabled ? ` is-disabled${v.kind === 'structural' ? ' dis-structural' : ''}` : ''}`,
+        attrs: { 'data-group': group, title, 'aria-disabled': disabled ? 'true' : null },
+      };
+      return hasChildren
+        ? `<div class="tag-menu-node has-children">${menuRowHtml({ ...row, caret: true })}<div class="tag-submenu" role="menu">${renderTagTreeMenu(node.children, opts, depth + 1)}</div></div>`
+        : menuRowHtml(row);
+    }
+    const caret = hasChildren ? '<span class="tag-caret mi" aria-hidden="true">expand_more</span>' : '';
     // A filter chip only filters: deleting a group lives in Settings > Groups
     // (a hover x here deleted the whole group, 14 px from the filter toggle).
-    const control = isFilter
-      ? renderChip({
-        cls: `group-tag${treeClass}`,
-        state: activeFilters.has(group) ? 'include' : excludedFilters.has(group) ? 'exclude' : '',
-        attrs: { 'data-group': group, title, 'aria-label': group },
-        html: `<span class="tag-label">${text}</span>${caret}`,
-      })
-      : `<span class="${baseClass}${stateClass}${treeClass}" data-group="${label}" title="${escapeHtml(title)}" aria-label="${label}"><span class="tag-label">${text}</span>${caret}</span>`;
+    const control = renderChip({
+      cls: `group-tag${treeClass}${disabledChipClass(disabled ? { disabled, disabledKind: v.kind } : null)}`,
+      state,
+      attrs: { 'data-group': group, title, 'aria-label': group, 'aria-disabled': disabled ? 'true' : null },
+      html: `<span class="tag-label">${text}</span>${caret}`,
+    });
     const children = hasChildren
-      ? `<span class="tag-submenu" role="menu">${renderTagTreeMenu(node.children, opts, depth + 1)}</span>`
+      ? `<div class="tag-submenu" role="menu">${renderTagTreeMenu(node.children, opts, depth + 1)}</div>`
       : '';
     return `<span class="tag-menu-node${hasChildren ? ' has-children' : ''}">${control}${children}</span>`;
   }
@@ -359,6 +376,7 @@
       sortMode: s.sortMode,
       docs: s.docs,
       searchTextLower: s.searchTextLower,
+      cache: s.cache, // a caller-owned object: lets the next keystroke refine the last result
     });
   }
   function filterItems(items, state) {
@@ -439,12 +457,23 @@
         .filter((filter) => filter.count > 0)
       : builtinFilters(items, activeFilters)
         .map((filter) => ({ ...filter, excluded: excludedFilters.has(filter.id) }));
+    // options.census (Search.facetCensus for this query): every chip's count is
+    // the clips it would show under the OTHER active filters; one that would
+    // show none is greyed + inert with the reason as its tooltip (the current
+    // selection never is). No census = every chip enabled.
+    const census = options.census || null;
+    const parsed = census ? Search.parseQuery(query) : null;
+    const verdict = census ? (token) => Search.facetOptionVerdict(census, parsed, token) : null;
     for (const filter of filters) {
-      const title = filter.excluded ? `Excluding ${filter.label}` : builtinFilterTitle(filter);
+      const v = census ? Search.facetOptionVerdict(census, parsed, { kind: 'builtin', value: filter.id }, { selected: !!(filter.active || filter.excluded) }) : null;
+      if (v && v.hidden) continue;
+      const disabled = !!(v && !v.enabled);
+      const counted = v ? { ...filter, count: v.count } : filter;
+      const title = filter.excluded ? `Excluding ${filter.label}` : disabled ? `${filter.label} - ${v.reason}` : builtinFilterTitle(counted);
       html += renderChip({
-        cls: 'builtin icon-filter',
+        cls: `builtin icon-filter${disabledChipClass(disabled ? { disabled, disabledKind: v.kind } : null)}`,
         state: filter.active ? 'include' : filter.excluded ? 'exclude' : '',
-        attrs: { 'data-filter': filter.id, title, 'aria-label': filter.ariaLabel },
+        attrs: { 'data-filter': filter.id, title, 'aria-label': filter.ariaLabel, 'aria-disabled': disabled ? 'true' : null },
         html: builtinFilterIconHtml(filter, options),
       });
     }
@@ -454,6 +483,7 @@
       activeFilters,
       excludedFilters,
       groupCounts,
+      verdict,
     });
     if ((activeFilters.size || excludedFilters.size) && !query) {
       html += '<span class="filter-tag clear-filter icon-filter" data-action="clear-search-filters" title="Clear filters" aria-label="Clear filters"><span class="mi">close</span></span>';
@@ -615,20 +645,13 @@
       ? `<span class="bc-reveal row-actions"><span class="bc-reveal-inner">${actionsHtml}</span></span>`
       : '';
     // draggable: a row drags its clip out (controller.onDragstart): images as
-    // files, text as text. A still click still pastes.
-    return `<div class="item${cls}" data-id="${escapeHtml(id)}" draggable="true">
-      <div class="item-row">
-        <div class="pin-area">
-          <button class="star${pinned ? ' active' : ''}" type="button" data-action="pin" data-id="${escapeHtml(id)}" title="${pinned ? 'Unpin' : 'Pin'}"><span class="mi${pinned ? ' filled' : ''}">star</span></button>
-        </div>
-        <div class="content">
-          ${primaryHtml}
-          ${previewHtml}
-          <div class="meta">${renderClipMeta(item)}</div>
-        </div>
-        ${actions}
-      </div>
-    </div>`;
+    // files, text as text. A still click still pastes. No whitespace between
+    // the tags: every rebuild parses and styles ~60 rows, and indentation was
+    // a dozen extra text nodes per row.
+    return `<div class="item${cls}" data-id="${escapeHtml(id)}" draggable="true">`
+      + '<div class="item-row"><div class="pin-area">'
+      + `<button class="star${pinned ? ' active' : ''}" type="button" data-action="pin" data-id="${escapeHtml(id)}" title="${pinned ? 'Unpin' : 'Pin'}"><span class="mi${pinned ? ' filled' : ''}">star</span></button>`
+      + `</div><div class="content">${primaryHtml}${previewHtml}<div class="meta">${renderClipMeta(item)}</div></div>${actions}</div></div>`;
   }
   // Empty list states, ONE renderer for the app and the demo: what is empty and
   // why, with the way out. kind (derived from { total, query } when omitted):
@@ -636,8 +659,8 @@
   //   'no-match'    - the search text matches nothing
   //   'filtered'    - the filters (group:/is:/since:/...) exclude everything
   //   'empty-group' - the only filter is one group, and it has no clips
-  // opts.nudgeHtml fills the .empty-nudge slot (the search behaviour work adds
-  // the "relax this filter" nudge there).
+  // opts.nudgeHtml fills the .empty-nudge slot (renderRelaxNudge);
+  // opts.regex / opts.groups let it tell an invalid query from a bad spelling.
   function emptyStateKind(opts) {
     const o = opts || {};
     if (!(Number(o.total) > 0)) return 'no-clips';
@@ -660,11 +683,78 @@
       'empty-group': { icon: 'sell', title: `No clips in ${group || 'this group'} yet`, hint: 'Add a clip with the + on its row, or from its menu.', action: 'Show all clips' },
     };
     const s = states[kind] || states['no-match'];
+    // A query the validator rejects (a broken regex, a bad value, an unknown
+    // filter) is the real reason, and the hint line under the field already
+    // says what: never point at the spelling instead. opts.regex / opts.groups
+    // = the same context the search box validates with.
+    const invalid = kind !== 'no-clips' && o.query && Search.validateQuery(o.query, { regex: !!o.regex, groups: o.groups || [] }).length;
+    const hint = invalid ? 'Part of the search is not valid: fix the part marked in red.' : s.hint;
     const action = s.action ? `<button class="btn quiet sm empty-action" type="button" data-action="clear-search-filters">${escapeHtml(s.action)}</button>` : '';
     return `<div class="list-empty" data-empty="${escapeHtml(kind)}" role="status">`
       + `<span class="mi empty-icon" aria-hidden="true">${s.icon}</span>`
-      + `<p class="empty-title">${escapeHtml(s.title)}</p><p class="empty-hint">${escapeHtml(s.hint)}</p>${action}`
+      + `<p class="empty-title">${escapeHtml(s.title)}</p><p class="empty-hint">${escapeHtml(hint)}</p>${action}`
       + `<div class="empty-nudge"${o.nudgeHtml ? '' : ' hidden'}>${o.nudgeHtml || ''}</div></div>`;
+  }
+  // The empty-result nudge (the .empty-nudge slot): the ONE filter whose
+  // removal brings back the most clips (Search.bestRelaxation), as one click
+  // that rewrites the query (data-action="apply-query" -> adapter.setQuery).
+  // rel: bestRelaxation's result, or null (no nudge). It sits under the empty
+  // state's own title, so it never says "No matches" again, and when dropping
+  // the blocker leaves nothing to search by it is the state's own clear button
+  // over again, so it is left out.
+  function renderRelaxNudge(rel) {
+    if (!rel || !(rel.count > 0)) return '';
+    const relaxed = Search.parseQuery(rel.query || '');
+    if (!relaxed.content.length && !Search.anyFilterActive(relaxed)) return '';
+    const what = rel.time ? 'range' : 'filter';
+    const title = `Remove ${rel.label} and show ${rel.count} clip${rel.count === 1 ? '' : 's'}`;
+    return `<button class="empty-nudge-btn" type="button" data-action="apply-query" data-query="${escapeHtml(rel.query)}" title="${escapeHtml(title)}">`
+      + `<span><code>${escapeHtml(rel.label)}</code>: ${rel.count} outside this ${what}</span><span class="mi" aria-hidden="true">arrow_forward</span></button>`;
+  }
+  // ONE availability census per (filters, docs, groups, minute): free text is
+  // not part of it (Search.facetKey), so typing words never recomputes it.
+  // opts: { docs() -> the search docs, groups() -> group names, onUpdate?(census) }.
+  // get(query) returns the census, each new one with a fresh `id` (consumers
+  // key their chip rebuilds on it). A filter change computes at once (the
+  // chips must answer the click); with onUpdate, a change of only the history
+  // or the minute keeps the current census for this paint and refreshes it
+  // right after, so a capture, a sync or a keystroke never pays for it.
+  function createCensusCache(opts) {
+    const o = opts || {};
+    let key = null;
+    let filtersKey = null;
+    let docsRef = null;
+    let value = null;
+    let seq = 0;
+    let timer = null;
+    let lastParsed = null;
+    function compute(parsed) {
+      const now = Date.now();
+      const docs = o.docs ? o.docs() : [];
+      const groups = o.groups ? o.groups() : [];
+      value = Search.facetCensus(docs, parsed, { now, groups });
+      value.id = ++seq;
+      filtersKey = `${Search.facetKey(parsed)}\u0002${groups.join('\u0001')}`;
+      key = `${filtersKey}\u0002${Math.floor(now / 60000)}`;
+      docsRef = docs;
+      return value;
+    }
+    return {
+      get(query) {
+        const parsed = typeof query === 'string' ? Search.parseQuery(query) : query;
+        lastParsed = parsed;
+        const docs = o.docs ? o.docs() : [];
+        const groups = o.groups ? o.groups() : [];
+        const fk = `${Search.facetKey(parsed)}\u0002${groups.join('\u0001')}`;
+        const k = `${fk}\u0002${Math.floor(Date.now() / 60000)}`;
+        if (value && k === key && docs === docsRef) return value;
+        if (value && fk === filtersKey && o.onUpdate) {
+          if (!timer) timer = setTimeout(() => { timer = null; o.onUpdate(compute(lastParsed)); }, 0);
+          return value;
+        }
+        return compute(parsed);
+      },
+    };
   }
   function renderPopupShell(options) {
     const opts = options || {};
@@ -815,42 +905,63 @@
   // equivalents. Markup MUST stay identical so the two popups never drift.
   //
   // The always-visible hover row is deliberately MINIMAL (the one primary
-  // action + a "..." button). "Set title" and "Delete" are demoted into the
+  // action + a "..." button). "Rename..." and "Delete" are demoted into the
   // right-click / "..." menu (renderClipMenu) as advanced actions, so the row
   // stays clean and accidental deletes are less likely. The menu is the
   // complete surface; the row is the fast path.
+  //
+  // ONE glyph per clip action, shared by the row buttons and every clip menu
+  // (popup, editor, viewer), so an action looks the same wherever it appears
+  // and no two actions share a glyph.
+  const CLIP_ACTION_ICONS = {
+    pin: 'star', edit: 'edit_note', 'open-img': 'open_in_full', 'open-img-ext': 'open_in_new', 'save-img': 'download',
+    rename: 'drive_file_rename_outline', revert: 'history', 'select-similar': 'select_all', del: 'delete',
+  };
   function renderClipActions(item, options) {
     const opts = options || {};
     const id = itemId(item) || '';
     const isImage = item && item.type === 'image';
+    const I = CLIP_ACTION_ICONS;
     let html = '';
     if (isImage) {
-      html += `<button class="icon-btn accent" data-action="open-img" data-id="${escapeHtml(id)}" title="Open image"><span class="mi">open_in_new</span></button><button class="icon-btn accent" data-action="save-img" data-id="${escapeHtml(id)}" title="Copy to Downloads"><span class="mi">save</span></button>`;
+      html += `<button class="icon-btn accent" data-action="open-img" data-id="${escapeHtml(id)}" title="Open image"><span class="mi">${I['open-img']}</span></button><button class="icon-btn accent" data-action="save-img" data-id="${escapeHtml(id)}" title="Copy to Downloads"><span class="mi">${I['save-img']}</span></button>`;
     } else {
-      html += `<button class="icon-btn accent" data-action="edit" data-id="${escapeHtml(id)}" title="Open in editor"><span class="mi">open_in_new</span></button>`;
+      html += `<button class="icon-btn accent" data-action="edit" data-id="${escapeHtml(id)}" title="Open in editor"><span class="mi">${I.edit}</span></button>`;
     }
     html += `<button class="icon-btn" data-action="clip-menu" data-id="${escapeHtml(id)}" title="More actions" aria-label="More actions"><span class="mi">more_horiz</span></button>`;
     return html;
   }
-  // Numpad 1-9 buttons, shared by the per-clip picker and the "..." menu's
-  // Numpad submenu. Rendered in real NUMPAD FORMATION (7 8 9 / 4 5 6 / 1 2 3 —
+  // Numpad 1-9 buttons, shared by the clip menu's Numpad submenu and a row's
+  // # popover. Rendered in real NUMPAD FORMATION (7 8 9 / 4 5 6 / 1 2 3:
   // .np-row is a 3-column grid), which reads like the physical keypad instead
   // of a flat strip. `np` is the item's current slot; `nmap` is slot->id.
+  // Keys are menu items (radio: the clip's own key is checked); a taken key
+  // keeps its slot's clip as the tooltip.
   const NUMPAD_LAYOUT = [7, 8, 9, 4, 5, 6, 1, 2, 3];
   function renderNumpadButtons(item, items, nmap) {
     const np = numpadOf(item);
     let html = '';
     for (const n of NUMPAD_LAYOUT) {
       const cls = np === n ? 'current' : nmap[n] ? 'taken' : 'free';
-      let title = String(n);
-      if (nmap[n]) {
+      let title = `Key ${n}`;
+      if (np === n) title = `Key ${n}: this clip`;
+      else if (nmap[n]) {
         const slotItem = (items || []).find((candidate) => itemId(candidate) === nmap[n]);
         title = slotItem && slotItem.type === 'image'
-          ? `${n}: [image]`
-          : `${n}: ${String(slotItem && slotItem.text || '').replace(/\s+/g, ' ').slice(0, 80)}`;
+          ? `Key ${n} (taken): [image]`
+          : `Key ${n} (taken): ${String(slotItem && slotItem.text || '').replace(/\s+/g, ' ').slice(0, 80)}`;
       }
-      html += `<span class="np-btn ${cls}" data-n="${n}" title="${escapeHtml(title)}">${n}</span>`;
+      html += `<button class="np-btn ${cls}" type="button" role="menuitemradio" aria-checked="${np === n}" tabindex="-1" data-n="${n}" title="${escapeHtml(title)}">${n}</button>`;
     }
+    return html;
+  }
+  // The keypad block used wherever a clip's key is picked (the clip menu's
+  // Numpad submenu and a row's # popover): the keys, then "Remove from key N"
+  // as a normal row when the clip has one.
+  function renderKeypadMenu(item, items, nmap) {
+    const np = numpadOf(item);
+    let html = `<div class="numpad-picker" role="group" aria-label="Numpad key"><div class="np-row">${renderNumpadButtons(item, items, nmap || {})}</div></div>`;
+    if (np) html += menuRowHtml({ icon: 'backspace', label: `Remove from key ${np}`, cls: 'np-remove', attrs: { 'data-action': 'numpad-unassign', 'data-slot': np } });
     return html;
   }
   // Per-group membership across a set of selected items: 'all' | 'some' | 'none'.
@@ -864,12 +975,58 @@
     return has === 0 ? 'none' : has === list.length ? 'all' : 'some';
   }
   function similarLabel(n) { return `Select ${n} similar`; }
+  // ONE menu row primitive (.bc-menu-item) for every menu, submenu, group tree
+  // and picker: an icon column (an icon, a membership check, or empty, so labels
+  // always line up), the label, then an optional trailing hint or submenu
+  // caret. Rows are menu items for keyboard navigation (createMenu): roving
+  // focus, so they stay out of the Tab order. A label ending in "..." opens a
+  // dialog. o: { icon, label, hint, caret, cls, role, check, disabled, attrs }.
+  function menuRowHtml(o) {
+    let attrs = '';
+    for (const [key, value] of Object.entries(o.attrs || {})) {
+      if (value != null && value !== false) attrs += ` ${key}="${escapeHtml(value)}"`;
+    }
+    const icon = `<span class="mi${o.check ? ' bc-menu-check' : ''}" aria-hidden="true">${o.icon || ''}</span>`;
+    const tail = (o.hint ? `<span class="bc-menu-hint">${escapeHtml(o.hint)}</span>` : '')
+      + (o.caret ? '<span class="tag-caret mi" aria-hidden="true">chevron_right</span>' : '');
+    return `<button class="bc-menu-item${o.cls ? ` ${o.cls}` : ''}" type="button" role="${o.role || 'menuitem'}" tabindex="-1"${o.disabled ? ' disabled' : ''}${attrs}>`
+      + `${icon}<span class="bc-menu-label">${escapeHtml(o.label)}</span>${tail}</button>`;
+  }
+  // A row that opens a submenu beside it: the row (aria-haspopup) and its
+  // .tag-submenu share one .tag-menu-node, which hover / keyboard opens.
+  function submenuNodeHtml(row, innerHtml, subClass) {
+    const parent = menuRowHtml({ ...row, caret: true, attrs: { ...(row.attrs || {}), 'aria-haspopup': 'menu', 'aria-expanded': 'false' } });
+    return `<div class="tag-menu-node has-children" role="none">${parent}<div class="tag-submenu${subClass ? ` ${subClass}` : ''}" role="menu">${innerHtml}</div></div>`;
+  }
+  const MENU_SEPARATOR = '<div class="bc-menu-sep" role="separator"></div>';
+  // ONE group checklist for every group menu: the tag tree as rows with the
+  // membership glyph in the icon column (state(group) 'all' | 'some' | 'none'
+  // = check / dash / nothing, in the accent; labels stay --text) and a nested
+  // submenu per parent tag. Single-clip pickers toggle with toggle-group, the
+  // multi-select tree with bulk-group. A click on a member removes it.
+  const MEMBERSHIP_GLYPH = { all: ['check', 'true'], some: ['remove', 'mixed'], none: ['', 'false'] };
+  function renderGroupChecklist(nodes, state, action) {
+    return (nodes || []).map((node) => {
+      const group = normalizeTagName(node && node.name);
+      if (!group) return '';
+      const [icon, checked] = MEMBERSHIP_GLYPH[state(group)] || MEMBERSHIP_GLYPH.none;
+      const row = { icon, check: true, label: node.label || group, role: 'menuitemcheckbox', attrs: { 'data-action': action, 'data-group': group, 'aria-checked': checked, title: group } };
+      return node.children && node.children.length
+        ? submenuNodeHtml(row, renderGroupChecklist(node.children, state, action))
+        : menuRowHtml(row);
+    }).join('');
+  }
+  // "New group..." closes every group checklist: a normal row, after a
+  // separator when there are groups above it.
+  function withNewGroupRow(treeHtml, action) {
+    return treeHtml + (treeHtml ? MENU_SEPARATOR : '') + menuRowHtml({ icon: 'add', label: 'New group...', attrs: { 'data-action': action } });
+  }
   // ONE menu-content builder for the per-clip "..." menu. Reuses the exact
   // data-action attributes the controller already dispatches (pin/edit/rename/
-  // del/open-img/save-img) plus the shared group-tree + numpad grid, so the menu
-  // needs no new dispatch. The menu root carries data-id, so the gp-btn/np-btn
-  // handlers resolve their target via closest('[data-id]') the same way the
-  // in-row picker does.
+  // del/open-img/save-img) plus the shared group checklist + keypad, so the menu
+  // needs no new dispatch. The menu root carries data-id, so the group / key
+  // handlers resolve their target via closest('[data-id]') the same way a
+  // row's popovers do.
   function renderClipMenu(item, options) {
     const opts = options || {};
     // context: 'popup' (default, the clip list) | 'editor' | 'viewer' — the
@@ -882,38 +1039,39 @@
     const items = opts.items || [];
     const groups = opts.groups || [];
     const nmap = opts.numpadMap || numpadMap(items);
-    const row = (action, icon, label, cls) =>
-      `<button class="bc-menu-item${cls ? ` ${cls}` : ''}" type="button" data-action="${action}" data-id="${escapeHtml(id)}"><span class="mi">${icon}</span><span class="bc-menu-label">${escapeHtml(label)}</span></button>`;
+    const row = (action, label, cls, extra) => menuRowHtml({ icon: CLIP_ACTION_ICONS[action], label, cls, ...(extra || {}), attrs: { 'data-action': action, 'data-id': id, ...((extra && extra.attrs) || {}) } });
     let html = '<div class="bc-menu-list">';
-    html += row('pin', 'star', pinned ? 'Unpin' : 'Pin');
+    html += row('pin', pinned ? 'Unpin' : 'Pin');
     if (isImage) {
-      if (context !== 'viewer') html += row('open-img', 'open_in_new', 'Open image');
-      html += row('open-img-ext', 'launch', 'Open externally');
-      html += row('save-img', 'save', 'Copy to Downloads');
+      if (context !== 'viewer') html += row('open-img', 'Open image');
+      html += row('open-img-ext', 'Open externally');
+      html += row('save-img', 'Copy to Downloads');
     } else if (context !== 'editor') {
-      html += row('edit', 'open_in_new', 'Open in editor');
+      html += row('edit', 'Open in editor');
     }
-    html += row('rename', 'drive_file_rename_outline', isImage ? 'Name image' : 'Set title');
-    html += `<div class="bc-menu-item tag-menu-node has-children"><span class="mi">sell</span><span class="bc-menu-label">Add to group</span><span class="tag-caret mi">chevron_right</span><span class="tag-submenu">${clipGroupTreeHtml(groups, item)}</span></div>`;
-    html += `<div class="bc-menu-item tag-menu-node has-children"><span class="mi">dialpad</span><span class="bc-menu-label">Numpad</span><span class="tag-caret mi">chevron_right</span><span class="tag-submenu"><div class="numpad-picker"><div class="np-row">${renderNumpadButtons(item, items, nmap)}</div></div></span></div>`;
+    html += row('rename', 'Rename...');
+    // The editor's "back to the text it opened with" (the window bar keeps
+    // only find and the menu).
+    if (context === 'editor' && !isImage) html += row('revert', 'Revert to original');
+    html += submenuNodeHtml({ icon: 'sell', label: 'Add to group' }, clipGroupTreeHtml(groups, item));
+    html += submenuNodeHtml({ icon: 'dialpad', label: 'Numpad', hint: numpadOf(item) ? String(numpadOf(item)) : '' }, renderKeypadMenu(item, items, nmap), 'bc-keypad');
     // opts.similarCount: a number (0 = no row) or null while it is being
     // counted (a disabled placeholder the controller fills in); absent = never.
     if (opts.similarCount === null) {
-      html += `<button class="bc-menu-item" type="button" data-action="select-similar" data-id="${escapeHtml(id)}" disabled aria-busy="true"><span class="mi">select_all</span><span class="bc-menu-label">Looking for similar clips...</span></button>`;
+      html += row('select-similar', 'Looking for similar clips...', '', { disabled: true, attrs: { 'aria-busy': 'true' } });
     } else if (opts.similarCount > 0) {
-      html += row('select-similar', 'select_all', similarLabel(opts.similarCount));
+      html += row('select-similar', similarLabel(opts.similarCount));
     }
-    html += row('del', 'delete', 'Delete', 'danger');
+    html += MENU_SEPARATOR + row('del', 'Delete', 'danger');
     html += '</div>';
     return html;
   }
-  // Picker group tree + "New group" for ONE clip — the single builder behind
-  // the clip menu's "Add to group" submenu AND the title-bar strip's + popover
-  // (openGroupPicker). Marks the clip's current groups as assigned.
+  // Group checklist + "New group..." for ONE clip: the single builder behind
+  // the clip menu's "Add to group" submenu AND the title-bar strip's / a row's
+  // + popover (openGroupPickerAt). The clip's current groups carry the check.
   function clipGroupTreeHtml(groups, item) {
     const itemGroups = new Set(groupsOf(item));
-    return renderTagTreeMenu(buildTagTree([...(groups || []), ...itemGroups]), { mode: 'picker', itemGroups })
-      + '<span class="tag-menu-node"><span class="gp-btn add-group" data-action="add-group" title="New group"><span class="mi sm">add</span> New group</span></span>';
+    return withNewGroupRow(renderTagTreeMenu(buildTagTree([...(groups || []), ...itemGroups]), { mode: 'picker', itemGroups }), 'add-group');
   }
   // Title-bar tag strip content (editor + viewer windows and the demo editor):
   // the clip's groups as inert chips — reusing the EXACT filter-tag/group-tag
@@ -942,40 +1100,24 @@
     const groups = opts.groups || [];
     const selItems = opts.selectedItems || [];
     const allText = !info.hasImage;
-    const row = (action, icon, label, cls) =>
-      `<button class="bc-menu-item${cls ? ` ${cls}` : ''}" type="button" data-action="${action}"><span class="mi">${icon}</span><span class="bc-menu-label">${escapeHtml(label)}</span></button>`;
+    const row = (action, icon, label, cls) => menuRowHtml({ icon, label, cls, attrs: { 'data-action': action } });
     let html = '<div class="bc-menu-list">';
     html += row('bulk-paste', 'content_paste', `Paste all (${count})`);
-    html += `<div class="bc-menu-item tag-menu-node has-children"><span class="mi">sell</span><span class="bc-menu-label">Add to group</span><span class="tag-caret mi">chevron_right</span><span class="tag-submenu">${bulkGroupTreeHtml(groups, selItems)}</span></div>`;
+    html += submenuNodeHtml({ icon: 'sell', label: 'Add to group' }, bulkGroupTreeHtml(groups, selItems));
     if (allText) html += row('bulk-unify', 'merge', `Unify (${count})`);
-    html += row('bulk-delete', 'delete', `Delete (${count})`, 'danger');
+    html += MENU_SEPARATOR + row('bulk-delete', CLIP_ACTION_ICONS.del, `Delete (${count})`, 'danger');
     html += '</div>';
     return html;
   }
-  // Tri-state group tree + "New group" for a selection — ONE builder shared by
-  // the bulk menu's submenu and the selection bar's Group popover.
+  // Tri-state group checklist + "New group..." for a selection: ONE builder
+  // shared by the bulk menu's submenu and the selection bar's Group popover.
+  // Each group shows its membership across the selection (all = check, some =
+  // dash, none = empty); a click toggles it for every selected clip (all ->
+  // remove from all, else add to all).
   function bulkGroupTreeHtml(groups, selItems) {
-    const treeGroups = [...new Set([...(groups || []), ...(selItems || []).flatMap(groupsOf)])];
-    return renderBulkGroupTree(buildTagTree(treeGroups), selItems || [])
-      + '<span class="tag-menu-node"><span class="gp-btn add-group" data-action="bulk-add-group" title="New group"><span class="mi sm">add</span> New group</span></span>';
-  }
-  // Bulk group tree: like the picker tree but each node shows aggregate
-  // membership across the selection (all/some/none) and carries data-action so
-  // the controller's bulk-group branch toggles it for every selected clip.
-  function renderBulkGroupTree(nodes, selItems, depth) {
-    const level = Number(depth) || 0;
-    return (nodes || []).map((node) => {
-      const group = normalizeTagName(node && node.name);
-      if (!group) return '';
-      const state = groupMembership(selItems, group);
-      const stateClass = state === 'all' ? ' assigned' : state === 'some' ? ' partial' : ' available';
-      const hasChildren = !!(node.children && node.children.length);
-      const treeClass = `${hasChildren ? ' has-children' : ''}${node.stored ? '' : ' virtual'}`;
-      const caret = hasChildren ? '<span class="tag-caret mi" aria-hidden="true">chevron_right</span>' : '';
-      const control = `<span class="gp-btn${stateClass}${treeClass}" data-action="bulk-group" data-group="${escapeHtml(group)}" title="${escapeHtml(group)}"><span class="tag-label">${escapeHtml(node.label || group)}</span>${caret}</span>`;
-      const children = hasChildren ? `<span class="tag-submenu" role="menu">${renderBulkGroupTree(node.children, selItems, level + 1)}</span>` : '';
-      return `<span class="tag-menu-node${hasChildren ? ' has-children' : ''}">${control}${children}</span>`;
-    }).join('');
+    const sel = selItems || [];
+    const treeGroups = [...new Set([...(groups || []), ...sel.flatMap(groupsOf)])];
+    return withNewGroupRow(renderGroupChecklist(buildTagTree(treeGroups), (g) => groupMembership(sel, g), 'bulk-group'), 'bulk-add-group');
   }
   // The contextual bar shown while 2+ clips are selected. It takes the chip
   // bar's place at the same height (the shell stacks both in .chip-row; the
@@ -1200,19 +1342,29 @@
     const title = x.reason || (opt.prompt ? (state === 'include' ? 'Remove this filter' : `Add ${opt.prompt} and type a date (2026-01-31) or 7d`) : tokenText);
     return renderChip({
       tag: 'button',
-      cls: 'facet-opt',
+      cls: `facet-opt${disabledChipClass(x)}`,
       state,
       attrs: { 'data-row': x.row, 'data-opt': x.index, 'aria-pressed': state === 'include' ? 'true' : 'false', title, disabled: !!x.disabled, 'aria-disabled': x.disabled ? 'true' : null },
       html: escapeHtml(label),
     });
   }
-  function renderSearchFacets(query) {
+  // A greyed chip's tier (Forge's disabledTier): 'transient' = nothing matches
+  // right now, 'structural' = can never match with the active filters (fainter).
+  function disabledChipClass(x) {
+    return x && x.disabled ? ` is-disabled${x.disabledKind === 'structural' ? ' dis-structural' : ''}` : '';
+  }
+  // census: Search.facetCensus for this query (null = everything enabled). An
+  // option the census hides (a kind absent from all history) is left out.
+  function renderSearchFacets(query, census) {
     if (!Search || !Search.OPTION_FACETS) return '';
     const parsed = Search.parseQuery(query || '');
     return Search.OPTION_FACETS.map((row, r) => {
       const chips = row.options.map((opt, i) => {
         const probe = opt.prompt ? { kind: opt.token.kind } : opt.token;
-        return renderFacetOption(opt, Search.facetTokenState(parsed, probe), { row: r, index: i, value: opt.prompt ? parsed[opt.token.kind] : '' });
+        const state = Search.facetTokenState(parsed, probe);
+        const v = census ? Search.facetOptionVerdict(census, parsed, probe, { selected: state !== null }) : { enabled: true };
+        if (v.hidden) return '';
+        return renderFacetOption(opt, state, { row: r, index: i, value: opt.prompt ? parsed[opt.token.kind] : '', disabled: !v.enabled, disabledKind: v.kind, reason: v.reason });
       }).join('');
       return `<span class="opts-facet-label">${escapeHtml(row.label)}</span><div class="opts-facet-chips" role="group" aria-label="${escapeHtml(row.label)}">${chips}</div>`;
     }).join('');
@@ -1290,20 +1442,82 @@
     let suggestFor = null; // the field text the open list was built for
     let panelOpen = false;
     let optionsHeight = Math.max(0, Math.round(Number(o.optionsHeight) || 0)); // 0 = the default share
-    let facetsQuery = null;
+    let facetsKey = null;
+    // Forge autocomplete state: the list parked by Esc (until the text changes),
+    // the open result, the ghost suffix, the selected-suffix auto-fill and how
+    // the last edit was made (a deletion never auto-fills).
+    let parkedFor = null;
+    let suggestRes = null;
+    let ghost = '';
+    let autoFill = null; // { text, selStart, selEnd }
+    let lastInputType = '';
+    let rawPaste = false; // Ctrl/Cmd+Shift+V: paste exactly what is on the clipboard
+    let pendingTimer = null;
+    let pendingShown = null; // the text whose pending problems (a regex being typed) are shown
+    // ONE hint line under the field (invalid tokens, a broken regex): it folds
+    // open and shut, 0 px when there is nothing to say.
+    const hint = document.createElement('div');
+    hint.className = 'search-hint';
+    hint.setAttribute('role', 'status');
+    hint.setAttribute('aria-live', 'polite');
+    hint.innerHTML = '<div class="search-hint-clip"><div class="search-hint-row"><span class="mi" aria-hidden="true">info</span><span class="search-hint-text"></span></div></div>';
+    const hintText = hint.querySelector('.search-hint-text');
+    if (row) row.insertAdjacentElement('afterend', hint); else field.insertAdjacentElement('afterend', hint);
+
+    // One focus state for everything that shows it (the underline's accent and
+    // the placeholder): the field (or its buttons) holds the focus AND the
+    // window does. A popup open in an unfocused window shows neither.
+    const fieldFocused = () => document.activeElement === inputEl && (typeof document.hasFocus !== 'function' || document.hasFocus());
+    const rowFocused = () => !!(row && row.contains(document.activeElement)) && (typeof document.hasFocus !== 'function' || document.hasFocus());
+    const caretAt = () => (inputEl.selectionStart === inputEl.selectionEnd ? inputEl.selectionStart : null);
 
     function paintHighlight() {
-      const segs = Search && Search.lexQuery ? Search.lexQuery(inputEl.value, { regex: !!getRegex() }) : [];
-      backdrop.innerHTML = segs.map((s) => `<span class="qh-${s.kind}">${escapeHtml(s.text)}</span>`).join('') || '';
+      const value = inputEl.value;
+      let segs = [];
+      let shown = [];
+      if (Search && Search.validateQuery) {
+        const all = Search.validateQuery(value, { regex: !!getRegex(), groups: getGroups(), caret: caretAt() });
+        // A token still being typed at the caret (a regex mid-group) is flagged
+        // only once typing pauses.
+        shown = all.filter((p) => !p.pending || pendingShown === value);
+        clearTimeout(pendingTimer);
+        if (all.some((p) => p.pending) && pendingShown !== value) pendingTimer = setTimeout(() => { pendingShown = inputEl.value; paintHighlight(); }, 700);
+        segs = Search.lexQuery(value, { regex: !!getRegex(), problems: shown });
+      }
+      backdrop.innerHTML = segs.map((s) => `<span class="qh-${s.kind}">${escapeHtml(s.text)}</span>`).join('')
+        + (ghost ? `<span class="qh-ghost">${escapeHtml(ghost)}</span>` : '');
       backdrop.scrollLeft = inputEl.scrollLeft;
+      paintHint(shown[0] || null);
+    }
+    function paintHint(problem) {
+      // The "Did you mean X?" is its own button (one click rewrites the bad key
+      // or token), so the sentence leaves it out.
+      const text = problem && Search.describeProblem ? Search.describeProblem({ ...problem, didYouMean: undefined, options: problem.didYouMean ? undefined : problem.options }) : '';
+      hint.classList.toggle('show', !!text);
+      if (!text) return;
+      hintText.textContent = text;
+      if (problem.didYouMean) {
+        const fix = document.createElement('button');
+        fix.type = 'button';
+        fix.className = 'search-hint-fix';
+        fix.innerHTML = `Did you mean <code>${escapeHtml(problem.didYouMean)}</code>?`;
+        const neg = problem.token[0] === '-' && problem.token.length > 1 ? '-' : '';
+        fix.dataset.from = String(problem.kind === 'unknown-key' ? problem.start + neg.length : problem.start);
+        fix.dataset.to = String(problem.kind === 'unknown-key' ? problem.valueStart : problem.end);
+        fix.dataset.text = problem.kind === 'unknown-key' ? problem.didYouMean : neg + problem.didYouMean;
+        fix.dataset.for = inputEl.value;
+        hintText.appendChild(fix);
+      }
     }
     // The field's chrome follows its state: placeholder, revealed buttons, the
     // options toggle (lit while the panel is open or the query holds one of its filters).
     function syncControls() {
       const value = inputEl.value;
-      const focused = document.activeElement === inputEl;
-      const focusInside = !!(row && row.contains(document.activeElement));
-      inputEl.placeholder = focused ? SEARCH_PLACEHOLDER_FOCUSED : SEARCH_PLACEHOLDER_IDLE;
+      // ONE value for the underline AND the placeholder (Tab onto a field
+      // button keeps both in the focused look).
+      const focusInside = row ? rowFocused() : fieldFocused();
+      inputEl.placeholder = focusInside ? SEARCH_PLACEHOLDER_FOCUSED : SEARCH_PLACEHOLDER_IDLE;
+      if (row) row.classList.toggle('is-focused', focusInside);
       const parsed = Search && Search.parseQuery ? Search.parseQuery(value) : null;
       const optionFilters = !!(parsed && Search.optionFacetsActive && Search.optionFacetsActive(parsed));
       if (clearReveal) clearReveal.classList.toggle('open', value.length > 0);
@@ -1316,56 +1530,98 @@
       }
       if (panelOpen) renderFacets();
     }
+    // The chips depend on the filters and the census only, never on the free
+    // text: typing words with the panel open rebuilds nothing.
     function renderFacets() {
-      if (!facetsEl || facetsQuery === inputEl.value) return;
-      facetsQuery = inputEl.value;
+      if (!facetsEl) return;
+      const parsed = Search.parseQuery(inputEl.value);
+      const census = o.getCensus ? o.getCensus(parsed) : null;
+      const key = `${Search.facetKey(parsed)}\u0001${census ? census.id || 'c' : ''}`;
+      if (facetsKey === key) return;
+      facetsKey = key;
       // A rebuild must not drop a keyboard user's place: the focused chip's twin
       // takes the focus back (else it falls to <body> and Tab starts over).
       const focused = facetsEl.contains(document.activeElement) ? document.activeElement : null;
       const place = focused && focused.dataset ? `.facet-opt[data-row="${focused.dataset.row}"][data-opt="${focused.dataset.opt}"]` : null;
-      facetsEl.innerHTML = renderSearchFacets(facetsQuery);
+      facetsEl.innerHTML = renderSearchFacets(inputEl.value, census);
       const twin = place ? facetsEl.querySelector(place) : null;
       if (twin) twin.focus({ preventScroll: true });
     }
     function closeSuggest() { suggestOpen = false; active = -1; suggestions = []; dropdown.classList.add('hidden'); dropdown.innerHTML = ''; }
+    // The rows share the menu-row look (.bc-menu-item); each row's hint is its
+    // own (Search.FIELD_INFO), never one hint repeated down the list.
     function renderSuggest() {
       if (!suggestions.length) { closeSuggest(); return; }
       dropdown.innerHTML = suggestions.map((s, i) =>
-        `<div class="search-suggest-item${i === active ? ' active' : ''}" data-i="${i}"><span class="ss-text">${escapeHtml(s.label)}</span>${s.hint ? `<span class="ss-hint">${escapeHtml(s.hint)}</span>` : ''}</div>`
+        `<div class="bc-menu-item search-suggest-item${i === active ? ' active' : ''}" data-i="${i}" role="option" aria-selected="${i === active}"><span class="ss-text bc-menu-label">${escapeHtml(s.label)}</span>${s.hint ? `<span class="ss-hint">${escapeHtml(s.hint)}</span>` : ''}</div>`
       ).join('');
       dropdown.classList.remove('hidden');
       suggestOpen = true;
     }
-    function updateSuggest() {
-      const res = Search && Search.suggestQuery ? Search.suggestQuery(inputEl.value, inputEl.selectionStart, { groups: getGroups() }) : null;
-      if (!res) { closeSuggest(); return; }
+    // Suggestions for the token at the caret (Search.suggestQuery's rules), the
+    // top row's ghost and, unless Esc parked the list for this exact text,
+    // the dropdown.
+    function computeSuggest() {
+      const caret = caretAt();
+      const parked = parkedFor !== null && parkedFor === inputEl.value;
+      suggestRes = !parked && caret != null && Search && Search.suggestQuery ? Search.suggestQuery(inputEl.value, caret, { groups: getGroups() }) : null;
+      ghost = suggestRes && Search.ghostCompletion ? Search.ghostCompletion(inputEl.value, caret, suggestRes) : '';
       suggestFor = inputEl.value;
-      suggestions = res.suggestions.map((s) => ({ ...s, replaceStart: res.replaceStart, replaceEnd: res.replaceEnd }));
+    }
+    function updateSuggest() {
+      if (parkedFor !== null && parkedFor !== inputEl.value) parkedFor = null; // any edit un-parks
+      computeSuggest();
+      if (!suggestRes) { closeSuggest(); return; }
+      suggestions = suggestRes.suggestions;
       active = -1;
       renderSuggest();
+    }
+    // Exactly one value fits what was just typed: fill it in, the inserted part
+    // selected (the next key replaces it; Space or Tab keeps it). Never after a
+    // deletion, never over a selection.
+    function maybeAutoFill() {
+      if (!suggestRes || lastInputType.startsWith('delete') || caretAt() == null || !Search.uniqueCompletion) return false;
+      const comp = Search.uniqueCompletion(inputEl.value, suggestRes);
+      if (!comp || comp.text === inputEl.value) return false;
+      inputEl.value = comp.text;
+      inputEl.setSelectionRange(comp.selectionStart, comp.selectionEnd);
+      autoFill = { text: comp.text, selStart: comp.selectionStart, selEnd: comp.selectionEnd };
+      closeSuggest();
+      suggestRes = null;
+      ghost = '';
+      paintHighlight();
+      syncControls();
+      if (o.onChange) o.onChange(inputEl.value);
+      return true;
     }
     // A programmatic change of the query (suggestion, panel chip): repaint, then
     // hand the new value to the consumer like typed input.
     function commitValue(next, caret) {
       closeSuggest(); // its rows (and their replace ranges) belong to the old text
+      autoFill = null;
       inputEl.value = next;
       const at = caret == null ? next.length : caret;
       inputEl.setSelectionRange(at, at);
+      computeSuggest();
       paintHighlight();
       syncControls();
       if (o.onChange) o.onChange(inputEl.value);
     }
     function applySuggestion(i) {
-      const s = suggestions[i];
+      const s = suggestRes && suggestRes.suggestions[i];
       if (!s) return;
-      const v = inputEl.value;
+      const res = suggestRes;
       closeSuggest();
-      commitValue(v.slice(0, s.replaceStart) + s.text + ' ' + v.slice(s.replaceEnd), s.replaceStart + s.text.length + 1);
+      const next = Search.applySuggestion(inputEl.value, res, s);
+      commitValue(next.text, next.caret);
+      // A key (title:) is followed by its value: offer the values at once.
+      if (res.kind === 'key') updateSuggest();
     }
     // The consumer changed the field's text (cleared it, a chip rewrote it): a
     // suggestion list built for the old text goes with it.
     function refresh() {
       if (suggestOpen && inputEl.value !== suggestFor) closeSuggest();
+      if (inputEl.value !== suggestFor) { suggestRes = null; ghost = ''; }
       paintHighlight();
       syncControls();
     }
@@ -1394,7 +1650,7 @@
       panel.setAttribute('aria-hidden', String(!panelOpen));
       if (panelOpen) {
         closeSuggest(); // the panel opens under the field; a suggest list would cover its rows
-        facetsQuery = null;
+        facetsKey = null;
         applyOptionsHeight(effectiveOptionsHeight());
         if (scroller && !was) scroller.scrollTop = 0;
       } else if (was && (focusInPanel || !active || active === document.body)) {
@@ -1449,6 +1705,8 @@
       applyOption(hit.opt, 'include');
     };
     const onPanelContextmenu = (e) => {
+      // A disabled <button> still receives contextmenu (Forge's ChipToggle note): a greyed chip does nothing.
+      if (e.target.closest('.facet-opt:disabled')) { e.preventDefault(); e.stopPropagation(); return; }
       const hit = facetFromEvent(e);
       if (!hit) return;
       e.preventDefault();
@@ -1490,33 +1748,114 @@
     if (clearBtn) clearBtn.tabIndex = -1;
     if (row) row.addEventListener('mousedown', onRowMousedown);
 
-    const onInput = () => { paintHighlight(); syncControls(); updateSuggest(); };
+    const onBeforeInput = (e) => { lastInputType = e.inputType || ''; };
+    const onInput = () => {
+      if (autoFill && autoFill.text !== inputEl.value) autoFill = null; // typed over (or deleted) the fill
+      updateSuggest();
+      if (!maybeAutoFill()) { paintHighlight(); syncControls(); }
+      lastCaret = caretAt(); // the keyup that follows is not a caret move
+    };
     const onScroll = () => { backdrop.scrollLeft = inputEl.scrollLeft; };
     const onFocus = () => syncControls();
-    const onBlur = () => { syncControls(); setTimeout(closeSuggest, 120); }; // allow a click on a suggestion
+    const onBlur = () => { syncControls(); setTimeout(closeSuggest, 120); if (ghost) { ghost = ''; paintHighlight(); } }; // allow a click on a suggestion
     // Focus moving between the field and its own buttons keeps them revealed.
     const onRowFocusChange = () => setTimeout(syncControls, 0);
+    // The window gaining or losing focus changes the ONE focus state too.
+    const onWindowFocus = () => syncControls();
+    // The caret moved without an edit (arrows, a click): the list and the ghost
+    // follow it (both only exist with the caret at the end of a token).
+    let lastCaret = null;
+    const onCaretMove = () => {
+      const caret = caretAt();
+      if (caret === lastCaret) return;
+      lastCaret = caret;
+      updateSuggest();
+      paintHighlight();
+    };
     const onKeyDown = (e) => {
+      if (e.isComposing) return;
+      // Ctrl/Cmd+Shift+V pastes exactly what is on the clipboard (no auto-quote).
+      // Windows/Linux Chromium pastes on that chord by itself; macOS binds no
+      // paste to Cmd+Shift+V, so there the box asks for one (a no-op where the
+      // page may not read the clipboard).
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'v' || e.key === 'V')) {
+        rawPaste = Date.now();
+        if (e.metaKey && typeof navigator !== 'undefined' && /Mac/i.test(navigator.platform || '')) {
+          e.preventDefault();
+          try { document.execCommand('paste'); } catch {}
+        }
+      }
+      // Space or Tab keeps an auto-filled value and ends its token.
+      if ((e.key === ' ' || e.key === 'Tab') && !e.shiftKey && autoFill && autoFill.text === inputEl.value
+        && inputEl.selectionStart === autoFill.selStart && inputEl.selectionEnd === autoFill.selEnd) {
+        e.preventDefault(); e.stopPropagation();
+        const at = autoFill.selEnd;
+        const v = inputEl.value;
+        const space = /^\s/.test(v.slice(at)) ? '' : ' ';
+        commitValue(v.slice(0, at) + space + v.slice(at), at + space.length);
+        return;
+      }
       if (suggestOpen && suggestions.length) {
         // While the dropdown is open, capture nav keys BEFORE the document controller sees
         // them (stopPropagation) so arrows move the suggestion, not the result cursor.
         if (e.key === 'ArrowDown') { e.preventDefault(); e.stopPropagation(); active = (active + 1) % suggestions.length; renderSuggest(); return; }
         if (e.key === 'ArrowUp') { e.preventDefault(); e.stopPropagation(); active = (active - 1 + suggestions.length) % suggestions.length; renderSuggest(); return; }
         if (e.key === 'Tab' || (e.key === 'Enter' && active >= 0)) { e.preventDefault(); e.stopPropagation(); applySuggestion(active >= 0 ? active : 0); return; }
-        if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeSuggest(); return; }
+        // Esc parks the list for this text (the next edit brings it back); the
+        // Esc after that reaches the panel / popup as before.
+        if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); parkedFor = inputEl.value; closeSuggest(); computeSuggest(); paintHighlight(); return; }
       }
+      // The ghost: Tab, or Right with the caret at the very end, takes it.
+      const atEnd = inputEl.selectionStart === inputEl.value.length && inputEl.selectionEnd === inputEl.value.length;
+      if (ghost && suggestRes && !e.shiftKey && (e.key === 'Tab' || (e.key === 'ArrowRight' && atEnd))) { e.preventDefault(); e.stopPropagation(); applySuggestion(0); return; }
       if (e.key === 'Enter' && o.onEnter) { o.onEnter(); }
+    };
+    // A multi-word plain-text paste searches as ONE phrase (Search.quotePastedText);
+    // not inside an open quote, not query syntax, not after Ctrl/Cmd+Shift+V.
+    const onPaste = (e) => {
+      const raw = rawPaste && Date.now() - rawPaste < 1000;
+      rawPaste = false;
+      if (raw || !Search || !Search.quotePastedText) return;
+      const v = inputEl.value;
+      const start = inputEl.selectionStart == null ? v.length : inputEl.selectionStart;
+      const end = inputEl.selectionEnd == null ? v.length : inputEl.selectionEnd;
+      if (Search.insideQuote(v, start)) return;
+      const quoted = Search.quotePastedText(e.clipboardData ? e.clipboardData.getData('text') : '');
+      if (!quoted) return;
+      e.preventDefault();
+      const before = start > 0 && !/\s/.test(v[start - 1]) ? ' ' : '';
+      const after = end < v.length && !/\s/.test(v[end]) ? ' ' : '';
+      const ins = before + quoted + after;
+      commitValue(v.slice(0, start) + ins + v.slice(end), start + ins.length);
     };
     const onDropdownMousedown = (e) => {
       const item = e.target.closest('.search-suggest-item');
       if (item) { e.preventDefault(); applySuggestion(Number(item.dataset.i)); }
     };
+    // The hint's "Use title:" fixes the token; the field keeps the focus.
+    const onHintMousedown = (e) => { if (e.target.closest('.search-hint-fix')) e.preventDefault(); };
+    const onHintClick = (e) => {
+      const fix = e.target.closest('.search-hint-fix');
+      if (!fix || fix.dataset.for !== inputEl.value) return;
+      const from = Number(fix.dataset.from);
+      const to = Number(fix.dataset.to);
+      const v = inputEl.value;
+      commitValue(v.slice(0, from) + fix.dataset.text + v.slice(to), from + fix.dataset.text.length);
+      inputEl.focus();
+    };
     dropdown.addEventListener('mousedown', onDropdownMousedown);
+    hint.addEventListener('mousedown', onHintMousedown);
+    hint.addEventListener('click', onHintClick);
+    inputEl.addEventListener('beforeinput', onBeforeInput);
     inputEl.addEventListener('input', onInput);
+    inputEl.addEventListener('paste', onPaste);
     inputEl.addEventListener('scroll', onScroll);
     inputEl.addEventListener('focus', onFocus);
     inputEl.addEventListener('blur', onBlur);
     inputEl.addEventListener('keydown', onKeyDown, true);
+    inputEl.addEventListener('keyup', onCaretMove);
+    inputEl.addEventListener('mouseup', onCaretMove);
+    if (typeof window !== 'undefined') { window.addEventListener('focus', onWindowFocus); window.addEventListener('blur', onWindowFocus); }
     if (row) { row.addEventListener('focusin', onRowFocusChange); row.addEventListener('focusout', onRowFocusChange); }
     paintHighlight();
     syncControls();
@@ -1529,11 +1868,18 @@
       closeOptions: (how) => { const shown = panelVisible(); setPanel(false, how); return shown; },
       setOptionsHeight: (px) => { optionsHeight = Math.max(0, Math.round(Number(px) || 0)); if (panelOpen) applyOptionsHeight(effectiveOptionsHeight()); },
       destroy() {
+        clearTimeout(pendingTimer);
+        inputEl.removeEventListener('beforeinput', onBeforeInput);
         inputEl.removeEventListener('input', onInput);
+        inputEl.removeEventListener('paste', onPaste);
         inputEl.removeEventListener('scroll', onScroll);
         inputEl.removeEventListener('focus', onFocus);
         inputEl.removeEventListener('blur', onBlur);
         inputEl.removeEventListener('keydown', onKeyDown, true);
+        inputEl.removeEventListener('keyup', onCaretMove);
+        inputEl.removeEventListener('mouseup', onCaretMove);
+        if (typeof window !== 'undefined') { window.removeEventListener('focus', onWindowFocus); window.removeEventListener('blur', onWindowFocus); }
+        hint.remove();
         if (row) { row.removeEventListener('focusin', onRowFocusChange); row.removeEventListener('focusout', onRowFocusChange); row.removeEventListener('mousedown', onRowMousedown); }
         if (optsBtn) optsBtn.removeEventListener('click', onOptsClick);
         if (panel) {
@@ -1551,24 +1897,79 @@
     };
   }
 
+  // How the user last drove this window: a trusted keydown or a pointer press.
+  // A menu opened right after a key press (Enter / Space on its button, the
+  // menu key) is a keyboard open and focuses its first row; one opened by a
+  // click or right-click is not. (Focus state cannot tell: a field, or an
+  // element focused by script, matches :focus-visible either way.)
+  let lastInputWasKey = false;
+  function trackInputModality() {
+    if (typeof document === 'undefined' || document.bcInputModality) return;
+    document.bcInputModality = true;
+    document.addEventListener('keydown', (e) => { if (e.isTrusted) lastInputWasKey = true; }, true);
+    document.addEventListener('pointerdown', (e) => { if (e.isTrusted) lastInputWasKey = false; }, true);
+  }
+  // Keyboard model shared by every menu (createMenu), pure so it is unit
+  // tested (Forge SelectionList): the item to focus after `key` from `index`
+  // (-1 = none focused yet) over `count` items, skipping disabled ones
+  // (isDisabled(i)) and wrapping; Home / End = the first / last enabled item.
+  // -1 when nothing is enabled.
+  function menuNavIndex(count, index, key, isDisabled) {
+    if (!count) return -1;
+    const usable = (i) => !(isDisabled && isDisabled(i));
+    const scan = (from, step) => {
+      for (let k = 0, i = from; k < count; k += 1, i = (i + step + count) % count) if (usable(i)) return i;
+      return -1;
+    };
+    if (key === 'Home') return scan(0, 1);
+    if (key === 'End') return scan(count - 1, -1);
+    if (key === 'ArrowDown') return scan(index < 0 ? 0 : (index + 1) % count, 1);
+    if (key === 'ArrowUp') return scan(index < 0 ? count - 1 : (index - 1 + count) % count, -1);
+    return index;
+  }
+  // The keypad (7 8 9 / 4 5 6 / 1 2 3) moves in two dimensions: the key
+  // position (0-8, layout order) after an arrow, 'up' / 'down' when it leaves
+  // the grid at the top / bottom (the menu moves on to the row before / after
+  // it), 'left' at the left edge (closes a submenu), null at the right edge.
+  function keypadStep(pos, key) {
+    const col = pos % 3;
+    if (key === 'ArrowLeft') return col > 0 ? pos - 1 : 'left';
+    if (key === 'ArrowRight') return col < 2 ? pos + 1 : null;
+    if (key === 'ArrowUp') return pos >= 3 ? pos - 3 : 'up';
+    if (key === 'ArrowDown') return pos < 6 ? pos + 3 : 'down';
+    return null;
+  }
   // A lightweight click-open popover, mounted into `host` (document.body for the
   // app so it inherits :root tokens; the demo window for the demo so it inherits
   // .bc-popup tokens). Positioned at a point, clamped to the host box, dismissed
   // on outside-click / Esc / scroll / resize. Menu item clicks bubble to the
   // document controller (same data-action dispatch); this just closes after.
+  // Keyboard: Up / Down / Home / End move between rows (disabled rows are
+  // skipped), Right or Enter opens a submenu, Left / Esc close one level,
+  // Enter / Space activate, 1-9 press the visible keypad's key, Tab closes.
+  // Opened from the keyboard, the first row takes focus; opened with the
+  // mouse, nothing moves until the first arrow key. Focus that went into the
+  // menu goes back to the opener on close. The mouse works as it always did.
   function createMenu(host) {
     if (typeof document === 'undefined') return { open() {}, close() {}, isOpen: () => false, root: () => null };
     const mount = host || document.body;
+    const boundsEl = mount === document.body || mount === document.documentElement ? document : mount;
+    trackInputModality();
     let el = null;
     let onClosed = null;
+    let opener = null;
     function close() {
       if (!el) return;
+      const hadFocus = el.contains(document.activeElement);
       el.remove();
       el = null;
       document.removeEventListener('pointerdown', onOutside, true);
       document.removeEventListener('keydown', onKey, true);
       document.removeEventListener('scroll', onScroll, true);
       window.removeEventListener('resize', close, true);
+      const back = opener;
+      opener = null;
+      if (hadFocus && back && back.isConnected && typeof back.focus === 'function') back.focus({ preventScroll: true });
       const done = onClosed;
       onClosed = null;
       if (done) done();
@@ -1577,22 +1978,122 @@
     // Scrolling the list under an open menu would leave it floating over rows
     // that moved away — close instead (scrolls inside the menu are fine).
     function onScroll(e) { if (el && !el.contains(e.target)) close(); }
-    function onKey(e) { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(); } }
+    // --- Keyboard: one level = the root list or one .tag-submenu; its items
+    // are its own rows (a parent row included) and the keys of its keypad.
+    const ITEMS = ':scope > .bc-menu-item, :scope > .tag-menu-node > .bc-menu-item, :scope > .numpad-picker .np-btn';
+    const rootLevel = () => (el ? el.querySelector(':scope > .bc-menu-list') || el : null);
+    const itemsOf = (level) => (level ? [...level.querySelectorAll(ITEMS)] : []);
+    const isOff = (item) => !!(item && (item.disabled || item.getAttribute('aria-disabled') === 'true'));
+    const levelOf = (item) => (item.parentElement && item.parentElement.closest('.tag-submenu')) || rootLevel();
+    const isParent = (item) => item.getAttribute('aria-haspopup') === 'menu';
+    function focusedItem() {
+      const active = document.activeElement;
+      return el && active && el.contains(active) && typeof active.matches === 'function' && active.matches('.bc-menu-item, .np-btn') ? active : null;
+    }
+    function focusItem(item) { if (item && typeof item.focus === 'function') item.focus({ preventScroll: true }); }
+    function focusStep(level, from, key) {
+      const items = itemsOf(level);
+      const next = menuNavIndex(items.length, from ? items.indexOf(from) : -1, key, (i) => isOff(items[i]));
+      if (next >= 0) focusItem(items[next]);
+    }
+    function shut(node) {
+      for (const n of [node, ...node.querySelectorAll('.tag-menu-node.open')]) {
+        n.classList.remove('open');
+        const row = n.querySelector(':scope > .bc-menu-item');
+        if (row) row.setAttribute('aria-expanded', 'false');
+      }
+    }
+    function openSub(row) {
+      const node = row.parentElement;
+      const sub = node && node.classList.contains('tag-menu-node') ? node.querySelector(':scope > .tag-submenu') : null;
+      if (!sub) return;
+      for (const other of node.parentElement.querySelectorAll(':scope > .tag-menu-node.open')) if (other !== node) shut(other);
+      node.classList.add('open');
+      row.setAttribute('aria-expanded', 'true');
+      fitSubmenu(node, sub, boundsEl);
+      focusStep(sub, null, 'ArrowDown');
+    }
+    function closeLevel(level) {
+      const node = level.parentElement;
+      if (!node) return;
+      shut(node);
+      focusItem(node.querySelector(':scope > .bc-menu-item'));
+    }
+    function onKey(e) {
+      if (!el) return;
+      const key = e.key;
+      if (key === 'Tab') { close(); return; } // focus is back on the opener; Tab moves on from there
+      const item = focusedItem();
+      const stop = () => { e.preventDefault(); e.stopPropagation(); };
+      if (key === 'Escape') {
+        stop();
+        const level = item ? levelOf(item) : null;
+        if (level && level !== rootLevel()) closeLevel(level); else close();
+        return;
+      }
+      if (/^[1-9]$/.test(key) && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        const pad = [...el.querySelectorAll('.numpad-picker')].find((p) => p.getClientRects().length);
+        const keyBtn = pad && pad.querySelector(`.np-btn[data-n="${key}"]`);
+        if (keyBtn) { stop(); keyBtn.click(); }
+        return;
+      }
+      // Nothing focused yet (opened with the mouse): only Up / Down enter the
+      // menu, so typing and caret keys in a focused field keep working.
+      if (!item) {
+        if (key === 'ArrowDown' || key === 'ArrowUp') { stop(); focusStep(rootLevel(), null, key); }
+        return;
+      }
+      if (!['ArrowDown', 'ArrowUp', 'ArrowLeft', 'ArrowRight', 'Home', 'End', 'Enter', ' '].includes(key)) return;
+      stop();
+      const level = levelOf(item);
+      if (key === 'Enter' || key === ' ') {
+        if (isOff(item)) return;
+        if (isParent(item) && !item.dataset.action) openSub(item); else item.click();
+        return;
+      }
+      if (item.classList.contains('np-btn') && key.startsWith('Arrow')) {
+        const keys = [...item.parentElement.querySelectorAll(':scope > .np-btn')];
+        const step = keypadStep(keys.indexOf(item), key);
+        if (typeof step === 'number') { focusItem(keys[step]); return; }
+        if (step === 'up') { focusStep(level, keys[0], 'ArrowUp'); return; }
+        if (step === 'down') { focusStep(level, keys[keys.length - 1], 'ArrowDown'); return; }
+        if (step === 'left' && level !== rootLevel()) closeLevel(level);
+        return;
+      }
+      if (key === 'ArrowRight') { if (isParent(item)) openSub(item); return; }
+      if (key === 'ArrowLeft') { if (level !== rootLevel()) closeLevel(level); return; }
+      focusStep(level, item, key);
+    }
     // opts: { x, y, html, id (the clip it acts on, read by the dispatch via
     // closest('[data-id]')), className (an extra class), onClose(), aboveY (the
     // anchor's top edge: when the menu does not fit below y it opens above the
-    // anchor instead of being pushed up over it) }
+    // anchor instead of being pushed up over it), keyboard (opened from the
+    // keyboard: focus the first row; default = the last input was a key) }
     function open(opts) {
       close();
       const o = opts || {};
+      const active = document.activeElement;
+      opener = active && active !== document.body ? active : null;
       el = document.createElement('div');
       el.className = o.className ? `bc-menu ${o.className}` : 'bc-menu';
+      el.setAttribute('role', 'menu');
       onClosed = typeof o.onClose === 'function' ? o.onClose : null;
       if (o.id != null) el.dataset.id = o.id;
       el.innerHTML = o.html || '';
+      const list = el.querySelector(':scope > .bc-menu-list');
+      if (list) list.setAttribute('role', 'none');
       // Close after an actionable click (let the document dispatch run first).
       el.addEventListener('click', (e) => {
-        if (e.target.closest('[data-action],.gp-btn,.np-btn')) setTimeout(close, 0);
+        if (e.target.closest('[data-action],.np-btn')) setTimeout(close, 0);
+      });
+      // Pointer and keyboard drive ONE active row: moving onto a row closes the
+      // keyboard-opened branches it is not in and, once the keyboard has put
+      // focus in the menu, moves focus with it.
+      el.addEventListener('pointermove', (e) => {
+        const row = e.target && e.target.closest ? e.target.closest('.bc-menu-item, .np-btn') : null;
+        if (!row) return;
+        for (const node of el.querySelectorAll('.tag-menu-node.open')) if (!node.contains(row)) shut(node);
+        if (focusedItem() && document.activeElement !== row && !isOff(row)) focusItem(row);
       });
       mount.appendChild(el);
       const isBody = mount === document.body || mount === document.documentElement;
@@ -1611,6 +2112,7 @@
       localY = Math.max(4, Math.min(localY, vh - mh - 4));
       el.style.left = `${Math.round(localX + (isBody ? window.scrollX : mount.scrollLeft))}px`;
       el.style.top = `${Math.round(localY + (isBody ? window.scrollY : mount.scrollTop))}px`;
+      if (o.keyboard != null ? o.keyboard : lastInputWasKey) focusStep(rootLevel(), null, 'ArrowDown');
       setTimeout(() => {
         document.addEventListener('pointerdown', onOutside, true);
         document.addEventListener('keydown', onKey, true);
@@ -1620,11 +2122,39 @@
     }
     return { open, close, isOpen: () => !!el, root: () => el };
   }
+  // Keep a shown submenu inside the window: a right-opening submenu near the
+  // edge opens leftward (flip-x), a tall tree near the bottom shifts up.
+  // boundsEl: document (the app popup IS the OS window, so the viewport) or
+  // the demo's embedded popup box. Hover (installSubmenuAutoflip) and the
+  // menu keyboard (createMenu) both place submenus through this.
+  function fitSubmenu(node, sub, boundsEl) {
+    sub.classList.remove('flip-x');
+    sub.style.top = '';
+    const r = sub.getBoundingClientRect();
+    if (!r.width) return; // not shown (hover already left)
+    const bound = (boundsEl === document || boundsEl === document.documentElement)
+      ? { left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight }
+      : boundsEl.getBoundingClientRect();
+    if (bound.right - bound.left < 40) return; // hidden/unmeasurable host
+    if (r.right > bound.right - 4) {
+      const nr = node.getBoundingClientRect();
+      if (nr.left - bound.left > bound.right - nr.right) sub.classList.add('flip-x'); // open toward the roomier side
+    }
+    const r2 = sub.getBoundingClientRect();
+    if (r2.bottom > bound.bottom - 4) {
+      const shift = Math.min(r2.bottom - (bound.bottom - 4), Math.max(0, r2.top - (bound.top + 4)));
+      if (shift > 0) {
+        const curTop = parseFloat((typeof getComputedStyle === 'function' ? getComputedStyle(sub).top : '') || '0') || 0;
+        sub.style.top = `${curTop - shift}px`;
+      }
+    }
+  }
   // Auto-flip/clamp hover submenus so they never overflow the window. The popup
   // window is narrow, so a right-opening submenu near the edge must open leftward
   // (flip-x) and a tall group tree near the bottom must shift up. One delegated
-  // listener per consumer root covers the filter bar, the in-row pickers, AND the
-  // popover menus (the controller installs it automatically).
+  // listener per consumer root covers the filter bar AND the popover menus (the
+  // controller installs it automatically); keyboard-opened submenus are placed
+  // by createMenu through the same fitSubmenu.
   function installSubmenuAutoflip(rootEl) {
     if (typeof document === 'undefined' || !rootEl || rootEl._bcAutoflip) return;
     rootEl._bcAutoflip = true;
@@ -1636,31 +2166,9 @@
       const sub = node.querySelector(':scope > .tag-submenu');
       if (!sub) return;
       // setTimeout (not rAF): rAF is throttled to a halt in background tabs.
-      setTimeout(() => {
-        if (!sub.isConnected) return;
-        sub.classList.remove('flip-x');
-        sub.style.top = '';
-        const r = sub.getBoundingClientRect();
-        if (!r.width) return; // not shown (hover already left)
-        // Bounds: the app popup IS the OS window (viewport); the demo popup is a
-        // box embedded in the marketing page, so clamp to that box instead.
-        const bound = (rootEl === document || rootEl === document.documentElement)
-          ? { left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight }
-          : rootEl.getBoundingClientRect();
-        if (bound.right - bound.left < 40) return; // hidden/unmeasurable host
-        if (r.right > bound.right - 4) {
-          const nr = node.getBoundingClientRect();
-          if (nr.left - bound.left > bound.right - nr.right) sub.classList.add('flip-x'); // open toward the roomier side
-        }
-        const r2 = sub.getBoundingClientRect();
-        if (r2.bottom > bound.bottom - 4) {
-          const shift = Math.min(r2.bottom - (bound.bottom - 4), Math.max(0, r2.top - (bound.top + 4)));
-          if (shift > 0) {
-            const curTop = parseFloat((typeof getComputedStyle === 'function' ? getComputedStyle(sub).top : '') || '0') || 0;
-            sub.style.top = `${curTop - shift}px`;
-          }
-        }
-      }, 0);
+      // Bounds: the app popup IS the OS window (viewport); the demo popup is a
+      // box embedded in the marketing page, so clamp to that box instead.
+      setTimeout(() => { if (sub.isConnected) fitSubmenu(node, sub, rootEl); }, 0);
     });
   }
   // Shared "action toast": the transient toast with an Undo button, reused by the
@@ -1990,6 +2498,7 @@
     if (typeof document === 'undefined') {
       return { confirm: () => Promise.resolve(false), prompt: () => Promise.resolve(null), isOpen: () => false, dismiss: () => {} };
     }
+    trackInputModality();
     const root = host || document.body;
     const make = (inner) => {
       const overlay = document.createElement('div');
@@ -2004,28 +2513,51 @@
     const promptEl = make('<div class="dialog"><h3 data-x="title"></h3><input class="prompt-input" type="text" autocomplete="off" spellcheck="false" data-x="input"><div class="dialog-btns"><button type="button" class="btn" data-x="no"></button><button type="button" class="btn primary" data-x="yes"></button></div></div>');
     const q = (parent, name) => parent.querySelector(`[data-x="${name}"]`);
     let activeCancel = null;
-    function run(overlay, setup, getValue) {
+    // Keys: Esc cancels. Enter confirms a non-destructive dialog; a destructive
+    // one ({danger}) never confirms on a bare Enter: it opens with Cancel
+    // focused, so Enter (or Space) acts on whichever button has focus and the
+    // red button needs a click or a deliberate Tab to it. Focus moves into the
+    // dialog (the field, else the default button) and goes back on close when
+    // it came from a field or the keyboard.
+    function run(overlay, setup, getValue, focusEl, danger) {
       return new Promise((resolve) => {
         setup();
         overlay.classList.add('show');
         const yesBtn = q(overlay, 'yes');
         const noBtn = q(overlay, 'no');
+        let back = null;
         const finish = (value) => {
+          const restore = back && back.isConnected && overlay.contains(document.activeElement);
           overlay.classList.remove('show');
           yesBtn.removeEventListener('click', onYes);
           noBtn.removeEventListener('click', onNo);
           overlay.removeEventListener('click', onBackdrop);
           document.removeEventListener('keydown', onKey, true);
           activeCancel = null;
+          if (restore) back.focus({ preventScroll: true });
           resolve(value);
         };
         const onYes = () => finish(getValue());
         const onNo = () => finish(getValue(true));
         const onBackdrop = (e) => { if (e.target === overlay) onNo(); };
         const onKey = (e) => {
-          if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); onYes(); }
-          else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); onNo(); }
+          if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); onNo(); return; }
+          if (e.key !== 'Enter') return;
+          e.stopPropagation();
+          // A focused dialog button answers Enter natively (its own click).
+          if (e.target === yesBtn || e.target === noBtn) return;
+          e.preventDefault();
+          if (!danger) onYes();
         };
+        // After the opening click settles (a closing menu hands focus back to
+        // its opener first): remember where focus was, then take it.
+        setTimeout(() => {
+          if (!overlay.classList.contains('show')) return;
+          const prev = document.activeElement;
+          const typing = prev && (/^(INPUT|TEXTAREA)$/.test(prev.tagName) || prev.isContentEditable);
+          back = prev && prev !== document.body && !overlay.contains(prev) && (typing || lastInputWasKey) ? prev : null;
+          if (focusEl) focusEl.focus({ preventScroll: true });
+        }, 0);
         yesBtn.addEventListener('click', onYes);
         noBtn.addEventListener('click', onNo);
         overlay.addEventListener('click', onBackdrop);
@@ -2046,7 +2578,7 @@
         yes.classList.toggle('danger', !!o.danger);
         yes.classList.toggle('primary', !o.danger);
         q(confirmEl, 'no').textContent = o.cancelLabel || 'Cancel';
-      }, (cancelled) => !cancelled);
+      }, (cancelled) => !cancelled, q(confirmEl, o.danger ? 'no' : 'yes'), !!o.danger);
     }
     function prompt(opts) {
       const o = typeof opts === 'string' ? { title: opts } : (opts || {});
@@ -2056,8 +2588,7 @@
         input.value = o.value || '';
         q(promptEl, 'yes').textContent = o.okLabel || 'OK';
         q(promptEl, 'no').textContent = o.cancelLabel || 'Cancel';
-        setTimeout(() => input.focus(), 0);
-      }, (cancelled) => cancelled ? null : (input.value.trim() || null));
+      }, (cancelled) => cancelled ? null : (input.value.trim() || null), input, false);
       return result;
     }
     return {
@@ -2173,9 +2704,23 @@
       t.innerHTML = String(row || '').trim();
       return t.content.firstElementChild || document.createElement('div');
     }
+    // Rows given as html are parsed in ONE pass (a parse per row cost ~5 ms of
+    // every keystroke's rebuild); an element row is used as it is.
     function build(from, to) {
+      const rows = [];
+      let html = true;
+      for (let i = from; i < to; i += 1) {
+        const row = o.renderRow(i, ids[i]);
+        if (row && typeof row !== 'string') html = false;
+        rows.push(row);
+      }
+      if (html) {
+        const t = document.createElement('template');
+        t.innerHTML = rows.map((r) => String(r || '<div></div>').trim()).join('');
+        return t.content;
+      }
       const frag = document.createDocumentFragment();
-      for (let i = from; i < to; i += 1) frag.appendChild(toEl(o.renderRow(i, ids[i])));
+      for (const row of rows) frag.appendChild(toEl(row));
       return frag;
     }
     function rowFor(id) {
@@ -2229,12 +2774,21 @@
     // Keep a screenful of rows rendered below AND above the viewport, so the
     // scrollbar never bottoms out on a partial window (wheeling up at
     // scrollTop 0 fires no scroll event to load more).
+    // Rows are added in steps sized from the rows' measured height (rowH), so
+    // a rebuild renders about two screenfuls, not a fixed batch: every row a
+    // keystroke builds is parsed, styled and laid out, and a 30-row batch was
+    // twice what a popup shows (measured: ~halves the rebuild).
+    let rowH = 0;   // average row height at the last fill (0 = not measured yet)
+    let lastH = 0;  // the list's height at the last fill
+    const rowsFor = (px) => (rowH > 0 ? Math.min(batch, Math.max(4, Math.ceil(px / rowH) + 2)) : batch);
     function fill() {
       if (!laidOut() || !ids.length) return;
       const h = listEl.clientHeight;
+      lastH = h;
+      if (end > start) rowH = listEl.scrollHeight / (end - start);
       let guard = 0;
-      while (end < ids.length && listEl.scrollHeight - listEl.scrollTop - h < h && guard++ < 100) appendRows(batch);
-      while (start > 0 && listEl.scrollTop < h && guard++ < 200) prependRows(batch);
+      while (end < ids.length && listEl.scrollHeight - listEl.scrollTop - h < h && guard++ < 100) appendRows(rowsFor(2 * h - (listEl.scrollHeight - listEl.scrollTop)));
+      while (start > 0 && listEl.scrollTop < h && guard++ < 200) prependRows(rowsFor(h - listEl.scrollTop));
     }
     function anchorOf(el, offset, isCursor) {
       const id = el.dataset.id;
@@ -2271,14 +2825,14 @@
         }
         if (index < 0 || index >= ids.length) {
           start = 0; end = 0;
-          appendRows(batch);
+          appendRows(rowsFor(2 * lastH));
           listEl.scrollTop = 0;
           fill();
           return;
         }
-        start = Math.max(0, index - batch);
+        start = Math.max(0, index - rowsFor(1.5 * lastH));
         end = start;
-        appendRows(Math.min(ids.length, index + batch) - start);
+        appendRows(Math.min(ids.length, index + rowsFor(2 * lastH)) - start);
         const el = listEl.children[index - start];
         if (!laidOut()) { pendingPlace = { id: ids[index], offset }; return; }
         place(el, offset);
@@ -2782,7 +3336,7 @@
       refresh();
     }
     async function addGroup(id) {
-      const name = await dialogs.prompt({ title: 'New group name' });
+      const name = await dialogs.prompt({ title: 'New group name', okLabel: 'Create' });
       if (!name) return;
       await a.createGroup(name);
       if (id != null && a.toggleGroup) await a.toggleGroup(id, name); // clip is not yet in the new group, so this adds
@@ -2798,7 +3352,7 @@
     // with the current name. Reuses the same title field search indexes.
     async function renameClip(id) {
       const item = a.itemById(id);
-      const title = await dialogs.prompt({ title: 'Name this clip', value: item ? titleOf(item) : '', okLabel: 'Save' });
+      const title = await dialogs.prompt({ title: item && item.type === 'image' ? 'Rename image' : 'Rename clip', value: item ? titleOf(item) : '', okLabel: 'Save' });
       if (title === null) return;
       if (a.setClipTitle) await a.setClipTitle(id, title);
       refresh();
@@ -3117,7 +3671,7 @@
       refresh();
     }
     async function bulkAddGroup() {
-      const name = await dialogs.prompt({ title: 'New group name' });
+      const name = await dialogs.prompt({ title: 'New group name', okLabel: 'Create' });
       if (!name) return;
       if (a.createGroup) await a.createGroup(name);
       await bulkGroup(name);
@@ -3130,10 +3684,10 @@
       // unify window opens (no blur-to-hide), so a stale bar would linger.
       clearSelection();
     }
-    function openBulkMenu(x, y) {
+    function openBulkMenu(x, y, keyboard) {
       const info = selectionInfo();
       const selItems = info.ids.map((id) => a.itemById(id)).filter(Boolean);
-      menu.open({ x, y, html: renderBulkMenu(info, { groups: groupNames(), selectedItems: selItems }) });
+      menu.open({ x, y, keyboard, html: renderBulkMenu(info, { groups: groupNames(), selectedItems: selItems }) });
     }
     // The bar's dedicated Group button: a popover with JUST the tri-state group
     // tree (no submenu hop). The full bulk menu stays on right-click.
@@ -3145,16 +3699,16 @@
     // is open and offers "Select N similar" for a text clip (N over all
     // history; a placeholder row while the count is being worked out, removed
     // when there are none).
-    function openClipMenu(rowEl, x, y, aboveY) {
+    function openClipMenu(rowEl, x, y, aboveY, keyboard) {
       const id = rowEl && rowEl.dataset ? rowEl.dataset.id : null;
       if (!id) return;
-      if (selectedIds.size >= 2 && selectedIds.has(id)) { openBulkMenu(x, y); return; }
+      if (selectedIds.size >= 2 && selectedIds.has(id)) { openBulkMenu(x, y, keyboard); return; }
       const item = a.itemById(id);
       if (!item) return;
       const offerSimilar = item.type !== 'image' && (!a.menuContext || a.menuContext === 'popup');
       const known = offerSimilar ? similarResults().get(id) : null;
       const similarCount = !offerSimilar ? undefined : known ? known.size : null;
-      menu.open({ id, x, y, aboveY, onClose: releaseOnClose(id), html: renderClipMenu(item, { items: allItems(), groups: groupNames(), numpadMap: a.numpadMap ? a.numpadMap() : {}, context: a.menuContext, similarCount }) });
+      menu.open({ id, x, y, aboveY, keyboard, onClose: releaseOnClose(id), html: renderClipMenu(item, { items: allItems(), groups: groupNames(), numpadMap: a.numpadMap ? a.numpadMap() : {}, context: a.menuContext, similarCount }) });
       hold(id);
       if (similarCount !== null) return;
       whenSimilar(id, (set) => {
@@ -3176,28 +3730,24 @@
       menu.open({ id, x, y, html: renderClipMenu(item, { items: allItems(), groups: groupNames(), numpadMap: a.numpadMap ? a.numpadMap() : {}, context: a.menuContext }) });
     }
     // The one-clip group picker: the title-bar strip's + and a row's meta +
-    // (same clipGroupTreeHtml content as the clip menu's submenu, same
-    // gp-btn/add-group dispatch - the menu root carries data-id). Mirrors
-    // openBulkGroupMenu.
+    // (same clipGroupTreeHtml checklist as the clip menu's submenu, same
+    // toggle-group/add-group dispatch - the menu root carries data-id).
+    // Mirrors openBulkGroupMenu.
     function openGroupPickerAt(id, x, y, aboveY) {
       const item = a.itemById(id);
       if (!item) return;
       menu.open({ id, x, y, aboveY, onClose: releaseOnClose(id), html: `<div class="bc-menu-list bc-group-list">${clipGroupTreeHtml(groupNames(), item)}</div>` });
       hold(id);
     }
-    // A row's numpad badge / ghost #: the keypad (the same renderNumpadButtons
-    // the clip menu's Numpad submenu shows) in a popover; a key assigns through
+    // A row's numpad badge / ghost #: the keypad (the same renderKeypadMenu the
+    // clip menu's Numpad submenu shows) in a popover; a key assigns through
     // tryAssignNumpad (its replace confirm included), and a set key can be
     // removed.
     function openNumpadPickerAt(id, x, y, aboveY) {
       const item = a.itemById(id);
       if (!item) return;
-      const np = numpadOf(item);
-      const remove = np
-        ? `<button class="bc-menu-item np-remove" type="button" data-action="numpad-unassign" data-slot="${np}"><span class="mi">backspace</span><span class="bc-menu-label">Remove from key ${np}</span></button>`
-        : '';
-      const keys = renderNumpadButtons(item, allItems(), a.numpadMap ? a.numpadMap() : {});
-      menu.open({ id, x, y, aboveY, className: 'bc-keypad', onClose: releaseOnClose(id), html: `<div class="bc-menu-list"><div class="numpad-picker"><div class="np-row">${keys}</div></div>${remove}</div>` });
+      const keys = renderKeypadMenu(item, allItems(), a.numpadMap ? a.numpadMap() : {});
+      menu.open({ id, x, y, aboveY, className: 'bc-keypad', onClose: releaseOnClose(id), html: `<div class="bc-menu-list">${keys}</div>` });
       hold(id);
     }
 
@@ -3208,9 +3758,9 @@
     // row; the popup still blur-hides the moment the user clicks into one of them.
     // Keyboard opens (Ctrl/Alt+Enter) stay a hand-off: focus moves to the editor.
     const KEEP_POPUP = { keepPopup: true };
-    // Filter targets: the chip bar's chips and a row's group names (click
-    // includes, right-click excludes).
-    const FILTER_TARGET = '.filter-tag[data-filter], .filter-tag[data-group], .meta-tag[data-group]';
+    // Filter targets: the chip bar's chips, the group rows in a chip's dropdown
+    // and a row's group names (click includes, right-click excludes).
+    const FILTER_TARGET = '.filter-tag[data-filter], .filter-tag[data-group], .group-filter-row[data-group], .meta-tag[data-group]';
     async function openClipInEditor(event, row) {
       event.preventDefault(); event.stopPropagation();
       const item = a.itemById(row.dataset.id);
@@ -3237,7 +3787,7 @@
       const t = event.target;
       if (!t || typeof t.closest !== 'function') return null;
       const openBtn = t.closest(OPEN_BTN_SEL);
-      const row = openBtn ? openBtn.closest('.item') : (t.closest('button, .np-btn, .gp-btn, .star, [data-action], a') ? null : t.closest('.item'));
+      const row = openBtn ? openBtn.closest('.item') : (t.closest('button, .star, [data-action], a') ? null : t.closest('.item'));
       return row && row.dataset && row.dataset.id ? row : null;
     }
     function onMousedown(event) {
@@ -3272,7 +3822,7 @@
       const t = event.target;
       // Alt+click on a clip row body → open in editor/viewer (not on inner controls).
       if (event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey) {
-        if (!t.closest('button, .np-btn, .gp-btn, .star, [data-action], a')) {
+        if (!t.closest('button, .star, [data-action], a')) {
           const row = t.closest('.item');
           if (row && row.dataset.id) return openClipInEditor(event, row);
         }
@@ -3280,7 +3830,7 @@
       // Multi-select: Ctrl/Cmd-click toggles a row, Shift-click ranges from the
       // anchor. Only when the click lands on the row body (not an inner control),
       // so modifier-clicking the star/menu still does its own thing.
-      if ((event.metaKey || event.ctrlKey || event.shiftKey) && !t.closest('button, .np-btn, .gp-btn, .star, [data-action], a')) {
+      if ((event.metaKey || event.ctrlKey || event.shiftKey) && !t.closest('button, .star, [data-action], a')) {
         const row = t.closest('.item');
         if (row && row.dataset.id) {
           event.preventDefault(); event.stopPropagation();
@@ -3343,7 +3893,12 @@
       const selSimilar = t.closest('[data-action="select-similar"]');
       if (selSimilar) { event.stopPropagation(); if (!selSimilar.disabled) selectSimilar(selSimilar.dataset.id); return true; }
       const ftag = t.closest(FILTER_TARGET);
+      // A greyed chip (the availability census: it would show nothing) is inert.
+      if (ftag && ftag.getAttribute('aria-disabled') === 'true') { event.stopPropagation(); return true; }
       if (ftag) { event.stopPropagation(); if (a.setFilterIntent) a.setFilterIntent(ftag.dataset.filter || ftag.dataset.group, 'include'); render(); return true; }
+      // The empty-result nudge: one click rewrites the query without its blocker.
+      const applyQuery = t.closest('[data-action="apply-query"]');
+      if (applyQuery) { event.stopPropagation(); if (a.setQuery) a.setQuery(applyQuery.dataset.query || ''); render(); if (a.focusSearch) a.focusSearch(); return true; }
       const npRemove = t.closest('.np-remove');
       if (npRemove) { event.stopPropagation(); await a.numpadUnassign(Number(npRemove.dataset.slot)); refresh(); return true; }
       const slotEl = t.closest('.np-slot.has-content');
@@ -3352,13 +3907,16 @@
       if (share) { event.stopPropagation(); await a.setGroupSharedAi(share.dataset.group); refresh(); return true; }
       const gpDel = t.closest('.gp-del');
       if (gpDel) { event.stopPropagation(); deleteGroup(gpDel.dataset.group); return true; }
-      const gpBtn = t.closest('.gp-btn');
-      if (gpBtn) {
+      // A clip's group checklist (clip menu submenu, + / meta popovers): a row
+      // toggles membership, "New group..." prompts then adds. The menu root
+      // carries the clip's data-id.
+      const groupRow = t.closest('[data-action="toggle-group"], [data-action="add-group"]');
+      if (groupRow) {
         event.stopPropagation();
-        const item = gpBtn.closest('[data-id]'); // the row's .item OR the "..." menu root (both carry data-id)
-        if (!item) return true;
-        if (gpBtn.dataset.action === 'add-group') addGroup(item.dataset.id);
-        else if (gpBtn.dataset.group) { await a.toggleGroup(item.dataset.id, gpBtn.dataset.group); refresh(); }
+        const owner = groupRow.closest('[data-id]');
+        if (!owner) return true;
+        if (groupRow.dataset.action === 'add-group') addGroup(owner.dataset.id);
+        else if (groupRow.dataset.group) { await a.toggleGroup(owner.dataset.id, groupRow.dataset.group); refresh(); }
         return true;
       }
       const npBtn = t.closest('.np-btn');
@@ -3379,6 +3937,8 @@
       if (edit) { event.stopPropagation(); await a.editClip(edit.dataset.id, edit.closest('.item'), fromMenu ? KEEP_POPUP : undefined); return true; }
       const rename = t.closest('[data-action="rename"]');
       if (rename) { event.stopPropagation(); await renameClip(rename.dataset.id); return true; }
+      const revert = t.closest('[data-action="revert"]');
+      if (revert) { event.stopPropagation(); if (a.revertClip) await a.revertClip(revert.dataset.id); return true; }
       const del = t.closest('[data-action="del"]');
       if (del) { event.stopPropagation(); await deleteIds([del.dataset.id]); return true; } // same instant-delete + Undo toast as bulk
       const item = t.closest('.item');
@@ -3396,6 +3956,7 @@
       if (ftag) {
         event.preventDefault();
         event.stopPropagation();
+        if (ftag.getAttribute('aria-disabled') === 'true') return true; // greyed: inert to right-click too
         if (a.setFilterIntent) a.setFilterIntent(ftag.dataset.filter || ftag.dataset.group, 'exclude');
         render();
         return true;
@@ -3444,7 +4005,7 @@
       const t = event.target && event.target.nodeType === 1 ? event.target : event.target && event.target.parentElement;
       const row = t && typeof t.closest === 'function' ? t.closest('.item') : null;
       if (!row || !row.dataset || !row.dataset.id) return false;
-      if (t.closest('button, .np-btn, .gp-btn, .star, [data-action], a, .filter-tag, .numpad-picker')) { event.preventDefault(); return true; }
+      if (t.closest('button, .star, [data-action], a, .filter-tag, .numpad-picker')) { event.preventDefault(); return true; }
       const item = a.itemById(row.dataset.id);
       if (!item) { event.preventDefault(); return true; }
       const isImage = item.type === 'image';
@@ -3495,6 +4056,19 @@
       const fieldHasText = isTypingTarget(event.target) && typeof event.target.value === 'string' && event.target.value.length > 0;
       if (mod && (event.key === 'z' || event.key === 'Z')) { if (!fieldHasText && lastUndo) { event.preventDefault(); lastUndo(); } return; }
       if (mod && (event.key === 'a' || event.key === 'A')) { if (!fieldHasText) { event.preventDefault(); selectAll(); } return; }
+      // The menu key / Shift+F10 opens the cursor row's menu (the bulk menu on
+      // a multi-selection) from the keyboard, its first row focused.
+      if (event.key === 'ContextMenu' || (event.key === 'F10' && event.shiftKey && !mod && !event.altKey)) {
+        const id = focusId || (selectedIds.size ? [...selectedIds][0] : null);
+        const scope = a.menuHost || (typeof document !== 'undefined' ? document : null);
+        const row = id && scope ? scope.querySelector(`.item[data-id="${String(id).replace(/["\\]/g, '\\$&')}"]`) : null;
+        if (row) {
+          event.preventDefault();
+          const r = row.getBoundingClientRect();
+          openClipMenu(row, r.right, r.top + Math.min(r.height, 28), r.top, true);
+        }
+        return;
+      }
       if (event.key === 'ArrowDown') { event.preventDefault(); moveFocus(1, { extend: event.shiftKey }); }
       else if (event.key === 'ArrowUp') { event.preventDefault(); moveFocus(-1, { extend: event.shiftKey }); }
       // Delete while EDITING query text must stay a text edit (same fieldHasText
@@ -3647,7 +4221,7 @@
         <div class="bc-tag-strip" data-x="tags" hidden></div>
         <div class="bc-editor-bar-actions">
           <button class="icon-btn" type="button" data-x="find" title="Find (Ctrl+F)"><span class="mi">search</span></button>
-          <button class="icon-btn" type="button" data-x="revert" title="Revert to original"><span class="mi">undo</span></button>
+          <button class="icon-btn" type="button" data-x="revert" title="Revert to original"><span class="mi">${CLIP_ACTION_ICONS.revert}</span></button>
           ${o.onMenu ? '<button class="icon-btn" type="button" data-x="menu" title="More actions" aria-label="More actions"><span class="mi">more_horiz</span></button>' : ''}
           <button class="icon-btn close-btn" type="button" data-x="close" title="Close (Esc)" aria-label="Close"><span class="mi">close</span></button>
         </div>
@@ -3897,7 +4471,10 @@
     // the demo's in-page editor overlay has no clip context so no button).
     const menuBtn = q('menu');
     if (menuBtn) menuBtn.onclick = (e) => { e.stopPropagation(); const r = menuBtn.getBoundingClientRect(); o.onMenu(r.right, r.bottom + 2); };
-    q('revert').onclick = () => { area.value = originalText; titleInput.value = originalTitle; updateStats(); emitInput(); commit(); area.focus(); };
+    // Back to the text and title the editor opened with (the bar button and the
+    // clip menu's "Revert to original").
+    const revert = () => { area.value = originalText; titleInput.value = originalTitle; updateStats(); emitInput(); commit(); area.focus(); };
+    q('revert').onclick = revert;
     q('close').onclick = () => { commit(); if (o.onClose) o.onClose(); };
     root.addEventListener('keydown', (e) => {
       if (e.key !== 'Escape') return;
@@ -3930,6 +4507,7 @@
       focus: () => area.focus(),
       focusTitle: () => { showTitleInput(); titleInput.focus(); titleInput.select(); },
       openFind,
+      revert,
     };
   }
   // Shared in-app IMAGE VIEWER — the image twin of createEditor, mounted by the
@@ -4770,12 +5348,15 @@
     renderFilterBar,
     renderChip,
     renderNumpadButtons,
+    renderKeypadMenu,
     groupMembership,
     renderClipItem,
     clipRowText,
     renderClipMeta,
     renderEmptyState,
     emptyStateKind,
+    renderRelaxNudge,
+    createCensusCache,
     similarClipIds,
     similarSteps,
     similarText,
@@ -4799,6 +5380,8 @@
     renderFacetOption,
     renderSearchOptions,
     createMenu,
+    menuNavIndex,
+    keypadStep,
     installSubmenuAutoflip,
     showActionToast,
     revisionConflictCode,

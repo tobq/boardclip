@@ -201,25 +201,40 @@ function numpadMap() {
 // The bar depends on the facet tokens, whether there is any query text, the
 // groups and the counts - NOT on the free text being typed, so typing a word
 // no longer rebuilds it on every letter (~13 ms each on a 25-group bar).
+// The availability census (which chips would show anything under the other
+// filters) is cached on the filters, the history (searchDocs) and the minute:
+// typing words never recomputes it. One cache for the chip bar AND the
+// options panel.
+const censusCache = Core.createCensusCache({ docs: () => searchDocs, groups: () => groups, onUpdate: () => renderGroupFilters() });
 let filterBarKey = '';
+let lastCensusId = 0;
 function renderGroupFilters() {
   const startedAt = performance.now();
   const el = document.getElementById('groupFilters');
   const fs = facetState();
-  const key = JSON.stringify([[...fs.active].sort(), [...fs.excluded].sort(), !!query, groups]);
+  const census = censusCache.get(parsedQuery());
+  // A new census (the history or the filters changed): the open options
+  // panel's chips follow it too.
+  if (census.id !== lastCensusId) { lastCensusId = census.id; queueMicrotask(() => { if (searchBox.isOptionsOpen()) searchBox.refresh(); }); }
+  const key = JSON.stringify([[...fs.active].sort(), [...fs.excluded].sort(), !!query, groups, census.id]);
   if (key === filterBarKey) return;
   filterBarKey = key;
-  el.innerHTML = Core.renderFilterBar({ items, groups, activeFilters: fs.active, excludedFilters: fs.excluded, query, builtinCounts, groupCounts });
+  el.innerHTML = Core.renderFilterBar({ items, groups, activeFilters: fs.active, excludedFilters: fs.excluded, query, builtinCounts, groupCounts, census });
   recordRendererPerf('filters.render_bar', startedAt, { groups: groups.length }, 40);
 }
 
 // The shared list keeps your place across every rebuild (Core.createClipList +
 // the resolveListAnchor rules): typing, clearing, a sort flip, a new clip.
+// searchRefineCache: the last result, so typing more of a term tests only the
+// clips that matched before (Core.search.filterRankIndexes refinement rules).
+// relaxCache: the same for the empty-result nudge (Core.search.bestRelaxation).
+const searchRefineCache = {};
+const relaxCache = {};
 function applyFilter() {
   const startedAt = performance.now();
   const firstTerm = parsedQuery().content.find(c => !c.neg && c.scope !== 'title');
   previewTerm = firstTerm ? String(firstTerm.value).trim().toLowerCase() || null : null;
-  filtered = Core.filterItemIndexes(items, { query, regex: regexOn, docs: searchDocs, searchTextLower, sortMode });
+  filtered = Core.filterItemIndexes(items, { query, regex: regexOn, docs: searchDocs, searchTextLower, sortMode, cache: searchRefineCache });
   const rows = filtered;
   const rowItems = items;
   clipList.update({
@@ -227,7 +242,8 @@ function applyFilter() {
     tsAt: (i) => Number(rowItems[rows[i]] && rowItems[rows[i]].ts) || 0,
     mode: Core.search.rankMode(parsedQuery(), sortMode),
     queryKey: query,
-    emptyHtml: () => Core.renderEmptyState({ total: items.length, query }),
+    // Only when the list IS empty: the one filter whose removal brings clips back.
+    emptyHtml: () => Core.renderEmptyState({ total: items.length, query, regex: regexOn, groups, nudgeHtml: Core.renderRelaxNudge(Core.search.bestRelaxation(searchDocs, query, { regex: regexOn, searchTextLower, cache: relaxCache })) }),
   });
   recordRendererPerf('list.apply_filter', startedAt, { rendered: renderedCount(), regex: regexOn }, 60);
 }
@@ -274,11 +290,11 @@ function previewMatchIndex(ri) {
   if (!previewTerm || regexOn || !searchDocs[ri]) return null;
   return Core.search.bodyIndexOf(searchDocs[ri], searchTextLower[ri], previewTerm);
 }
+// A row's html (the shared list parses a whole batch of rows at once).
 function buildItem(it, ri) {
-  const el = document.createElement('div');
   // The selection state paints a full rebuild's cursor, checked, held and
   // similar rows (it lives in the shared controller).
-  el.innerHTML = Core.renderClipItem(it, {
+  return Core.renderClipItem(it, {
     imageSrc: item => `clip-img:///${esc(item.image)}`,
     query,
     regex: regexOn,
@@ -286,7 +302,6 @@ function buildItem(it, ri) {
     selection: controller ? controller.selection() : null,
     actionsHtml: Core.renderClipActions(it),
   });
-  return el.firstElementChild;
 }
 
 function updateCount() {
@@ -338,6 +353,14 @@ const appAdapter = {
     if (controller) controller.onQueryChange();
   },
   clearFilters: () => clearSearchAndFilters(),
+  // The empty-result nudge rewrites the whole query (one filter dropped).
+  setQuery: (next) => {
+    query = String(next || '');
+    searchEl.value = query;
+    if (typeof searchBox !== 'undefined' && searchBox) searchBox.refresh();
+    updateClearControls();
+    if (controller) controller.onQueryChange();
+  },
   focusSearch: () => searchEl.focus(),
   closeSearchOptions: () => searchBox.closeOptions(),
   pin: (id) => revGuard(() => window.api.pin(id, clipRevOf(id)), false),
@@ -486,6 +509,7 @@ function onQueryChanged(v) {
 const searchBox = Core.attachSearchBox(searchEl, {
   getRegex: () => regexOn,
   getGroups: () => groups,
+  getCensus: (parsed) => censusCache.get(parsed),
   onChange: onQueryChanged,
   // The options panel's height: per machine (dragged on its bottom edge).
   saveOptionsHeight: (px) => window.api.saveSettings({ options_panel_height: px }),

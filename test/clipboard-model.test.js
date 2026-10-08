@@ -545,8 +545,8 @@ function text(text, extra = {}) {
   assert(clipItem.includes('class="meta-tag" type="button" data-group="code"'));
   // The row's keypad + group pickers are the clip menu's components.
   const menu = ui.renderClipMenu(base[1], { items: base, groups: ['code', 'work/api'] });
-  assert(menu.includes('class="np-btn current" data-n="2"'));
-  assert(/class="gp-btn assigned[^"]*" data-group="code"/.test(menu));
+  assert(/class="np-btn current"[^>]*aria-checked="true"[^>]*data-n="2"/.test(menu));
+  assert(/role="menuitemcheckbox"[^>]*data-action="toggle-group" data-group="code" aria-checked="true"/.test(menu));
   assert(menu.includes('data-group="work/api"'));
   assert(menu.includes('class="tag-submenu"'));
   assert(menu.includes('data-action="add-group"'));
@@ -624,7 +624,7 @@ function text(text, extra = {}) {
   assert(!siteHtml.includes('window-head'));
   assert(!siteHtml.includes('icon-settings'));
   assert(!siteHtml.includes('demo-settings-note'));
-  for (const selector of ['main-view', 'sticky', 'count', 'close-btn', 'icon-btn', 'search-row', 'search', 'filter-tag', 'item', 'preview', 'meta', 'star', 'numpad-picker', 'np-row', 'np-btn', 'gp-btn', 'list-empty', 'settings-view', 'setting-row', 'switch', 'np-slot', 'group-slot', 'sync-account']) {
+  for (const selector of ['main-view', 'sticky', 'count', 'close-btn', 'icon-btn', 'search-row', 'search', 'filter-tag', 'item', 'preview', 'meta', 'star', 'numpad-picker', 'np-row', 'np-btn', 'bc-menu-item', 'list-empty', 'settings-view', 'setting-row', 'switch', 'np-slot', 'group-slot', 'sync-account']) {
     assert(sharedCss.includes(`.${selector}`), `shared popup css owns .${selector}`);
     assert(!new RegExp(`^\\s*\\.${selector}(?![-\\w])`, 'm').test(appHtml), `app must not redefine .${selector}`);
     assert(!new RegExp(`^\\s*\\.${selector}(?![-\\w])`, 'm').test(siteCss), `site css must not redefine .${selector}`);

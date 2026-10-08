@@ -328,6 +328,9 @@
       { text: "npx --yes netlify-cli@latest deploy --prod --dir site" }
     ];
 
+    // The labels the two rules below miss, on a fitting clip each, so every
+    // demo chip opens on clips and never on an empty group.
+    const DEMO_EXTRA_GROUPS = new Map([[45, "ideas"], [67, "legal"], [59, "meeting"], [42, "social"]]);
     const seedClips = Array.from({ length: 100 }, (_, index) => {
       const example = examples[index % examples.length];
       const text = example.text;
@@ -336,6 +339,7 @@
       if (numpadSlots.has(index)) pin.number = numpadSlots.get(index);
       if (index % 11 === 0 || index < 4) pin.groups = [labels[index % labels.length]];
       if (index % 23 === 0) pin.groups = [...new Set([...(pin.groups || []), labels[(index * 3 + 4) % labels.length]])];
+      if (DEMO_EXTRA_GROUPS.has(index)) pin.groups = [...new Set([...(pin.groups || []), DEMO_EXTRA_GROUPS.get(index)])];
       const hasPin = index % 19 === 0 || index < 2 || Object.keys(pin).length > 0;
       return {
         id: `demo:${index + 1}`,
@@ -460,7 +464,7 @@
         tsAt: (i) => Number(visible[i] && visible[i].ts) || 0,
         mode: Core.search.rankMode(Core.search.parseQuery(state.query), state.sortMode),
         queryKey: state.query,
-        emptyHtml: () => Core.renderEmptyState({ total: clips.length, query: state.query }),
+        emptyHtml: () => Core.renderEmptyState({ total: clips.length, query: state.query, regex: state.regex, groups: labels, nudgeHtml: Core.renderRelaxNudge(Core.search.bestRelaxation(demoSearchDocs(), state.query, { regex: state.regex, cache: demoRelaxCache })) }),
       });
     }
 
@@ -554,6 +558,16 @@
       document.getElementById("addGroupBtn").addEventListener("click", () => controller.addGroup(null));
     }
 
+    // Search docs for the demo's clips (rebuilt when `clips` is replaced) feed
+    // the same availability census and empty-result nudge as the app.
+    let demoDocs = [];
+    let demoDocsFor = null;
+    const demoRelaxCache = {}; // the nudge refines as words are typed (as in the app)
+    function demoSearchDocs() {
+      if (demoDocsFor !== clips) { demoDocs = clips.map(Core.search.clipToDoc); demoDocsFor = clips; }
+      return demoDocs;
+    }
+    const demoCensus = Core.createCensusCache({ docs: demoSearchDocs, groups: () => labels });
     function renderFilterChips() {
       const fs = facetState();
       filterChips.innerHTML = Core.renderFilterBar({
@@ -562,6 +576,7 @@
         activeFilters: fs.active,
         excludedFilters: fs.excluded,
         query: state.query,
+        census: demoCensus.get(state.query),
       });
     }
 
@@ -768,6 +783,14 @@
         controller.onQueryChange();
       },
       clearFilters: () => clearSearchAndFilters(),
+      // The empty-result nudge rewrites the whole query (one filter dropped).
+      setQuery: (next) => {
+        state.query = String(next || "");
+        search.value = state.query;
+        if (typeof demoSearchBox !== "undefined" && demoSearchBox) demoSearchBox.refresh();
+        updateClearControls();
+        controller.onQueryChange();
+      },
       focusSearch: () => search.focus(),
       closeSearchOptions: () => demoSearchBox.closeOptions(),
       pin: (id) => { clips = Core.togglePin(clips, id); },
@@ -934,6 +957,7 @@
     const demoSearchBox = Core.attachSearchBox(search, {
       getRegex: () => state.regex,
       getGroups: () => labels,
+      getCensus: (parsed) => demoCensus.get(parsed),
       onChange: (v) => { state.query = v; controller.onQueryChange(); renderClips(); },
       optionsHeight: demoOptionsHeight,
       saveOptionsHeight: (px) => { try { localStorage.setItem(DEMO_OPTIONS_HEIGHT_KEY, String(px)); } catch {} },

@@ -120,7 +120,10 @@ const clickCancel = (page) => page.eval(`(() => {
   if (b) b.click(); else document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
   return !!b;
 })()`);
+// The list renders only about two screenfuls, so a clip further down is put
+// into the DOM first (no scroll: the shot keeps the list where it is).
 const openRowMenu = (c, id) => c.popup.eval(`(() => {
+  clipList.ensureRendered(${J(id)});
   const b = document.querySelector(${J(`${row(id)} [data-action="clip-menu"]`)});
   if (!b) throw new Error('no menu button on the row');
   b.click();
@@ -133,6 +136,28 @@ const editorMenu = (page) => page.eval(`(() => {
   return true;
 })()`);
 const escape = (page) => page.eval(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`).catch(() => {});
+// A real key press through CDP (default actions included: Enter on a focused
+// button clicks it). shift / ctrl / meta hold the modifier.
+const VK = { Enter: 13, Escape: 27, Tab: 9, ' ': 32, ArrowLeft: 37, ArrowUp: 38, ArrowRight: 39, ArrowDown: 40, Home: 36, End: 35, F10: 121 };
+async function press(page, key, { shift = false, ctrl = false, meta = false } = {}) {
+  const vk = VK[key] || key.toUpperCase().charCodeAt(0);
+  const code = /^\d$/.test(key) ? `Digit${key}` : key === ' ' ? 'Space' : key;
+  const ev = { key, code, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk, modifiers: (shift ? 8 : 0) | (ctrl ? 2 : 0) | (meta ? 4 : 0) };
+  await page.send('Input.dispatchKeyEvent', { type: 'rawKeyDown', ...ev });
+  if (key === 'Enter' || key === ' ') await page.send('Input.dispatchKeyEvent', { type: 'char', text: key === 'Enter' ? '\r' : ' ', ...ev });
+  await page.send('Input.dispatchKeyEvent', { type: 'keyUp', ...ev });
+  await qa.sleep(80);
+}
+// The focused element, described: its label / data-n / id and where it sits.
+const focused = (page) => page.eval(`(() => {
+  const el = document.activeElement;
+  if (!el || el === document.body) return { what: 'body' };
+  const label = el.querySelector && el.querySelector('.bc-menu-label');
+  const sub = el.closest('.tag-submenu');
+  return { id: el.id || '', label: label ? label.textContent : '', n: el.dataset ? el.dataset.n || '' : '', text: (el.textContent || '').trim().slice(0, 40),
+    inMenu: !!el.closest('.bc-menu'), inSub: !!sub, subShown: !!(sub && sub.getClientRects().length), expanded: el.getAttribute && el.getAttribute('aria-expanded'),
+    dialog: !!el.closest('.dialog'), x: el.dataset ? el.dataset.x || '' : '' };
+})()`);
 
 // Each step: { name, popup (reset the popup first), run(c) }.
 const STEPS = [
@@ -333,6 +358,104 @@ const STEPS = [
       await c.shot(c.popup, name);
     }
   } },
+  // Keyboard-driven menus (real CDP keys): Shift+F10 opens the cursor row's
+  // menu on its first row; Home / End / Down / Right / Left / Enter / Esc walk
+  // the rows, the group submenu (a nested tag included) and the keypad; Esc
+  // hands focus back to the search; Enter on a row runs it (Rename... opens the
+  // prompt, Esc cancels, focus returns); a mouse-opened menu moves no focus
+  // until the first arrow key; 1-9 press the visible keypad's key.
+  { name: 'popup-menu-keyboard', popup: true, run: async (c) => {
+    const p = c.popup;
+    const expect = async (what, test) => { const f = await focused(p); if (!test(f)) throw new Error(`${what}: focus is ${J(f)}`); return f; };
+    const menuGone = (what) => p.waitFor(`!document.querySelector('.bc-menu')`, what, 3000);
+    await p.eval(`(document.getElementById('search').focus(), true)`);
+    await press(p, 'ArrowDown'); // the list cursor onto the first row (Launch plan)
+    await press(p, 'F10', { shift: true });
+    await p.waitFor(`!!document.querySelector('.bc-menu')`, 'menu open', 3000);
+    await expect('the menu opens on its first row', (f) => f.inMenu && f.label === 'Unpin');
+    await press(p, 'End'); await expect('End = the last row', (f) => f.label === 'Delete');
+    await press(p, 'Home'); await expect('Home = the first row', (f) => f.label === 'Unpin');
+    for (let i = 0; i < 3; i += 1) await press(p, 'ArrowDown');
+    await expect('Down x3', (f) => f.label === 'Add to group');
+    await press(p, 'ArrowRight');
+    await expect('Right opens the groups on the first group', (f) => f.inSub && f.subShown && f.label === 'AI');
+    for (let i = 0; i < 4; i += 1) await press(p, 'ArrowDown');
+    await expect('Down to Work', (f) => f.label === 'Work' && f.inSub);
+    await press(p, 'ArrowRight');
+    await expect('Right opens Work > Clients', (f) => f.label === 'Clients' && f.subShown);
+    await c.shot(p, 'popup-menu-keyboard-groups');
+    await press(p, 'ArrowLeft'); await expect('Left closes one level', (f) => f.label === 'Work' && f.expanded === 'false');
+    await press(p, 'Escape'); await expect('Esc closes one level', (f) => f.label === 'Add to group' && f.expanded === 'false');
+    await press(p, 'ArrowDown'); await expect('Down to Numpad', (f) => f.label === 'Numpad');
+    await press(p, 'Enter'); await expect('Enter opens the keypad on 7', (f) => f.n === '7' && f.subShown);
+    await press(p, 'ArrowDown'); await press(p, 'ArrowRight'); await expect('the keypad moves in 2-D (7, 4, 5)', (f) => f.n === '5');
+    await c.shot(p, 'popup-menu-keyboard-keypad');
+    await press(p, 'ArrowLeft'); await press(p, 'ArrowLeft'); await expect('Left at the keypad edge closes it', (f) => f.label === 'Numpad');
+    await press(p, 'Escape'); await menuGone('Esc closes the menu');
+    await expect('focus back on the search', (f) => f.id === 'search');
+    // Enter runs a row: Rename... opens the prompt; Esc cancels; focus returns.
+    await press(p, 'F10', { shift: true });
+    await p.waitFor(`!!document.querySelector('.bc-menu')`, 'menu reopened', 3000);
+    await press(p, 'ArrowDown'); await press(p, 'ArrowDown'); await expect('Down to Rename...', (f) => f.label === 'Rename...');
+    await press(p, 'Enter');
+    await p.waitFor(`!!document.querySelector('.overlay.show .prompt-input') && document.activeElement === document.querySelector('.overlay.show .prompt-input')`, 'the rename prompt has focus', 3000);
+    await press(p, 'Escape');
+    await p.waitFor(`!document.querySelector('.overlay.show')`, 'prompt closed', 3000);
+    await expect('focus back on the search after the dialog', (f) => f.id === 'search');
+    // A mouse-opened menu (a real click on the row's "...") moves nothing
+    // until the first arrow key.
+    await p.hover(`${row(c.ids.url)} .content`); await qa.sleep(300);
+    await p.click(`${row(c.ids.url)} [data-action="clip-menu"]`);
+    await p.waitFor(`!!document.querySelector('.bc-menu')`, 'menu opened by the mouse', 3000);
+    await expect('a mouse open leaves focus alone', (f) => !f.inMenu);
+    await press(p, 'ArrowDown'); await expect('the first arrow enters the menu', (f) => f.inMenu && f.label === 'Pin');
+    await press(p, 'Escape'); await menuGone('menu closed');
+    // 1-9 on a row's # popover (mouse-opened) assigns that key; then remove it.
+    const keyOf = async () => ((await c.sb.historyState()).find((i) => i.id === c.ids.url).pin || {}).number || null;
+    await p.hover(`${row(c.ids.url)} .content`); await qa.sleep(300);
+    await p.click(`${row(c.ids.url)} .meta-ghost[data-action="numpad-open"]`);
+    await p.waitFor(`!!document.querySelector('.bc-menu.bc-keypad')`, 'keypad popover', 3000);
+    await press(p, '7');
+    await qa.waitFor(async () => (await keyOf()) === 7, 'digit 7 assigned key 7', 5000);
+    await menuGone('the popover closes after the key');
+    await p.hover(`${row(c.ids.url)} .content`); await qa.sleep(300);
+    await p.click(`${row(c.ids.url)} .meta-np`);
+    await p.waitFor(`!!document.querySelector('.bc-menu.bc-keypad .np-remove')`, 'keypad popover with Remove', 3000);
+    await p.click('.bc-menu.bc-keypad .np-remove');
+    await qa.waitFor(async () => (await keyOf()) === null, 'key 7 removed again', 5000);
+    // Taking a key pins the clip and removing the key keeps the pin: unpin it,
+    // so the later shots match the baselines (the URL clip starts unpinned).
+    await p.eval(`(document.querySelector(${J(`${row(c.ids.url)} .star`)}).click(), true)`);
+    await qa.waitFor(async () => !(await c.sb.historyState()).find((i) => i.id === c.ids.url).pin, 'the URL clip unpinned again', 5000);
+  } },
+  // Dialog keys: a destructive confirm opens on Cancel, so a bare Enter cancels
+  // it (nothing is cleared).
+  { name: 'popup-dialog-keys', popup: true, run: async (c) => {
+    const p = c.popup;
+    const before = (await c.sb.historyState()).length;
+    await p.eval(`(document.getElementById('settingsBtn').click(), true)`);
+    await qa.sleep(300);
+    await p.eval(`(() => { const b = document.getElementById('clearAll'); b.scrollIntoView(); b.click(); return true; })()`);
+    await p.waitFor(`!!document.activeElement && document.activeElement.dataset.x === 'no' && !!document.activeElement.closest('.overlay.show')`, 'the destructive confirm opens on Cancel', 3000);
+    await press(p, 'Enter');
+    await p.waitFor(`!document.querySelector('.overlay.show')`, 'dialog closed', 3000);
+    const after = (await c.sb.historyState()).length;
+    if (after !== before) throw new Error(`Enter on a destructive confirm cleared clips (${before} -> ${after})`);
+    await p.eval(`(document.getElementById('settingsBack').click(), true)`);
+  } },
+  // The selection bar's Group popover: the tri-state checklist (a dash where
+  // only some of the selection is in the group).
+  { name: 'popup-bulk-groups', popup: true, run: async (c) => {
+    await c.popup.eval(`(() => {
+      const click = (id) => document.querySelector('.item[data-id="' + id + '"] .content').dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, ctrlKey: true }));
+      click(${J(c.ids.plan)}); click(${J(c.ids.json)});
+      return document.querySelectorAll('.item.multi-selected').length;
+    })()`);
+    await c.popup.click('[data-action="bulk-group-open"]');
+    await c.popup.waitFor(`!!document.querySelector('.bc-menu .bc-group-list [aria-checked="mixed"]')`, 'bulk group popover (mixed rows)', 3000);
+    await c.shot(c.popup, 'popup-bulk-group-popover');
+    await escape(c.popup);
+  } },
   { name: 'popup-filter-chip-sub', popup: true, run: async (c) => {
     await c.popup.hover('.group-filters .filter-tag[data-group="Work"]');
     const sub = await c.popup.eval(`(() => {
@@ -351,9 +474,38 @@ const STEPS = [
   { name: 'popup-search-regex-invalid', popup: true, run: async (c) => {
     await c.popup.eval(`(regexBtn.click(), true)`);
     await setQuery(c, '[unclosed');
+    // A regex still being typed is flagged after 700 ms idle: shoot the error.
+    await c.popup.waitFor(`!!document.querySelector('.search-hint.show')`, 'the broken regex hint', 1500);
     await c.shot(c.popup, 'popup-search-regex-invalid');
   } },
   { name: 'popup-search-empty', popup: true, run: async (c) => { await setQuery(c, 'zzqx nothing matches this'); await c.shot(c.popup, 'popup-search-empty'); } },
+  // Search behaviour (phase 4): an unknown key painted + the one hint line, the
+  // ghost completion, greyed chips (chip bar + options panel) and the
+  // empty-result nudge.
+  { name: 'popup-search-invalid', popup: true, run: async (c) => {
+    await setQuery(c, 'plan titel:notes is:imgae');
+    await c.popup.waitFor(`document.querySelector('.search-hint').classList.contains('show')`, 'hint shown', 5000);
+    await qa.sleep(300);
+    await c.shot(c.popup, 'popup-search-invalid');
+  } },
+  { name: 'popup-search-ghost', popup: true, run: async (c) => {
+    await setQuery(c, 'plan ti');
+    await c.popup.waitFor(`!!document.querySelector('.search-hl .qh-ghost')`, 'ghost painted', 5000);
+    await c.shot(c.popup, 'popup-search-ghost');
+  } },
+  { name: 'popup-chips-greyed', popup: true, run: async (c) => {
+    await setQuery(c, 'is:image');
+    await c.popup.eval(`(searchBox.openOptions(), true)`);
+    await c.popup.waitFor(`!!document.querySelector('.facet-opt.is-disabled')`, 'greyed panel chips', 5000);
+    await qa.sleep(400);
+    await c.shot(c.popup, 'popup-chips-greyed');
+    await c.popup.eval(`(searchBox.closeOptions({ instant: true }), true)`);
+  } },
+  { name: 'popup-search-nudge', popup: true, run: async (c) => {
+    await setQuery(c, 'plan is:image');
+    await c.popup.waitFor(`!!document.querySelector('.list-empty .empty-nudge-btn')`, 'nudge shown', 5000);
+    await c.shot(c.popup, 'popup-search-nudge');
+  } },
   // The flat field: idle ("Click here to search...", no buttons) and focused
   // ("Search...", regex + options slid in).
   { name: 'popup-search-unfocused', popup: true, run: async (c) => {
@@ -471,7 +623,9 @@ const STEPS = [
     }, { label: 'approval' });
     await ap.waitFor(`document.getElementById('explain').textContent.length > 0`, 'approval rendered');
     await ap.fontsReady();
-    await qa.sleep(400);
+    // The allow buttons arm a moment after the prompt appears.
+    await ap.waitFor(`!document.getElementById('allowOnce').disabled`, 'allow buttons armed', 5000);
+    await qa.sleep(200);
     await c.shot(ap, 'approval-modal');
     await ap.eval(`(document.getElementById('deny').click(), true)`);
     const result = await req;

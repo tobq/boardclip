@@ -90,6 +90,8 @@ const menuAdapter = {
   // rename would be reverted by the next commit if it only touched the clip.
   // Set the input + commit through the session instead — one write path.
   setClipTitle: (_id, title) => { if (editor) { editor.setTitle(title); editor.commit(); } },
+  // The clip menu's "Revert to original": the editor's own revert (one path).
+  revertClip: () => { if (editor) editor.revert(); },
   // Delete closes the window; main suppresses the close-commit so the draft
   // can't resurrect the clip.
   deleteClips: async (ids) => revGuard(async () => { await window.editorApi.deleteSelf(clipRevOf((ids && ids[0]) || menuClipId)); return []; }, []),

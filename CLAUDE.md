@@ -555,6 +555,35 @@ clear-all). All popup CSS + theme variables live in `site/shared/clipboard-popup
   shared by app + demo. Transparent input over a colored backdrop mirror (`lexQuery` →
   `.qh-*` spans); autocomplete dropdown (`suggestQuery`) for prefixes/group names/`is:`/
   `sort:`/`since:` presets/`num:`.
+- **Search behaviour from Forge (2026-10-08, all pure in clip-search.js, unit-tested)**:
+  `facetCensus` (one pass, `facetFailures` + FAILURE_CAP 2; single-valued facets hold their
+  dim open, AND facets only their own token; free text never part of it) ->
+  `facetOptionVerdict` (selected never greyed; absent `is:` kind hidden; `structural` .25
+  before `transient` .4; a group with no clips greys ONLY while other filters are active,
+  else its click lands on the "No clips in X yet" state); chips carry
+  `aria-disabled` and the controller ignores them (click AND contextmenu). ONE census per
+  `Core.createCensusCache` (key = `facetKey` + groups + minute + docs identity); with
+  `onUpdate` a history/minute change recomputes AFTER the paint (a background change blocks
+  0 ms). `validateQuery` is the ONE invalid rule (`lexQuery` paints its `problemRanges`;
+  a valid prefix is never flagged; a regex at the caret is `pending` until 700 ms idle).
+  Autocomplete = Forge rules (caret at a token END, complete value = nothing, ghost via
+  `ghostCompletion`, unique value auto-fill with the suffix selected, Esc parks until the
+  text changes). `applyFacet` EDITS the text (removes its tokens, inserts at the canonical
+  FACET_ORDER place) - never re-serializes what the user typed. `bestRelaxation` = the
+  empty-state nudge (pass a `cache`: typing more words refines like `filterRankIndexes`).
+  Multi-word paste auto-quoted (`quotePastedText`; Ctrl/Cmd+Shift+V raw) ONLY for single-
+  spaced one-line text: a phrase is a substring test, so a quoted multi-line paste could not
+  find its own clip. `KEY_TOKEN_RE` is the ONE "what is a filter key" rule (parser, lexer,
+  suggest, validate; `Content-Type:` is text). Group names match EXACTLY (`group:work` with
+  the group Work is flagged with a did-you-mean). Unknown-key did-you-mean = `KEY_GUESSES`
+  (type: -> is:) or a near FULL filter name, offered only if the value is valid there.
+  Dates are ISO-like only (`DATE_RE`): V8 `Date.parse` reads '>5' or '7' as 2001.
+- **Keystroke rebuild cost (measured 2026-10-08, owner scale)**: the list renders ~2
+  screenfuls sized from the measured row height (`rowsFor`), rows are parsed in ONE
+  template pass, row markup has no inter-tag whitespace, closed `.bc-reveal-inner` is
+  `content-visibility: hidden` (allow-discrete transition), and typing more of a term
+  refines the last result (`filterRankIndexes` `cache`). Profile with CDP `Profiler` +
+  `Tracing` (Layout/UpdateLayoutTree/ParseHTML) before guessing.
 - **In-app "AI search" mode REMOVED (2026-09-02)** - the sparkle/Tab toggle, offline IDF
   "smart ranking" (`rankFuzzyIndexes`/`buildIdf`), the BYO-endpoint agent (`lib/ai-search-agent.js`),
   the `ai-search` IPC and the `ai_search_*` settings are all gone (owner: "remove the shitty AI
@@ -626,12 +655,33 @@ clear-all). All popup CSS + theme variables live in `site/shared/clipboard-popup
   into `renderClipMenu` (the complete per-clip surface); `renderBulkMenu` is the
   2+-selection variant. Menu items reuse the SAME `data-action` attrs the controller
   already dispatches — no new dispatch. The menu root carries `data-id`, so the
-  `gp-btn`/`np-btn` handlers resolve their target via `closest('[data-id]')` (works
-  in the in-row picker AND the detached popover — that's why the resolution changed
-  from `closest('.item')`). `createMenu(host)` = the shared click popover; app host =
-  `document.body` (tokens on `:root`), demo host = `demoWindowEl` (tokens on
-  `.bc-popup`). Bulk Group is tri-state (`renderBulkGroupTree` via `groupMembership`:
-  all→remove, some/none→add).
+  `toggle-group`/`np-btn` handlers resolve their target via `closest('[data-id]')` (works
+  in a row's #/+ popover AND the detached menu). `createMenu(host)` = the shared click
+  popover; app host = `document.body` (tokens on `:root`), demo host = `demoWindowEl`
+  (tokens on `.bc-popup`).
+- **ONE menu row primitive (phase 4)**: every menu, submenu, group tree and picker row is
+  `menuRowHtml` (`.bc-menu-item`: icon column, label, hint / caret, `--ctl-md`, no gaps);
+  `submenuNodeHtml` = a row + its `.tag-submenu`; `renderGroupChecklist` = the group tree
+  (membership = accent check glyph in the icon column, dash + `aria-checked="mixed"` for
+  "some of the selection", labels stay `--text`; dispatch `toggle-group` / `bulk-group`,
+  "New group..." = an add row, `add-group` / `bulk-add-group`); `renderKeypadMenu` = the
+  Numpad submenu AND the row # popover. The chip bar's group dropdown rows are the same
+  row (`.group-filter-row`, in the controller's FILTER_TARGET). `.gp-btn` is GONE (ui-parity
+  #16 fails if it returns). Bulk Group is tri-state via `groupMembership` (all -> remove).
+- **Menu keyboard (`createMenu`)**: Up/Down/Home/End skip disabled rows, Right/Enter open a
+  submenu, Left/Esc close one level, Enter/Space activate, 1-9 press the visible keypad,
+  arrows move in 2-D on the keypad, Tab closes; focus returns to the opener. A menu opened
+  from the keyboard focuses its first row, a mouse open moves nothing until the first arrow:
+  decided by `trackInputModality` (the LAST real input was a key), because focus state cannot
+  tell (a focused field or a script-focused element looks keyboard-focused either way).
+  Shift+F10 / the menu key opens the cursor row's menu.
+- **Dialogs**: Cancel then confirm; a DESTRUCTIVE confirm opens on Cancel and a bare Enter
+  never confirms it (Esc cancels, Enter confirms only non-destructive dialogs).
+- **Approval prompt**: shown INACTIVE (`presentSecondaryWindow(modal, {keepPopup:true})`,
+  `acceptFirstMouse` for macOS), Enter AND Esc deny even with Allow focused, Ctrl/Cmd+Enter
+  allows once, and the allow buttons arm only 0.8 s after it appears (a click already on its
+  way cannot allow). `mcp-approval.html` must bind `const Core = window.BoardClipCore`: an
+  error in one ipcRenderer listener stops the listeners after it from running.
 - **Delete = instant + Undo toast**, no confirm dialog. `Core.showActionToast`
   reuses the `.toast` element; Ctrl/Cmd+Z re-invokes the undo. `applyDeleteItems`
   RETAINS the text/image blobs (no `removeItemImage`/blob prune) so restore always
@@ -729,8 +779,8 @@ clear-all). All popup CSS + theme variables live in `site/shared/clipboard-popup
   bg/radius/shadow/padding — do not re-fork per-surface variants (ui-parity #10
   counts the `--menu-edge` shadows). **Numpad renders in keypad formation**
   (`NUMPAD_LAYOUT` = 7 8 9 / 4 5 6 / 1 2 3 + `.np-row` 3-col grid) via the ONE
-  `renderNumpadButtons` shared by the in-row picker AND the "..." menu submenu
-  (renderItemPicker's old inline loop was a duplication — don't reintroduce it).
+  `renderNumpadButtons` inside `renderKeypadMenu` (Numpad submenu AND row # popover):
+  neutral keys, the clip's own key in the accent, a key another clip holds = a dim dot.
 - **Gotcha — verifying `.item` background**: `.item` has a `background` CSS
   transition, so `getComputedStyle` read immediately after toggling
   `.selected`/`.multi-selected` returns the PRE-transition (transparent) value;

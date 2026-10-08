@@ -43,7 +43,7 @@
 
 /* ONE keyboard focus ring for every BoardClip control: a box-shadow, so no
    outline and no layout shift. Text fields show focus on their own edge. */
-:is(:root[data-theme], .bc-popup) :where(button, [role="button"], a[href], .filter-tag, .seg-btn, .np-btn, .gp-btn, .bc-menu-item, .bc-chip):focus-visible {
+:is(:root[data-theme], .bc-popup) :where(button, [role="button"], a[href], .filter-tag, .seg-btn, .np-btn, .bc-menu-item, .bc-chip):focus-visible {
   outline: none; box-shadow: var(--focus-ring);
 }
 
@@ -134,17 +134,26 @@
              transition: grid-template-columns var(--dur) var(--ease); }
 .bc-reveal > * { min-width: 0; }
 /* visibility interpolates as "visible" for the whole transition when either end is
-   visible: shown at once on open, hidden only once the track has shut. */
-.bc-reveal-inner { display: flex; align-items: center; gap: var(--sp-1); padding: 0; visibility: hidden; transition: visibility var(--dur) var(--ease); }
+   visible: shown at once on open, hidden only once the track has shut.
+   content-visibility does the same (allow-discrete) and also skips laying out a
+   closed reveal's contents: every list row carries two closed reveals, and
+   laying out their buttons cost ~8 ms of each keystroke's rebuild (measured,
+   owner scale). Every open selector sets both. */
+.bc-reveal-inner { display: flex; align-items: center; gap: var(--sp-1); padding: 0; visibility: hidden; content-visibility: hidden;
+                   transition: visibility var(--dur) var(--ease), content-visibility var(--dur) var(--ease) allow-discrete; }
 .bc-reveal-inner > :first-child { margin-inline-start: var(--reveal-gap, 0); }
 .bc-reveal.open { grid-template-columns: 1fr; }
-.bc-reveal.open > .bc-reveal-inner { visibility: visible; }
+.bc-reveal.open > .bc-reveal-inner { visibility: visible; content-visibility: visible; }
 
 /* The search field is FLAT: no fill, no border, a hairline underline (an inset
    shadow, so focus never shifts layout) that turns accent while focused. */
 .search-row { display: flex; align-items: center; gap: 0; --reveal-gap: var(--sp-1); margin: var(--sp-3) var(--gutter) var(--sp-2); background: transparent; border: none; border-radius: 0;
               box-shadow: inset 0 -1px 0 var(--line); transition: box-shadow var(--dur) var(--ease); }
-.search-row:focus-within { box-shadow: inset 0 -1px 0 var(--accent); }
+/* Focused = ONE state, set by Core.attachSearchBox: the field (or its buttons)
+   has the focus AND the window does - the same state that swaps the
+   placeholder, so an unfocused popup never shows an accent line beside
+   "Click here to search...". */
+.search-row.is-focused { box-shadow: inset 0 -1px 0 var(--accent); }
 .search-field { position: relative; flex: 1; min-width: 0; display: flex; }
 .search { flex: 1; background: transparent; border: none; padding: var(--sp-3) var(--sp-2) var(--sp-3) 0; color: var(--text); font-size: var(--fs-text); outline: none; font-family: inherit; min-width: 0; }
 .search::placeholder { color: var(--text-dim); }
@@ -170,20 +179,35 @@
 .qh-value { color: var(--text); }
 .qh-regex { color: var(--green); }
 .qh-quote { color: var(--text-dim); }
-.qh-unknown { color: var(--red); text-decoration: underline dotted; text-underline-offset: 2px; }
+/* Exactly the invalid key or value (Search.validateQuery), nothing around it. */
+.qh-unknown { color: var(--red); text-decoration: underline wavy var(--red); text-decoration-thickness: 1px; text-underline-offset: 3px; }
 .qh-ws { color: transparent; }
+/* The top suggestion's rest, after the typed text (Tab or Right at the end takes it). */
+.qh-ghost { color: var(--text-dim); opacity: .7; }
+
+/* ONE hint line under the field (an invalid token, a broken regex): a rows
+   fold, 0 px and nothing reserved while there is nothing to say. */
+.search-hint { display: grid; grid-template-rows: 0fr; opacity: 0; margin: 0 var(--gutter);
+               transition: grid-template-rows var(--dur) var(--ease), opacity var(--dur) var(--ease); }
+.search-hint.show { grid-template-rows: 1fr; opacity: 1; }
+.search-hint-clip { min-height: 0; overflow: hidden; }
+.search-hint-row { display: flex; align-items: baseline; gap: var(--sp-2); padding: 0 0 var(--sp-2); font-size: var(--fs-meta); line-height: var(--lh-ui); color: var(--text-dim); }
+.search-hint-row > .mi { font-size: var(--icon-sm); color: var(--red); align-self: center; }
+.search-hint-fix { margin-left: var(--sp-1); padding: 0 var(--sp-2); height: var(--ctl-sm); border: 0; border-radius: var(--r-1); background: transparent; color: var(--accent);
+                   font: inherit; cursor: pointer; transition: background-color var(--dur) var(--ease); }
+.search-hint-fix code { font-family: var(--font-mono); }
+.search-hint-fix:hover { background: var(--hover); }
 
 /* Autocomplete dropdown for the token being typed. */
 /* .search-suggest shares the floating-surface bg/shadow/radius rule (top of file); only its
-   positioning + scroll live here. */
+   positioning + scroll live here. Its rows ARE menu rows (.bc-menu-item): the
+   token in mono, its own hint dim at the end. */
 .search-suggest { position: absolute; top: calc(100% + var(--sp-2)); left: 0; right: 0; z-index: 40;
                   overflow: hidden; max-height: 240px; overflow-y: auto; }
 .search-suggest.hidden { display: none; }
-.search-suggest-item { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3);
-                       padding: var(--sp-2) var(--sp-3); border-radius: var(--r-1); cursor: pointer; font-size: var(--fs-ui); }
 .search-suggest-item .ss-text { color: var(--text); font-family: var(--font-mono); }
-.search-suggest-item .ss-hint { color: var(--text-dim); font-size: var(--fs-meta); }
-.search-suggest-item.active, .search-suggest-item:hover { background: var(--menu-hover); }
+.search-suggest-item .ss-hint { flex-shrink: 0; color: var(--text-dim); font-size: var(--fs-meta); }
+.search-suggest-item.active { background: var(--menu-hover); }
 
 /* Search options panel (the "tune" toggle): an in-flow fold under the search
    field, inside the sticky header. Closed = grid row 0fr + opacity 0 + inert
@@ -235,8 +259,13 @@
 .filter-tag:hover { background: var(--hover); color: var(--text); }
 .filter-tag.active, .filter-tag.active:hover { background: var(--accent-bg); color: var(--accent); --icon-fill: 1; }
 .filter-tag.excluded { color: var(--text-dim); text-decoration: line-through; text-decoration-thickness: 1px; opacity: .6; }
-.filter-tag:disabled { opacity: .4; cursor: default; }
-.filter-tag:disabled:hover { background: transparent; color: var(--text-dim); }
+/* A greyed chip (the availability census, Forge's disabledTier): it would show
+   nothing under the other filters (.4), or can never match with them
+   (.dis-structural, .25). Inert (the controller ignores aria-disabled; panel
+   chips are disabled buttons), the reason is its tooltip, it never moves. */
+.filter-tag:disabled, .filter-tag.is-disabled { opacity: .4; cursor: default; }
+.filter-tag.is-disabled.dis-structural { opacity: .25; }
+.filter-tag:disabled:hover, .filter-tag.is-disabled:hover { background: transparent; color: var(--text-dim); }
 .filter-tag.clear-filter { width: var(--ctl-sm); padding: 0; }
 /* The editor / viewer title-bar strip's chips keep a hover-revealed x that
    removes the clip from that group (the filter chips have none). */
@@ -279,21 +308,23 @@
 .star { background: none; border: none; color: var(--text-dim); cursor: pointer; padding: var(--sp-1); transition: color var(--dur) var(--ease); line-height: 1; }
 .star .mi { font-size: var(--icon-lg); }
 .star.active, .star:hover { color: var(--pin); }
-/* The keypad (renderNumpadButtons) as a block inside a floating surface: the
+/* The keypad (renderKeypadMenu) as a block inside a floating surface: the
    clip menu's Numpad submenu and a row's # popover. Real numpad formation:
-   7 8 9 / 4 5 6 / 1 2 3 (the 3-column grid lays it out like the keypad). */
-.numpad-picker { display: flex; flex-direction: column; gap: var(--sp-1); padding: var(--sp-1); }
-.np-row { display: grid; grid-template-columns: repeat(3, var(--ctl-sm)); gap: var(--sp-1); justify-content: start; }
-.np-btn { width: var(--ctl-sm); height: var(--ctl-sm); display: flex; align-items: center; justify-content: center; border-radius: var(--r-1); font-size: var(--fs-meta);
-          font-family: var(--font-mono); cursor: pointer; transition: background-color var(--dur) var(--ease), color var(--dur) var(--ease); }
-.np-btn.free { color: var(--accent); background: transparent; }
-.np-btn.taken { color: var(--text); background: var(--line-strong); }
-.np-btn.current { color: var(--green); background: var(--green-bg); font-weight: var(--fw-strong); }
-.np-btn:hover { background: var(--menu-hover); color: var(--text); }
-.bc-menu.bc-keypad { min-width: 0; }
-.gp-btn { width: 100%; min-height: var(--ctl-md); box-sizing: border-box; padding: 0 var(--sp-3); display: flex; align-items: center; gap: var(--sp-2); border-radius: var(--r-1); font-size: var(--fs-ui);
-          cursor: pointer; transition: background-color var(--dur) var(--ease), color var(--dur) var(--ease); white-space: nowrap; }
-.gp-btn.virtual, .filter-tag.virtual { opacity: .82; font-style: italic; }
+   7 8 9 / 4 5 6 / 1 2 3 (the 3-column grid lays it out like the keypad), keys
+   aligned with the menu rows' icon column. Neutral keys; the clip's own key is
+   the accent (the selection colour); a key another clip holds carries a dot. */
+.numpad-picker { display: flex; flex-direction: column; gap: var(--sp-1); padding: var(--sp-1) var(--sp-3); }
+.np-row { display: grid; grid-template-columns: repeat(3, var(--ctl-md)); gap: var(--sp-1); justify-content: start; }
+.np-btn { position: relative; width: var(--ctl-md); height: var(--ctl-md); display: flex; align-items: center; justify-content: center; padding: 0; border: none; border-radius: var(--r-ctl);
+          background: var(--ctl-fill); color: var(--text); font-family: inherit; font-size: var(--fs-ui); line-height: 1; font-variant-numeric: tabular-nums;
+          cursor: pointer; transition: background-color var(--dur) var(--ease), color var(--dur) var(--ease); }
+.np-btn:hover { background: var(--ctl-fill-hover); }
+.np-btn.taken::after { content: ""; position: absolute; left: 0; right: 0; bottom: var(--sp-1); width: var(--sp-1); height: var(--sp-1); margin: 0 auto;
+                       border-radius: var(--r-chip); background: var(--text-dim); }
+.np-btn.current { background: var(--accent-bg); color: var(--accent); font-weight: var(--fw-strong); }
+.np-btn.current:hover { background: var(--accent-bg-strong); }
+.bc-menu.bc-keypad, .bc-menu .tag-submenu.bc-keypad { min-width: 0; }
+.filter-tag.virtual { opacity: .82; font-style: italic; }
 .tag-caret { flex: 0 0 auto; font-size: var(--icon-md); line-height: 1; opacity: .72; margin-left: auto; }
 .filter-tag .tag-caret { margin-left: var(--sp-1); margin-right: calc(-1 * var(--sp-1)); }
 .tag-label { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; line-height: var(--lh-ui); }
@@ -302,14 +333,14 @@
 .tag-submenu { display: none; position: absolute; top: 100%; left: 0; min-width: 150px; max-width: 240px; z-index: 70; }
 .tag-menu-node:hover > .tag-submenu, .tag-menu-node:focus-within > .tag-submenu { display: block; }
 .tag-submenu .tag-submenu { top: calc(-1 * var(--sp-2)); left: calc(100% - 1px); }
-.tag-submenu .tag-menu-node + .tag-menu-node { margin-top: var(--sp-1); }
-.tag-submenu .filter-tag, .tag-submenu .gp-btn { width: 100%; justify-content: flex-start; }
-.tag-submenu .filter-tag { max-width: none; border-radius: var(--r-1); }
-.tag-submenu .filter-tag:hover { background: var(--menu-hover); }
-.gp-btn.assigned { color: var(--green); background: var(--green-bg); }
-.gp-btn.available { color: var(--text-dim); background: transparent; }
-.gp-btn:hover { background: var(--menu-hover); color: var(--text); }
-.gp-btn.add-group { color: var(--accent); font-weight: var(--fw-strong); justify-content: center; }
+/* A group chip's dropdown holds menu rows (renderTagTreeMenuNode, depth > 0):
+   an excluded group is struck through like its chip, a greyed one dims in the
+   chips' two tiers, and a parent row stays lit while its submenu is out. */
+.bc-menu-item.excluded > .bc-menu-label { text-decoration: line-through; }
+.bc-menu-item.is-disabled { opacity: .4; cursor: default; }
+.bc-menu-item.is-disabled.dis-structural { opacity: .25; }
+.bc-menu-item.is-disabled:hover { background: none; }
+.group-filters .tag-menu-node:hover > .bc-menu-item { background: var(--menu-hover); }
 .content { flex: 1; min-width: 0; }
 /* Row anatomy (Core.renderClipItem): the primary line (a real title at the
    strong weight, or an untitled clip's first line at the regular weight), the
@@ -354,7 +385,7 @@
 .item:hover .bc-reveal.meta-reveal, .item:focus-within .bc-reveal.meta-reveal, .item.actions-held .bc-reveal.meta-reveal { grid-template-columns: 1fr; }
 .item:hover .bc-reveal.row-actions > .bc-reveal-inner, .item:focus-within .bc-reveal.row-actions > .bc-reveal-inner, .item.actions-held .bc-reveal.row-actions > .bc-reveal-inner,
 .item:hover .bc-reveal.meta-reveal > .bc-reveal-inner, .item:focus-within .bc-reveal.meta-reveal > .bc-reveal-inner, .item.actions-held .bc-reveal.meta-reveal > .bc-reveal-inner,
-.item:hover .img-actions, .item:focus-within .img-actions, .item.actions-held .img-actions { visibility: visible; }
+.item:hover .img-actions, .item:focus-within .img-actions, .item.actions-held .img-actions { visibility: visible; content-visibility: visible; }
 .item:hover .img-actions, .item:focus-within .img-actions, .item.actions-held .img-actions { opacity: 1; }
 /* Meta line (Core.renderClipMeta): time, size, the numpad badge and the clip's
    groups as plain text (each a filter: click includes, right-click excludes),
@@ -387,6 +418,14 @@
 .empty-hint { margin: 0; font-size: var(--fs-meta); line-height: var(--lh-ui); color: var(--text-dim); }
 .empty-action { margin-top: var(--sp-2); }
 .empty-nudge[hidden] { display: none; }
+/* The relax nudge (Core.renderRelaxNudge): one quiet line, the blocking token
+   in mono, the count, an arrow; a click drops that filter. */
+.empty-nudge-btn { display: inline-flex; align-items: center; gap: var(--sp-2); min-height: var(--ctl-md); padding: 0 var(--sp-3); border: 0; border-radius: var(--r-ctl);
+                   background: transparent; color: var(--text-dim); font: inherit; font-size: var(--fs-ui); cursor: pointer;
+                   transition: background-color var(--dur) var(--ease), color var(--dur) var(--ease); }
+.empty-nudge-btn code { font-family: var(--font-mono); color: var(--text); }
+.empty-nudge-btn .mi { font-size: var(--icon-sm); color: var(--accent); }
+.empty-nudge-btn:hover { background: var(--hover); color: var(--text); }
 
 .settings-view { display: none; flex-direction: column; height: 100%; color: var(--text); background: var(--surface); }
 .settings-view.show { display: flex; }
@@ -703,25 +742,37 @@ mark { background: var(--mark-bg); color: var(--mark-fg); border-radius: var(--r
 .tag-menu-node > .tag-submenu.flip-x { left: auto; right: calc(100% - 1px); }
 .group-filters > .tag-menu-node > .tag-submenu.flip-x { left: auto; right: 0; }
 
-/* --- Shared popover menu (per-clip "..." + multi-select bulk menu) --- */
+/* --- Shared popover menu: the per-clip "..." menu, the bulk menu, a row's
+   keypad / group popovers, the editor + viewer menus. ONE row primitive
+   (Core.menuRowHtml): icon column, label, optional hint / caret, --ctl-md tall,
+   contiguous. Every submenu and group checklist uses the same row, so labels
+   line up across levels. Membership = the accent check glyph in the icon
+   column (a dash for "some of the selection"), never a row fill; --text-dim is
+   for disabled rows only. Keyboard focus paints like hover (a menu has one
+   active row), danger rows turn red on hover / focus. --- */
 .bc-menu { position: absolute; z-index: 200; min-width: 176px; max-width: 260px; } /* surface look comes from the shared floating-surface rule */
 .bc-menu-list { display: flex; flex-direction: column; }
-.bc-menu-item { display: flex; align-items: center; gap: var(--sp-3); width: 100%; box-sizing: border-box; padding: var(--sp-2) var(--sp-3);
-                background: none; border: none; border-radius: var(--r-1); color: var(--text); font-family: inherit; font-size: var(--fs-ui);
+.bc-menu-item { display: flex; align-items: center; gap: var(--sp-3); width: 100%; min-height: var(--ctl-md); box-sizing: border-box; padding: 0 var(--sp-3);
+                background: none; border: none; border-radius: var(--r-1); color: var(--text); font-family: inherit; font-size: var(--fs-ui); line-height: var(--lh-ui);
                 text-align: left; cursor: pointer; position: relative; }
-.bc-menu-item:hover { background: var(--menu-hover); }
-.bc-menu-item > .mi { font-size: var(--icon-md); color: var(--text-dim); flex-shrink: 0; }
-.bc-menu-item.danger:hover { background: var(--red-bg); }
-.bc-menu-item.danger:hover, .bc-menu-item.danger:hover > .mi { color: var(--red); }
-.bc-menu-label { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.bc-menu-item > .tag-caret { margin-left: auto; font-size: var(--icon-sm); color: var(--text-dim); }
-/* Group/numpad submenus inside the menu open beside their row (reusing the shared
-   hover-submenu mechanics); they carry .tag-submenu so hover reveals them. */
+.bc-menu-item:hover, .bc-menu .bc-menu-item:focus-visible { background: var(--menu-hover); box-shadow: none; }
+.bc-menu-item > .mi { width: 1em; font-size: var(--icon-md); color: var(--text-dim); flex-shrink: 0; }
+.bc-menu-item > .bc-menu-check { color: var(--accent); }
+.bc-menu-item.danger:hover, .bc-menu-item.danger:focus-visible { background: var(--red-bg); }
+.bc-menu-item.danger:hover, .bc-menu-item.danger:hover > .mi, .bc-menu-item.danger:focus-visible, .bc-menu-item.danger:focus-visible > .mi { color: var(--red); }
+.bc-menu-item:disabled { color: var(--text-dim); cursor: default; }
+.bc-menu-item:disabled:hover { background: none; }
+.bc-menu-label { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bc-menu-hint { flex-shrink: 0; color: var(--text-dim); font-size: var(--fs-meta); font-variant-numeric: tabular-nums; }
+.bc-menu-item > .tag-caret { margin-left: 0; font-size: var(--icon-sm); color: var(--text-dim); opacity: 1; }
+.bc-menu-sep { height: 1px; margin: var(--sp-2) 0; background: var(--line); }
+/* A submenu opens beside its row (the row and its .tag-submenu share one
+   .tag-menu-node): on hover, or .open from the keyboard (Right / Enter). Focus
+   on a parent row alone does not open it. */
 .bc-menu .tag-submenu { top: -4px; left: calc(100% - 1px); min-width: 150px; }
-.bc-menu-item.tag-menu-node:hover > .tag-submenu, .bc-menu-item.tag-menu-node:focus-within > .tag-submenu { display: block; }
-/* Bulk-group tri-state: 'some' selected reads as a partial (accent) state,
-   distinct from 'all' (green, .assigned) and 'none' (.available). */
-.gp-btn.partial { color: var(--accent); background: var(--accent-bg); }
+.bc-menu .tag-menu-node.open > .tag-submenu { display: block; }
+.bc-menu .tag-menu-node:hover > .bc-menu-item, .bc-menu .tag-menu-node.open > .bc-menu-item { background: var(--menu-hover); } /* the row whose submenu is out */
+.bc-menu .tag-menu-node:not(.open):not(:hover) > .tag-submenu { display: none; }
 
 /* --- Undo toast action: an accent text button. The toast itself ignores the
    pointer (it floats over the last row); the action opts back in only while

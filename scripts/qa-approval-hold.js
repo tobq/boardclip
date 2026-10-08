@@ -27,6 +27,8 @@ const state = (page) => page.eval(`({ label: document.getElementById('countLabel
     const clip = (await sb.historyState()).find((i) => i.id === item.id);
     if (!clip || !clip.rev) throw new Error('seeded clip or its rev missing');
     const args = { id: clip.id, expected_rev: clip.rev };
+    const focusCalls = async () => (await sb.events()).filter((e) => /focus_blocked/.test(e.type)).length;
+    const focus0 = await focusCalls();
     const modalGone = (id) => qa.waitFor(async () => !(await sb.targets()).some((x) => x.id === id), 'modal closed', 10000).catch(() => false);
     // ---- 1-3: hover pause with a keepalive client ----
     const t0 = Date.now();
@@ -34,7 +36,6 @@ const state = (page) => page.eval(`({ label: document.getElementById('countLabel
     const modal = await sb.newPage(/mcp-approval\.html/, () => {
       req = sb.mcp('delete_clip', args, { client: 'hold proof', timeoutMs: 15000 }).then(() => 'unexpected success', (e) => e.message);
     }, { label: 'approval modal', timeoutMs: 10000 });
-    // Filled on load, which the Google Fonts stylesheet can hold for seconds.
     await modal.waitFor(`document.getElementById('explain').textContent.length > 0`, 'modal rendered', 30000);
     await qa.sleep(300);
     out.steps.before = await state(modal);
@@ -68,10 +69,13 @@ const state = (page) => page.eval(`({ label: document.getElementById('countLabel
     await qa.sleep(800);
     out.steps.decisions = sb.diagnostics().filter((d) => d.event === 'mcp.approval').map((d) => d.decision);
     out.steps.clipStillThere = (await sb.historyState()).some((i) => i.id === item.id);
+    // Shown inactive: main never called focus() for the prompts (the sandbox
+    // records every focus call it blocks).
+    out.steps.focusCalls = (await focusCalls()) - focus0;
     const s = out.steps;
     out.ok = /paused/i.test(s.hovered.label) && s.hovered.num === 'paused' && s.stillOpenAfter8s && s.whileHeld.num === 'paused' && s.clientStillWaiting
       && !/paused/i.test(s.resumed.label) && s.resumedAtSec >= 1 && s.resumedAtSec <= 5 && s.result === 'timed_out' && s.totalMs > 13000
-      && s.clientGaveUp === 'control_timeout' && s.modalClosedAfterClientGone && s.decisions.includes('client_gone') && s.clipStillThere;
+      && s.clientGaveUp === 'control_timeout' && s.modalClosedAfterClientGone && s.decisions.includes('client_gone') && s.clipStillThere && s.focusCalls === 0;
   } catch (e) {
     out.error = e.message;
   } finally {

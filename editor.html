@@ -33,6 +33,12 @@ let systemDark = matchMedia('(prefers-color-scheme: dark)').matches;
 function refreshTheme() { Core.applyTheme(document.documentElement, themeMode, systemDark); }
 if (window.editorApi.getColorScheme) window.editorApi.getColorScheme().then((s) => { systemDark = s !== 'light'; refreshTheme(); }).catch(() => {});
 if (window.editorApi.onColorSchemeChanged) window.editorApi.onColorSchemeChanged((s) => { systemDark = s !== 'light'; refreshTheme(); });
+// Later appearance changes (a setting here or on another device, the OS
+// accent, the glass scope) arrive as the same payload as init.
+if (window.editorApi.onAppearanceChanged) window.editorApi.onAppearanceChanged((look) => {
+  if (look.themeMode) { themeMode = (look.themeMode === 'light' || look.themeMode === 'dark') ? look.themeMode : 'system'; refreshTheme(); }
+  Core.applyVariants(document.documentElement, look);
+});
 
 let editor = null;
 let reconcileView = null;

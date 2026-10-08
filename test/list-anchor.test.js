@@ -141,13 +141,15 @@ const tsAt = (list) => (i) => ts[list[i]];
 {
   const withDims = ui.renderClipItem({ id: 'img:a.png', type: 'image', image: 'a.png', width: 1600, height: 400, ts: 1 }, { imageSrc: () => 'x.png' });
   assert.ok(withDims.includes('width="1600" height="400"'), 'intrinsic size attributes reserve the row');
-  assert.ok(withDims.includes('--ar:4;') && withDims.includes('--nw:1600px'), 'aspect ratio + natural width vars');
+  assert.ok(/<span class="preview-img" style="--ar:4;--nw:1600px"><img [^>]*width="1600" height="400"/.test(withDims),
+    'aspect ratio + natural width vars on the picture box (the row buttons float over it)');
   const legacy = ui.renderClipItem({ id: 'img:b.png', type: 'image', image: 'b.png', ts: 1 }, { imageSrc: () => 'y.png' });
   assert.ok(!legacy.includes('--ar') && !legacy.includes('width="'), 'no dims -> no sizing vars');
   const css = fs.readFileSync(path.join(__dirname, '../site/shared/clipboard-popup.css'), 'utf8');
-  assert.ok(/\.preview img\s*\{[^}]*--img-h:\s*min\(var\(--clip-img-h/.test(css), 'previews size from --clip-img-h (capped)');
-  assert.ok(/\.preview img\[style\*="--ar"\]\s*\{[^}]*width:\s*min\(100%,\s*calc\(var\(--img-h\) \* var\(--ar\)\),\s*var\(--nw\)\)/.test(css),
+  assert.ok(/\.preview-img\s*\{[^}]*--img-h:\s*min\(var\(--clip-img-h/.test(css), 'previews size from --clip-img-h (capped)');
+  assert.ok(/\.preview-img\[style\*="--ar"\]\s*\{[^}]*width:\s*min\(100%,\s*calc\(var\(--img-h\) \* var\(--ar\)\),\s*var\(--nw\)\)/.test(css),
     'width = min(row, height x ratio, real width): ratio kept, no sideways overflow, no upscaling');
+  assert.ok(/\.preview-img\[style\*="--ar"\] img\s*\{[^}]*width:\s*100%/.test(css), 'the picture fills its sized box');
   assert.ok(!/max-height:\s*60px/.test(css), 'no hard-coded 60px preview cap left');
 }
 

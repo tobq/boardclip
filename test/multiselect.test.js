@@ -7,7 +7,10 @@
 // dialogs/menu degrade to no-ops when there's no document).
 
 const assert = require('assert');
+const fs = require('fs');
+const path = require('path');
 const ui = require('../site/shared/clipboard-ui-core');
+const read = (rel) => fs.readFileSync(path.join(__dirname, '..', rel), 'utf8');
 
 // 1) groupMembership: all / some / none across a selection.
 {
@@ -343,6 +346,155 @@ const ui = require('../site/shared/clipboard-ui-core');
     await c3.onKeydown(ev);
     assert.deepStrictEqual(activated, ['a'], 'Enter in the search field still pastes the first clip');
     assert.strictEqual(ev.prevented, true);
+  }
+
+  // 9) Similar clips (D2): whitespace-collapsed, case-insensitive containment in
+  //    either direction, both sides >= 12 chars, images and the clip itself
+  //    excluded; a long target uses its 12-gram table (same answers), a clip
+  //    too big to normalise is searched through its lowercase text in chunks.
+  {
+    const T = (id, text) => ({ id, type: 'text', text });
+    const target = T('t', 'The quick brown fox jumps');
+    const items = [
+      target,
+      T('wider', 'Preface. the   QUICK brown\nfox\tjumps over the lazy dog'), // contains the target
+      T('inside', 'quick brown fox'),                                          // contained in the target
+      T('short', 'brown fox'),                                                 // < 12 chars: never
+      T('other', 'an unrelated note about lunch'),
+      { id: 'img', type: 'image', text: 'The quick brown fox jumps' },
+      T('t', 'The quick brown fox jumps'),                                     // same id as the target
+      T('copy', '  the quick brown fox jumps  '),                              // identical once normalised
+    ];
+    assert.deepStrictEqual(ui.similarClipIds(target, items), ['wider', 'inside', 'copy'], 'containment both ways, ws/case-insensitive, >= 12 chars, no images, not itself');
+    assert.deepStrictEqual(ui.similarClipIds({ id: 'x', type: 'text', text: 'tiny' }, items), [], 'a target under 12 chars has none');
+    assert.deepStrictEqual(ui.similarClipIds({ id: 'i', type: 'image' }, items), [], 'an image target has none');
+    assert.strictEqual(ui.similarText(items[1]), 'preface. the quick brown fox jumps over the lazy dog', 'normalised: whitespace collapsed + lowercase');
+    assert.strictEqual(ui.similarText(items[1]), ui.similarText(items[1]), 'cached per item object');
+    // A long target (>= 1024 chars) answers through its 12-gram table: the same
+    // set as a plain scan, including a clip at its very end.
+    const words = Array.from({ length: 400 }, (_, i) => `w${i}x`).join(' ');
+    const longTarget = T('long', words);
+    const pool = [longTarget, T('head', words.slice(0, 60)), T('tail', words.slice(-40)), T('mid', words.slice(700, 760)), T('miss', 'w1x w3x w2x w4x w5x w6x'), T('sup', `${words} and more`)];
+    const expectIds = pool.filter((it) => it !== longTarget).filter((it) => {
+      const n = (s) => s.toLowerCase().replace(/\s+/g, ' ').trim();
+      const a = n(it.text);
+      const b = n(longTarget.text);
+      return a.length >= 12 && (a.includes(b) || b.includes(a));
+    }).map((it) => it.id);
+    assert.deepStrictEqual(ui.similarClipIds(longTarget, pool), expectIds, 'the 12-gram table gives the same answers as a plain scan');
+    assert.ok(expectIds.includes('tail') && expectIds.includes('sup') && !expectIds.includes('miss'), 'sanity: the long-target fixture covers the end and a superset');
+    // A clip over SIMILAR_MAX_CHARS: only "contains the target", through lowerOf, with any whitespace.
+    const filler = 'z'.repeat(ui.SIMILAR_MAX_CHARS + 10);
+    const huge = T('huge', `${filler} THE QUICK\n\nbrown fox   jumps ${filler}`);
+    let asked = 0;
+    const lowerOf = (it) => { asked += 1; return it.text.toLowerCase(); };
+    assert.deepStrictEqual(ui.similarClipIds(target, [huge], { lowerOf }), ['huge'], 'a huge clip containing the target is found');
+    assert.ok(asked === 1, 'the huge clip is read through lowerOf (the host\'s lowercase haystack)');
+    assert.deepStrictEqual(ui.similarClipIds(huge, items), [], 'a huge target is never scanned against every clip');
+    assert.ok(!/similarClipIds|similarText/.test(read('index.html') + read('site/index.html')), 'the consumers never run the similar scan themselves (the controller owns it)');
+  }
+
+  // 10) "Select N similar": the menu shows the count (a placeholder while it is
+  //     being counted, nothing when 0), the action multi-selects the clip + its
+  //     similar clips so Unify is one click; hidden ones clear the search first.
+  {
+    const T = (id, text) => ({ id, type: 'text', text });
+    const items = [T('a', 'meeting notes for the launch'), T('b', 'Meeting notes for the launch, v2 with owners'), T('c', 'notes for the launch'), T('d', 'nothing alike at all here'), { id: 'e', type: 'image' }];
+    const byId = Object.fromEntries(items.map((i) => [i.id, i]));
+    let visible = ['a', 'b', 'd'];
+    let cleared = 0;
+    const c = ui.createClipController({
+      itemById: (id) => byId[id],
+      visibleIds: () => visible,
+      allItems: () => items,
+      renderSelection: () => {},
+      render() {},
+      refresh() {},
+      clearFilters: () => { cleared += 1; visible = items.map((i) => i.id); },
+    });
+    const set = await new Promise((resolve) => c.whenSimilar('a', resolve));
+    assert.deepStrictEqual([...set].sort(), ['b', 'c'], 'similar set over ALL items (c is outside the current results)');
+    c.selectSimilar('a');
+    assert.strictEqual(cleared, 1, 'a similar clip outside the results clears the search first');
+    assert.deepStrictEqual(c.selection().ids.slice().sort(), ['a', 'b', 'c'], 'the clip + its similar clips are multi-selected');
+    assert.strictEqual(c.selection().hasImage, false, 'all text -> the selection bar offers Unify');
+    assert.strictEqual(c.focusedId(), 'a', 'the cursor stays on the clip');
+    const none = await new Promise((resolve) => c.whenSimilar('d', resolve));
+    assert.strictEqual(none.size, 0);
+    const menuFor = (count) => ui.renderClipMenu(items[0], { items, groups: [], numpadMap: {}, similarCount: count });
+    assert.ok(/data-action="select-similar"[^>]*>.*Select 2 similar/.test(menuFor(2)), 'menu: Select N similar');
+    assert.ok(!menuFor(0).includes('select-similar') && !menuFor(undefined).includes('select-similar'), 'menu: no row when there are none (or for images / other windows)');
+    assert.ok(/data-action="select-similar"[^>]*disabled aria-busy="true"/.test(menuFor(null)), 'menu: a disabled placeholder while counting');
+    // The hover / cursor target paints the set on the next selection paint.
+    c.clearSelection();
+    c.moveFocus(1); // keyboard cursor onto the first visible row ('a')
+    await new Promise((r) => setTimeout(r, 220));
+    assert.strictEqual(c.similar().target, 'a', 'the keyboard cursor row is the similar target');
+    assert.deepStrictEqual(c.similar().ids.sort(), ['b', 'c'], 'its similar set is painted (cached)');
+    c.onMouseover({ target: { closest: (sel) => (sel === '.item' ? { dataset: { id: 'd' } } : null) } });
+    assert.strictEqual(c.similar().target, 'd', 'hover takes over the target');
+    assert.deepStrictEqual(c.similar().ids, [], 'the previous tint goes at once');
+    c.onMouseout({ relatedTarget: null, currentTarget: null });
+    c.clearSelection();
+    assert.strictEqual(c.similar().target, null, 'leaving the rows (and no cursor) clears the target');
+    // A cursor the list drops (the new query hides its row) takes its tint
+    // along: a lone result must not look like the cursor while Enter does nothing.
+    visible = ['a', 'b', 'c', 'd'];
+    c.moveFocus(1);
+    await new Promise((r) => setTimeout(r, 220));
+    assert.strictEqual(c.similar().target, 'a', 'sanity: the cursor row is the target');
+    visible = ['b'];
+    c.onQueryChange();
+    c.reconcileVisible({ keepCursor: false });
+    assert.strictEqual(c.focusedId(), null, 'the hidden cursor is dropped');
+    assert.strictEqual(c.similar().target, null, 'its similar target goes with it');
+    assert.deepStrictEqual(c.similar().ids, [], 'no row keeps the tint');
+    // A hovered row the rebuild hid is no target either.
+    visible = ['a', 'b', 'c', 'd'];
+    c.onMouseover({ target: { closest: (sel) => (sel === '.item' ? { dataset: { id: 'a' } } : null) } });
+    await new Promise((r) => setTimeout(r, 220));
+    assert.strictEqual(c.similar().target, 'a');
+    visible = ['b'];
+    c.reconcileVisible({ keepCursor: false });
+    assert.strictEqual(c.similar().target, null, 'a hidden hover row is no target');
+  }
+
+  // 11) A scan that throws still answers its waiters (an empty set, so the
+  //     menu row goes instead of staying on "Looking for similar clips..."),
+  //     and a huge clip is searched without building a pattern from the target
+  //     (a 25K+ char RegExp does not compile: "Stack overflow").
+  {
+    const T = (id, text) => ({ id, type: 'text', text });
+    let r = '';
+    for (let i = 0; r.length < 40000; i += 1) r += `word${i % 97}x${i} `;
+    const big = T('big', r.trim());
+    const huge = T('huge', `${'q'.repeat(ui.SIMILAR_MAX_CHARS)} lead-in ${r.trim().replace(/ /g, '\n  ')} tail`);
+    const miss = T('miss', `${'q'.repeat(ui.SIMILAR_MAX_CHARS)} ${r.trim().replace('word5x5', 'word5y5')}`);
+    assert.deepStrictEqual(ui.similarClipIds(big, [big, huge, miss]), ['huge'], 'a 40K target found in a huge clip across whitespace runs, a one-char difference is not');
+    // The anchor (the target's longest space-free run) straddles the 1 MB chunk edge.
+    const edge = T('edge', `${'q'.repeat((1 << 20) - 8)}abcdefghijklmnop\t\tqrs tuv`);
+    assert.deepStrictEqual(ui.similarClipIds(T('t', 'ABCDEFGHIJKLMNOP qrs tuv'), [edge]), ['edge'], 'an anchor across a chunk edge is found');
+    assert.deepStrictEqual(ui.similarClipIds(T('t', 'abcdefghijklmnop qrs tuvw'), [edge]), [], 'and the text after it must match too');
+    const items = [T('a', 'meeting notes for the launch'), T('b', 'meeting notes for the launch, v2')];
+    const byId = Object.fromEntries(items.map((i) => [i.id, i]));
+    let throwOn = true;
+    const c = ui.createClipController({
+      itemById: (id) => byId[id], visibleIds: () => ['a', 'b'], allItems: () => items, renderSelection: () => {}, render() {}, refresh() {},
+      lowerOf: () => { if (throwOn) throw new Error('boom'); return ''; },
+    });
+    items.push(T('h', 'x'.repeat(ui.SIMILAR_MAX_CHARS + 1)));
+    byId.h = items[2];
+    const errors = [];
+    const onUncaught = (e) => errors.push(e && e.message);
+    process.on('uncaughtException', onUncaught);
+    const got = await new Promise((resolve) => c.whenSimilar('a', resolve));
+    await new Promise((res) => setTimeout(res, 20));
+    process.removeListener('uncaughtException', onUncaught);
+    assert.ok(got instanceof Set && got.size === 0, 'a failed scan answers with an empty set');
+    assert.deepStrictEqual(errors, ['boom'], 'the error is still reported (rethrown on its own tick)');
+    throwOn = false;
+    const again = await new Promise((resolve) => c.whenSimilar('a', resolve));
+    assert.strictEqual(again, got, 'the answer is cached: no stuck scan, no retry storm');
   }
 
   console.log('multiselect.test.js: all multi-select guards passed');

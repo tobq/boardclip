@@ -103,15 +103,21 @@
     search_all:'searching private clips', image_path:'revealing image paths',
   };
 
-  if (window.approval.onSettings) window.approval.onSettings(s => {
+  // The appearance payload every window gets (main's appearanceVariantPayload):
+  // with the request, then again on any change while the prompt is up.
+  function applyLook(look) {
     const root = document.documentElement;
-    if (s.theme === 'light' || s.theme === 'dark') root.dataset.theme = s.theme;
     const setv = (attr, val, def) => { if (val && val !== def) root.setAttribute(attr, val); else root.removeAttribute(attr); };
-    setv('data-accent', s.accent, 'blue');
-    setv('data-density', s.density, 'normal');
-    setv('data-corners', s.corners, 'soft');
-    setv('data-borders', s.borders, 'bordered');
+    setv('data-accent', look.accentVariant, 'blue');
+    setv('data-density', look.uiDensity, 'normal');
+    setv('data-corners', look.uiCorners, 'soft');
+    setv('data-borders', look.uiBorders, 'bordered');
+  }
+  if (window.approval.onSettings) window.approval.onSettings(s => {
+    if (s.theme === 'light' || s.theme === 'dark') document.documentElement.dataset.theme = s.theme;
+    applyLook(s);
   });
+  if (window.approval.onAppearanceChanged) window.approval.onAppearanceChanged(applyLook);
 
   function fit() {
     const h = Math.ceil(document.getElementById('wrap').getBoundingClientRect().bottom) + 4;

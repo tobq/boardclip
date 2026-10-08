@@ -61,6 +61,15 @@ async function main() {
     for (let i = 0; i < 13400; i += 1) seed.push({ type: 'text', text: `filler ${i} ${words(20 + (next() % 500))}`, ts: now - (N + i) * 60 });
     const para = words(400);
     seed.push({ type: 'text', text: `huge clip ${para.repeat(Math.ceil(31e6 / para.length))}`.slice(0, 31e6), ts: now - 90 }); // recent: ranks among the visible rows, like the owner's
+    // Similar clips: a note, a longer version of it and a fragment of it; and a
+    // clip whose text sits inside the 31 MB clip (found through its haystack).
+    const note = `qa similar seed ${words(120)}`;
+    seed.push({ type: 'text', text: note, ts: now - 95 }, { type: 'text', text: `${note}\nplus a paragraph added later`, ts: now - 96 }, { type: 'text', text: note.slice(0, 200), ts: now - 97 });
+    seed.push({ type: 'text', title: 'qa similar part', text: para.slice(40, 400), ts: now - 98 });
+    // A 30K-char target inside the 31 MB clip: the huge clip is searched
+    // without a pattern built from the target (a 25K+ char RegExp does not
+    // compile: "Stack overflow", 2026-10-08).
+    seed.push({ type: 'text', title: 'qa similar long part', text: para.repeat(14).slice(123, 30123), ts: now - 99 });
   }
   const sb = await qa.launch({
     name: 'popup',
@@ -178,6 +187,61 @@ async function main() {
         }
       }
       check('a background change blocks the popup thread < 50 ms (was ~1 s)', perf.pinned && perf.deltaBlock < 50, `longest block ${perf.deltaBlock.toFixed(0)} ms`);
+      // Similar clips (D2) at owner scale: the scan behind the hover tint and
+      // the menu's "Select N similar" runs in slices; measured per slice (the
+      // longest stretch the popup thread is blocked) and end to end, cold
+      // (every clip normalised for the first time) and warm, plus the real
+      // hover-to-paint and menu-count paths with a long-task observer on.
+      const sim = await cdp.eval(`(async () => {
+        const lowerOf = (it) => searchIndexFor(it).hay;
+        const scan = (item) => new Promise((resolve) => {
+          const slices = [];
+          const t0 = performance.now();
+          Core.runSliced(Core.similarSteps(item, items, { lowerOf }), (ids) => resolve({
+            ms: +(performance.now() - t0).toFixed(1), found: ids.length, slices: slices.length,
+            maxSlice: +Math.max(0, ...slices).toFixed(1), cpu: +slices.reduce((a, b) => a + b, 0).toFixed(1),
+          }), { onSlice: (ms) => slices.push(ms) });
+        });
+        const find = (prefix) => items.find((it) => (it.text || '').startsWith(prefix));
+        const cold = await scan(find('qa similar seed'));
+        const warm = await scan(items.find((it) => it.title === 'qa similar part'));
+        const long = await scan(items.find((it) => it.title === 'qa similar long part'));
+        const tasks = [];
+        const lto = new PerformanceObserver((list) => { for (const e of list.getEntries()) tasks.push(Math.round(e.duration)); });
+        lto.observe({ type: 'longtask', buffered: false });
+        // Hover a rendered text row (a target never scanned before): time to the painted tint.
+        const rows = [...document.querySelectorAll('#list > .item')].filter((el) => { const it = itemById(el.dataset.id); return it && it.type !== 'image' && (it.text || '').length < 200000; });
+        const hoverRow = rows[2];
+        const h0 = performance.now();
+        hoverRow.querySelector('.content').dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+        await new Promise((r) => controller.whenSimilar(hoverRow.dataset.id, r));
+        await new Promise((r) => setTimeout(r, 0));
+        const hoverMs = +(performance.now() - h0).toFixed(1);
+        const hoverTarget = controller.similar().target === hoverRow.dataset.id;
+        hoverRow.dispatchEvent(new MouseEvent('mouseout', { bubbles: true, relatedTarget: null }));
+        // Open another row's menu: time until its "Select N similar" row settles.
+        const menuRow = rows[4];
+        const r = menuRow.getBoundingClientRect();
+        const m0 = performance.now();
+        controller.openRowMenu(menuRow, r.left + 40, r.top + 10);
+        const placeholder = !!document.querySelector('.bc-menu [data-action="select-similar"][aria-busy]');
+        await new Promise((res) => controller.whenSimilar(menuRow.dataset.id, res));
+        const menuMs = +(performance.now() - m0).toFixed(1);
+        const settled = !document.querySelector('.bc-menu [data-action="select-similar"][aria-busy]');
+        controller.closeMenu();
+        await new Promise((res) => setTimeout(res, 100));
+        lto.disconnect();
+        return { cold, warm, long, hoverMs, hoverTarget, menuMs, placeholder, settled, longTasks: tasks };
+      })()`);
+      console.log(`      similar scan cold (first normalisation of ${perf.items} clips): ${sim.cold.ms} ms wall, ${sim.cold.cpu} ms CPU in ${sim.cold.slices} slices, longest slice ${sim.cold.maxSlice} ms, ${sim.cold.found} found`);
+      console.log(`      similar scan warm (target inside the 31 MB clip): ${sim.warm.ms} ms wall, ${sim.warm.cpu} ms CPU in ${sim.warm.slices} slices, longest slice ${sim.warm.maxSlice} ms, ${sim.warm.found} found`);
+      console.log(`      hover-to-result ${sim.hoverMs} ms (the scan; the tint paints after the 120 ms dwell), menu count ${sim.menuMs} ms (placeholder shown: ${sim.placeholder}), long tasks: ${JSON.stringify(sim.longTasks)}`);
+      console.log(`      similar scan long target (30K chars, inside the 31 MB clip): ${sim.long.ms} ms wall, ${sim.long.cpu} ms CPU in ${sim.long.slices} slices, longest slice ${sim.long.maxSlice} ms, ${sim.long.found} found`);
+      check('similar scan never blocks a frame (longest slice < 16 ms, cold + warm + long target)', sim.cold.maxSlice < 16 && sim.warm.maxSlice < 16 && sim.long.maxSlice < 16, `${sim.cold.maxSlice} / ${sim.warm.maxSlice} / ${sim.long.maxSlice} ms`);
+      check('similar: the clip inside the 31 MB clip is found through its haystack', sim.warm.found >= 1, `${sim.warm.found}`);
+      check('similar: a 30K-char target is found inside the 31 MB clip (no pattern from the target)', sim.long.found >= 1, `${sim.long.found}`);
+      check('similar: the seeded near-duplicates are found', sim.cold.found >= 2, `${sim.cold.found}`);
+      check('similar: hover paints the target, menu count settles, no long task on the popup thread', sim.hoverTarget && sim.settled && sim.longTasks.length === 0, JSON.stringify({ hover: sim.hoverTarget, settled: sim.settled, longTasks: sim.longTasks }));
       return;
     }
 
@@ -409,12 +473,12 @@ async function main() {
       const rows = [...document.querySelectorAll('#list > .item')];
       const textRow = rows.find((r) => r.dataset.id.startsWith('txt:') && r.dataset.id !== rows[0].dataset.id);
       const imgRow = rows.find((r) => r.dataset.id.startsWith('img:'));
-      const text = fire(textRow.querySelector('.preview'));
+      const text = fire(textRow.querySelector('.content'));
       const image = fire(imgRow.querySelector('img'));
       const star = fire(textRow.querySelector('.star'));
       // Multi: ctrl-click two images, drag one -> both, list order.
       const imgs = rows.filter((r) => r.dataset.id.startsWith('img:')).slice(0, 2);
-      imgs.forEach((r) => r.querySelector('.preview').dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, ctrlKey: true })));
+      imgs.forEach((r) => r.querySelector('.content').dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, ctrlKey: true })));
       fire(imgs[1].querySelector('img'));
       controller.clearSelection();
       appAdapter.dragImages = real;

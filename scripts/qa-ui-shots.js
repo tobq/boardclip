@@ -45,7 +45,11 @@ function seed() {
     { text: 'https://example.com/docs/getting-started?ref=boardclip&utm_source=newsletter', ago: 300 },
     { text: '{\n  "name": "boardclip",\n  "version": "2.4.0",\n  "scripts": { "start": "electron .", "test": "node test/run.js" }\n}', title: 'package.json snippet', pin: { groups: ['Snippets'] }, ago: 900 },
     { text: 'The quick brown fox jumps over the lazy dog while the committee reviews the quarterly roadmap, the hiring plan and the long list of customer requests that arrived over the weekend.', ago: 1800 },
+    { text: 'Groceries for Saturday\nmilk, eggs and sourdough bread\noat milk, coffee beans', ago: 2000 },
     { text: 'Thanks, see you tomorrow at 10!', pin: { groups: ['Personal'], number: 2 }, ago: 3600 },
+    // Near-duplicates of the clip above (the similar-clip highlight + Select N similar).
+    { text: 'Thanks, see you tomorrow at 10! I will bring the printed slides.', ago: 3700 },
+    { text: 'see you   tomorrow at 10', ago: 3800 },
     { text: 'hello@example.com', ago: 5400 },
     { text: 'SELECT id, email, last_seen\nFROM users\nWHERE last_seen > now() - interval \'7 days\'\nORDER BY last_seen DESC;', title: 'SQL: active users', pin: { groups: ['Snippets', 'Work/Clients'] }, ago: 7200 },
     { text: 'Meeting notes - design review\nAttendees: Sam, Alex, Priya\nDecisions: ship the new search panel, keep the slide-in buttons', title: 'Design review', html: '<b>Meeting notes</b> - design review<br>Attendees: Sam, Alex, Priya', pin: { groups: ['Work'] }, ago: 10800 },
@@ -73,7 +77,7 @@ function seed() {
   }] };
   // Solid surface: a glass page is translucent, and a CDP screenshot has no OS
   // blur behind it.
-  const settings = { groups: ['Work', 'Work/Clients', 'Personal', 'Snippets', 'AI'], groups_shared_with_ai: ['AI'], ai_approval_timeout_sec: 120, surface_style: 'solid' };
+  const settings = { groups: ['Work', 'Work/Clients', 'Personal', 'Snippets', 'AI', 'Ideas'], groups_shared_with_ai: ['AI'], ai_approval_timeout_sec: 120, surface_style: 'solid' };
   return { history, images, conflicts, settings };
 }
 
@@ -135,7 +139,190 @@ const STEPS = [
   { name: 'popup-list', popup: true, run: (c) => c.shot(c.popup, 'popup-list') },
   { name: 'popup-row-hover', popup: true, run: async (c) => { await c.popup.hover(`${row(c.ids.json)} .content`); await c.shot(c.popup, 'popup-row-hover'); } },
   { name: 'popup-image-row-hover', popup: true, run: async (c) => { await c.popup.hover(`${row(c.ids.wide)} img`); await c.shot(c.popup, 'popup-image-row-hover'); } },
-  { name: 'popup-numpad-picker', popup: true, run: async (c) => { await c.popup.hover(`${row(c.ids.plan)} .pin-area .star`); await c.shot(c.popup, 'popup-numpad-picker'); } },
+  // Rows: hover each kind (titled, untitled multi-line, single-line short and
+  // long, image,
+  // with tags + numpad badge). A text row's buttons slide in on the reveal, an
+  // image row's float over the picture, the meta line's ghost # / + slide in,
+  // and NO row of any kind changes height (measured: the step fails otherwise).
+  { name: 'popup-rows-hover', popup: true, run: async (c) => {
+    const kinds = { titled: c.ids.json, untitled: c.ids.groceries, single: c.ids.url, singleLong: c.ids.fox, image: c.ids.wide, tags: c.ids.plan };
+    const heights = async () => new Map(await c.popup.eval(`[...document.querySelectorAll('#list > .item')].map((el) => [el.dataset.id, +el.getBoundingClientRect().height.toFixed(2)])`));
+    const before = await heights();
+    const checked = {};
+    for (const [kind, id] of Object.entries(kinds)) {
+      await c.popup.eval(`(document.querySelector(${J(row(id))}).scrollIntoView({ block: 'center' }), true)`);
+      await qa.sleep(120);
+      await c.popup.hover(`${row(id)} .content`);
+      await qa.sleep(350); // the reveal transition
+      const open = await c.popup.eval(`(() => {
+        const el = document.querySelector(${J(row(id))});
+        const track = el.querySelector('.row-actions');
+        const chip = el.querySelector('.img-actions');
+        const ghosts = el.querySelector('.meta-reveal');
+        return { actions: track ? track.getBoundingClientRect().width : (chip ? +getComputedStyle(chip).opacity : 0), ghosts: ghosts.getBoundingClientRect().width };
+      })()`);
+      if (!(open.actions > 0.5) || !(open.ghosts > 4)) throw new Error(`hovering the ${kind} row did not reveal its buttons: ${J(open)}`);
+      const after = await heights();
+      const changed = [...after].filter(([rid, h]) => before.has(rid) && Math.abs(before.get(rid) - h) > 0.5);
+      if (changed.length) throw new Error(`row heights changed while hovering the ${kind} row: ${J(changed.map(([rid, h]) => [rid, before.get(rid), h]))}`);
+      checked[kind] = before.get(id);
+      await c.shot(c.popup, `popup-row-hover-${kind}`);
+    }
+    c.note('rowHeightsStableOnHover', checked);
+  } },
+  // The meta line's ghost # (no key set) and the #N badge open the keypad
+  // popover; + opens the group picker. The row keeps its buttons out while one
+  // is open, even with the pointer elsewhere, and its height never changes.
+  { name: 'popup-meta-popovers', popup: true, run: async (c) => {
+    const heightOf = (id) => c.popup.eval(`document.querySelector(${J(row(id))}).getBoundingClientRect().height`);
+    const open = async (id, selector, menuSel, shot) => {
+      const h0 = await heightOf(id);
+      await c.popup.hover(`${row(id)} .content`);
+      await qa.sleep(300);
+      await c.popup.click(`${row(id)} ${selector}`);
+      await c.popup.waitFor(`!!document.querySelector(${J(menuSel)})`, `${shot} open`, 5000);
+      await c.popup.mouse('mouseMoved', 6, 6); // pointer away: the row stays held
+      await qa.sleep(250);
+      const held = await c.popup.eval(`(() => { const el = document.querySelector(${J(row(id))}); return { held: el.classList.contains('actions-held'), track: el.querySelector('.meta-reveal').getBoundingClientRect().width, h: el.getBoundingClientRect().height }; })()`);
+      if (!held.held || !(held.track > 4)) throw new Error(`${shot}: the row did not keep its buttons out (${J(held)})`);
+      if (Math.abs(held.h - h0) > 0.5) throw new Error(`${shot}: the row height changed ${h0} -> ${held.h}`);
+      await c.shot(c.popup, shot);
+      await escape(c.popup);
+      await c.popup.waitFor(`!document.querySelector('.bc-menu') && !document.querySelector('.item.actions-held')`, `${shot} closed`, 5000);
+      // Mouse-opened, then dismissed: the opener's leftover focus must not keep
+      // the row's buttons out (:focus-within) with the pointer elsewhere.
+      await qa.sleep(350);
+      const after = await c.popup.eval(`(() => { const el = document.querySelector(${J(row(id))}); return { track: el.querySelector('.meta-reveal').getBoundingClientRect().width, focusInRow: el.contains(document.activeElement) }; })()`);
+      if (after.track > 0.5 || after.focusInRow) throw new Error(`${shot}: the row kept its buttons out after the popover closed (${J(after)})`);
+    };
+    await open(c.ids.fox, '.meta-ghost[data-action="numpad-open"]', '.bc-menu.bc-keypad .np-btn', 'popup-meta-keypad');
+    await open(c.ids.plan, '.meta-np', '.bc-menu.bc-keypad .np-remove', 'popup-meta-keypad-set');
+    await open(c.ids.fox, '.meta-ghost[data-action="tag-add"]', '.bc-menu .bc-group-list', 'popup-meta-group-picker');
+  } },
+  // Similar clips: hovering a text row tints the rendered rows that contain it
+  // or that it contains; its menu offers "Select N similar", which selects
+  // them all (the selection bar then offers Unify).
+  { name: 'popup-similar', popup: true, run: async (c) => {
+    const id = c.ids.thanks;
+    await c.popup.eval(`(document.querySelector(${J(row(id))}).scrollIntoView({ block: 'center' }), true)`);
+    await qa.sleep(150);
+    await c.popup.hover(`${row(id)} .content`);
+    await c.popup.waitFor(`controller.similar().target === ${J(id)} && controller.similar().ids.length >= 2`, 'similar clips painted', 5000);
+    await qa.sleep(250);
+    const painted = await c.popup.eval(`[...document.querySelectorAll('#list > .item.similar')].map((el) => el.dataset.id)`);
+    for (const want of c.ids.similar) if (!painted.includes(want)) throw new Error(`similar clip ${want} not tinted (${J(painted)})`);
+    if (painted.includes(id)) throw new Error('the hovered row tinted itself');
+    await c.shot(c.popup, 'popup-similar-hover');
+    // The keyboard cursor on the same row: the cursor row (accent) must read
+    // apart from its similar rows (neutral wash + dotted edge, never accent).
+    await c.popup.mouse('mouseMoved', -10, -10);
+    const cursor = await c.popup.eval(`(() => {
+      for (let k = 0; k < 60 && controller.focusedId() !== ${J(id)}; k += 1) controller.moveFocus(1);
+      return controller.focusedId();
+    })()`);
+    if (cursor !== id) throw new Error(`could not put the cursor on the row (${cursor})`);
+    await c.popup.waitFor(`controller.similar().target === ${J(id)} && document.querySelectorAll('#list > .item.similar').length >= 2`, 'similar clips painted for the cursor', 5000);
+    await qa.sleep(250);
+    const tints = await c.popup.eval(`(() => {
+      const bg = (sel) => getComputedStyle(document.querySelector(sel)).backgroundColor;
+      return { cursor: bg('#list > .item.selected'), similar: bg('#list > .item.similar') };
+    })()`);
+    if (tints.cursor === tints.similar) throw new Error(`the similar rows look like the cursor row: ${J(tints)}`);
+    c.note('similarVsCursor', tints);
+    await c.shot(c.popup, 'popup-similar-cursor');
+    await c.popup.eval('(controller.clearSelection(), true)');
+    await c.popup.hover(`${row(id)} .content`);
+    await c.popup.waitFor(`controller.similar().target === ${J(id)}`, 'similar target back on hover', 5000);
+    await qa.sleep(350); // the row's buttons slide back in before the menu click
+    await c.popup.click(`${row(id)} [data-action="clip-menu"]`);
+    await c.popup.waitFor(`[...document.querySelectorAll('.bc-menu [data-action="select-similar"]')].some((b) => !b.disabled && /Select 2 similar/.test(b.textContent))`, 'Select 2 similar', 5000);
+    await c.shot(c.popup, 'popup-similar-menu');
+    await c.popup.click('.bc-menu [data-action="select-similar"]');
+    await c.popup.waitFor(`controller.selection().count === 3 && !document.getElementById('selectionBar').classList.contains('hidden')`, 'similar clips selected', 5000);
+    const bar = await c.popup.eval(`(() => {
+      const chips = document.getElementById('groupFilters').getBoundingClientRect();
+      const bar = document.getElementById('selectionBar').getBoundingClientRect();
+      return { unify: !!document.querySelector('#selectionBar [data-action="bulk-unify"]'), chipsHidden: getComputedStyle(document.getElementById('groupFilters')).visibility === 'hidden', sameTop: Math.abs(chips.top - bar.top) < 0.5, barH: bar.height, rowH: document.querySelector('.chip-row').getBoundingClientRect().height };
+    })()`);
+    if (!bar.unify || !bar.chipsHidden || !bar.sameTop) throw new Error(`selection bar not in the chip bar's place: ${J(bar)}`);
+    c.note('selectionBar', bar);
+    await c.shot(c.popup, 'popup-similar-selected');
+  } },
+  // A clip in many groups: the meta line shows whole group names or none
+  // (never "D..." fragments), the hover ghosts still slide in, the row keeps
+  // its height. The row is rendered into the list in the page only.
+  { name: 'popup-meta-many-groups', popup: true, run: async (c) => {
+    await c.popup.eval(`(() => {
+      const item = { id: 'qa:many', type: 'text', ts: Math.floor(Date.now() / 1000) - 60, text: 'A clip in five groups\\nwith a second line',
+        pin: { number: 3, groups: ['Alpha group long name', 'Beta group long name', 'Gamma group', 'Delta', 'Epsilon group'] } };
+      const list = document.getElementById('list');
+      list.insertAdjacentHTML('afterbegin', Core.renderClipItem(item, { actionsHtml: Core.renderClipActions(item) }));
+      list.scrollTop = 0;
+      return true;
+    })()`);
+    const measure = () => c.popup.eval(`(() => {
+      const el = document.querySelector('.item[data-id="qa:many"]');
+      const box = el.querySelector('.meta-tags').getBoundingClientRect();
+      const tags = [...el.querySelectorAll('.meta-tag')].map((t) => {
+        const r = t.getBoundingClientRect();
+        return { text: t.textContent, shown: r.bottom <= box.bottom + 0.5 && r.right <= box.right + 0.5, cut: t.scrollWidth > t.clientWidth + 1 };
+      });
+      const meta = el.querySelector('.meta');
+      // Laid-out overflow past the meta box (scrollWidth also counts the closed
+      // reveal's clip margin, an invisible 4 px: not a measure of what shows).
+      const right = meta.getBoundingClientRect().right;
+      const overflow = Math.max(0, ...[...meta.children].map((k) => k.getBoundingClientRect().right - right));
+      return { tags, overflow, ghosts: el.querySelector('.meta-reveal').getBoundingClientRect().width, h: el.getBoundingClientRect().height };
+    })()`);
+    const rest = await measure();
+    await c.popup.hover('.item[data-id="qa:many"] .content');
+    await qa.sleep(350);
+    const hover = await measure();
+    for (const [state, m] of [['at rest', rest], ['on hover', hover]]) {
+      const shown = m.tags.filter((t) => t.shown);
+      if (!shown.length) throw new Error(`${state}: no group name shown ${J(m)}`);
+      if (shown.length > 1 && shown.some((t) => t.cut)) throw new Error(`${state}: a group name shows as a fragment ${J(m)}`);
+      if (m.overflow > 0.5) throw new Error(`${state}: the meta line overflows by ${m.overflow} px`);
+    }
+    if (!(hover.ghosts > 4)) throw new Error(`the ghost # / + did not slide in: ${J(hover)}`);
+    if (Math.abs(rest.h - hover.h) > 0.5) throw new Error(`the row height changed on hover ${rest.h} -> ${hover.h}`);
+    c.note('metaManyGroups', { rest: rest.tags.filter((t) => t.shown).map((t) => t.text), hover: hover.tags.filter((t) => t.shown).map((t) => t.text) });
+    await c.shot(c.popup, 'popup-meta-many-groups');
+  } },
+  // The selection bar never moves the list, even with an EMPTY chip bar (a
+  // fresh install: no pins, keys, images or groups): the chip cell keeps the
+  // bar's height. The chips are emptied in the page only; the next reset
+  // rebuilds them.
+  { name: 'popup-selection-bar-empty-chips', popup: true, run: async (c) => {
+    const got = await c.popup.eval(`(() => {
+      const listTop = () => document.getElementById('list').getBoundingClientRect().top;
+      document.getElementById('groupFilters').innerHTML = '';
+      const before = listTop();
+      const ids = [...document.querySelectorAll('#list > .item')].slice(0, 2).map((el) => el.dataset.id);
+      for (const id of ids) controller.toggle(id);
+      const shown = !document.getElementById('selectionBar').classList.contains('hidden');
+      const during = listTop();
+      controller.clearSelection();
+      return { shown, before, during, after: listTop() };
+    })()`);
+    if (!got.shown) throw new Error(`the selection bar did not show: ${J(got)}`);
+    if (Math.abs(got.before - got.during) > 0.5 || Math.abs(got.before - got.after) > 0.5) throw new Error(`the list moved with an empty chip bar: ${J(got)}`);
+    c.note('selectionBarEmptyChips', got);
+  } },
+  // Empty states from the ONE shared renderer: no matches, filters exclude
+  // everything, an empty group, no clips yet.
+  { name: 'popup-empty-states', popup: true, run: async (c) => {
+    for (const [q, kind] of [['zzqx nothing matches this', 'no-match'], ['is:image num:5', 'filtered'], ['group:Ideas', 'empty-group']]) {
+      await setQuery(c, q);
+      const got = await c.popup.eval(`(document.querySelector('#list > .list-empty') || { dataset: {} }).dataset.empty || null`);
+      if (got !== kind) throw new Error(`"${q}" rendered empty state ${got}, expected ${kind}`);
+      await c.shot(c.popup, `popup-empty-${kind}`);
+    }
+    // No clips yet: the same renderer for an empty history, rendered into the
+    // list directly (the next reset rebuilds it from the real history).
+    await c.popup.eval(`(clipList.update({ ids: [], queryKey: '', emptyHtml: Core.renderEmptyState({ total: 0 }) }), true)`);
+    await c.shot(c.popup, 'popup-empty-no-clips');
+  } },
   { name: 'popup-row-menu', popup: true, run: async (c) => {
     await openRowMenu(c, c.ids.plan);
     await c.shot(c.popup, 'popup-row-menu');
@@ -146,7 +333,19 @@ const STEPS = [
       await c.shot(c.popup, name);
     }
   } },
-  { name: 'popup-filter-chip-sub', popup: true, run: async (c) => { await c.popup.hover('.group-filters .filter-tag[data-group="Work"]'); await c.shot(c.popup, 'popup-filter-chip-sub'); } },
+  { name: 'popup-filter-chip-sub', popup: true, run: async (c) => {
+    await c.popup.hover('.group-filters .filter-tag[data-group="Work"]');
+    const sub = await c.popup.eval(`(() => {
+      const node = document.querySelector('.group-filters .filter-tag[data-group="Work"]').closest('.tag-menu-node');
+      const menu = node && node.querySelector(':scope > .tag-submenu');
+      if (!menu || getComputedStyle(menu).display === 'none') return 'submenu not open';
+      const r = menu.getBoundingClientRect();
+      const hit = document.elementFromPoint(r.left + r.width / 2, r.top + Math.min(r.height / 2, 12));
+      return hit && menu.contains(hit) ? 'ok' : \`covered by \${hit ? hit.className : 'nothing'}\`;
+    })()`);
+    if (sub !== 'ok') throw new Error(`the Work chip's submenu is not visible: ${sub}`);
+    await c.shot(c.popup, 'popup-filter-chip-sub');
+  } },
   { name: 'popup-search-facet', popup: true, run: async (c) => { await setQuery(c, 'group:Work plan'); await c.shot(c.popup, 'popup-search-facet'); } },
   { name: 'popup-search-suggest', popup: true, run: async (c) => { await setQuery(c, 'is:'); await c.shot(c.popup, 'popup-search-suggest'); } },
   { name: 'popup-search-regex-invalid', popup: true, run: async (c) => {
@@ -186,7 +385,7 @@ const STEPS = [
   } },
   { name: 'popup-multiselect', popup: true, run: async (c) => {
     await c.popup.eval(`(() => {
-      const click = (id) => document.querySelector('.item[data-id="' + id + '"] .preview').dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, ctrlKey: true }));
+      const click = (id) => document.querySelector('.item[data-id="' + id + '"] .content').dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, ctrlKey: true }));
       click(${J(c.ids.url)}); click(${J(c.ids.fox)});
       return document.querySelectorAll('.item.multi-selected').length;
     })()`);
@@ -302,9 +501,9 @@ const STEPS = [
 async function runTheme(theme, site) {
   const outDir = path.join(OUT, theme);
   fs.mkdirSync(outDir, { recursive: true });
-  const result = { theme, shots: [], skipped: [], ms: {} };
+  const result = { theme, shots: [], skipped: [], ms: {}, notes: {} };
   const t0 = Date.now();
-  const c = { theme, site, outDir };
+  const c = { theme, site, outDir, note: (key, value) => { result.notes[key] = value; } };
   c.shot = async (page, name, opts) => {
     await qa.sleep(250);
     await page.screenshot(path.join(outDir, `${name}.png`), opts);
@@ -327,7 +526,9 @@ async function runTheme(theme, site) {
     c.ids = {
       plan: by((i) => i.title === 'Launch plan'), json: by((i) => i.title === 'package.json snippet'), notes: by((i) => i.title === 'Design review'),
       wide: by((i) => i.title === 'Dashboard screenshot'), url: by((i) => /^https:\/\/example\.com/.test(i.text || '')),
-      fox: by((i) => /^The quick brown fox/.test(i.text || '')), filler: by((i) => i.text === 'Filler clip number 1 with a little text so the list scrolls'),
+      fox: by((i) => /^The quick brown fox/.test(i.text || '')), groceries: by((i) => /^Groceries for Saturday\n/.test(i.text || '')), filler: by((i) => i.text === 'Filler clip number 1 with a little text so the list scrolls'),
+      thanks: by((i) => i.text === 'Thanks, see you tomorrow at 10!'),
+      similar: [by((i) => /I will bring the printed slides/.test(i.text || '')), by((i) => i.text === 'see you   tomorrow at 10')],
     };
     result.ms.setup = Date.now() - t0 - result.ms.launch;
     for (const step of SELECTED) {

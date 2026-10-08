@@ -9,6 +9,13 @@ contextBridge.exposeInMainWorld('approval', {
   onSettings: (callback) => {
     ipcRenderer.on('approval-settings', (_, s) => callback(s));
   },
+  // Appearance (accent, density, corners, theme mode, this window's surface):
+  // one event whenever any of it changes - a setting, another device, the OS accent.
+  onAppearanceChanged: (callback) => {
+    const listener = (_, look) => callback(look || {});
+    ipcRenderer.on('appearance-changed', listener);
+    return () => ipcRenderer.removeListener('appearance-changed', listener);
+  },
   decide: (id, choice) => ipcRenderer.send('approval-decide', id, choice),
   hold: (id, held, remainingSec) => ipcRenderer.send('approval-hold', id, held, remainingSec),
   resize: (height) => ipcRenderer.send('approval-resize', height),

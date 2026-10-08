@@ -83,6 +83,13 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.on('surface-changed', listener);
     return () => ipcRenderer.removeListener('surface-changed', listener);
   },
+  // Appearance (accent, density, corners, theme mode, this window's surface):
+  // one event whenever any of it changes - a setting, another device, the OS accent.
+  onAppearanceChanged: (callback) => {
+    const listener = (_, look) => callback(look || {});
+    ipcRenderer.on('appearance-changed', listener);
+    return () => ipcRenderer.removeListener('appearance-changed', listener);
+  },
   // AI Access (MCP)
   getAiAccess: () => ipcRenderer.invoke('get-ai-access'),
   setAiAccessEnabled: (enabled) => ipcRenderer.invoke('set-ai-access-enabled', enabled),

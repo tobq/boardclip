@@ -1,5 +1,5 @@
 const { app, BrowserWindow, Tray, Menu, globalShortcut, clipboard, nativeImage,
-        ipcMain, protocol, screen, shell, nativeTheme, dialog, Notification } = require('electron');
+        ipcMain, protocol, screen, shell, nativeTheme, systemPreferences, dialog, Notification } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
@@ -47,6 +47,7 @@ const conflictModel = require('./lib/conflict-model');
 const { ControlServer } = require('./lib/control-server');
 const windowsConsole = require('./lib/windows-console');
 const windowsDwm = require('./lib/windows-dwm');
+const appearance = require('./lib/appearance');
 
 function guardBrokenPipe(stream) {
   try {
@@ -504,7 +505,10 @@ function loadSettings() {
     // JSON written by Windows tools rather than reading a valid settings file as
     // an unreadable store and replacing it with defaults on the next write.
     const loaded = blobStore.parseJsonText(fs.readFileSync(SETTINGS_PATH, 'utf-8'));
-    const merged = { ...DEFAULT_SETTINGS, ...(loaded && typeof loaded === 'object' ? loaded : {}) };
+    // The audit-era appearance axes are promoted once, on the file as read
+    // (before the defaults fill in what it lacks).
+    const promoted = appearance.migrateAppearanceSettings(loaded, { debugVariants: debugVariantsEnabled() });
+    const merged = { ...DEFAULT_SETTINGS, ...(promoted && typeof promoted === 'object' ? promoted : {}) };
     for (const key of REMOVED_SETTING_KEYS) delete merged[key];
     return merged;
   } catch {
@@ -1170,8 +1174,10 @@ function mergeGroups(local, remote) {
   return clipboardModel.mergeGroups(local, remote, settings.group_tombstones);
 }
 
-// Settings the save-settings IPC may write without touching history or sync.
-const LOCAL_ONLY_SETTING_KEYS = new Set(['image_preview_height', 'options_panel_height']);
+// Settings the save-settings IPC may write without touching history or sync
+// (per-machine display knobs; the window surface reaches the windows through
+// its own broadcast).
+const LOCAL_ONLY_SETTING_KEYS = new Set(['image_preview_height', 'options_panel_height', 'surface_style', 'glass_scope']);
 
 function remoteSettingsPayload() {
   const remoteSave = {
@@ -1193,12 +1199,11 @@ function remoteSettingsPayload() {
   delete remoteSave.popup_size;
   delete remoteSave.editor_bounds;
   delete remoteSave.viewer_bounds;
-  // Appearance variants: per-machine (glass support is hardware-dependent; the
-  // rest are dev-only auditioning knobs), never synced.
+  // Appearance, per machine: the surface (glass support is hardware-dependent),
+  // which windows get it, and the audit-only borders axis. The accent choice,
+  // density and corners DO sync (lib/appearance.js, newest stamp wins).
   delete remoteSave.surface_style;
-  delete remoteSave.accent_variant;
-  delete remoteSave.ui_density;
-  delete remoteSave.ui_corners;
+  delete remoteSave.glass_scope;
   delete remoteSave.ui_borders;
   // Image preview height and the search options panel height suit THIS
   // machine's screen and popup size.
@@ -1236,6 +1241,9 @@ function mergeSyncedSettings(remoteSettings) {
   }
   settings.p2p_endpoints = mergeEndpointRegistry(settings.p2p_endpoints, remoteSettings.p2p_endpoints);
   settings.p2p_pinned_peers = normalizePinnedPeers([...(settings.p2p_pinned_peers || []), ...(remoteSettings.p2p_pinned_peers || [])]);
+  // Accent choice, density, corners: another device's newer choice applies here
+  // and reaches every open window.
+  if (appearance.mergeSyncedAppearance(settings, remoteSettings)) broadcastAppearance('sync');
   ensureP2PIdentity();
   return JSON.stringify(remoteSettingsPayload()) !== before;
 }
@@ -4013,16 +4021,26 @@ function currentColorScheme() {
   return nativeTheme.shouldUseDarkColors ? 'dark' : 'light';
 }
 
-function appBackgroundColor() {
-  if (process.platform === 'darwin') return '#00000000';
+// An opaque window's native background (shows before the first paint and
+// while resizing). appBackgroundColor() is the popup's: transparent on macOS,
+// where the popup is always a transparent window.
+function solidWindowColor() {
   return nativeTheme.shouldUseDarkColors ? '#14171b' : '#ffffff';
 }
+function appBackgroundColor() {
+  if (process.platform === 'darwin') return '#00000000';
+  return solidWindowColor();
+}
 
-// --- Native frosted glass for the popup pane -----------------------------
-// macOS gets real vibrancy (already wired); Windows 11 gets an acrylic
-// backdrop that blurs whatever sits behind the window (other apps + desktop).
-// Everything below is centralized so the popup window-creation site, the
-// live toggle, and the colour-scheme refresh all agree on one source of truth.
+// --- Native frosted glass ----------------------------------------------------
+// macOS gets real vibrancy; Windows 11 gets an acrylic backdrop that blurs
+// whatever sits behind the window (other apps + desktop). The popup is glass
+// wherever supported unless the user picked Solid. Every other window (editor,
+// viewer, conflict, unify, approval) is SOLID unless "Glass on: All windows"
+// (glass_scope 'all'): spreading the popup's options into them made the editor
+// and the merge view frosted, with a second translucent layer on every band
+// (audit 2026-10-07). Everything below is centralized so the window-creation
+// sites, the live toggle and the colour-scheme refresh agree on one source.
 function glassSupport() {
   if (process.platform === 'darwin') return 'vibrancy';
   if (process.platform === 'win32') {
@@ -4041,67 +4059,180 @@ function glassOn() {
   return glassSupport() !== 'none'; // 'auto' | 'glass' -> on wherever supported
 }
 function resolvedSurfaceStyle() { return glassOn() ? 'glass' : 'solid'; }
-// BrowserWindow options for the popup, spread into createPopup(). macOS keeps
-// transparent:true ALWAYS (transparent can't change post-creation), and toggles
-// the material at runtime instead, so glass<->solid never needs a window
-// recreate. Windows uses acrylic (transparent stays false).
+// The secondary windows: glass only with "All windows" AND the surface on.
+function secondaryGlassOn() { return glassOn() && settings.glass_scope === 'all'; }
+function secondarySurfaceStyle() { return secondaryGlassOn() ? 'glass' : 'solid'; }
+// BrowserWindow surface options (lib/appearance.js surfaceWindowOptions):
+// popupSurfaceOptions() is spread into createPopup() only, and EVERY other
+// window spreads secondaryWindowSurfaceOptions() (test/appearance.test.js).
 function popupSurfaceOptions() {
-  const support = glassSupport();
-  const on = glassOn();
-  if (support === 'vibrancy') {
-    return { transparent: true, vibrancy: on ? 'popover' : undefined, visualEffectState: 'active', backgroundColor: '#00000000' };
-  }
-  if (support === 'acrylic' && on) {
-    return { backgroundMaterial: 'acrylic', backgroundColor: '#00000000' };
-  }
-  return { backgroundColor: appBackgroundColor() };
+  return appearance.surfaceWindowOptions({ support: glassSupport(), on: glassOn(), solidBackground: appBackgroundColor(), live: true });
 }
-// Re-apply the surface material to the live popup window without recreating it,
-// then tell the renderer to flip its data-surface attribute.
+function secondaryWindowSurfaceOptions() {
+  return appearance.surfaceWindowOptions({ support: glassSupport(), on: secondaryGlassOn(), solidBackground: solidWindowColor() });
+}
+// The surface each secondary window HAS, noted right after it is created
+// (noteSecondarySurface at every creation site). live = it can switch glass <->
+// solid while open: always on Windows; on macOS only a window created glass
+// (transparent). A macOS window created solid is opaque for life, keeps
+// 'solid' in its payload and takes a scope change when it is next opened.
+const secondarySurfaces = new WeakMap(); // window -> { style, live }
+function noteSecondarySurface(w) {
+  const style = secondarySurfaceStyle();
+  secondarySurfaces.set(w, { style, live: glassSupport() !== 'vibrancy' || style === 'glass' });
+}
+function secondarySurfaceOf(w) {
+  const s = secondarySurfaces.get(w);
+  return s ? s.style : secondarySurfaceStyle();
+}
+function secondaryWindows() {
+  return BrowserWindow.getAllWindows().filter((w) => w && !w.isDestroyed() && w !== win);
+}
+// Re-apply a surface material to a live window without recreating it.
+function applySurfaceMaterial(w, on) {
+  if (!w || w.isDestroyed()) return;
+  const support = glassSupport();
+  try {
+    if (support === 'vibrancy' && w.setVibrancy) w.setVibrancy(on ? 'popover' : null);
+    else if (support === 'acrylic' && w.setBackgroundMaterial) w.setBackgroundMaterial(on ? 'acrylic' : 'none');
+    w.setBackgroundColor(on ? '#00000000' : appBackgroundColor());
+  } catch {}
+}
+// The popup's material, then its renderer flips data-surface.
 function applySurfaceToPopup() {
   if (!win || win.isDestroyed()) return;
-  const support = glassSupport();
-  const on = glassOn();
-  try {
-    if (support === 'vibrancy' && win.setVibrancy) win.setVibrancy(on ? 'popover' : null);
-    else if (support === 'acrylic' && win.setBackgroundMaterial) win.setBackgroundMaterial(on ? 'acrylic' : 'none');
-    win.setBackgroundColor(on ? '#00000000' : appBackgroundColor());
-  } catch {}
+  applySurfaceMaterial(win, glassOn());
   try { win.webContents.send('surface-changed', resolvedSurfaceStyle()); } catch {}
 }
-
-function notifyColorSchemeChanged() {
-  if (!win || win.isDestroyed()) return;
-  // Don't stamp an opaque background over a live acrylic/transparent window.
-  if (!glassOn()) win.setBackgroundColor(appBackgroundColor());
-  win.webContents.send('color-scheme-changed', currentColorScheme());
+// After a surface_style / glass_scope change: the popup, every open secondary
+// window, then one appearance-changed (it carries each window's surface).
+function applySurfaceToWindows() {
+  applySurfaceToPopup();
+  const on = secondaryGlassOn();
+  for (const w of secondaryWindows()) {
+    const s = secondarySurfaces.get(w);
+    if (s && !s.live) continue; // macOS, created opaque: keeps its surface until reopened
+    applySurfaceMaterial(w, on);
+    if (s) s.style = on ? 'glass' : 'solid';
+  }
+  broadcastAppearance('surface');
 }
 
-// Non-surface appearance variants (accent/density/corners/borders), shared by
-// the editor + conflict windows so they match the popup. Surface stays solid on
-// those windows (a text editor / merge view reads better opaque).
-// The accent/density/corners/borders axes are a DESIGN-AUDIT tool, not user
-// settings: they apply only with BOARDCLIP_DEBUG_VARIANTS=1. They used to leak
-// into every git install (the primary distribution is un-packaged, so
-// `!app.isPackaged` was always true): a stale `ui_borders: 'borderless'` on one
-// machine turned group tags into filled chips while the Mac on defaults showed
-// the intended no-background style - same commit, different look (2026-09-02).
-// With the flag off every window renders the code's default look, whatever the
-// settings file says.
+// Every window follows the OS scheme (editor + viewer listen as the popup
+// does). A solid window's native background shows before its first paint and
+// while resizing, so it takes the new scheme; never stamped over live glass.
+function notifyColorSchemeChanged() {
+  const scheme = currentColorScheme();
+  if (win && !win.isDestroyed() && !glassOn()) win.setBackgroundColor(appBackgroundColor());
+  for (const w of BrowserWindow.getAllWindows()) {
+    if (!w || w.isDestroyed()) continue;
+    try {
+      if (w !== win && secondarySurfaceOf(w) === 'solid') {
+        // A transparent macOS window (created glass) keeps its clear background.
+        const s = secondarySurfaces.get(w);
+        w.setBackgroundColor(s && s.live ? appBackgroundColor() : solidWindowColor());
+      }
+      w.webContents.send('color-scheme-changed', scheme);
+    } catch {}
+  }
+}
+
+// --- Appearance every window renders with ------------------------------------
+// The accent, density and corners are real settings (synced, lib/appearance.js).
+// The borders axis is still a DESIGN-AUDIT tool that applies only with
+// BOARDCLIP_DEBUG_VARIANTS=1. The audit axes used to leak into every git install
+// (the primary distribution is un-packaged, so `!app.isPackaged` was always
+// true): a stale `ui_borders: 'borderless'` on one machine turned group tags
+// into filled chips while the Mac on defaults showed the intended
+// no-background style - same commit, different look (2026-09-02).
 function debugVariantsEnabled() {
   return !!process.env.BOARDCLIP_DEBUG_VARIANTS;
 }
 
-function appearanceVariantPayload() {
-  if (!debugVariantsEnabled()) {
-    return { accentVariant: 'blue', uiDensity: 'normal', uiCorners: 'soft', uiBorders: 'bordered' };
+// The OS accent, for accent_mode 'system': read per device (the CHOICE syncs,
+// the colour never does) and followed live. Windows reads the value Settings
+// writes (lib/windows-dwm.js readAccentColor: Electron's getAccentColor is DWM's
+// blended colorization colour there), re-read on 'accent-color-changed'. macOS
+// reads NSColor.controlAccentColor (getAccentColor) on the colour-preferences
+// distributed notification and AppKit's NSSystemColorsDidChangeNotification.
+// Every trigger re-reads again a moment later, in case the new value lands
+// after the notification; nativeTheme 'updated' is one more trigger.
+let systemAccent = null; // '#rrggbb' | null
+let lastAppearanceSignature = '';
+function readSystemAccent() {
+  if (process.platform === 'win32') {
+    const fromSettings = windowsDwm.readAccentColor();
+    if (fromSettings) return fromSettings;
+  } else if (process.platform !== 'darwin') {
+    return null;
   }
-  return {
-    accentVariant: settings.accent_variant,
-    uiDensity: settings.ui_density,
-    uiCorners: settings.ui_corners,
-    uiBorders: settings.ui_borders,
+  try { return appearance.normalizeAccentHex(systemPreferences.getAccentColor()); } catch { return null; }
+}
+function refreshSystemAccent(reason) {
+  const next = readSystemAccent();
+  if (next === systemAccent) return;
+  systemAccent = next;
+  diagnostics.record('appearance.system_accent', { accent: next, reason });
+  broadcastAppearance('system-accent');
+}
+function watchSystemAccent() {
+  systemAccent = readSystemAccent();
+  const reread = (event) => {
+    refreshSystemAccent(event);
+    const late = setTimeout(() => refreshSystemAccent(`${event}:late`), 500);
+    if (late.unref) late.unref();
   };
+  try {
+    if (process.platform === 'win32') {
+      systemPreferences.on('accent-color-changed', () => reread('accent-color-changed'));
+    } else if (process.platform === 'darwin') {
+      systemPreferences.subscribeNotification('AppleColorPreferencesChangedNotification', () => reread('AppleColorPreferencesChangedNotification'));
+      systemPreferences.subscribeLocalNotification('NSSystemColorsDidChangeNotification', () => reread('NSSystemColorsDidChangeNotification'));
+    }
+    if (process.platform === 'win32' || process.platform === 'darwin') nativeTheme.on('updated', () => reread('native-theme-updated'));
+  } catch (error) {
+    diagnostics.record('appearance.accent_watch_failed', { error: error && error.message }, { forceFile: true });
+  }
+  lastAppearanceSignature = appearanceSignature();
+}
+
+// Spread into every window's init payload (each adds its own surfaceStyle).
+// accentVariant = the token palette (data-accent); accentColor = the '#rrggbb'
+// a System / Custom accent lays over it (null: the palette alone).
+function appearanceVariantPayload() {
+  const accent = appearance.resolveAccent({ mode: settings.accent_mode, custom: settings.accent_custom, system: systemAccent });
+  return {
+    themeMode: settings.theme_mode || 'system',
+    accentMode: accent.mode,
+    accentVariant: accent.preset,
+    accentColor: accent.color,
+    accentCustom: appearance.normalizeAccentHex(settings.accent_custom) || '',
+    systemAccent,
+    uiDensity: settings.ui_density === 'compact' ? 'compact' : 'normal',
+    uiCorners: settings.ui_corners === 'sharp' ? 'sharp' : 'soft',
+    uiBorders: debugVariantsEnabled() && settings.ui_borders === 'borderless' ? 'borderless' : 'bordered',
+    glassScope: settings.glass_scope === 'all' ? 'all' : 'popup',
+  };
+}
+function windowAppearance(w) {
+  return { ...appearanceVariantPayload(), surfaceStyle: w === win ? resolvedSurfaceStyle() : secondarySurfaceOf(w) };
+}
+function appearanceSignature() {
+  return JSON.stringify([appearanceVariantPayload(), resolvedSurfaceStyle(), secondarySurfaceStyle()]);
+}
+// ONE 'appearance-changed' to every window (popup, editor, viewer, conflict,
+// unify, approval) whenever anything it renders with changes: an appearance
+// setting here or from another device, the OS accent, the surface. Diffed, so
+// callers just call it after any change.
+function broadcastAppearance(reason) {
+  const signature = appearanceSignature();
+  if (signature === lastAppearanceSignature) return false;
+  lastAppearanceSignature = signature;
+  for (const w of BrowserWindow.getAllWindows()) {
+    if (!w || w.isDestroyed()) continue;
+    try { w.webContents.send('appearance-changed', { ...windowAppearance(w), reason }); } catch {}
+  }
+  return true;
 }
 
 function configureMacPopupWindow(window) {
@@ -4430,6 +4561,65 @@ function waitForPopupFrame(capMs = 120) {
     new Promise((resolve) => setTimeout(resolve, capMs)),
   ]);
 }
+// The open animation (plan I), decided per open. It moves the WHOLE window
+// (OS-drawn glass + content together; a CSS animation cannot touch the glass):
+// - 'slide': Windows + glass. The parked popup uncloaks complete in ONE frame
+//   and slides up. No fade: a layered window drops the acrylic, and the
+//   backdrop cannot be crossfaded either (both recorded frame by frame
+//   2026-10-07: a see-through or a grey two-step).
+// - 'fade': macOS (vibrancy survives window alpha), and Windows + solid ONLY
+//   with BOARDCLIP_SOLID_FADE=1: the same slide with the window alpha 0 -> 1 on
+//   the same ease. Windows + solid (and every Windows 10, which has no acrylic)
+//   otherwise keeps the shipped slide: the owner's ship rule for the open
+//   animation is a clean frame-by-frame recording, and the Solid fade so far is
+//   verified as window STATE only (qa-appearance.js, in a cloaked sandbox that
+//   draws nothing), not on screen where the layered-style flip at its end could
+//   show a two-step. Flip the default once a recording on an idle machine is clean.
+// - 'none': the OS asks for reduced motion (or no rich animation, e.g. a remote
+//   session): straight to the resting place. Linux keeps its plain show.
+function solidFadeEnabled() {
+  return process.env.BOARDCLIP_SOLID_FADE === '1';
+}
+function popupOpenMotion() {
+  if (process.platform !== 'win32' && process.platform !== 'darwin') return 'none';
+  try {
+    const anim = systemPreferences.getAnimationSettings();
+    if (anim && (anim.prefersReducedMotion || anim.shouldRenderRichAnimation === false)) return 'none';
+  } catch {}
+  if (process.platform === 'darwin') return 'fade';
+  return glassOn() || !solidFadeEnabled() ? 'slide' : 'fade';
+}
+let popupFading = false; // the window alpha is below 1 (Windows: layered) until endPopupFade
+function setPopupAlpha(alpha) {
+  if (!win || win.isDestroyed()) return false;
+  if (process.platform === 'win32') return windowsDwm.setWindowAlpha(win, alpha).ok;
+  win.setOpacity(alpha);
+  return true;
+}
+// Starts a fade at alpha 0; the window must not be on screen yet (cloaked or
+// hidden). false = no fade this time (the alpha could not be set).
+function beginPopupFade() {
+  popupFading = true;
+  if (setPopupAlpha(0)) return true;
+  endPopupFade();
+  return false;
+}
+// Back to a plain opaque window (Windows: no longer layered, so nothing of the
+// fade outlives it). Every way an open can end runs it: the slide finishing, a
+// close mid-fade (after the park / hide, so no full-alpha frame shows), a drag
+// that settles the slide.
+function endPopupFade() {
+  if (!popupFading) return;
+  popupFading = false;
+  if (!win || win.isDestroyed()) return;
+  if (process.platform === 'win32') {
+    const result = windowsDwm.clearLayered(win);
+    if (!result.ok) diagnostics.record('popup.fade_clear_failed', result, { forceFile: true });
+    try { win.webContents.invalidate(); } catch {}
+  } else {
+    win.setOpacity(1);
+  }
+}
 function stopPopupSlide() {
   if (popupSlideTimer) clearTimeout(popupSlideTimer);
   popupSlideTimer = null;
@@ -4442,22 +4632,25 @@ function settlePopupSlide() {
   if (!popupSlideTimer || !target) return;
   stopPopupSlide();
   if (win && !win.isDestroyed()) win.setPosition(target.x, target.y);
+  endPopupFade();
 }
-// The open animation moves the WHOLE window (glass + content together): a CSS
-// animation cannot touch the OS-drawn glass, and a window fade (setOpacity)
-// makes the window layered, which drops the acrylic.
-function slidePopupInto(x, y) {
+// fade: the window alpha follows the slide's ease (popupOpenMotion 'fade').
+function slidePopupInto(x, y, { fade = false } = {}) {
   stopPopupSlide();
   popupSlideTarget = { x, y };
   const startedAt = Date.now();
   const step = () => {
     popupSlideTimer = null;
-    if (!isPopupOpen()) { popupSlideTarget = null; return; }
+    if (!isPopupOpen()) { popupSlideTarget = null; endPopupFade(); return; }
     const t = Math.min(1, (Date.now() - startedAt) / POPUP_SLIDE_MS);
     const eased = 1 - Math.pow(1 - t, 3);
     win.setPosition(x, Math.round(y + POPUP_SLIDE_PX * (1 - eased)));
+    if (fade) setPopupAlpha(eased);
     if (t < 1) popupSlideTimer = setTimeout(step, 8);
-    else popupSlideTarget = null;
+    else {
+      popupSlideTarget = null;
+      if (fade) endPopupFade();
+    }
   };
   step();
 }
@@ -4508,6 +4701,7 @@ function hidePopup() {
   } else {
     win.hide(); // the 'hide' event runs onPopupClosed
   }
+  endPopupFade();
   if (windowsHook) windowsHook.setPopupVisible(false);
   stopClickAwayWatcher();
 }
@@ -4548,32 +4742,41 @@ function showPopup() {
   const py = Math.round(y);
   const wasParked = popupParked;
   popupParked = false;
+  endPopupFade(); // never start an open from a half-faded window
+  const motion = popupOpenMotion();
   if (wasParked && win.isVisible() && !win.isMinimized()) {
     // Windows: MOVE the parked, already-painted window while it is still
     // cloaked (uncloaking first flashed it for one frame at its last spot),
     // then uncloak it just below its target and slide it up (see the popup
     // open/close block above hidePopup).
     const fromScale = screen.getDisplayMatching(win.getBounds()).scaleFactor;
-    win.setPosition(px, py + POPUP_SLIDE_PX);
+    win.setPosition(px, motion === 'none' ? py : py + POPUP_SLIDE_PX);
     const reveal = () => {
       if (!isPopupOpen()) return; // closed again before the repaint landed
+      // Solid: alpha 0 while still cloaked, so the uncloak shows nothing and
+      // the fade brings it in.
+      const fade = motion === 'fade' && beginPopupFade();
       unparkPopup();
       win.show(); // already shown: no Windows show animation, just activation
       win.moveTop();
       win.focus();
-      slidePopupInto(px, py);
+      if (motion !== 'none') slidePopupInto(px, py, { fade });
     };
     // Onto a display with another scale factor, Chromium re-renders the page;
     // reveal after that frame so no wrong-scale frame shows.
     if (display.scaleFactor !== fromScale) waitForPopupFrame().then(reveal);
     else reveal();
   } else {
-    win.setPosition(px, py);
+    // A real show: macOS (fade + slide, window alpha) and a Windows cloak
+    // failure (Windows animates that show itself).
+    const fade = process.platform === 'darwin' && motion === 'fade' && beginPopupFade();
+    win.setPosition(px, fade ? py + POPUP_SLIDE_PX : py);
     if (wasParked) unparkPopup(); // never leave it cloaked behind a real show
     win.show();
     win.moveTop();
     if (process.platform === 'darwin') app.focus({ steal: true });
     win.focus();
+    if (fade) slidePopupInto(px, py, { fade: true });
   }
   resetPopupAfterShow();
   if (windowsHook) windowsHook.setPopupVisible(true);
@@ -5013,7 +5216,7 @@ function createEditorWindow(session, presentOptions = {}) {
     show: false,
     skipTaskbar: false,
     title: 'BoardClip - editor',
-    ...popupSurfaceOptions(),
+    ...secondaryWindowSurfaceOptions(),
     icon: APP_ICON_PATH,
     webPreferences: {
       preload: path.join(SCRIPT_DIR, 'editor-preload.js'),
@@ -5021,6 +5224,7 @@ function createEditorWindow(session, presentOptions = {}) {
       nodeIntegration: false,
     },
   });
+  noteSecondarySurface(editorWin);
   session.win = editorWin;
   editorWin.loadFile(path.join(SCRIPT_DIR, 'editor.html'));
   // Show + focus the editor, then dismiss the popup so it doesn't linger behind
@@ -5045,8 +5249,7 @@ function createEditorWindow(session, presentOptions = {}) {
         title: session.isNew ? 'New clip' : 'Edit clip',
         isNew: session.isNew,
         themeMode: settings.theme_mode || 'system',
-        surfaceStyle: resolvedSurfaceStyle(),
-        ...appearanceVariantPayload(),
+        ...windowAppearance(editorWin),
       });
     } catch {}
   });
@@ -5235,7 +5438,7 @@ function openImageViewer(id, options = {}) {
     show: false,
     skipTaskbar: false,
     title: 'BoardClip - image',
-    ...popupSurfaceOptions(),
+    ...secondaryWindowSurfaceOptions(),
     icon: APP_ICON_PATH,
     webPreferences: {
       preload: path.join(SCRIPT_DIR, 'viewer-preload.js'),
@@ -5243,6 +5446,7 @@ function openImageViewer(id, options = {}) {
       nodeIntegration: false,
     },
   });
+  noteSecondarySurface(viewerWin);
   viewerWindows.set(key, viewerWin);
   viewerWin.loadFile(path.join(SCRIPT_DIR, 'viewer.html'));
   viewerWin.once('ready-to-show', () => { try { presentSecondaryWindow(viewerWin, options); } catch {} });
@@ -5253,8 +5457,7 @@ function openImageViewer(id, options = {}) {
         src: `clip-img:///${item.image}`,
         title: titleOf(item) || 'Image',
         themeMode: settings.theme_mode || 'system',
-        surfaceStyle: resolvedSurfaceStyle(),
-        ...appearanceVariantPayload(),
+        ...windowAppearance(viewerWin),
       });
     } catch {}
   });
@@ -5341,7 +5544,7 @@ function openConflictWindow(conflictId) {
     show: false,
     skipTaskbar: false,
     title: 'BoardClip - resolve conflict',
-    ...popupSurfaceOptions(),
+    ...secondaryWindowSurfaceOptions(),
     icon: APP_ICON_PATH,
     webPreferences: {
       preload: path.join(SCRIPT_DIR, 'editor-preload.js'),
@@ -5349,6 +5552,7 @@ function openConflictWindow(conflictId) {
       nodeIntegration: false,
     },
   });
+  noteSecondarySurface(conflictWin);
   conflictWindows.set(id, conflictWin);
   const sessionId = `conflict:${id}`;
   conflictWin.loadFile(path.join(SCRIPT_DIR, 'editor.html'));
@@ -5361,8 +5565,7 @@ function openConflictWindow(conflictId) {
         noteTitle: '',
         title: 'Resolve conflict',
         themeMode: settings.theme_mode || 'system',
-        surfaceStyle: resolvedSurfaceStyle(),
-        ...appearanceVariantPayload(),
+        ...windowAppearance(conflictWin),
       });
       conflictWin.webContents.send('editor-conflict', record);
     } catch {}
@@ -5454,7 +5657,7 @@ function openUnifyWindow(session) {
     show: false,
     skipTaskbar: false,
     title: 'BoardClip - unify clips',
-    ...popupSurfaceOptions(),
+    ...secondaryWindowSurfaceOptions(),
     icon: APP_ICON_PATH,
     webPreferences: {
       preload: path.join(SCRIPT_DIR, 'editor-preload.js'),
@@ -5462,6 +5665,7 @@ function openUnifyWindow(session) {
       nodeIntegration: false,
     },
   });
+  noteSecondarySurface(unifyWin);
   session.win = unifyWin;
   unifyWin.loadFile(path.join(SCRIPT_DIR, 'editor.html'));
   unifyWin.once('ready-to-show', () => { try { unifyWin.show(); unifyWin.focus(); } catch {} });
@@ -5473,8 +5677,7 @@ function openUnifyWindow(session) {
         noteTitle: '',
         title: 'Unify clips',
         themeMode: settings.theme_mode || 'system',
-        surfaceStyle: resolvedSurfaceStyle(),
-        ...appearanceVariantPayload(),
+        ...windowAppearance(unifyWin),
       });
       unifyWin.webContents.send('editor-conflict', unifyRecord(session));
     } catch {}
@@ -6030,7 +6233,7 @@ function requestApproval(request, { signal } = {}) {
       show: false,
       skipTaskbar: false,
       title: 'BoardClip - approve AI action',
-      backgroundColor: appBackgroundColor(),
+      ...secondaryWindowSurfaceOptions(),
       icon: APP_ICON_PATH,
       webPreferences: {
         preload: path.join(SCRIPT_DIR, 'mcp-approval-preload.js'),
@@ -6038,15 +6241,18 @@ function requestApproval(request, { signal } = {}) {
         nodeIntegration: false,
       },
     });
+    noteSecondarySurface(modal);
     modal.setAlwaysOnTop(true, 'screen-saver');
     pendingApprovals.set(id, { finish, hold });
     modal.loadFile(path.join(SCRIPT_DIR, 'mcp-approval.html'));
     modal.once('ready-to-show', () => { try { modal.show(); modal.focus(); } catch {} });
     modal.webContents.on('did-finish-load', () => {
       try {
+        // The same payload every window gets (it used to send the raw settings,
+        // past the audit gate), plus the resolved theme.
         modal.webContents.send('approval-settings', {
+          ...windowAppearance(modal),
           theme: settings.theme_mode === 'light' || settings.theme_mode === 'dark' ? settings.theme_mode : currentColorScheme(),
-          accent: settings.accent_variant, density: settings.ui_density, corners: settings.ui_corners, borders: settings.ui_borders,
         });
       } catch {}
       try { modal.webContents.send('approval-request', payload); } catch {}
@@ -6349,7 +6555,10 @@ function setupIPC() {
         diagnostics_file: DIAGNOSTICS_PATH,
         p2p: p2pStatus(),
         surface_style: resolvedSurfaceStyle(),
+        secondary_surface_style: secondarySurfaceStyle(),
         surface_supported: glassSupport() !== 'none',
+        system_accent: systemAccent,
+        appearance: appearanceVariantPayload(),
         debug_variants: debugVariantsEnabled(),
         developer_mode: !app.isPackaged,
         update_mode: developerUpdateMode(),
@@ -6454,18 +6663,11 @@ function setupIPC() {
     if (body.quick_paste_restore_delay_ms !== undefined) {
       settings.quick_paste_restore_delay_ms = Math.min(2000, Math.max(0, parseInt(body.quick_paste_restore_delay_ms) || 0));
     }
-    // Appearance variants (per-machine; not synced). surface_style is a real
-    // user setting; the others are dev-only auditioning knobs that persist so a
-    // chosen combo survives a restart.
-    let surfaceChanged = false;
-    if (body.surface_style !== undefined && ['auto', 'glass', 'solid'].includes(body.surface_style)) {
-      surfaceChanged = settings.surface_style !== body.surface_style;
-      settings.surface_style = body.surface_style;
-    }
-    if (body.accent_variant !== undefined && ['blue', 'teal', 'mono'].includes(body.accent_variant)) settings.accent_variant = body.accent_variant;
-    if (body.ui_density !== undefined && ['normal', 'compact'].includes(body.ui_density)) settings.ui_density = body.ui_density;
-    if (body.ui_corners !== undefined && ['soft', 'sharp'].includes(body.ui_corners)) settings.ui_corners = body.ui_corners;
-    if (body.ui_borders !== undefined && ['bordered', 'borderless'].includes(body.ui_borders)) settings.ui_borders = body.ui_borders;
+    // Appearance (lib/appearance.js validates): the accent choice, density and
+    // corners sync, stamped so the newest change wins on every device; the
+    // surface, the glass scope and the audit-only borders stay on this machine.
+    const look = appearance.applyAppearanceSettings(settings, body);
+    const surfaceChanged = look.changed.includes('surface_style') || look.changed.includes('glass_scope');
     if (body.image_preview_height !== undefined) {
       const px = Math.round(Number(body.image_preview_height));
       if (Number.isFinite(px)) settings.image_preview_height = Math.min(600, Math.max(40, px));
@@ -6484,7 +6686,8 @@ function setupIPC() {
     // needs no history refresh, sync or prune.
     const localOnly = Object.keys(body || {}).length > 0 && Object.keys(body).every(key => LOCAL_ONLY_SETTING_KEYS.has(key));
     saveSettingsFile({ localOnly });
-    if (surfaceChanged) applySurfaceToPopup();
+    if (surfaceChanged) applySurfaceToWindows();
+    else broadcastAppearance('settings');
     if (!localOnly) pruneHistory();
   });
 
@@ -7096,6 +7299,7 @@ app.whenReady().then(() => {
   p2p.revision = syncState.tracker.revision;
   scheduleSyncStateSave();
   setupIPC();
+  watchSystemAccent();
   createPopup();
   createTray();
   registerShortcuts();

@@ -48,9 +48,9 @@
 }
 
 /* ONE floating surface for every panel that floats over content: menus,
-   submenus, the in-row picker, suggest, dialogs, the toast and the Newest
-   pill. Flat in-window, this is the only elevation. */
-.search-suggest, .dialog, .toast, .list-newest, .numpad-picker, .tag-submenu, .bc-menu { background: var(--menu); border-radius: var(--r-panel); padding: var(--sp-2);
+   submenus, popovers (a row's keypad / group picker), suggest, dialogs, the
+   toast and the Newest pill. Flat in-window, this is the only elevation. */
+.search-suggest, .dialog, .toast, .list-newest, .tag-submenu, .bc-menu { background: var(--menu); border-radius: var(--r-panel); padding: var(--sp-2);
                                          box-shadow: 0 8px 24px var(--shadow), 0 0 0 1px var(--menu-edge); }
 
 /* ONE button family: a fill, never a border. Default / primary / danger /
@@ -223,41 +223,28 @@
 }
 
 .group-filters { display: flex; align-items: center; gap: var(--sp-2); padding: var(--sp-1) var(--gutter) var(--sp-1); flex-wrap: wrap; overflow: visible; position: relative; z-index: 30; }
-/* Tags are FLAT by default — no outline/background until hover (subtle fill) or active
-   (accent fill). Group tags read accent-tinted in BOTH the header bar and on clips so a
-   group looks identical everywhere (the .group-tag class is shared by both). */
+/* ONE chip (Core.renderChip): the chip bar's icon facets and group chips and
+   the options panel's facet chips. Idle = dim text, no fill, no border; hover
+   = text + the hover overlay; active (include) = the accent tint with a filled
+   glyph; excluded = struck through. One shape: the pill. Group names are text
+   colours, never accent. */
 .filter-tag { min-height: var(--ctl-sm); max-width: 170px; box-sizing: border-box; font-size: var(--fs-ui); padding: 0 var(--sp-3); border-radius: var(--r-chip); border: 0;
               background: transparent; color: var(--text-dim); cursor: pointer; transition: background-color var(--dur) var(--ease), color var(--dur) var(--ease); line-height: var(--lh-ui); position: relative;
-              display: inline-flex; align-items: center; gap: var(--sp-1); vertical-align: top; }
-.filter-tag.icon-filter { min-width: var(--ctl-sm); height: var(--ctl-sm); display: inline-flex; align-items: center; justify-content: center;
-                          padding: 0 var(--sp-2); border-radius: var(--r-ctl); }
-.filter-tag.group-tag { color: var(--accent); }
+              display: inline-flex; align-items: center; gap: var(--sp-1); vertical-align: top; font-family: inherit; }
+.filter-tag.icon-filter { min-width: var(--ctl-sm); height: var(--ctl-sm); justify-content: center; padding: 0 var(--sp-2); }
 .filter-tag:hover { background: var(--hover); color: var(--text); }
-.filter-tag.active { background: var(--accent); color: var(--active-fg); }
-.filter-tag.excluded { color: var(--text-dim); text-decoration: line-through; text-decoration-thickness: 1px; opacity: .7; }
-.filter-tag.icon-filter:hover { background: var(--hover); color: var(--text); }
-.filter-tag.icon-filter.active { background: transparent; color: var(--accent); --icon-fill: 1; } /* an active facet fills its glyph */
-.filter-tag.icon-filter.excluded { background: transparent; color: var(--text-dim); opacity: .55; }
-.filter-tag.clear-filter { width: var(--ctl-sm); height: var(--ctl-sm); padding: 0; border: 0; border-radius: 50%; color: var(--text-dim); background: transparent; }
-.filter-tag.clear-filter:hover { color: var(--text); background: var(--hover); }
+.filter-tag.active, .filter-tag.active:hover { background: var(--accent-bg); color: var(--accent); --icon-fill: 1; }
+.filter-tag.excluded { color: var(--text-dim); text-decoration: line-through; text-decoration-thickness: 1px; opacity: .6; }
+.filter-tag:disabled { opacity: .4; cursor: default; }
+.filter-tag:disabled:hover { background: transparent; color: var(--text-dim); }
+.filter-tag.clear-filter { width: var(--ctl-sm); padding: 0; }
+/* The editor / viewer title-bar strip's chips keep a hover-revealed x that
+   removes the clip from that group (the filter chips have none). */
 .filter-tag .gtag-x { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 14px; margin-left: 0; margin-right: calc(-1 * var(--sp-1)); padding: 0; border: 0; color: var(--text-dim); background: transparent; font-size: var(--icon-sm);
                       width: 14px; height: 14px; line-height: 1; text-align: center; border-radius: 50%; cursor: pointer; opacity: 0; transition: opacity var(--dur) var(--ease), background-color var(--dur) var(--ease), color var(--dur) var(--ease); }
-.filter-tag:hover .gtag-x, .filter-tag:focus-within .gtag-x, .tag-menu-node:hover > .filter-tag .gtag-x { opacity: 1; }
+.filter-tag:hover .gtag-x, .filter-tag:focus-within .gtag-x { opacity: 1; }
 .filter-tag .gtag-x:hover { color: var(--text); background: var(--hover); }
 .filter-tag .gtag-x:focus-visible { color: var(--text); background: var(--hover); } /* + the shared focus ring */
-.filter-tag.active .gtag-x { color: color-mix(in srgb, var(--active-fg) 55%, transparent); }
-.filter-tag.active .gtag-x:hover { color: var(--active-fg); background: color-mix(in srgb, var(--active-fg) 22%, transparent); }
-.filter-tag.active .gtag-x:focus-visible { color: var(--active-fg); background: color-mix(in srgb, var(--active-fg) 22%, transparent); }
-/* Borders OFF: group tags become FILLED chips (light solid bg) rather than
-   bare text. Icon builtins + submenu items keep their look. */
-:root[data-borders="borderless"] .filter-tag:not(.icon-filter),
-.bc-popup[data-borders="borderless"] .filter-tag:not(.icon-filter) {
-  background: color-mix(in srgb, var(--text) 11%, transparent);
-}
-:root[data-borders="borderless"] .tag-submenu .filter-tag,
-.bc-popup[data-borders="borderless"] .tag-submenu .filter-tag { background: transparent; }
-:root[data-borders="borderless"] .filter-tag.active,
-.bc-popup[data-borders="borderless"] .filter-tag.active { background: var(--accent); }
 
 /* The list sits in a wrapper so the "Newest" pill can float over its top edge
    without being part of the scrolled rows (Core.createClipList owns both). */
@@ -273,22 +260,29 @@
 .list-newest.has-new .list-newest-dot { display: inline-block; }
 .list { flex: 1; overflow-y: auto; padding: 0 0 var(--sp-4); min-height: 0; }
 .item { padding: var(--sp-4) var(--gutter); cursor: pointer; transition: background-color var(--dur) var(--ease); position: relative; border-bottom: 1px solid var(--line-faint); color: inherit; }
-/* Row states: hover = the --hover overlay, the keyboard cursor (the row Enter
-   pastes) = --accent-bg. ONE 2px left edge, an overlay so it never shifts the
-   row's content: pin = --pin, multi-select = --accent (selection wins). */
+/* Row states: hover = the --hover overlay; the keyboard cursor (the row Enter
+   pastes) = --accent-bg; a candidate duplicate of the hovered or cursor row
+   (.similar, Core.similarClipIds) = a NEUTRAL wash under --hover plus a dotted
+   dim edge, never the selection hue, so it can't read as the cursor or a
+   checked row. ONE 2px left edge, an overlay so it never shifts the row's
+   content: similar = dotted --text-dim, pin = --pin (wins over similar),
+   multi-select = --accent (wins over both). No state changes a row's size. */
 .item::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 2px; background: var(--row-edge, transparent); pointer-events: none; }
+.item.similar { background: color-mix(in srgb, var(--hover) 60%, transparent); --row-edge: repeating-linear-gradient(to bottom, var(--text-dim) 0 3px, transparent 3px 6px); }
 .item.has-pin { --row-edge: var(--pin); }
 .item:hover { background: var(--hover); }
 .item.selected { background: var(--accent-bg); }
-.item-row { display: flex; align-items: flex-start; gap: var(--sp-4); }
-.pin-area { position: relative; flex-shrink: 0; display: flex; align-items: center; gap: var(--sp-1); padding-top: var(--sp-1); }
+/* No flex gap: the space after the star is its own margin, so a closed
+   actions track at the end of the row takes exactly 0 px. */
+.item-row { display: flex; align-items: flex-start; }
+.pin-area { position: relative; flex-shrink: 0; display: flex; align-items: center; margin-right: var(--sp-4); padding-top: var(--sp-1); }
 .star { background: none; border: none; color: var(--text-dim); cursor: pointer; padding: var(--sp-1); transition: color var(--dur) var(--ease); line-height: 1; }
 .star .mi { font-size: var(--icon-lg); }
 .star.active, .star:hover { color: var(--pin); }
-.numpad-picker { display: none; position: absolute; top: 100%; left: calc(-1 * var(--sp-2)); z-index: 40; flex-direction: column; gap: var(--sp-1); overflow: visible; }
-.pin-area:hover .numpad-picker { display: flex; }
-/* Real numpad formation: 7 8 9 / 4 5 6 / 1 2 3 (renderNumpadButtons emits that
-   order; the 3-column grid lays it out like the physical keypad). */
+/* The keypad (renderNumpadButtons) as a block inside a floating surface: the
+   clip menu's Numpad submenu and a row's # popover. Real numpad formation:
+   7 8 9 / 4 5 6 / 1 2 3 (the 3-column grid lays it out like the keypad). */
+.numpad-picker { display: flex; flex-direction: column; gap: var(--sp-1); padding: var(--sp-1); }
 .np-row { display: grid; grid-template-columns: repeat(3, var(--ctl-sm)); gap: var(--sp-1); justify-content: start; }
 .np-btn { width: var(--ctl-sm); height: var(--ctl-sm); display: flex; align-items: center; justify-content: center; border-radius: var(--r-1); font-size: var(--fs-meta);
           font-family: var(--font-mono); cursor: pointer; transition: background-color var(--dur) var(--ease), color var(--dur) var(--ease); }
@@ -296,7 +290,7 @@
 .np-btn.taken { color: var(--text); background: var(--line-strong); }
 .np-btn.current { color: var(--green); background: var(--green-bg); font-weight: var(--fw-strong); }
 .np-btn:hover { background: var(--menu-hover); color: var(--text); }
-.gp-row { display: block; min-width: 150px; max-width: 220px; border-top: 1px solid var(--line); padding-top: var(--sp-1); }
+.bc-menu.bc-keypad { min-width: 0; }
 .gp-btn { width: 100%; min-height: var(--ctl-md); box-sizing: border-box; padding: 0 var(--sp-3); display: flex; align-items: center; gap: var(--sp-2); border-radius: var(--r-1); font-size: var(--fs-ui);
           cursor: pointer; transition: background-color var(--dur) var(--ease), color var(--dur) var(--ease); white-space: nowrap; }
 .gp-btn.virtual, .filter-tag.virtual { opacity: .82; font-style: italic; }
@@ -308,37 +302,91 @@
 .tag-submenu { display: none; position: absolute; top: 100%; left: 0; min-width: 150px; max-width: 240px; z-index: 70; }
 .tag-menu-node:hover > .tag-submenu, .tag-menu-node:focus-within > .tag-submenu { display: block; }
 .tag-submenu .tag-submenu { top: calc(-1 * var(--sp-2)); left: calc(100% - 1px); }
-.tag-submenu .tag-menu-node + .tag-menu-node, .gp-row > .tag-menu-node + .tag-menu-node { margin-top: var(--sp-1); }
+.tag-submenu .tag-menu-node + .tag-menu-node { margin-top: var(--sp-1); }
 .tag-submenu .filter-tag, .tag-submenu .gp-btn { width: 100%; justify-content: flex-start; }
 .tag-submenu .filter-tag { max-width: none; border-radius: var(--r-1); }
 .tag-submenu .filter-tag:hover { background: var(--menu-hover); }
-.gp-row > .tag-menu-node > .tag-submenu { top: -4px; left: calc(100% - 1px); }
 .gp-btn.assigned { color: var(--green); background: var(--green-bg); }
 .gp-btn.available { color: var(--text-dim); background: transparent; }
 .gp-btn:hover { background: var(--menu-hover); color: var(--text); }
 .gp-btn.add-group { color: var(--accent); font-weight: var(--fw-strong); justify-content: center; }
 .content { flex: 1; min-width: 0; }
-.clip-title { font-size: var(--fs-ui); line-height: var(--lh-ui); font-weight: var(--fw-strong); color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: var(--sp-1); }
-.clip-title + .preview { color: var(--text-dim); }
-.preview { font-size: var(--fs-ui); line-height: var(--lh-text); color: var(--text); font-family: var(--font-mono); }
+/* Row anatomy (Core.renderClipItem): the primary line (a real title at the
+   strong weight, or an untitled clip's first line at the regular weight), the
+   dim mono preview of the rest, then the meta line. Every line is ONE line, so
+   a row's height depends only on which lines it has, never on its width. */
+.clip-title { font-size: var(--fs-ui); line-height: var(--lh-ui); font-weight: var(--fw-strong); color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.clip-title.derived { font-weight: var(--fw-regular); }
+.clip-title + .preview { margin-top: var(--sp-1); }
+.preview { font-size: var(--fs-ui); line-height: var(--lh-text); color: var(--text-dim); font-family: var(--font-mono); }
 .preview.collapsed { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .preview.expanded { white-space: pre-wrap; word-break: break-word; max-height: 300px; overflow-y: auto; background: var(--bg); border-radius: var(--r-2); padding: var(--sp-4); margin: var(--sp-1) 0; }
 /* Image previews render at --clip-img-h (Ctrl+wheel / Settings, default 60px),
    capped by --clip-img-cap (the list's visible height, set by Core.createImageZoom)
-   so one preview never outgrows the list. With known dims (--ar/--nw from the
-   row markup) the width is the smallest of: the row, height x aspect ratio, and
-   the image's real width - so the ratio holds, nothing overflows sideways and
-   nothing is enlarged past its real size. Legacy clips without dims fall back
-   to max-width/max-height, which also keeps the ratio. */
-.preview img { --img-h: min(var(--clip-img-h, 60px), var(--clip-img-cap, 100000px));
-               display: block; max-width: 100%; max-height: var(--img-h); height: auto; border-radius: var(--r-1); }
-.preview img[style*="--ar"] { width: min(100%, calc(var(--img-h) * var(--ar)), var(--nw)); max-height: none; }
-.meta { margin-top: var(--sp-1); font-size: var(--fs-meta); color: var(--text-dim); display: flex; gap: var(--sp-4); flex-wrap: wrap; align-items: center; }
-.numpad-tag { color: var(--green); }
-.group-tag { color: var(--accent); }
-.actions { display: flex; align-items: center; gap: var(--sp-1); flex-shrink: 0; opacity: 0; transition: opacity var(--dur) var(--ease); }
-.item:hover .actions { opacity: 1; }
-.empty { text-align: center; color: var(--text-dim); padding: 60px 0; font-size: var(--fs-ui); }
+   so one preview never outgrows the list. The wrapper is the picture's box (so
+   the row's buttons can float over its corner): with known dims (--ar/--nw from
+   the row markup) its width is the smallest of the row, height x aspect ratio
+   and the image's real width - so the ratio holds, nothing overflows sideways
+   and nothing is enlarged past its real size. Legacy clips without dims fall
+   back to max-width/max-height, which also keeps the ratio. */
+.preview-img { --img-h: min(var(--clip-img-h, 60px), var(--clip-img-cap, 100000px));
+               position: relative; display: block; width: fit-content; max-width: 100%; }
+.preview-img[style*="--ar"] { width: min(100%, calc(var(--img-h) * var(--ar)), var(--nw)); }
+.preview-img img { display: block; max-width: 100%; max-height: var(--img-h); height: auto; border-radius: var(--r-1); }
+.preview-img[style*="--ar"] img { width: 100%; max-height: none; }
+/* An image row's buttons float over the picture's top-right corner on a
+   frosted chip (the picture never resizes, the row never grows). A picture
+   narrower than the chip lets it run on to the right (safe alignment), never
+   left over the star. The chip is the opaque menu colour, frosted, so it
+   reads on any picture in both themes and every accent. */
+.img-actions-anchor { position: absolute; top: var(--sp-2); left: var(--sp-2); right: var(--sp-2); display: flex; justify-content: safe flex-end; pointer-events: none; }
+.img-actions { display: flex; align-items: center; gap: var(--sp-1); flex-shrink: 0; padding: var(--sp-1); border-radius: var(--r-panel); pointer-events: auto;
+               background: color-mix(in srgb, var(--menu) 78%, transparent); -webkit-backdrop-filter: blur(10px) saturate(1.3); backdrop-filter: blur(10px) saturate(1.3);
+               box-shadow: 0 1px 6px var(--shadow); opacity: 0; visibility: hidden;
+               transition: opacity var(--dur) var(--ease), visibility var(--dur) var(--ease); }
+.img-actions .icon-btn { color: var(--text); }
+/* A text row's buttons ride the shared reveal at the row's end: closed = 0 px
+   (the text runs the full width), open while the row is hovered, holds focus,
+   has its menu open or is being dragged (.actions-held); the text's ellipsis
+   moves with them. The meta line's ghost # / + open the same way. */
+.row-actions { --reveal-gap: var(--sp-2); margin-top: calc((var(--fs-ui) * var(--lh-ui) - var(--ctl-md)) / 2); }
+.item:hover .bc-reveal.row-actions, .item:focus-within .bc-reveal.row-actions, .item.actions-held .bc-reveal.row-actions,
+.item:hover .bc-reveal.meta-reveal, .item:focus-within .bc-reveal.meta-reveal, .item.actions-held .bc-reveal.meta-reveal { grid-template-columns: 1fr; }
+.item:hover .bc-reveal.row-actions > .bc-reveal-inner, .item:focus-within .bc-reveal.row-actions > .bc-reveal-inner, .item.actions-held .bc-reveal.row-actions > .bc-reveal-inner,
+.item:hover .bc-reveal.meta-reveal > .bc-reveal-inner, .item:focus-within .bc-reveal.meta-reveal > .bc-reveal-inner, .item.actions-held .bc-reveal.meta-reveal > .bc-reveal-inner,
+.item:hover .img-actions, .item:focus-within .img-actions, .item.actions-held .img-actions { visibility: visible; }
+.item:hover .img-actions, .item:focus-within .img-actions, .item.actions-held .img-actions { opacity: 1; }
+/* Meta line (Core.renderClipMeta): time, size, the numpad badge and the clip's
+   groups as plain text (each a filter: click includes, right-click excludes),
+   then the hover-only ghost # and + on the reveal. ONE line that never wraps:
+   as the ghosts slide in, group names that no longer fit drop out whole (.meta-tags), so no row changes height
+   and nothing is reserved while they are hidden (the reveal's negative margin
+   cancels the flex gap before a closed track). */
+.meta { --meta-h: calc(var(--fs-meta) * var(--lh-text)); margin-top: var(--sp-1); display: flex; align-items: center; gap: var(--sp-3); min-width: 0; height: var(--meta-h);
+        font-size: var(--fs-meta); line-height: 1; color: var(--text-dim); white-space: nowrap; overflow: clip; overflow-clip-margin: var(--sp-1); }
+.meta-time, .meta-size, .meta-np { flex-shrink: 0; }
+.meta-np, .meta-tag, .meta-ghost { height: var(--meta-h); padding: 0 var(--sp-1); border: 0; border-radius: var(--r-1); background: transparent; color: inherit;
+                                   font: inherit; line-height: 1; cursor: pointer; transition: background-color var(--dur) var(--ease), color var(--dur) var(--ease); }
+.meta-np { color: var(--text); }
+/* The group names show whole or not at all, never as fragments: they wrap onto
+   a second line the fixed-height box clips away, so a name that does not fit
+   is left out whole (each name's own title still names it on hover); only a
+   name alone on the line ellipsizes. The + picker lists every membership. */
+.meta-tags { display: flex; flex-wrap: wrap; align-content: flex-start; column-gap: var(--sp-3); flex: 0 1 auto; min-width: 0; height: var(--meta-h); overflow: hidden; }
+.meta-tag { display: block; flex: 0 1 auto; min-width: 0; max-width: 140px; overflow: hidden; text-overflow: ellipsis; }
+.meta-np:hover, .meta-tag:hover, .meta-ghost:hover { color: var(--text); background: var(--hover); }
+.meta-ghost { display: inline-flex; align-items: center; justify-content: center; width: var(--meta-h); padding: 0; }
+.meta-ghost .mi { font-size: var(--icon-sm); }
+.meta > .meta-reveal { margin-left: calc(-1 * var(--sp-3)); --reveal-gap: var(--sp-3); }
+.meta-reveal .bc-reveal-inner { gap: var(--sp-1); }
+/* Empty list (Core.renderEmptyState): a quiet icon, what is empty and why, the
+   way out; .empty-nudge is the slot for the search behaviour's suggestion. */
+.list-empty { display: flex; flex-direction: column; align-items: center; gap: var(--sp-2); padding: var(--sp-12) var(--gutter); text-align: center; color: var(--text-dim); }
+.list-empty .empty-icon { font-size: var(--icon-lg); color: var(--text-dim); margin-bottom: var(--sp-1); }
+.empty-title { margin: 0; max-width: 100%; font-size: var(--fs-ui); line-height: var(--lh-ui); font-weight: var(--fw-strong); color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.empty-hint { margin: 0; font-size: var(--fs-meta); line-height: var(--lh-ui); color: var(--text-dim); }
+.empty-action { margin-top: var(--sp-2); }
+.empty-nudge[hidden] { display: none; }
 
 .settings-view { display: none; flex-direction: column; height: 100%; color: var(--text); background: var(--surface); }
 .settings-view.show { display: flex; }
@@ -630,9 +678,18 @@ mark { background: var(--mark-bg); color: var(--mark-fg); border-radius: var(--r
    step stronger. */
 .item.multi-selected { background: var(--accent-bg); --row-edge: var(--accent); }
 .item.multi-selected:hover, .item.selected.multi-selected { background: var(--accent-bg-strong); }
-.selection-bar { display: flex; align-items: center; gap: var(--sp-3); padding: var(--sp-2) var(--sp-5); background: var(--accent-bg); border-top: 1px solid var(--line-faint); }
+/* The selection bar takes the chip bar's place while 2+ clips are selected:
+   both sit in ONE grid cell (.chip-row), the chips go invisible, the cell's
+   height is the taller of the two, so nothing below moves; no band, no tint,
+   no border (the checked rows carry the only accent). The cell is never lower
+   than a populated chip bar, so an empty one (no pins, keys, images or groups
+   yet) does not grow when the selection bar or the first chip shows. */
+.chip-row { display: grid; min-height: max(var(--ctl-md), calc(var(--ctl-sm) + 2 * var(--sp-1))); }
+.chip-row > .group-filters, .chip-row > .selection-bar { grid-area: 1 / 1; }
+.chip-row:has(> .selection-bar:not(.hidden)) > .group-filters { visibility: hidden; }
+.selection-bar { display: flex; align-items: center; gap: var(--sp-3); min-height: var(--ctl-md); padding: 0 var(--sp-4) 0 var(--gutter); z-index: 31; }
 .selection-bar.hidden { display: none; }
-.selection-count { flex: 1; font-size: var(--fs-meta); font-weight: var(--fw-strong); color: var(--text); }
+.selection-count { flex: 1; font-size: var(--fs-ui); font-weight: var(--fw-strong); color: var(--text); }
 .selection-actions { display: flex; align-items: center; gap: var(--sp-1); }
 
 /* Rows are click-to-act (click pastes, shift/ctrl-click selects) — native text
@@ -662,7 +719,6 @@ mark { background: var(--mark-bg); color: var(--mark-fg); border-radius: var(--r
    hover-submenu mechanics); they carry .tag-submenu so hover reveals them. */
 .bc-menu .tag-submenu { top: -4px; left: calc(100% - 1px); min-width: 150px; }
 .bc-menu-item.tag-menu-node:hover > .tag-submenu, .bc-menu-item.tag-menu-node:focus-within > .tag-submenu { display: block; }
-.numpad-picker.static { display: flex; position: static; box-shadow: none; padding: var(--sp-1); background: none; }
 /* Bulk-group tri-state: 'some' selected reads as a partial (accent) state,
    distinct from 'all' (green, .assigned) and 'none' (.available). */
 .gp-btn.partial { color: var(--accent); background: var(--accent-bg); }

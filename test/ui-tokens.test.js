@@ -62,17 +62,34 @@ const approvalHtml = read('mcp-approval.html');
 //    layer keys on is actually driven by the applier.
 {
   assert.ok(typeof ui.applyVariants === 'function', 'core must export applyVariants');
-  // The audit axes must never leak into real installs: gated on the env flag only
-  // (git installs are un-packaged, so `!app.isPackaged` was true everywhere), and
-  // both the popup and the secondary windows fall back to the default look.
+  // The audit axis (borders) must never leak into real installs: gated on the
+  // env flag only (git installs are un-packaged, so `!app.isPackaged` was true
+  // everywhere), in ONE place (main's appearanceVariantPayload). Every window,
+  // the popup included, renders from that same payload, so no window can show
+  // other accent / density / corners / borders than another (2026-09-02 drift).
   {
     const mainSrc = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
     const appSrc = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
     assert.ok(mainSrc.includes('debug_variants: debugVariantsEnabled(),'), 'debug_variants must come from debugVariantsEnabled()');
     assert.ok(/function debugVariantsEnabled\(\) \{\s*return !!process\.env\.BOARDCLIP_DEBUG_VARIANTS;/.test(mainSrc), 'debug variants must be gated on BOARDCLIP_DEBUG_VARIANTS only');
     assert.ok(!/debug_variants:.*isPackaged/.test(mainSrc), 'debug variants must not be tied to app.isPackaged');
-    assert.ok(appSrc.includes("uiBorders: debug ? s.ui_borders : 'bordered',"), 'popup must apply the audit axes only under debug_variants');
-    assert.ok(mainSrc.includes("return { accentVariant: 'blue', uiDensity: 'normal', uiCorners: 'soft', uiBorders: 'bordered' };"), 'secondary windows must get the default axes when debug variants are off');
+    // Accent, density and corners are real settings now (lib/appearance.js,
+    // test/appearance.test.js); the borders axis is still audit-only.
+    assert.ok(mainSrc.includes("uiBorders: debugVariantsEnabled() && settings.ui_borders === 'borderless' ? 'borderless' : 'bordered',"), 'every window gets the default borders when debug variants are off');
+    assert.ok(/function applyAppearance\(look\) \{\s*if \(look\) Core\.applyVariants\(document\.documentElement, look\);\s*\}/.test(appSrc)
+      && appSrc.includes("applyAppearance({ ...(rt.appearance || {}), surfaceStyle: rt.surface_style || 'solid' });")
+      && appSrc.includes('window.api.onAppearanceChanged(applyAppearance)'), 'the popup renders from runtime_info.appearance, then every appearance-changed');
+    assert.ok(!/\bs\.(accent_variant|ui_density|ui_corners|ui_borders)\b/.test(appSrc), 'the popup never reads the raw appearance settings (past the gate, or a retired key)');
+    for (const file of ['editor.html', 'viewer.html']) {
+      const src = fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
+      assert.ok(/accentVariant: init\.accentVariant, uiDensity: init\.uiDensity, uiCorners: init\.uiCorners, uiBorders: init\.uiBorders/.test(src)
+        && /onAppearanceChanged\(\(look\) => \{[\s\S]{0,240}Core\.applyVariants\(document\.documentElement, look\);/.test(src), `${file} renders from the init payload, then every appearance-changed`);
+    }
+    const approvalSrc = fs.readFileSync(path.join(__dirname, '..', 'mcp-approval.html'), 'utf8');
+    assert.ok(/setv\('data-accent', look\.accentVariant, 'blue'\);[\s\S]{0,200}setv\('data-borders', look\.uiBorders, 'bordered'\);/.test(approvalSrc)
+      && approvalSrc.includes('window.approval.onAppearanceChanged(applyLook)'), 'the approval modal renders from the same payload');
+    // The app's switcher writes the real accent setting (no retired key).
+    assert.ok(/accentVariant: 'accent_mode'/.test(appSrc) && !/accent_variant/.test(appSrc), "the app's switcher saves accent_mode");
   }
   assert.ok(typeof ui.createVariantSwitcher === 'function', 'core must export createVariantSwitcher');
   for (const attr of ['data-surface', 'data-accent', 'data-density', 'data-corners', 'data-borders']) {
@@ -98,15 +115,17 @@ const approvalHtml = read('mcp-approval.html');
     assert.ok(mainJs.includes(fn), `main.js should define ${fn.replace('function ', '').replace('(', '')}`);
   }
   assert.ok(mainJs.includes('...popupSurfaceOptions()'), 'createPopup must spread the shared surface options');
-  assert.ok(mainJs.includes("backgroundMaterial: 'acrylic'"), 'Windows acrylic backdrop should be wired');
+  // The option objects themselves live in lib/appearance.js (surfaceWindowOptions).
+  assert.ok(read('lib/appearance.js').includes("backgroundMaterial: 'acrylic'"), 'Windows acrylic backdrop should be wired');
 }
 
 // 7) Per-machine UI state is defaulted and excluded from sync. Window geometry
 //    must never migrate between displays/machines (including the image viewer).
+//    (The accent choice, density and corners sync: test/appearance.test.js.)
 {
   const model = read('lib/clipboard-model.js');
   for (const key of [
-    'surface_style', 'accent_variant', 'ui_density', 'ui_corners', 'ui_borders',
+    'surface_style', 'glass_scope', 'ui_borders',
     'popup_size', 'editor_bounds', 'viewer_bounds',
   ]) {
     assert.ok(model.includes(`${key}:`), `DEFAULT_SETTINGS should include ${key}`);
@@ -312,7 +331,7 @@ const rules = (css) => [...stripComments(css).matchAll(/([^{}]+)\{([^{}]*)\}/g)]
 // 17) ONE floating surface (menus, suggest, dialog, toast, Newest pill) at
 //     --r-panel; the toast is neutral (no status-colour pill).
 {
-  const floating = rules(popupCss).find((r) => /\.numpad-picker,\s*\.tag-submenu,\s*\.bc-menu$/.test(r.sel));
+  const floating = rules(popupCss).find((r) => /\.tag-submenu,\s*\.bc-menu$/.test(r.sel));
   assert.ok(floating, 'the shared floating-surface rule must exist');
   for (const cls of ['.dialog', '.toast', '.search-suggest', '.list-newest']) assert.ok(floating.sel.split(/,\s*/).includes(cls), `${cls} must ride the shared floating-surface rule`);
   assert.ok(/border-radius:\s*var\(--r-panel\)/.test(floating.body), 'floating surfaces use --r-panel');
@@ -376,13 +395,11 @@ const rules = (css) => [...stripComments(css).matchAll(/([^{}]+)\{([^{}]*)\}/g)]
 }
 
 // 22) Spacing snaps to the --sp-* scale (or --gutter): no raw px padding /
-//     margin / gap. The list empty state's 60px is the one open exception until
-//     the empty-state redesign replaces it.
+//     margin / gap (the empty state's old 60px went with its redesign).
 {
   for (const [name, css] of sheets) {
     for (const prop of ['padding', 'padding-[a-z]+', 'margin', 'margin-[a-z]+', 'gap', 'row-gap', 'column-gap']) {
       for (const value of decls(css, prop)) {
-        if (name === 'clipboard-popup.css' && value === '60px 0') continue;
         assert.ok(!/(^|[\s(])-?\d+(\.\d+)?px/.test(value), `${name}: ${prop} "${value}" must use the --sp-* scale`);
       }
     }

@@ -540,14 +540,16 @@ function text(text, extra = {}) {
   assert(!filterBar.includes('class="chip'));
   const clipItem = ui.renderClipItem(base[1], { imageSrc: () => '' });
   assert(clipItem.includes('class="item has-pin"'));
-  assert(clipItem.includes('class="numpad-tag">#2</span>'));
-  assert(clipItem.includes('class="filter-tag group-tag" data-group="code"'));
-  const picker = ui.renderItemPicker(base[1], { items: base, groups: ['code', 'work/api'] });
-  assert(picker.includes('class="np-btn current" data-n="2"'));
-  assert(/class="gp-btn assigned[^"]*" data-group="code"/.test(picker));
-  assert(picker.includes('data-group="work/api"'));
-  assert(picker.includes('class="tag-submenu"'));
-  assert(picker.includes('data-action="add-group"'));
+  // Meta line: the numpad badge opens the keypad, a group name is a filter.
+  assert(/<button class="meta-np"[^>]*data-action="numpad-open"[^>]*>#2<\/button>/.test(clipItem));
+  assert(clipItem.includes('class="meta-tag" type="button" data-group="code"'));
+  // The row's keypad + group pickers are the clip menu's components.
+  const menu = ui.renderClipMenu(base[1], { items: base, groups: ['code', 'work/api'] });
+  assert(menu.includes('class="np-btn current" data-n="2"'));
+  assert(/class="gp-btn assigned[^"]*" data-group="code"/.test(menu));
+  assert(menu.includes('data-group="work/api"'));
+  assert(menu.includes('class="tag-submenu"'));
+  assert(menu.includes('data-action="add-group"'));
   assert.deepStrictEqual(ui.filterItems(base, { filters: new Set(['work']), query: 'invoice', regex: false }).map(i => i.id), ['a']);
   assert.deepStrictEqual(ui.filterItems(base, { filters: new Set(['work']), query: '', regex: false }).map(i => i.id).sort(), ['a', 'c']);
   assert.deepStrictEqual(ui.filterItems(base, { excludedFilters: new Set(['work']), query: '', regex: false }).map(i => i.id), ['b']);
@@ -613,8 +615,7 @@ function text(text, extra = {}) {
   assert(siteHtml.includes('Core.renderFilterBar'));
   assert(appHtml.includes('Core.renderClipItem'));
   assert(siteHtml.includes('Core.renderClipItem'));
-  assert(appHtml.includes('Core.renderItemPicker'));
-  assert(siteHtml.includes('Core.renderItemPicker'));
+  assert(!appHtml.includes('renderItemPicker') && !siteHtml.includes('renderItemPicker'), 'the star hover picker is gone');
   assert(appHtml.includes('Core.renderPopupShell'));
   assert(siteHtml.includes('Core.renderPopupShell'));
   const shellHtml = ui.renderPopupShell({ headerActionsHtml: '<button id="syncHeaderBtn"></button>' });
@@ -623,7 +624,7 @@ function text(text, extra = {}) {
   assert(!siteHtml.includes('window-head'));
   assert(!siteHtml.includes('icon-settings'));
   assert(!siteHtml.includes('demo-settings-note'));
-  for (const selector of ['main-view', 'sticky', 'count', 'close-btn', 'icon-btn', 'search-row', 'search', 'filter-tag', 'item', 'preview', 'meta', 'star', 'numpad-picker', 'np-row', 'np-btn', 'gp-row', 'gp-btn', 'empty', 'settings-view', 'setting-row', 'switch', 'np-slot', 'group-slot', 'sync-account']) {
+  for (const selector of ['main-view', 'sticky', 'count', 'close-btn', 'icon-btn', 'search-row', 'search', 'filter-tag', 'item', 'preview', 'meta', 'star', 'numpad-picker', 'np-row', 'np-btn', 'gp-btn', 'list-empty', 'settings-view', 'setting-row', 'switch', 'np-slot', 'group-slot', 'sync-account']) {
     assert(sharedCss.includes(`.${selector}`), `shared popup css owns .${selector}`);
     assert(!new RegExp(`^\\s*\\.${selector}(?![-\\w])`, 'm').test(appHtml), `app must not redefine .${selector}`);
     assert(!new RegExp(`^\\s*\\.${selector}(?![-\\w])`, 'm').test(siteCss), `site css must not redefine .${selector}`);

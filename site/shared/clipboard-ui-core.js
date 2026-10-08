@@ -204,10 +204,16 @@
     const caret = hasChildren
       ? `<span class="tag-caret mi" aria-hidden="true">${isFilter && depth === 0 ? 'expand_more' : 'chevron_right'}</span>`
       : '';
-    const deleteHtml = isFilter && node.stored
-      ? `<span class="gtag-x mi" data-action="delete-group" data-group="${label}" title="Delete group">close</span>`
-      : '';
-    const control = `<span class="${baseClass}${stateClass}${treeClass}" data-group="${label}" title="${escapeHtml(title)}" aria-label="${label}"><span class="tag-label">${text}</span>${caret}${deleteHtml}</span>`;
+    // A filter chip only filters: deleting a group lives in Settings > Groups
+    // (a hover x here deleted the whole group, 14 px from the filter toggle).
+    const control = isFilter
+      ? renderChip({
+        cls: `group-tag${treeClass}`,
+        state: activeFilters.has(group) ? 'include' : excludedFilters.has(group) ? 'exclude' : '',
+        attrs: { 'data-group': group, title, 'aria-label': group },
+        html: `<span class="tag-label">${text}</span>${caret}`,
+      })
+      : `<span class="${baseClass}${stateClass}${treeClass}" data-group="${label}" title="${escapeHtml(title)}" aria-label="${label}"><span class="tag-label">${text}</span>${caret}</span>`;
     const children = hasChildren
       ? `<span class="tag-submenu" role="menu">${renderTagTreeMenu(node.children, opts, depth + 1)}</span>`
       : '';
@@ -381,6 +387,21 @@
     if (filter.id === '__images__') return `${filter.count} image clip${filter.count !== 1 ? 's' : ''}`;
     return `${filter.count} ${filter.label.toLowerCase()}`;
   }
+  // ONE chip for every filter control: the chip bar's icon facets and group
+  // chips and the options panel's facet chips. Idle = dim text, no fill; hover
+  // = text + the hover overlay; include = accent tint (+ a filled glyph);
+  // exclude = struck through. o: { tag ('span' | 'button'), cls, state
+  // ('include' | 'exclude' | ''), attrs {name: value, true = bare}, html }.
+  function renderChip(o) {
+    const tag = o.tag === 'button' ? 'button' : 'span';
+    const state = o.state === 'include' ? ' active' : o.state === 'exclude' ? ' excluded' : '';
+    let attrs = tag === 'button' ? ' type="button"' : '';
+    for (const [name, value] of Object.entries(o.attrs || {})) {
+      if (value == null || value === false) continue;
+      attrs += value === true ? ` ${name}` : ` ${name}="${escapeHtml(value)}"`;
+    }
+    return `<${tag} class="filter-tag${o.cls ? ` ${o.cls}` : ''}${state}"${attrs}>${o.html || ''}</${tag}>`;
+  }
   function builtinFilterIconHtml(filter, options) {
     const iconMode = options && options.iconMode || 'material';
     if (!filter) return '';
@@ -419,9 +440,13 @@
       : builtinFilters(items, activeFilters)
         .map((filter) => ({ ...filter, excluded: excludedFilters.has(filter.id) }));
     for (const filter of filters) {
-      const stateClass = filter.active ? ' active' : filter.excluded ? ' excluded' : '';
       const title = filter.excluded ? `Excluding ${filter.label}` : builtinFilterTitle(filter);
-      html += `<span class="filter-tag builtin icon-filter${stateClass}" data-filter="${escapeHtml(filter.id)}" title="${escapeHtml(title)}" aria-label="${escapeHtml(filter.ariaLabel)}">${builtinFilterIconHtml(filter, options)}</span>`;
+      html += renderChip({
+        cls: 'builtin icon-filter',
+        state: filter.active ? 'include' : filter.excluded ? 'exclude' : '',
+        attrs: { 'data-filter': filter.id, title, 'aria-label': filter.ariaLabel },
+        html: builtinFilterIconHtml(filter, options),
+      });
     }
     html += renderTagTreeMenu(buildTagTree(groups), {
       mode: 'filter',
@@ -435,95 +460,211 @@
     }
     return html;
   }
-  function defaultPreviewHtml(item, options) {
-    const isImage = item && item.type === 'image';
-    if (isImage) {
-      const src = options && typeof options.imageSrc === 'function' ? options.imageSrc(item) : item.imageSrc || item.image || '';
-      // Known pixel size: width/height reserve the row's space before the image
-      // loads (no layout jump under a kept scroll place) and --ar/--nw let the
-      // shared CSS size it from --clip-img-h (the zoomable preview height)
-      // without ever widening past the row or past the image's real size.
-      const w = Math.round(Number(item.width));
-      const h = Math.round(Number(item.height));
-      const dims = w > 0 && h > 0 ? ` width="${w}" height="${h}" style="--ar:${+(w / h).toFixed(4)};--nw:${w}px"` : '';
-      // Decoded synchronously (no async decoding hint): every list rebuild re-creates the rows, and an async
-      // decode painted image rows blank for a frame (the "opens twice" flicker).
-      return `<img src="${escapeHtml(src)}" alt="image"${dims}>`;
-    }
-    const text = item && item.text || '';
-    const display = options && typeof options.previewText === 'function'
-      ? options.previewText(item)
-      : options && options.expanded ? text : text.replace(/\r?\n/g, ' ');
-    if (options && typeof options.highlight === 'function') return options.highlight(display);
-    return escapeHtml(display);
-  }
-  function renderItemPicker(item, options) {
+  // An image preview: the picture in a wrapper the size of the picture, so the
+  // row's buttons can float over its top-right corner (actionsHtml) instead of
+  // taking a column. Known pixel size: width/height reserve the row's space
+  // before the image loads (no layout jump under a kept scroll place) and
+  // --ar/--nw let the shared CSS size the wrapper from --clip-img-h (the
+  // zoomable preview height) without ever widening past the row or past the
+  // image's real size.
+  function imagePreviewHtml(item, options) {
     const opts = options || {};
-    const items = opts.items || [];
-    const groups = opts.groups || [];
-    const nmap = opts.numpadMap || numpadMap(items);
-    // Same shared numpad-formation grid the "..." menu uses (one renderer).
-    const npBtns = renderNumpadButtons(item, items, nmap);
-    const itemGroups = new Set(groupsOf(item));
-    let gpBtns = renderTagTreeMenu(buildTagTree([...groups, ...itemGroups]), {
-      mode: 'picker',
-      itemGroups,
-    });
-    if (opts.showAddGroup !== false) {
-      gpBtns += '<span class="tag-menu-node"><span class="gp-btn add-group" data-action="add-group" title="New group"><span class="mi sm">add</span></span></span>';
-    }
-    return `<div class="numpad-picker">
-      <div class="np-row">${npBtns}</div>
-      <div class="gp-row">${gpBtns}</div>
-    </div>`;
+    const src = typeof opts.imageSrc === 'function' ? opts.imageSrc(item) : item.imageSrc || item.image || '';
+    const w = Math.round(Number(item.width));
+    const h = Math.round(Number(item.height));
+    const known = w > 0 && h > 0;
+    const vars = known ? ` style="--ar:${+(w / h).toFixed(4)};--nw:${w}px"` : '';
+    const dims = known ? ` width="${w}" height="${h}"` : '';
+    // Decoded synchronously (no async decoding hint): every list rebuild re-creates the rows, and an async
+    // decode painted image rows blank for a frame (the "opens twice" flicker).
+    const actions = opts.actionsHtml ? `<span class="img-actions-anchor"><span class="img-actions">${opts.actionsHtml}</span></span>` : '';
+    return `<span class="preview-img"${vars}><img src="${escapeHtml(src)}" alt="image"${dims}>${actions}</span>`;
   }
+  // Row text anatomy (one for every text row). The primary line is the clip's
+  // real title or, untitled, its first non-empty line (derived); the preview is
+  // the rest of the text (all of it under a real title, minus a first line that
+  // only repeats the title), one line, windowed around the first match.
+  // Bounded for huge clips: the first non-empty line is looked for within
+  // ROW_LINE_SCAN chars (no newline there = the rest is one line), and every
+  // part goes through the match-centred window, so nothing here scans,
+  // flattens or lowercases a whole body.
+  //   opts: { query, regex, matchIndex (where the match sits in item.text) }
+  // Returns { primary, derived, rest } ('' rest = no preview line).
+  const ROW_BLANK_LINES_MAX = 200;
+  const ROW_LINE_SCAN = 65536;
+  // Every row line is ONE line: a ROW_LINE_CHARS window (wider than any popup
+  // shows) keeps the text a row lays out small, and keeps the match
+  // ROW_LINE_LEAD chars in, so a highlighted match is on screen.
+  const ROW_LINE_CHARS = 320;
+  const ROW_LINE_LEAD = 24;
+  // The first non-empty line of text: { start, end, next } (end = its newline
+  // or the text's end, next = where the rest starts), or null when the text is
+  // blank. Past ROW_BLANK_LINES_MAX blank lines the line is empty and the rest
+  // starts there.
+  function rowFirstLine(text) {
+    let start = 0;
+    for (let k = 0; k < ROW_BLANK_LINES_MAX && start < text.length; k += 1) {
+      const scanEnd = Math.min(text.length, start + ROW_LINE_SCAN);
+      const nl = text.slice(start, scanEnd).indexOf('\n');
+      const end = nl < 0 ? text.length : start + nl;
+      if (/\S/.test(text.slice(start, Math.min(end, scanEnd)))) return { start, end, next: Math.min(text.length, end + 1) };
+      if (nl < 0) return null;
+      start = end + 1;
+    }
+    return start < text.length ? { start, end: start, next: start } : null;
+  }
+  function clipRowText(item, options) {
+    const o = options || {};
+    const text = String(item && item.text || '');
+    const mi = Number.isFinite(o.matchIndex) ? o.matchIndex : null;
+    const windowed = (part, at) => collapsedPreviewText(part, o.query, o.regex, { max: ROW_LINE_CHARS, lead: ROW_LINE_LEAD, ...(at != null ? { matchIndex: at } : {}) });
+    // The part of text from `from` on, with the match index made relative to it.
+    const restFrom = (from) => {
+      const restText = text.slice(from);
+      if (!/\S/.test(restText)) return '';
+      const at = mi != null && mi >= from ? mi - from : (mi != null ? -1 : null);
+      return windowed(restText, at).replace(/^\s+/, '');
+    };
+    const title = titleOf(item);
+    const line = rowFirstLine(text);
+    if (title) {
+      // A first line that only repeats the title is not shown twice.
+      const repeats = line && line.end - line.start <= title.length + 64
+        && text.slice(line.start, line.end).trim().toLowerCase() === String(title).trim().toLowerCase();
+      if (!repeats) return { primary: title, derived: false, rest: windowed(text, mi) };
+      return { primary: title, derived: false, rest: restFrom(line.next) };
+    }
+    if (!line) return { primary: '', derived: true, rest: '' };
+    const { start, end } = line;
+    const lineAt = mi != null && mi >= start && mi < end ? mi - start : (mi != null ? -1 : null);
+    const primary = windowed(text.slice(start, end), lineAt).trim();
+    return { primary, derived: true, rest: restFrom(line.next) };
+  }
+  // Meta line: time, size, the numpad badge, the clip's groups as plain text
+  // (each still a filter: click includes, right-click excludes) and, at its
+  // end, the hover-only ghost # (assign a numpad key; only when none is set,
+  // else the badge itself opens the keypad) and + (add to a group) on the
+  // shared reveal. The line never wraps: group names that no longer fit (as
+  // the ghosts slide in) drop out whole, never as fragments, so no row ever
+  // changes height, and nothing is reserved when unset.
+  function renderClipMeta(item) {
+    const isImage = item && item.type === 'image';
+    const np = numpadOf(item);
+    let html = `<span class="meta-time" data-relative-ts="${item.ts || 0}">${ago(item.ts)}</span>`;
+    html += isImage
+      ? `<span class="meta-size">${escapeHtml(`${item.width || '?'}x${item.height || '?'}`)}</span>`
+      : `<span class="meta-size">${String(item && item.text || '').length.toLocaleString()} chars</span>`;
+    if (np) html += `<button class="meta-np" type="button" data-action="numpad-open" title="Numpad key ${np}: change or remove" aria-label="Numpad key ${np}">#${np}</button>`;
+    const groups = groupsOf(item);
+    if (groups.length) {
+      html += '<span class="meta-tags">';
+      for (const group of groups) {
+        const g = escapeHtml(group);
+        html += `<button class="meta-tag" type="button" data-group="${g}" title="Filter by ${g} (right-click to exclude)">${g}</button>`;
+      }
+      html += '</span>';
+    }
+    const ghosts = (np ? '' : '<button class="meta-ghost" type="button" data-action="numpad-open" title="Assign a numpad key" aria-label="Assign a numpad key"><span class="mi">tag</span></button>')
+      + '<button class="meta-ghost" type="button" data-action="tag-add" title="Add to group" aria-label="Add to group"><span class="mi">add</span></button>';
+    return `${html}<span class="bc-reveal meta-reveal"><span class="bc-reveal-inner">${ghosts}</span></span>`;
+  }
+  // One row. opts: { query, regex, matchIndex, highlight(text), highlightTitle(text),
+  // imageSrc(item), actionsHtml (Core.renderClipActions), selection (the
+  // controller's selection(): paints the cursor, checked, held and similar
+  // states) or the legacy selected / multiSelected booleans }.
   function renderClipItem(item, options) {
     const opts = options || {};
     const id = itemId(item) || '';
     const pinned = isPinned(item);
-    const np = numpadOf(item);
     const isImage = item && item.type === 'image';
-    let metaHtml;
+    const sel = opts.selection || null;
+    const hl = typeof opts.highlight === 'function' ? opts.highlight : (s) => highlight(s, opts.query, opts.regex);
+    const hlTitle = typeof opts.highlightTitle === 'function' ? opts.highlightTitle : hl;
+    let primaryHtml = '';
+    let previewHtml = '';
     if (isImage) {
-      const width = item.width || '?';
-      const height = item.height || '?';
-      metaHtml = `<span data-relative-ts="${item.ts || 0}">${ago(item.ts)}</span><span>${escapeHtml(`${width}x${height}`)}</span>`;
+      // Both text and images can carry a title (images are named so they're searchable).
+      const title = titleOf(item);
+      if (title) primaryHtml = `<div class="clip-title">${hlTitle(title)}</div>`;
+      previewHtml = `<div class="preview image">${imagePreviewHtml(item, opts)}</div>`;
+    } else if (opts.expanded) {
+      const title = titleOf(item);
+      if (title) primaryHtml = `<div class="clip-title">${hlTitle(title)}</div>`;
+      previewHtml = `<div class="preview expanded">${hl(String(item.text || ''))}</div>`;
     } else {
-      const text = item && item.text || '';
-      metaHtml = `<span data-relative-ts="${item.ts || 0}">${ago(item.ts)}</span><span>${text.length.toLocaleString()} chars</span>`;
+      const parts = clipRowText(item, opts);
+      primaryHtml = parts.derived
+        ? `<div class="clip-title derived">${parts.primary ? hl(parts.primary) : '&nbsp;'}</div>`
+        : `<div class="clip-title">${hlTitle(parts.primary)}</div>`;
+      if (parts.rest) previewHtml = `<div class="preview collapsed">${hl(parts.rest)}</div>`;
     }
-    if (np) metaHtml += `<span class="numpad-tag">#${np}</span>`;
-    // A clip's group tag IS a filter control: left-click includes, right-click excludes
-    // (routed through the SAME .filter-tag[data-group] handler the header chips use).
-    for (const group of groupsOf(item)) metaHtml += `<span class="filter-tag group-tag" data-group="${escapeHtml(group)}" title="Filter by ${escapeHtml(group)}">${escapeHtml(group)}</span>`;
-    const previewClass = opts.expanded ? 'expanded' : 'collapsed';
-    // Both text and images can carry a title (images are named so they're searchable).
-    const title = titleOf(item);
-    const titleHtml = title
-      ? `<div class="clip-title">${opts.highlightTitle ? opts.highlightTitle(title) : escapeHtml(title)}</div>`
-      : '';
-    const selected = opts.selected ? ' selected' : '';
+    const is = (flag, fromSel) => (sel ? fromSel(sel) : !!opts[flag]);
     // `selected` = keyboard focus cursor (single). `multi-selected` = membership
-    // in the multi-select set (Ctrl/Shift-click). Both are painted by the shared
-    // controller's renderSelection; kept as separate classes so a focused row and
-    // a checked row read differently.
-    const multi = opts.multiSelected ? ' multi-selected' : '';
+    // in the multi-select set (Ctrl/Shift-click). `actions-held` keeps the row's
+    // buttons out while its menu is open or it is being dragged; `similar` =
+    // a candidate duplicate of the hovered / cursor row (Core.similarClipIds).
+    let cls = pinned ? ' has-pin' : '';
+    if (is('selected', (s) => s.focusId === id)) cls += ' selected';
+    if (is('multiSelected', (s) => !!(s.selectedIds && s.selectedIds.has(id)))) cls += ' multi-selected';
+    if (sel && sel.heldId === id) cls += ' actions-held';
+    if (sel && sel.similarIds && sel.similarIds.has(id)) cls += ' similar';
+    // The row's buttons: a text row's slide in on the shared reveal (closed =
+    // 0 px, the text runs full width); an image row's float over the picture.
+    const actionsHtml = opts.actionsHtml || '';
+    const actions = !isImage && actionsHtml
+      ? `<span class="bc-reveal row-actions"><span class="bc-reveal-inner">${actionsHtml}</span></span>`
+      : '';
     // draggable: a row drags its clip out (controller.onDragstart): images as
     // files, text as text. A still click still pastes.
-    return `<div class="item${pinned ? ' has-pin' : ''}${selected}${multi}" data-id="${escapeHtml(id)}" draggable="true">
+    return `<div class="item${cls}" data-id="${escapeHtml(id)}" draggable="true">
       <div class="item-row">
         <div class="pin-area">
           <button class="star${pinned ? ' active' : ''}" type="button" data-action="pin" data-id="${escapeHtml(id)}" title="${pinned ? 'Unpin' : 'Pin'}"><span class="mi${pinned ? ' filled' : ''}">star</span></button>
-          ${opts.pickerHtml || ''}
         </div>
         <div class="content">
-          ${titleHtml}
-          <div class="preview ${previewClass}">${defaultPreviewHtml(item, opts)}</div>
-          <div class="meta">${metaHtml}</div>
+          ${primaryHtml}
+          ${previewHtml}
+          <div class="meta">${renderClipMeta(item)}</div>
         </div>
-        <div class="actions">${opts.actionsHtml || ''}</div>
+        ${actions}
       </div>
     </div>`;
+  }
+  // Empty list states, ONE renderer for the app and the demo: what is empty and
+  // why, with the way out. kind (derived from { total, query } when omitted):
+  //   'no-clips'    - history is empty
+  //   'no-match'    - the search text matches nothing
+  //   'filtered'    - the filters (group:/is:/since:/...) exclude everything
+  //   'empty-group' - the only filter is one group, and it has no clips
+  // opts.nudgeHtml fills the .empty-nudge slot (the search behaviour work adds
+  // the "relax this filter" nudge there).
+  function emptyStateKind(opts) {
+    const o = opts || {};
+    if (!(Number(o.total) > 0)) return 'no-clips';
+    const parsed = Search.parseQuery(o.query || '');
+    if (parsed.content.length) return 'no-match';
+    const onlyGroup = parsed.groups.length === 1 && !parsed.negGroups.length && !parsed.is.length && !parsed.negIs.length
+      && !parsed.nums.length && !parsed.negNums.length && !parsed.since && !parsed.before && !parsed.len && !parsed.lines && !parsed.words && !parsed.id;
+    return onlyGroup ? 'empty-group' : 'filtered';
+  }
+  function renderEmptyState(options) {
+    const o = options || {};
+    const kind = o.kind || emptyStateKind(o);
+    const parsed = Search.parseQuery(o.query || '');
+    const said = parsed.content.filter((c) => !c.neg).map((c) => c.value).join(' ').trim();
+    const group = parsed.groups[0] || '';
+    const states = {
+      'no-clips': { icon: 'content_paste', title: 'No clips yet', hint: 'Copy something and it shows up here.' },
+      'no-match': { icon: 'search_off', title: said ? `No matches for "${said}"` : 'No matches', hint: 'Check the spelling, or try fewer or different words.', action: 'Clear search' },
+      filtered: { icon: 'filter_alt_off', title: 'Nothing matches these filters', hint: 'Every clip is hidden by the active filters.', action: 'Clear filters' },
+      'empty-group': { icon: 'sell', title: `No clips in ${group || 'this group'} yet`, hint: 'Add a clip with the + on its row, or from its menu.', action: 'Show all clips' },
+    };
+    const s = states[kind] || states['no-match'];
+    const action = s.action ? `<button class="btn quiet sm empty-action" type="button" data-action="clear-search-filters">${escapeHtml(s.action)}</button>` : '';
+    return `<div class="list-empty" data-empty="${escapeHtml(kind)}" role="status">`
+      + `<span class="mi empty-icon" aria-hidden="true">${s.icon}</span>`
+      + `<p class="empty-title">${escapeHtml(s.title)}</p><p class="empty-hint">${escapeHtml(s.hint)}</p>${action}`
+      + `<div class="empty-nudge"${o.nudgeHtml ? '' : ' hidden'}>${o.nudgeHtml || ''}</div></div>`;
   }
   function renderPopupShell(options) {
     const opts = options || {};
@@ -580,8 +721,10 @@
             <div class="search-opts-resize" role="separator" aria-orientation="horizontal" title="Drag to resize (double-click to reset)"></div>
           </div>
         </div>
-        <div class="group-filters" id="${esc(ids.groupFilters)}" aria-label="Filters"></div>
-        <div class="selection-bar hidden" id="${esc(ids.selectionBar)}" role="toolbar" aria-label="Selection actions"></div>
+        <div class="chip-row">
+          <div class="group-filters" id="${esc(ids.groupFilters)}" aria-label="Filters"></div>
+          <div class="selection-bar hidden" id="${esc(ids.selectionBar)}" role="toolbar" aria-label="Selection actions"></div>
+        </div>
       </div>
       <div class="list-wrap">
         <div class="list" id="${esc(ids.list)}" aria-live="polite"></div>
@@ -622,14 +765,18 @@
   // keystroke whenever a 31 MB clip was among the visible rows. opts.matchIndex
   // (where the match sits in `text`, e.g. from the search haystack) skips the
   // search; without it a case-insensitive search of the raw text is used.
+  // opts.max / opts.lead: the window's length and how much text it keeps
+  // before the match (default 700 / 260).
   function collapsedPreviewText(text, query, regex, opts) {
     const raw = String(text || '');
-    if (raw.length <= COLLAPSED_PREVIEW_CHARS) return raw.replace(/\r?\n/g, ' ');
+    const max = opts && opts.max > 0 ? opts.max : COLLAPSED_PREVIEW_CHARS;
+    const lead = opts && opts.lead >= 0 ? opts.lead : SEARCH_PREVIEW_CONTEXT;
+    if (raw.length <= max) return raw.replace(/\r?\n/g, ' ');
     const known = opts && Number.isFinite(opts.matchIndex) ? opts.matchIndex : null;
     const matchIndex = known != null ? known : queryMatchIndex(raw, query, regex);
-    const center = matchIndex >= 0 ? Math.max(0, matchIndex - SEARCH_PREVIEW_CONTEXT) : 0;
-    const start = Math.min(center, Math.max(0, raw.length - COLLAPSED_PREVIEW_CHARS));
-    const end = Math.min(raw.length, start + COLLAPSED_PREVIEW_CHARS);
+    const center = matchIndex >= 0 ? Math.max(0, matchIndex - lead) : 0;
+    const start = Math.min(center, Math.max(0, raw.length - max));
+    const end = Math.min(raw.length, start + max);
     return `${start > 0 ? '...' : ''}${raw.slice(start, end).replace(/\r?\n/g, ' ')}${end < raw.length ? '...' : ''}`;
   }
   // Apply a history-feed delta (main's lib/history-feed.js) to the items a
@@ -716,6 +863,7 @@
     for (const item of list) if (isInGroup(item, group)) has += 1;
     return has === 0 ? 'none' : has === list.length ? 'all' : 'some';
   }
+  function similarLabel(n) { return `Select ${n} similar`; }
   // ONE menu-content builder for the per-clip "..." menu. Reuses the exact
   // data-action attributes the controller already dispatches (pin/edit/rename/
   // del/open-img/save-img) plus the shared group-tree + numpad grid, so the menu
@@ -747,7 +895,14 @@
     }
     html += row('rename', 'drive_file_rename_outline', isImage ? 'Name image' : 'Set title');
     html += `<div class="bc-menu-item tag-menu-node has-children"><span class="mi">sell</span><span class="bc-menu-label">Add to group</span><span class="tag-caret mi">chevron_right</span><span class="tag-submenu">${clipGroupTreeHtml(groups, item)}</span></div>`;
-    html += `<div class="bc-menu-item tag-menu-node has-children"><span class="mi">dialpad</span><span class="bc-menu-label">Numpad</span><span class="tag-caret mi">chevron_right</span><span class="tag-submenu"><div class="numpad-picker static"><div class="np-row">${renderNumpadButtons(item, items, nmap)}</div></div></span></div>`;
+    html += `<div class="bc-menu-item tag-menu-node has-children"><span class="mi">dialpad</span><span class="bc-menu-label">Numpad</span><span class="tag-caret mi">chevron_right</span><span class="tag-submenu"><div class="numpad-picker"><div class="np-row">${renderNumpadButtons(item, items, nmap)}</div></div></span></div>`;
+    // opts.similarCount: a number (0 = no row) or null while it is being
+    // counted (a disabled placeholder the controller fills in); absent = never.
+    if (opts.similarCount === null) {
+      html += `<button class="bc-menu-item" type="button" data-action="select-similar" data-id="${escapeHtml(id)}" disabled aria-busy="true"><span class="mi">select_all</span><span class="bc-menu-label">Looking for similar clips...</span></button>`;
+    } else if (opts.similarCount > 0) {
+      html += row('select-similar', 'select_all', similarLabel(opts.similarCount));
+    }
     html += row('del', 'delete', 'Delete', 'danger');
     html += '</div>';
     return html;
@@ -822,19 +977,21 @@
       return `<span class="tag-menu-node${hasChildren ? ' has-children' : ''}">${control}${children}</span>`;
     }).join('');
   }
-  // The slim contextual toolbar shown when 2+ clips are selected. Mirrors the
-  // bulk menu's actions as a always-visible bar. Reuses icon-btn + tokens.
+  // The contextual bar shown while 2+ clips are selected. It takes the chip
+  // bar's place at the same height (the shell stacks both in .chip-row; the
+  // chips come back when the selection ends), so the list never moves. Mirrors
+  // the bulk menu's actions. Reuses icon-btn + tokens.
   function renderSelectionBar(state) {
     const info = state || {};
     const count = info.count || 0;
     const allText = !info.hasImage;
     return `<span class="selection-count">${count} selected</span>
       <div class="selection-actions">
-        <button class="icon-btn accent" type="button" data-action="bulk-paste" title="Paste all"><span class="mi">content_paste</span></button>
-        <button class="icon-btn accent" type="button" data-action="bulk-group-open" title="Group" aria-haspopup="true"><span class="mi">sell</span></button>
-        ${allText ? '<button class="icon-btn accent" type="button" data-action="bulk-unify" title="Unify into one clip"><span class="mi">merge</span></button>' : ''}
-        <button class="icon-btn danger" type="button" data-action="bulk-delete" title="Delete selected"><span class="mi">delete</span></button>
-        <button class="icon-btn" type="button" data-action="bulk-clear" title="Clear selection (Esc)"><span class="mi">close</span></button>
+        <button class="icon-btn" type="button" data-action="bulk-paste" title="Paste all (Enter)" aria-label="Paste all"><span class="mi">content_paste</span></button>
+        <button class="icon-btn" type="button" data-action="bulk-group-open" title="Group" aria-label="Group" aria-haspopup="true"><span class="mi">sell</span></button>
+        ${allText ? '<button class="icon-btn" type="button" data-action="bulk-unify" title="Unify into one clip" aria-label="Unify into one clip"><span class="mi">merge</span></button>' : ''}
+        <button class="icon-btn danger" type="button" data-action="bulk-delete" title="Delete selected" aria-label="Delete selected"><span class="mi">delete</span></button>
+        <button class="icon-btn" type="button" data-action="bulk-clear" title="Clear selection (Esc)" aria-label="Clear selection"><span class="mi">close</span></button>
       </div>`;
   }
   // ── Window drag on a header (one helper for every popup header) ──
@@ -1041,8 +1198,13 @@
     const tokenText = Search && Search.facetTokenText ? Search.facetTokenText(opt.token) : '';
     const label = opt.prompt && state === 'include' && x.value ? `Before ${x.value}` : opt.label;
     const title = x.reason || (opt.prompt ? (state === 'include' ? 'Remove this filter' : `Add ${opt.prompt} and type a date (2026-01-31) or 7d`) : tokenText);
-    return `<button type="button" class="filter-tag facet-opt${cls}" data-row="${escapeHtml(x.row)}" data-opt="${escapeHtml(x.index)}"`
-      + ` aria-pressed="${state === 'include' ? 'true' : 'false'}" title="${escapeHtml(title)}"${x.disabled ? ' disabled aria-disabled="true"' : ''}>${escapeHtml(label)}</button>`;
+    return renderChip({
+      tag: 'button',
+      cls: 'facet-opt',
+      state,
+      attrs: { 'data-row': x.row, 'data-opt': x.index, 'aria-pressed': state === 'include' ? 'true' : 'false', title, disabled: !!x.disabled, 'aria-disabled': x.disabled ? 'true' : null },
+      html: escapeHtml(label),
+    });
   }
   function renderSearchFacets(query) {
     if (!Search || !Search.OPTION_FACETS) return '';
@@ -1125,6 +1287,7 @@
     let suggestions = [];
     let active = -1;
     let suggestOpen = false;
+    let suggestFor = null; // the field text the open list was built for
     let panelOpen = false;
     let optionsHeight = Math.max(0, Math.round(Number(o.optionsHeight) || 0)); // 0 = the default share
     let facetsQuery = null;
@@ -1176,6 +1339,7 @@
     function updateSuggest() {
       const res = Search && Search.suggestQuery ? Search.suggestQuery(inputEl.value, inputEl.selectionStart, { groups: getGroups() }) : null;
       if (!res) { closeSuggest(); return; }
+      suggestFor = inputEl.value;
       suggestions = res.suggestions.map((s) => ({ ...s, replaceStart: res.replaceStart, replaceEnd: res.replaceEnd }));
       active = -1;
       renderSuggest();
@@ -1198,7 +1362,13 @@
       closeSuggest();
       commitValue(v.slice(0, s.replaceStart) + s.text + ' ' + v.slice(s.replaceEnd), s.replaceStart + s.text.length + 1);
     }
-    function refresh() { paintHighlight(); syncControls(); }
+    // The consumer changed the field's text (cleared it, a chip rewrote it): a
+    // suggestion list built for the old text goes with it.
+    function refresh() {
+      if (suggestOpen && inputEl.value !== suggestFor) closeSuggest();
+      paintHighlight();
+      syncControls();
+    }
 
     // ── options panel ──
     const rootHeight = () => (sizeRoot === document.documentElement ? window.innerHeight : sizeRoot.clientHeight) || 0;
@@ -1387,9 +1557,10 @@
   // on outside-click / Esc / scroll / resize. Menu item clicks bubble to the
   // document controller (same data-action dispatch); this just closes after.
   function createMenu(host) {
-    if (typeof document === 'undefined') return { open() {}, close() {}, isOpen: () => false };
+    if (typeof document === 'undefined') return { open() {}, close() {}, isOpen: () => false, root: () => null };
     const mount = host || document.body;
     let el = null;
+    let onClosed = null;
     function close() {
       if (!el) return;
       el.remove();
@@ -1398,17 +1569,25 @@
       document.removeEventListener('keydown', onKey, true);
       document.removeEventListener('scroll', onScroll, true);
       window.removeEventListener('resize', close, true);
+      const done = onClosed;
+      onClosed = null;
+      if (done) done();
     }
     function onOutside(e) { if (el && !el.contains(e.target)) close(); }
     // Scrolling the list under an open menu would leave it floating over rows
     // that moved away — close instead (scrolls inside the menu are fine).
     function onScroll(e) { if (el && !el.contains(e.target)) close(); }
     function onKey(e) { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(); } }
+    // opts: { x, y, html, id (the clip it acts on, read by the dispatch via
+    // closest('[data-id]')), className (an extra class), onClose(), aboveY (the
+    // anchor's top edge: when the menu does not fit below y it opens above the
+    // anchor instead of being pushed up over it) }
     function open(opts) {
       close();
       const o = opts || {};
       el = document.createElement('div');
-      el.className = 'bc-menu';
+      el.className = o.className ? `bc-menu ${o.className}` : 'bc-menu';
+      onClosed = typeof o.onClose === 'function' ? o.onClose : null;
       if (o.id != null) el.dataset.id = o.id;
       el.innerHTML = o.html || '';
       // Close after an actionable click (let the document dispatch run first).
@@ -1424,6 +1603,10 @@
       const vh = isBody ? window.innerHeight : hostRect.height;
       let localX = isBody ? o.x : o.x - hostRect.left;
       let localY = isBody ? o.y : o.y - hostRect.top;
+      if (o.aboveY != null && localY + mh > vh - 4) {
+        const above = (isBody ? o.aboveY : o.aboveY - hostRect.top) - mh;
+        if (above >= 4) localY = above;
+      }
       localX = Math.max(4, Math.min(localX, vw - mw - 4));
       localY = Math.max(4, Math.min(localY, vh - mh - 4));
       el.style.left = `${Math.round(localX + (isBody ? window.scrollX : mount.scrollLeft))}px`;
@@ -1435,7 +1618,7 @@
         window.addEventListener('resize', close, true);
       }, 0);
     }
-    return { open, close, isOpen: () => !!el };
+    return { open, close, isOpen: () => !!el, root: () => el };
   }
   // Auto-flip/clamp hover submenus so they never overflow the window. The popup
   // window is narrow, so a right-opening submenu near the edge must open leftward
@@ -1543,11 +1726,14 @@
     const o = opts || {};
     const state = o.state || {};
     const selected = state.selectedIds instanceof Set ? state.selectedIds : new Set(state.ids || []);
+    const similar = state.similarIds instanceof Set ? state.similarIds : null;
     if (o.listEl) {
       o.listEl.querySelectorAll('.item').forEach((el) => {
         const id = el.dataset.id;
         el.classList.toggle('selected', id === state.focusId);
         el.classList.toggle('multi-selected', selected.has(id));
+        el.classList.toggle('actions-held', id === state.heldId);
+        el.classList.toggle('similar', !!(similar && similar.has(id)));
       });
       if (state.focusId && o.scroll !== false) {
         const sel = '.item[data-id="' + String(state.focusId).replace(/["\\]/g, '\\$&') + '"]';
@@ -1558,7 +1744,10 @@
     if (o.barEl) {
       const active = (state.count || 0) >= 2;
       o.barEl.classList.toggle('hidden', !active);
-      o.barEl.innerHTML = active ? renderSelectionBar(state) : '';
+      // Only when it changed: hover and hold repaints must not rebuild the bar
+      // under a focused or pressed button.
+      const html = active ? renderSelectionBar(state) : '';
+      if (o.barEl._bcHtml !== html) { o.barEl.innerHTML = html; o.barEl._bcHtml = html; }
     }
   }
   // The full settings panel body, shared verbatim by the app and the demo. The
@@ -1742,7 +1931,9 @@
   }
   // A live playground of segmented controls, one row per axis. Reuses the shared
   // .seg/.seg-btn styling. The app renders it dev-gated (plus Surface as a real
-  // setting); the demo renders it always-on. `fields` picks which axes appear.
+  // setting); the demo renders it always-on. `fields` picks which axes appear;
+  // `options` ({ axisKey: [[value, label], ...] }) replaces an axis's choices
+  // (the app's accent row picks the accent MODE, System included).
   function createVariantSwitcher(config) {
     if (typeof document === 'undefined') return { el: null, set() {}, get: () => ({}) };
     const cfg = config || {};
@@ -1762,7 +1953,7 @@
       seg.className = 'seg';
       seg.setAttribute('role', 'group');
       seg.setAttribute('aria-label', axis.label);
-      for (const [val, text] of axis.options) {
+      for (const [val, text] of (cfg.options && cfg.options[axis.key]) || axis.options) {
         const btn = document.createElement('button');
         btn.type = 'button';
         btn.className = 'seg-btn';
@@ -2073,7 +2264,8 @@
         pendingPlace = null;
         if (!ids.length) {
           start = 0; end = 0;
-          if (emptyHtml) listEl.innerHTML = emptyHtml;
+          const empty = typeof emptyHtml === 'function' ? emptyHtml() : emptyHtml;
+          if (empty) listEl.innerHTML = empty;
           listEl.scrollTop = 0;
           return;
         }
@@ -2113,7 +2305,8 @@
     }
 
     // Rebuild for a new result set. next: { ids, tsAt, mode (Search.rankMode),
-    // queryKey (the query text), emptyHtml }. A changed query/mode only keeps
+    // queryKey (the query text), emptyHtml (html, or a function called only when
+    // the list IS empty) }. A changed query/mode only keeps
     // the cursor if it was the on-screen anchor and stayed put; a background
     // rebuild (same query) keeps it whenever it is still in the results.
     function update(next) {
@@ -2353,6 +2546,212 @@
     };
   }
 
+  // ── Similar clips: candidate duplicates to merge (Unify) ──
+  // Two text clips are similar when one contains the other once whitespace is
+  // collapsed and case ignored, both sides at least SIMILAR_MIN_CHARS long.
+  // Pure. The normalised text is cached per item OBJECT (a history delta keeps
+  // unchanged clips' objects, so a refresh re-normalises only what changed).
+  // A clip over SIMILAR_MAX_CHARS is never normalised: as a candidate it is
+  // searched through its lowercase text (opts.lowerOf(item), e.g. the app's
+  // search haystack) a chunk at a time, anchored on the target's longest
+  // space-free run (similarContainsAt); as the target it has no similar clips
+  // (it would be scanned once per clip).
+  const SIMILAR_MIN_CHARS = 12;
+  const SIMILAR_MAX_CHARS = 262144;
+  const SIMILAR_CHUNK = 1 << 20;
+  const SIMILAR_GRAM_TABLE_AT = 1024; // longer targets index their 12-char windows
+  const similarNormCache = new WeakMap();
+  const similarLowerCache = new WeakMap();
+  function similarText(item) {
+    if (!item || item.type === 'image' || typeof item !== 'object') return '';
+    const raw = String(item.text || '');
+    if (raw.length < SIMILAR_MIN_CHARS || raw.length > SIMILAR_MAX_CHARS) return '';
+    let norm = similarNormCache.get(item);
+    if (norm == null) {
+      // Lowercase, then ONE pass over whitespace runs + non-space whitespace
+      // (about 4x faster than replacing every \s+ run, measured on 23 MB).
+      norm = raw.toLowerCase().replace(/\s{2,}|[^\S ]/g, ' ').trim();
+      if (norm.length < SIMILAR_MIN_CHARS) norm = '';
+      similarNormCache.set(item, norm);
+    }
+    return norm;
+  }
+  function similarLower(item, opts) {
+    const fromHost = opts && typeof opts.lowerOf === 'function' ? opts.lowerOf(item) : null;
+    if (typeof fromHost === 'string') return fromHost;
+    let lower = similarLowerCache.get(item);
+    if (lower == null) { lower = String(item.text || '').toLowerCase(); similarLowerCache.set(item, lower); }
+    return lower;
+  }
+  // The 12-char windows of a long target in an open-addressing hash table
+  // (rolling hash), so "is this shorter clip inside the target?" first asks
+  // whether its opening 12 chars occur there at all: O(1) per clip instead of a
+  // scan of the target per clip. A hash collision only costs a real check.
+  function similarGramHash(s, from) {
+    let h = 0;
+    for (let i = from; i < from + SIMILAR_MIN_CHARS; i += 1) h = (Math.imul(h, 31) + s.charCodeAt(i)) | 0;
+    return h;
+  }
+  function similarGramTable(t) {
+    const n = t.length - SIMILAR_MIN_CHARS + 1;
+    let size = 2;
+    while (size < n * 2) size *= 2;
+    const keys = new Int32Array(size);
+    const used = new Uint8Array(size);
+    const mask = size - 1;
+    const slotOf = (h) => (Math.imul(h, 0x9E3779B1) >>> 0) & mask;
+    let pow = 1;
+    for (let i = 1; i < SIMILAR_MIN_CHARS; i += 1) pow = Math.imul(pow, 31);
+    let h = similarGramHash(t, 0);
+    for (let i = 0; i < n; i += 1) {
+      if (i > 0) h = (Math.imul(h - Math.imul(t.charCodeAt(i - 1), pow), 31) + t.charCodeAt(i + SIMILAR_MIN_CHARS - 1)) | 0;
+      let slot = slotOf(h);
+      while (used[slot] && keys[slot] !== h) slot = (slot + 1) & mask;
+      used[slot] = 1;
+      keys[slot] = h;
+    }
+    return (x) => {
+      const hx = similarGramHash(x, 0);
+      for (let slot = slotOf(hx); used[slot]; slot = (slot + 1) & mask) if (keys[slot] === hx) return true;
+      return false;
+    };
+  }
+  // A huge clip is never normalised, so "does it contain the target?" works on
+  // its raw lowercase text: the target's longest space-free run is the anchor
+  // (native indexOf finds where it occurs), and each spot is checked outward
+  // with every space of the target matching one whitespace RUN of the clip.
+  // No pattern is built from the target (a 25K+ char RegExp does not compile:
+  // V8 "Stack overflow", 2026-10-08) and nothing is copied per chunk.
+  const SPACE_RE = /\s/;
+  function isSpaceCode(c) { return c === 32 || (c >= 9 && c <= 13) || (c > 127 && SPACE_RE.test(String.fromCharCode(c))); }
+  function similarAnchor(t) {
+    let best = 0;
+    let bestLen = 0;
+    let start = 0;
+    for (let i = 0; i <= t.length; i += 1) {
+      if (i === t.length || t.charCodeAt(i) === 32) {
+        if (i - start > bestLen) { best = start; bestLen = i - start; }
+        start = i + 1;
+      }
+    }
+    return { seg: t.slice(best, best + bestLen), off: best };
+  }
+  // Does `lower` hold the normalised target t with its anchor run starting at p?
+  function similarContainsAt(lower, p, t, anchor) {
+    let i = anchor.off + anchor.seg.length;
+    let j = p + anchor.seg.length;
+    while (i < t.length) {
+      if (t.charCodeAt(i) === 32) {
+        if (j >= lower.length || !isSpaceCode(lower.charCodeAt(j))) return false;
+        while (j < lower.length && isSpaceCode(lower.charCodeAt(j))) j += 1;
+      } else if (lower.charCodeAt(j) !== t.charCodeAt(i)) return false;
+      else j += 1;
+      i += 1;
+    }
+    i = anchor.off - 1;
+    j = p - 1;
+    while (i >= 0) {
+      if (t.charCodeAt(i) === 32) {
+        if (j < 0 || !isSpaceCode(lower.charCodeAt(j))) return false;
+        while (j >= 0 && isSpaceCode(lower.charCodeAt(j))) j -= 1;
+      } else if (j < 0 || lower.charCodeAt(j) !== t.charCodeAt(i)) return false;
+      else j -= 1;
+      i -= 1;
+    }
+    return true;
+  }
+  // The scan as a generator that yields after every unit of work (one clip, or
+  // one chunk of a huge clip), so a host can run it in time slices; returns the
+  // similar clips' ids. similarClipIds runs it to the end.
+  function* similarSteps(target, items, opts) {
+    const out = [];
+    const t = similarText(target);
+    if (!t) return out;
+    const targetId = itemId(target);
+    const m = t.length;
+    let inTarget = null;
+    let anchor = null;
+    for (const item of items || []) {
+      if (!item || item === target || item.type === 'image') continue;
+      const id = itemId(item);
+      if (id == null || id === targetId) continue;
+      const rawLen = String(item.text || '').length;
+      if (rawLen < SIMILAR_MIN_CHARS) continue;
+      if (rawLen > SIMILAR_MAX_CHARS) {
+        // A huge clip can only CONTAIN the target. Each chunk's window runs on
+        // by the anchor's length, so an anchor across a chunk edge is found once.
+        anchor = anchor || similarAnchor(t);
+        const lower = similarLower(item, opts);
+        const seg = anchor.seg;
+        let found = false;
+        for (let at = 0; at < lower.length && !found; at += SIMILAR_CHUNK) {
+          const win = lower.slice(at, at + SIMILAR_CHUNK + seg.length - 1);
+          for (let q = win.indexOf(seg); q !== -1 && !found; q = win.indexOf(seg, q + 1)) {
+            found = similarContainsAt(lower, at + q, t, anchor);
+          }
+          if (!found) yield;
+        }
+        if (found) out.push(id);
+        continue;
+      }
+      const x = similarText(item);
+      if (x) {
+        if (x.length >= m) { if (x.includes(t)) out.push(id); }
+        else if (m < SIMILAR_GRAM_TABLE_AT) { if (t.includes(x)) out.push(id); }
+        else {
+          inTarget = inTarget || similarGramTable(t);
+          if (inTarget(x) && t.includes(x)) out.push(id);
+        }
+      }
+      yield;
+    }
+    return out;
+  }
+  // Candidate duplicates of `target` among `items`: every other text clip whose
+  // whitespace-collapsed, case-folded text contains the target's or is
+  // contained in it (both >= 12 chars; images, the target itself and a target
+  // over SIMILAR_MAX_CHARS give none). opts: { lowerOf(item) -> lowercase text,
+  // used for clips too big to normalise }. Returns ids in `items` order.
+  function similarClipIds(target, items, opts) {
+    const steps = similarSteps(target, items, opts);
+    let r = steps.next();
+    while (!r.done) r = steps.next();
+    return r.value;
+  }
+  // Run a step generator in slices of at most sliceMs on the event loop, so a
+  // long scan never blocks a frame; holdUntil() > Date.now() pauses it (e.g.
+  // while the query is typed); onSlice(ms) reports each slice (QA). Returns stop().
+  // A step that throws ends the run with onDone(undefined), so a caller waiting
+  // on it is always answered; the error is rethrown on its own tick, where the
+  // host's error reporting records it.
+  function runSliced(steps, onDone, options) {
+    const o = options || {};
+    const sliceMs = o.sliceMs || 6;
+    const clock = () => (typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now());
+    let stopped = false;
+    const step = () => {
+      if (stopped) return;
+      const hold = o.holdUntil ? o.holdUntil() - Date.now() : 0;
+      if (hold > 0) { setTimeout(step, hold); return; }
+      const began = clock();
+      const until = began + sliceMs;
+      let r;
+      try {
+        r = steps.next();
+        while (!r.done && clock() < until) r = steps.next();
+      } catch (error) {
+        stopped = true;
+        setTimeout(() => { throw error; }, 0);
+        onDone(undefined);
+        return;
+      }
+      if (o.onSlice) o.onSlice(clock() - began);
+      if (r.done) { stopped = true; onDone(r.value); } else setTimeout(step, 0);
+    };
+    step();
+    return () => { stopped = true; };
+  }
+
   function createClipController(adapter) {
     const a = adapter || {};
     const dialogs = a.dialogs || createDialogs(a.dialogHost);
@@ -2416,6 +2815,9 @@
     let anchorId = null;
     let focusId = null;
     let lastUndo = null;
+    // heldId: the row whose buttons stay out while its menu / popover is open
+    // or it is being dragged (painted as .actions-held).
+    let heldId = null;
 
     function visibleIds() { return (a.visibleIds && a.visibleIds()) || []; }
     function allItems() { return (a.allItems && a.allItems()) || []; }
@@ -2424,7 +2826,151 @@
     function selectionInfo() {
       let hasImage = false;
       for (const id of selectedIds) { if (itemIsImage(id)) { hasImage = true; break; } }
-      return { count: selectedIds.size, ids: [...selectedIds], selectedIds, focusId, anchorId, hasImage };
+      return { count: selectedIds.size, ids: [...selectedIds], selectedIds, focusId, anchorId, hasImage, heldId, similarIds };
+    }
+
+    // --- Similar clips (candidate duplicates, D2) ---
+    // Hovering a text row, or moving the keyboard cursor onto one, tints the
+    // RENDERED rows whose text contains it or is contained in it
+    // (Core.similarClipIds over all history, painted as .similar), so likely
+    // duplicates stand out for Unify; the "..." menu offers "Select N similar".
+    // Never on the typing path: a scan starts only after the pointer / cursor
+    // rests on a row (SIMILAR_DWELL_MS), runs in slices of a few ms, pauses
+    // while the query is being typed, and its result is kept per target until
+    // the history (allItems()) changes.
+    const SIMILAR_DWELL_MS = 120;
+    const SIMILAR_QUIET_MS = 350;
+    let hoverId = null;          // the row under the pointer
+    let similarCursorId = null;  // the cursor row after a keyboard move
+    let similarFor = null;       // the target whose similar set is wanted now
+    let similarIds = null;       // the painted set (null = none)
+    let similarTimer = null;
+    let similarScan = null;      // { id, list, waiters, stop }
+    let quietUntil = 0;          // no scanning until then (query typing)
+    const similarCache = { list: null, byId: new Map() };
+    function similarResults() {
+      const list = allItems();
+      if (similarCache.list !== list) { similarCache.list = list; similarCache.byId = new Map(); }
+      return similarCache.byId;
+    }
+    function isTextClip(id) { const it = id != null && a.itemById ? a.itemById(id) : null; return !!(it && it.type !== 'image'); }
+    // The similar set of `id` to cb(Set): from the cache, by joining the scan
+    // already running for it, or by starting one (which replaces a scan for
+    // another target).
+    function whenSimilar(id, cb) {
+      const cache = similarResults();
+      if (cache.has(id)) { cb(cache.get(id)); return; }
+      if (similarScan && similarScan.id === id && similarScan.list === similarCache.list) { similarScan.waiters.push(cb); return; }
+      if (similarScan) similarScan.stop();
+      const item = a.itemById ? a.itemById(id) : null;
+      if (!item || item.type === 'image') { const none = new Set(); cache.set(id, none); cb(none); return; }
+      const list = similarCache.list;
+      const job = { id, list, waiters: [cb], stop: () => {} };
+      similarScan = job;
+      // runSliced runs its first slice before returning, so the job can be done
+      // (or failed: ids undefined = an empty set, cached like any answer)
+      // before job.stop is assigned.
+      job.stop = runSliced(similarSteps(item, list, { lowerOf: a.lowerOf }), (ids) => {
+        if (similarScan === job) similarScan = null;
+        const set = new Set(ids || []);
+        if (similarCache.list === list) similarCache.byId.set(id, set);
+        for (const waiter of job.waiters) waiter(set);
+      }, { holdUntil: () => quietUntil });
+    }
+    function paintSimilar(set) {
+      const next = set && set.size ? set : null;
+      if (next === similarIds) return;
+      similarIds = next;
+      paintSelection({ scroll: false });
+    }
+    // The target is the row whose menu is open, else the hovered row, else the
+    // cursor row (only while the cursor is still on it: a cursor the list
+    // dropped takes its tint along); a cached result paints at once, a new one
+    // after the dwell.
+    function refreshSimilar() {
+      const id = heldId || hoverId || (similarCursorId != null && similarCursorId === focusId ? similarCursorId : null);
+      const target = isTextClip(id) ? id : null;
+      if (target === similarFor) return;
+      similarFor = target;
+      if (similarTimer) { clearTimeout(similarTimer); similarTimer = null; }
+      const cached = target ? similarResults().get(target) : null;
+      paintSimilar(cached || null); // the previous row's tint goes at once
+      if (!target || cached) return;
+      similarTimer = setTimeout(() => {
+        similarTimer = null;
+        if (similarFor === target) whenSimilar(target, (set) => { if (similarFor === target) paintSimilar(set); });
+      }, SIMILAR_DWELL_MS);
+    }
+    function hold(id) {
+      if (heldId === id) return;
+      heldId = id;
+      refreshSimilar();
+      paintSelection({ scroll: false });
+    }
+    // A row's menu / popover is opening: its onClose. The caller opens the menu,
+    // THEN hold(id) (opening closes a previous one, whose onClose releases its
+    // own hold first). Closing releases the hold; when it was opened with the
+    // mouse and the opener button still has focus afterwards (Esc, a scroll),
+    // focus goes back to the search field, so :focus-within does not keep the
+    // buttons out. Opened from the keyboard, focus stays where Tab put it.
+    function releaseOnClose(id) {
+      const doc = typeof document !== 'undefined' ? document : null;
+      const inRow = (el) => {
+        const row = el && typeof el.closest === 'function' ? el.closest('.item') : null;
+        return !!(row && row.dataset && row.dataset.id === id);
+      };
+      const opener = doc ? doc.activeElement : null;
+      const keyboard = !!(opener && inRow(opener) && typeof opener.matches === 'function' && opener.matches(':focus-visible'));
+      return () => {
+        hold(null);
+        if (keyboard || !doc) return;
+        // After the close settles: a popover opened next on the same row holds it again.
+        setTimeout(() => {
+          const el = doc.activeElement;
+          if (heldId === id || !inRow(el)) return;
+          if (a.focusSearch) a.focusSearch(); else if (typeof el.blur === 'function') el.blur();
+        }, 0);
+      };
+    }
+    // Hover tracking (hosts route mouseover / mouseout here).
+    function onMouseover(event) {
+      const t = event.target;
+      const row = t && typeof t.closest === 'function' ? t.closest('.item') : null;
+      const id = row && row.dataset && row.dataset.id ? row.dataset.id : null;
+      if (id === hoverId) return false;
+      hoverId = id;
+      refreshSimilar();
+      return !!id;
+    }
+    function onMouseout(event) {
+      if (hoverId == null) return false;
+      // Still inside the host (the app's document, the demo's popup box): the
+      // next mouseover says where. Out of the window or the box: no hover.
+      const host = event.currentTarget;
+      const to = event.relatedTarget;
+      if (to && (!host || typeof host.contains !== 'function' || host === to || host.contains(to))) return false;
+      hoverId = null;
+      refreshSimilar();
+      return true;
+    }
+    // "Select N similar": the clip plus every clip similar to it, across all
+    // history. When some of them are outside the current results, the search is
+    // cleared first so the selection never holds a clip the list hides.
+    function selectSimilar(id) {
+      if (!a.itemById || !a.itemById(id)) return;
+      // From the cache (the menu's count); recounted when the history changed since.
+      whenSimilar(id, (set) => { if (set.size) applySelectSimilar(id, set); });
+    }
+    function applySelectSimilar(id, set) {
+      const ids = [...set].filter((x) => a.itemById(x));
+      const visible = new Set(visibleIds());
+      if (a.clearFilters && (!visible.has(id) || ids.some((x) => !visible.has(x)))) a.clearFilters();
+      selectedIds.clear();
+      selectedIds.add(id);
+      for (const x of ids) selectedIds.add(x);
+      anchorId = id;
+      focusId = id;
+      paintSelection({ scroll: false });
     }
     // opts.scroll === false: a repaint after a list rebuild, which must not move
     // the kept scroll place to chase the cursor.
@@ -2434,6 +2980,7 @@
       selectedIds.clear();
       anchorId = null;
       focusId = null;
+      if (similarCursorId != null) { similarCursorId = null; refreshSimilar(); }
       if (paint) paintSelection();
       return had;
     }
@@ -2443,15 +2990,21 @@
     function onQueryChange() {
       selectedIds.clear();
       anchorId = null;
+      quietUntil = Date.now() + SIMILAR_QUIET_MS; // similar scans wait for a typing pause
     }
     // After a rebuild: drop selection/cursor ids the list no longer shows; a
     // changed query keeps the cursor only when keepCursor (the list decides).
+    // The similar target goes with a row the list no longer shows (a hidden
+    // row's tint would leave a result looking like the cursor).
     function reconcileVisible({ keepCursor = true } = {}) {
-      if (!selectedIds.size && focusId == null && anchorId == null) return;
+      if (!selectedIds.size && focusId == null && anchorId == null && hoverId == null && similarCursorId == null) return;
       const visible = new Set(visibleIds());
       for (const id of [...selectedIds]) if (!visible.has(id)) selectedIds.delete(id);
       if (anchorId != null && !visible.has(anchorId)) anchorId = null;
       if (focusId != null && (!keepCursor || !visible.has(focusId))) focusId = null;
+      if (hoverId != null && !visible.has(hoverId)) hoverId = null;
+      if (similarCursorId != null && similarCursorId !== focusId) similarCursorId = null;
+      refreshSimilar();
     }
     function toggleSelect(id) {
       if (!id) return;
@@ -2498,6 +3051,9 @@
         ? (onScreen >= 0 ? onScreen : (dir > 0 ? 0 : ids.length - 1))
         : Math.max(0, Math.min(idx + dir, ids.length - 1));
       const nextId = ids[next];
+      // The cursor row is now the similar target (until the pointer moves).
+      hoverId = null;
+      similarCursorId = nextId;
       if (extend) {
         if (anchorId == null) anchorId = focusId != null ? focusId : nextId;
         selectRange(nextId);
@@ -2507,6 +3063,7 @@
         focusId = nextId;
         paintSelection();
       }
+      refreshSimilar();
     }
     function isTypingTarget(el) {
       if (!el) return false;
@@ -2584,13 +3141,32 @@
       const selItems = selectionInfo().ids.map((id) => a.itemById(id)).filter(Boolean);
       menu.open({ x, y, html: `<div class="bc-menu-list bc-group-list">${bulkGroupTreeHtml(groupNames(), selItems)}</div>` });
     }
-    function openClipMenu(rowEl, x, y) {
+    // The popup's single-clip menu: also holds the row's buttons out while it
+    // is open and offers "Select N similar" for a text clip (N over all
+    // history; a placeholder row while the count is being worked out, removed
+    // when there are none).
+    function openClipMenu(rowEl, x, y, aboveY) {
       const id = rowEl && rowEl.dataset ? rowEl.dataset.id : null;
       if (!id) return;
       if (selectedIds.size >= 2 && selectedIds.has(id)) { openBulkMenu(x, y); return; }
       const item = a.itemById(id);
       if (!item) return;
-      menu.open({ id, x, y, html: renderClipMenu(item, { items: allItems(), groups: groupNames(), numpadMap: a.numpadMap ? a.numpadMap() : {}, context: a.menuContext }) });
+      const offerSimilar = item.type !== 'image' && (!a.menuContext || a.menuContext === 'popup');
+      const known = offerSimilar ? similarResults().get(id) : null;
+      const similarCount = !offerSimilar ? undefined : known ? known.size : null;
+      menu.open({ id, x, y, aboveY, onClose: releaseOnClose(id), html: renderClipMenu(item, { items: allItems(), groups: groupNames(), numpadMap: a.numpadMap ? a.numpadMap() : {}, context: a.menuContext, similarCount }) });
+      hold(id);
+      if (similarCount !== null) return;
+      whenSimilar(id, (set) => {
+        const root = menu.root();
+        const row = root && root.dataset.id === id ? root.querySelector('[data-action="select-similar"]') : null;
+        if (!row) return;
+        if (!set.size) { row.remove(); return; }
+        row.disabled = false;
+        row.removeAttribute('aria-busy');
+        const label = row.querySelector('.bc-menu-label');
+        if (label) label.textContent = similarLabel(set.size);
+      });
     }
     // Public entry for hosts without clip rows (the standalone editor/viewer
     // windows): open the shared clip menu for `id` at x,y.
@@ -2599,13 +3175,30 @@
       if (!item) return;
       menu.open({ id, x, y, html: renderClipMenu(item, { items: allItems(), groups: groupNames(), numpadMap: a.numpadMap ? a.numpadMap() : {}, context: a.menuContext }) });
     }
-    // The title-bar strip's + popover: JUST the one-clip group picker (same
-    // clipGroupTreeHtml content as the clip menu's submenu, same gp-btn/add-group
-    // dispatch — the menu root carries data-id). Mirrors openBulkGroupMenu.
-    function openGroupPickerAt(id, x, y) {
+    // The one-clip group picker: the title-bar strip's + and a row's meta +
+    // (same clipGroupTreeHtml content as the clip menu's submenu, same
+    // gp-btn/add-group dispatch - the menu root carries data-id). Mirrors
+    // openBulkGroupMenu.
+    function openGroupPickerAt(id, x, y, aboveY) {
       const item = a.itemById(id);
       if (!item) return;
-      menu.open({ id, x, y, html: `<div class="bc-menu-list bc-group-list">${clipGroupTreeHtml(groupNames(), item)}</div>` });
+      menu.open({ id, x, y, aboveY, onClose: releaseOnClose(id), html: `<div class="bc-menu-list bc-group-list">${clipGroupTreeHtml(groupNames(), item)}</div>` });
+      hold(id);
+    }
+    // A row's numpad badge / ghost #: the keypad (the same renderNumpadButtons
+    // the clip menu's Numpad submenu shows) in a popover; a key assigns through
+    // tryAssignNumpad (its replace confirm included), and a set key can be
+    // removed.
+    function openNumpadPickerAt(id, x, y, aboveY) {
+      const item = a.itemById(id);
+      if (!item) return;
+      const np = numpadOf(item);
+      const remove = np
+        ? `<button class="bc-menu-item np-remove" type="button" data-action="numpad-unassign" data-slot="${np}"><span class="mi">backspace</span><span class="bc-menu-label">Remove from key ${np}</span></button>`
+        : '';
+      const keys = renderNumpadButtons(item, allItems(), a.numpadMap ? a.numpadMap() : {});
+      menu.open({ id, x, y, aboveY, className: 'bc-keypad', onClose: releaseOnClose(id), html: `<div class="bc-menu-list"><div class="numpad-picker"><div class="np-row">${keys}</div></div>${remove}</div>` });
+      hold(id);
     }
 
     // Opens the editor (or image viewer for images) for the clip row under event.
@@ -2615,6 +3208,9 @@
     // row; the popup still blur-hides the moment the user clicks into one of them.
     // Keyboard opens (Ctrl/Alt+Enter) stay a hand-off: focus moves to the editor.
     const KEEP_POPUP = { keepPopup: true };
+    // Filter targets: the chip bar's chips and a row's group names (click
+    // includes, right-click excludes).
+    const FILTER_TARGET = '.filter-tag[data-filter], .filter-tag[data-group], .meta-tag[data-group]';
     async function openClipInEditor(event, row) {
       event.preventDefault(); event.stopPropagation();
       const item = a.itemById(row.dataset.id);
@@ -2698,7 +3294,7 @@
       }
       // Per-clip "..." menu + multi-select bulk actions (bar + menu share these).
       const menuBtn = t.closest('[data-action="clip-menu"]');
-      if (menuBtn) { event.stopPropagation(); const r = menuBtn.getBoundingClientRect(); openClipMenu(menuBtn.closest('.item'), r.right, r.bottom + 2); return true; }
+      if (menuBtn) { event.stopPropagation(); const r = menuBtn.getBoundingClientRect(); openClipMenu(menuBtn.closest('.item'), r.right, r.bottom + 2, r.top - 2); return true; }
       const bulkGroupOpen = t.closest('[data-action="bulk-group-open"]');
       if (bulkGroupOpen) { event.stopPropagation(); const r = bulkGroupOpen.getBoundingClientRect(); openBulkGroupMenu(r.left, r.bottom + 2); return true; }
       if (t.closest('[data-action="bulk-paste"]')) { event.stopPropagation(); pasteSelection(); return true; }
@@ -2732,12 +3328,21 @@
         let id = strip ? strip.dataset.id : null;
         if (!id && a.ensureClipId) id = await a.ensureClipId();
         if (!id) { toast(a.emptyClipToast || 'Type something first'); return true; }
-        openGroupPickerAt(id, r.left, r.bottom + 4);
+        openGroupPickerAt(id, r.left, r.bottom + 4, r.top - 4);
         return true;
       }
-      const gx = t.closest('[data-action="delete-group"]');
-      if (gx) { event.stopPropagation(); deleteGroup(gx.dataset.group); return true; }
-      const ftag = t.closest('.filter-tag[data-filter], .filter-tag[data-group]');
+      // A row's numpad badge / ghost # opens the keypad popover.
+      const npOpen = t.closest('[data-action="numpad-open"]');
+      if (npOpen) {
+        event.stopPropagation();
+        const owner = npOpen.closest('[data-id]');
+        const r = npOpen.getBoundingClientRect();
+        if (owner) openNumpadPickerAt(owner.dataset.id, r.left, r.bottom + 4, r.top - 4);
+        return true;
+      }
+      const selSimilar = t.closest('[data-action="select-similar"]');
+      if (selSimilar) { event.stopPropagation(); if (!selSimilar.disabled) selectSimilar(selSimilar.dataset.id); return true; }
+      const ftag = t.closest(FILTER_TARGET);
       if (ftag) { event.stopPropagation(); if (a.setFilterIntent) a.setFilterIntent(ftag.dataset.filter || ftag.dataset.group, 'include'); render(); return true; }
       const npRemove = t.closest('.np-remove');
       if (npRemove) { event.stopPropagation(); await a.numpadUnassign(Number(npRemove.dataset.slot)); refresh(); return true; }
@@ -2787,8 +3392,8 @@
         const row = openBtn.closest('.item');
         if (row && row.dataset && row.dataset.id) return openClipInEditor(event, row);
       }
-      const ftag = event.target.closest('.filter-tag[data-filter], .filter-tag[data-group]');
-      if (ftag && !event.target.closest('[data-action="delete-group"]')) {
+      const ftag = event.target.closest(FILTER_TARGET);
+      if (ftag) {
         event.preventDefault();
         event.stopPropagation();
         if (a.setFilterIntent) a.setFilterIntent(ftag.dataset.filter || ftag.dataset.group, 'exclude');
@@ -2818,6 +3423,23 @@
     // text (plus its HTML when the clip has one). Grabbing a row that is part of
     // a 2+ selection drags every selected clip of the grabbed row's kind, in list
     // order. Presses on a row's own controls never start a drag.
+    // The dragged row keeps its buttons out until the drag ends: dragend for a
+    // page drag; for a host-run (native file) drag the page sees no drag
+    // events, so the first pointer event after it (no button held) ends it.
+    function holdWhileDragging(id) {
+      if (typeof document === 'undefined') return;
+      hold(id);
+      const end = (e) => {
+        if (e && e.type === 'pointermove' && e.buttons) return;
+        document.removeEventListener('dragend', end, true);
+        document.removeEventListener('pointermove', end, true);
+        document.removeEventListener('pointerdown', end, true);
+        if (heldId === id && !menu.isOpen()) hold(null);
+      };
+      document.addEventListener('dragend', end, true);
+      document.addEventListener('pointermove', end, true);
+      document.addEventListener('pointerdown', end, true);
+    }
     function onDragstart(event) {
       const t = event.target && event.target.nodeType === 1 ? event.target : event.target && event.target.parentElement;
       const row = t && typeof t.closest === 'function' ? t.closest('.item') : null;
@@ -2833,12 +3455,14 @@
       if (isImage) {
         // No host support -> no drag (a bare internal image URL is useless elsewhere).
         if (!a.dragImages || !a.dragImages(items.map(itemId), event)) event.preventDefault();
+        else holdWhileDragging(row.dataset.id);
         return true;
       }
       const dt = event.dataTransfer;
       if (!dt) return false;
       dt.setData('text/plain', items.map((it) => String(it.text || '')).join('\n'));
       if (items.length === 1 && typeof items[0].html === 'string' && items[0].html) dt.setData('text/html', items[0].html);
+      holdWhileDragging(row.dataset.id);
       // effectAllowed stays at its default ("all"): a text drop target that
       // asks for "move" (rich-text composers often do) must not be refused.
       // BoardClip ignores the result either way - nothing is ever removed.
@@ -2911,6 +3535,8 @@
       onKeydown,
       onWheel,
       onDragstart,
+      onMouseover,
+      onMouseout,
       deleteGroup,
       tryAssignNumpad,
       addGroup,
@@ -2929,7 +3555,16 @@
       onQueryChange,
       reconcileVisible,
       openClipMenu: openClipMenuAt, // standalone editor/viewer windows open the same menu
+      openRowMenu: openClipMenu, // a row's "..." menu (with Select N similar), e.g. for QA
       openGroupPicker: openGroupPickerAt, // title-bar strip's + popover (same picker as the menu submenu)
+      openNumpadPicker: openNumpadPickerAt, // a row's numpad badge / ghost #
+      // Similar clips: the painted target + set, and the "Select N similar" action.
+      similar: () => ({ target: similarFor, ids: similarIds ? [...similarIds] : [] }),
+      whenSimilar,
+      selectSimilar,
+      heldId: () => heldId,
+      // The popup was hidden: the pointer is no longer over a row (its tint goes).
+      forgetPointer: () => { if (hoverId != null) { hoverId = null; refreshSimilar(); } },
       closeMenu: () => menu.close(), // popup hide/reset must not leave a stale popover
     };
   }
@@ -4133,10 +4768,20 @@
     builtinFilterTitle,
     builtinFilterIconHtml,
     renderFilterBar,
-    renderItemPicker,
+    renderChip,
     renderNumpadButtons,
     groupMembership,
     renderClipItem,
+    clipRowText,
+    renderClipMeta,
+    renderEmptyState,
+    emptyStateKind,
+    similarClipIds,
+    similarSteps,
+    similarText,
+    SIMILAR_MIN_CHARS,
+    SIMILAR_MAX_CHARS,
+    runSliced,
     renderClipActions,
     renderClipMenu,
     renderBulkMenu,

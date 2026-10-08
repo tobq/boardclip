@@ -97,28 +97,20 @@ function setThemeMode(mode) {
 }
 if (window.api.getColorScheme) window.api.getColorScheme().then(applyColorScheme).catch(() => {});
 if (window.api.onColorSchemeChanged) window.api.onColorSchemeChanged(applyColorScheme);
-// Appearance variants: surface (glass/solid, resolved by main against OS support),
-// plus dev-only accent/density/corners/borders. All ride data-* on <html>.
-function applyAppearance(s) {
-  if (!s) return;
-  const rt = s.runtime_info || {};
-  // Surface is a real user setting; the other axes are a design-audit tool and
-  // apply ONLY under BOARDCLIP_DEBUG_VARIANTS (runtime_info.debug_variants). Off
-  // the flag, the code's default look wins regardless of what the settings file
-  // holds - the tags-look-different-per-machine bug of 2026-09-02.
-  const debug = !!rt.debug_variants;
-  Core.applyVariants(document.documentElement, {
-    surfaceStyle: rt.surface_style || 'solid',
-    accentVariant: debug ? s.accent_variant : 'blue',
-    uiDensity: debug ? s.ui_density : 'normal',
-    uiCorners: debug ? s.ui_corners : 'soft',
-    uiBorders: debug ? s.ui_borders : 'bordered',
-  });
+// Appearance (surface, accent, density, corners, borders): the SAME payload
+// main sends every window (appearanceVariantPayload: runtime_info.appearance at
+// start, then 'appearance-changed'), so the popup can never render with other
+// values than the editor / viewer / approval windows. Main already resolved it:
+// the surface against OS support, borders gated on BOARDCLIP_DEBUG_VARIANTS
+// (the tags-look-different-per-machine bug of 2026-09-02). All ride data-* on <html>.
+function applyAppearance(look) {
+  if (look) Core.applyVariants(document.documentElement, look);
 }
 if (window.api.getSettings) window.api.getSettings().then(s => {
   if (!s) return;
   if (s.theme_mode) setThemeMode(s.theme_mode);
-  applyAppearance(s);
+  const rt = s.runtime_info || {};
+  applyAppearance({ ...(rt.appearance || {}), surfaceStyle: rt.surface_style || 'solid' });
   if (s.image_preview_height != null) imageZoom.load(s.image_preview_height);
   searchBox.setOptionsHeight(s.options_panel_height);
   // The saved regex toggle applies from the first open (it used to wait for Settings).
@@ -127,6 +119,7 @@ if (window.api.getSettings) window.api.getSettings().then(s => {
   searchBox.refresh();
 }).catch(() => {});
 if (window.api.onSurfaceChanged) window.api.onSurfaceChanged((style) => document.documentElement.setAttribute('data-surface', style === 'solid' ? 'solid' : 'glass'));
+if (window.api.onAppearanceChanged) window.api.onAppearanceChanged(applyAppearance);
 
 // --- Helpers ---
 function ago(ts) { return Core.ago(ts); }
@@ -234,7 +227,7 @@ function applyFilter() {
     tsAt: (i) => Number(rowItems[rows[i]] && rowItems[rows[i]].ts) || 0,
     mode: Core.search.rankMode(parsedQuery(), sortMode),
     queryKey: query,
-    emptyHtml: `<div class="empty">${query ? 'No matches' : 'Copy something to get started'}</div>`,
+    emptyHtml: () => Core.renderEmptyState({ total: items.length, query }),
   });
   recordRendererPerf('list.apply_filter', startedAt, { rendered: renderedCount(), regex: regexOn }, 60);
 }
@@ -281,23 +274,17 @@ function previewMatchIndex(ri) {
   if (!previewTerm || regexOn || !searchDocs[ri]) return null;
   return Core.search.bodyIndexOf(searchDocs[ri], searchTextLower[ri], previewTerm);
 }
-function buildItem(it, ri, nmap) {
-  const id = itemId(it);
+function buildItem(it, ri) {
   const el = document.createElement('div');
-  const pickerHtml = Core.renderItemPicker(it, { items, groups, numpadMap: nmap });
-  const actionsHtml = Core.renderClipActions(it);
-  // Read the multi-select state so a full rebuild keeps the focus cursor +
-  // checked rows painted (selection lives in the shared controller).
-  const sel = controller ? controller.selection() : null;
+  // The selection state paints a full rebuild's cursor, checked, held and
+  // similar rows (it lives in the shared controller).
   el.innerHTML = Core.renderClipItem(it, {
     imageSrc: item => `clip-img:///${esc(item.image)}`,
-    previewText: item => Core.collapsedPreviewText(item.text || '', query, regexOn, { matchIndex: previewMatchIndex(ri) }),
-    highlight: text => Core.highlight(text, query, regexOn),
-    highlightTitle: text => Core.highlight(text, query, regexOn),
-    selected: !!(sel && sel.focusId === id),
-    multiSelected: !!(sel && sel.selectedIds.has(id)),
-    pickerHtml,
-    actionsHtml,
+    query,
+    regex: regexOn,
+    matchIndex: previewMatchIndex(ri),
+    selection: controller ? controller.selection() : null,
+    actionsHtml: Core.renderClipActions(it),
   });
   return el.firstElementChild;
 }
@@ -393,6 +380,9 @@ const appAdapter = {
   visibleIds: () => clipList.ids(),
   firstVisibleId: () => clipList.firstVisibleId(),
   allItems: () => items,
+  // Similar clips: a clip too big to normalise is searched through its
+  // lowercase search haystack (already built for search, no second copy).
+  lowerOf: (item) => searchIndexFor(item).hay,
   groupNames: () => groups,
   // The shared list renders the focused row on demand, then paints.
   renderSelection: (state, opts) => clipList.paintSelection(state, opts),
@@ -416,7 +406,7 @@ const clipList = Core.createClipList({
   listEl,
   newestEl: document.getElementById('listNewest'),
   barEl: document.getElementById('selectionBar'),
-  renderRow: (i) => buildItem(items[filtered[i]], filtered[i], numpadMap()),
+  renderRow: (i) => buildItem(items[filtered[i]], filtered[i]),
   controller,
   onRendered: () => scheduleRelativeTimeRefresh(),
 });
@@ -438,12 +428,15 @@ document.addEventListener('auxclick', (e) => controller.onAuxclick(e));
 document.addEventListener('contextmenu', (e) => controller.onContextmenu(e));
 document.addEventListener('wheel', (e) => controller.onWheel(e), { passive: false });
 document.addEventListener('dragstart', (e) => controller.onDragstart(e));
+document.addEventListener('mouseover', (e) => controller.onMouseover(e));
+document.addEventListener('mouseout', (e) => controller.onMouseout(e));
 
 // Popup reset (called by the main process when the window is shown).
 window.resetPopupState = function() {
   appDialogs.dismiss();
   controller.closeMenu(); // a popover left open at blur-hide would eat keys on re-show
   controller.clearSelection({ paint: false });
+  controller.forgetPointer(); // no stale similar-clip tint from the last hover
   clipList.scrollToTop(); // reopening always starts at the newest clip
   document.getElementById('settingsView')?.classList.remove('show');
   document.getElementById('mainView')?.classList.remove('hidden');
@@ -997,32 +990,34 @@ document.getElementById('updateNow').addEventListener('click', async () => {
   }
 });
 
-const VARIANT_SETTING_KEYS = { surfaceStyle: 'surface_style', accentVariant: 'accent_variant', uiDensity: 'ui_density', uiCorners: 'ui_corners', uiBorders: 'ui_borders' };
+// The switcher writes the real settings (accent_mode, ui_density, ui_corners
+// sync; surface_style + ui_borders stay on this machine); main answers with
+// 'appearance-changed', which repaints this window and every other one.
+const VARIANT_SETTING_KEYS = { surfaceStyle: 'surface_style', accentVariant: 'accent_mode', uiDensity: 'ui_density', uiCorners: 'ui_corners', uiBorders: 'ui_borders' };
 function renderAppearanceVariants(s) {
   const host = document.getElementById('appearanceVariants');
   if (!host) return;
   host.innerHTML = '';
   const rt = s.runtime_info || {};
-  // Surface ships as a real setting; the rest are dev-only auditioning knobs.
+  // Surface ships as a real setting; the other rows show only under the debug
+  // flag until Settings > Appearance gets its own controls.
   const fields = rt.debug_variants
     ? ['surfaceStyle', 'accentVariant', 'uiDensity', 'uiCorners', 'uiBorders']
     : ['surfaceStyle'];
+  const look = rt.appearance || {};
   const switcher = Core.createVariantSwitcher({
     fields,
+    // The accent row picks the accent MODE (System = the OS accent, per device).
+    options: { accentVariant: [['system', 'System'], ['blue', 'Blue'], ['teal', 'Teal'], ['mono', 'Mono']] },
     initial: {
       surfaceStyle: s.surface_style || 'auto',
-      accentVariant: s.accent_variant || 'blue',
-      uiDensity: s.ui_density || 'normal',
-      uiCorners: s.ui_corners || 'soft',
-      uiBorders: s.ui_borders || 'bordered',
+      accentVariant: look.accentMode || 'system',
+      uiDensity: look.uiDensity || 'normal',
+      uiCorners: look.uiCorners || 'soft',
+      uiBorders: look.uiBorders || 'bordered',
     },
     onChange: (next, key) => {
       window.api.saveSettings({ [VARIANT_SETTING_KEYS[key]]: next[key] });
-      // Non-surface axes apply instantly; surface waits for main's OS-resolved
-      // broadcast (onSurfaceChanged) so unsupported systems stay solid.
-      Core.applyVariants(document.documentElement, {
-        accentVariant: next.accentVariant, uiDensity: next.uiDensity, uiCorners: next.uiCorners, uiBorders: next.uiBorders,
-      });
     },
   });
   host.appendChild(switcher.el);

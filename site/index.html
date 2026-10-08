@@ -438,17 +438,12 @@
     // Rows render through the SAME shared list as the app (Core.createClipList,
     // created below): it keeps your place across every rebuild.
     let visibleRows = [];
-    let rowNumpadMap = {};
     function renderClipRow(clip) {
-      const sel = controller ? controller.selection() : null;
       return Core.renderClipItem(clip, {
-        selected: !!(sel && sel.focusId === Core.itemId(clip)),
-        multiSelected: !!(sel && sel.selectedIds.has(Core.itemId(clip))),
         imageSrc: item => item.imageSrc,
-        previewText: item => Core.collapsedPreviewText(item.text || "", state.query, state.regex),
-        highlight: text => Core.highlight(text, state.query, state.regex),
-        highlightTitle: text => Core.highlight(text, state.query, state.regex),
-        pickerHtml: Core.renderItemPicker(clip, { items: clips, groups: labels, numpadMap: rowNumpadMap }),
+        query: state.query,
+        regex: state.regex,
+        selection: controller ? controller.selection() : null,
         actionsHtml: Core.renderClipActions(clip),
       });
     }
@@ -459,14 +454,13 @@
       updateDemoSortButton(); // defined below; renderClips first runs at the bottom of this script
       renderFilterChips();
       renderDemoSettings();
-      rowNumpadMap = Core.numpadMap(clips);
       visibleRows = visible;
       demoList.update({
         ids: visible.map((clip) => Core.itemId(clip)),
         tsAt: (i) => Number(visible[i] && visible[i].ts) || 0,
         mode: Core.search.rankMode(Core.search.parseQuery(state.query), state.sortMode),
         queryKey: state.query,
-        emptyHtml: `<div class="empty">No clips found. Try a different search.</div>`,
+        emptyHtml: () => Core.renderEmptyState({ total: clips.length, query: state.query }),
       });
     }
 
@@ -929,6 +923,8 @@
     demoWindowEl.addEventListener("contextmenu", (event) => controller.onContextmenu(event));
     demoWindowEl.addEventListener("wheel", (event) => controller.onWheel(event), { passive: false });
     demoWindowEl.addEventListener("dragstart", (event) => controller.onDragstart(event));
+    demoWindowEl.addEventListener("mouseover", (event) => controller.onMouseover(event));
+    demoWindowEl.addEventListener("mouseout", (event) => controller.onMouseout(event));
 
     // Live syntax highlighting + autocomplete + the options panel (shared helper),
     // same as the app popup. The panel height is kept per visitor in localStorage.

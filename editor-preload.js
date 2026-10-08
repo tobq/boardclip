@@ -55,4 +55,11 @@ contextBridge.exposeInMainWorld('editorApi', {
     ipcRenderer.on('color-scheme-changed', listener);
     return () => ipcRenderer.removeListener('color-scheme-changed', listener);
   },
+  // Appearance (accent, density, corners, theme mode, this window's surface):
+  // one event whenever any of it changes - a setting, another device, the OS accent.
+  onAppearanceChanged: (callback) => {
+    const listener = (_, look) => callback(look || {});
+    ipcRenderer.on('appearance-changed', listener);
+    return () => ipcRenderer.removeListener('appearance-changed', listener);
+  },
 });

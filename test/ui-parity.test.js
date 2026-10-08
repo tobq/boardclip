@@ -228,8 +228,8 @@ const siteCss = read('site/styles.css');
   assert.ok(!declares(siteCss, 'bc-editor-area'), 'site/styles.css re-declares editor style (belongs in clipboard-popup.css)');
   assert.ok(popupCss.includes('.tag-submenu { display: none; position: absolute; top: 100%;'),
     'tag submenus must touch their parent so hover does not drop while moving into the menu');
-  assert.ok(popupCss.includes('.gp-row > .tag-menu-node > .tag-submenu { top: -4px; left: calc(100% - 1px); }'),
-    'picker submenus must overlap horizontally with their parent so hover does not drop');
+  assert.ok(popupCss.includes('.bc-menu .tag-submenu { top: -4px; left: calc(100% - 1px);'),
+    'menu and popover submenus must overlap horizontally with their parent so hover does not drop');
 }
 
 // 11) Search bar parity: BOTH consumers render the shared shell's sort + regex
@@ -289,21 +289,24 @@ const siteCss = read('site/styles.css');
 }
 
 // 10) Menu-system consistency: ONE shared floating-surface rule covers the
-//     in-row picker, hover submenus, and the popover menus (no per-surface
-//     shadow/padding forks), and the numpad renders in real keypad formation
-//     (7 8 9 / 4 5 6 / 1 2 3) from the ONE shared renderer.
+//     hover submenus and the popover menus (the clip menu, a row's keypad and
+//     group popovers; no per-surface shadow/padding forks), and the numpad
+//     renders in real keypad formation (7 8 9 / 4 5 6 / 1 2 3) from the ONE
+//     shared renderer.
 {
-  assert.ok(/\.numpad-picker,\s*\.tag-submenu,\s*\.bc-menu\s*\{/.test(popupCss),
-    'clipboard-popup.css must define the single shared floating-surface rule (.numpad-picker, .tag-submenu, .bc-menu)');
+  assert.ok(/\.tag-submenu,\s*\.bc-menu\s*\{/.test(popupCss),
+    'clipboard-popup.css must define the single shared floating-surface rule (.tag-submenu, .bc-menu)');
   const surfaceForks = (popupCss.match(/box-shadow:[^;]*var\(--menu-edge\)/g) || []).length;
   assert.strictEqual(surfaceForks, 1, `floating surfaces re-forked their shadows (${surfaceForks} menu-edge shadows; dialogs, the toast and the Newest pill ride the ONE shared rule too)`);
   const order = (html) => [...html.matchAll(/data-n="(\d)"/g)].map((m) => Number(m[1]));
   const expected = [7, 8, 9, 4, 5, 6, 1, 2, 3];
-  assert.deepStrictEqual(order(ui.renderItemPicker({ id: 'x', type: 'text', text: 'a' }, { items: [], groups: [] })), expected,
-    'renderItemPicker numpad must be in keypad formation (7 8 9 / 4 5 6 / 1 2 3)');
   assert.deepStrictEqual(order(ui.renderClipMenu({ id: 'x', type: 'text', text: 'a' }, { items: [], groups: [], numpadMap: {} })), expected,
     'renderClipMenu numpad submenu must be in keypad formation');
   assert.ok(/\.np-row\s*\{[^}]*grid-template-columns:\s*repeat\(3/.test(popupCss), '.np-row must be a 3-column grid (keypad formation)');
+  // A row's # popover reuses the same keypad renderer inside the shared menu.
+  const coreSrc = read('site/shared/clipboard-ui-core.js');
+  const popover = coreSrc.slice(coreSrc.indexOf('function openNumpadPickerAt('), coreSrc.indexOf('function openNumpadPickerAt(') + 1200);
+  assert.ok(/renderNumpadButtons\(item/.test(popover) && /menu\.open\(/.test(popover), "a row's keypad popover = renderNumpadButtons in the shared createMenu");
 }
 
 // 13) Title-bar tag strip: ONE shared renderer (renderClipTagChips) + ONE
@@ -469,6 +472,119 @@ const siteCss = read('site/styles.css');
   assert.deepStrictEqual(ui.resolveFadeVars({ scrollTop: 200, clientHeight: 100, scrollHeight: 300 }, sizes), { top: 24, bottom: 0 }, 'at the end: top fade only');
   assert.ok(rules(popupCss).some((r) => r.sel === '.bc-scroll-fade' && /mask-image:/.test(r.body) && /var\(--fade-top\)/.test(r.body) && /var\(--fade-bottom\)/.test(r.body)), 'the ONE .bc-scroll-fade mask');
   assert.ok(/@property --fade-top/.test(popupCss) && /@property --fade-bottom/.test(popupCss), 'the fade edges are @property-registered so they animate');
+}
+
+// 15) Rows (UI overhaul D / D2): ONE row anatomy from the shared renderer, the
+//     star only pins (its hover picker is gone), a text row's buttons ride the
+//     shared reveal and an image row's float over the picture, the meta line's
+//     ghost # / + open the keypad / group popovers, a filter chip never deletes
+//     a group, the selection bar takes the chip bar's place, the empty states
+//     and the similar-clip highlight come from the shared core for app + demo.
+{
+  const coreSrc = read('site/shared/clipboard-ui-core.js');
+  const stripComments = (css) => css.replace(/\/\*[\s\S]*?\*\//g, '');
+  const rules = (css) => [...stripComments(css).matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((m) => ({ sel: m[1].trim(), body: m[2] }));
+  const row = (item) => ui.renderClipItem({ ts: 1, ...item }, { actionsHtml: ui.renderClipActions(item), imageSrc: () => 'x.png' });
+  // Anatomy: real title (strong) + the whole text as the dim preview, minus a
+  // first line that only repeats the title (it is not shown twice).
+  const titled = row({ id: 't', type: 'text', title: 'Launch plan', text: '\nLaunch Plan \n1. Freeze' });
+  assert.ok(/<div class="clip-title">Launch plan<\/div>\s*<div class="preview collapsed">1\. Freeze<\/div>/.test(titled), 'a titled row whose first line is the title: title + the rest');
+  const retitled = row({ id: 't2', type: 'text', title: 'Release', text: 'Launch plan\n1. Freeze' });
+  assert.ok(/<div class="clip-title">Release<\/div>\s*<div class="preview collapsed">Launch plan 1\. Freeze<\/div>/.test(retitled), 'a titled row: title line + the text as the preview');
+  assert.ok(!row({ id: 't3', type: 'text', title: 'Just this', text: 'just this' }).includes('class="preview'), 'a text that IS its title has no preview line');
+  // Untitled: the first non-empty line is the primary line, the rest the preview.
+  const untitled = row({ id: 'u', type: 'text', text: '\n\n  First line\nsecond\nthird' });
+  assert.ok(/<div class="clip-title derived">First line<\/div>\s*<div class="preview collapsed">second third<\/div>/.test(untitled), 'an untitled row: its first line (derived) + the rest');
+  const single = row({ id: 's', type: 'text', text: 'just one line' });
+  assert.ok(single.includes('<div class="clip-title derived">just one line</div>') && !single.includes('class="preview'), 'a single-line untitled row has no preview line');
+  const hl = ui.renderClipItem({ id: 'h', type: 'text', ts: 1, text: 'alpha beta\ngamma delta' }, { query: 'gamma', actionsHtml: '' });
+  assert.ok(hl.includes('<mark>gamma</mark>'), 'search highlighting reaches the preview part');
+  assert.ok(ui.renderClipItem({ id: 'h', type: 'text', ts: 1, text: 'alpha beta\ngamma' }, { query: 'beta' }).includes('alpha <mark>beta</mark>'), 'and the derived primary line');
+  assert.ok(rules(popupCss).some((r) => r.sel === '.clip-title.derived' && /font-weight:\s*var\(--fw-regular\)/.test(r.body)), 'the derived line is the regular weight');
+  // Each part is a one-line window around the match (a long line lays out only
+  // what a row can show, with the match on screen), never the whole text.
+  const long = `${'x'.repeat(3000)}NEEDLE${'y'.repeat(3000)}\n${'z'.repeat(2000)}`;
+  const parts = ui.clipRowText({ type: 'text', text: long }, { query: 'needle', matchIndex: 3000 });
+  assert.ok(parts.derived && parts.primary.length <= 330 && parts.primary.indexOf('NEEDLE') >= 0 && parts.primary.indexOf('NEEDLE') < 40, 'the derived line windows onto the match');
+  assert.ok(parts.rest.length <= 330 && /^z+\.\.\.$/.test(parts.rest), 'the rest is a bounded window too');
+  // The first line's end is looked for within ROW_LINE_SCAN chars only: a huge
+  // one-line clip (minified JSON, base64) is never scanned whole per render.
+  const oneLine = ui.clipRowText({ type: 'text', text: `${'w'.repeat(70000)}\nsecond` }, {});
+  assert.ok(oneLine.derived && /^w+\.\.\.$/.test(oneLine.primary) && oneLine.primary.length <= 330 && oneLine.rest === '', 'no newline within the scan: the rest counts as the first line');
+  assert.ok(rules(popupCss).some((r) => r.sel === '.preview' && /color:\s*var\(--text-dim\)/.test(r.body) && /var\(--font-mono\)/.test(r.body)), 'the preview is dim mono');
+  // The star only pins: no hover picker anywhere.
+  assert.ok(!('renderItemPicker' in ui) && !/renderItemPicker|pickerHtml/.test(coreSrc + appHtml + siteHtml), 'the star hover picker (renderItemPicker / pickerHtml) is gone');
+  assert.ok(!/\.pin-area:hover|\.gp-row/.test(stripComments(popupCss)), 'no CSS for the star hover picker');
+  assert.ok(/<div class="pin-area">\s*<button class="star"[^>]*data-action="pin"[^>]*>[\s\S]*?<\/button>\s*<\/div>/.test(single), 'the pin area holds only the star');
+  // Meta line: badge + tags as text + the hover ghosts on the reveal.
+  const meta = row({ id: 'm', type: 'text', text: 'body text here', pin: { number: 3, groups: ['Work'] } });
+  assert.ok(/data-action="numpad-open"[^>]*>#3<\/button>/.test(meta) && /class="meta-tag" type="button" data-group="Work"/.test(meta), 'meta: #N badge + group names as text');
+  assert.ok(/<span class="bc-reveal meta-reveal"><span class="bc-reveal-inner"><button class="meta-ghost"[^>]*data-action="tag-add"/.test(meta), 'meta: a set key has no ghost # (the badge opens the keypad); the + rides the reveal');
+  assert.ok(/class="meta-ghost"[^>]*data-action="numpad-open"/.test(single), 'meta: an unset key shows the ghost # on the reveal');
+  assert.ok(/\.meta \{[^}]*white-space:\s*nowrap/.test(stripComments(popupCss)) && /\.meta \{[^}]*height:\s*var\(--meta-h\)/.test(stripComments(popupCss)), 'the meta line is one fixed-height line (the ghosts never wrap it)');
+  assert.ok(/\[data-action="numpad-open"\][\s\S]{0,300}openNumpadPickerAt\(/.test(coreSrc), 'the badge / ghost # opens the keypad popover');
+  // Row buttons: text rows on the reveal, image rows floating over the picture.
+  assert.ok(/<span class="bc-reveal row-actions"><span class="bc-reveal-inner">[^]*data-action="clip-menu"/.test(titled), "a text row's buttons ride the shared reveal");
+  const image = row({ id: 'i', type: 'image', image: 'a.png', width: 400, height: 100 });
+  assert.ok(/<span class="preview-img"[^>]*><img [^>]*><span class="img-actions-anchor"><span class="img-actions">[^]*data-action="open-img"/.test(image) && !image.includes('row-actions'),
+    "an image row's buttons float over the picture (no actions column)");
+  for (const want of ['.item:hover .bc-reveal.row-actions', '.item:focus-within .bc-reveal.row-actions', '.item.actions-held .bc-reveal.row-actions']) {
+    assert.ok(rules(popupCss).some((r) => r.sel.split(/,\s*/).includes(want) && /grid-template-columns:\s*1fr/.test(r.body)), `row buttons open on ${want}`);
+  }
+  assert.ok(rules(popupCss).some((r) => r.sel === '.img-actions' && /backdrop-filter/.test(r.body) && /var\(--menu\)/.test(r.body)), 'the image chip is frosted, on the opaque menu colour');
+  assert.ok(/el\.classList\.toggle\('actions-held', id === state\.heldId\)/.test(coreSrc) && /onClose: releaseOnClose\(id\)/.test(coreSrc), "a row's buttons are held while its menu is open");
+  assert.ok(/holdWhileDragging\(row\.dataset\.id\)/.test(coreSrc), "and while it is dragged");
+  // Closing a mouse-opened row menu / popover (Esc, a scroll) hands focus back
+  // to the search field, so the opener's leftover focus (:focus-within) does not
+  // keep the row's buttons out; a keyboard-opened one leaves focus where Tab put it.
+  assert.ok(/function releaseOnClose\(id\)[\s\S]{0,700}opener\.matches\(':focus-visible'\)[\s\S]{0,500}a\.focusSearch\(\)/.test(coreSrc), 'a closed row menu does not leave the row held by focus');
+  // A consumer that rewrites the search text (clear X, a chip) closes a
+  // suggestion list built for the old text (it covered the chip bar).
+  assert.ok(/function refresh\(\) \{\s*if \(suggestOpen && inputEl\.value !== suggestFor\) closeSuggest\(\);/.test(coreSrc), 'searchBox.refresh() closes a stale suggestion list');
+  // Chips: one renderer, and a filter chip never deletes a group.
+  const bar = ui.renderFilterBar({ items: [{ id: 'x', type: 'text', text: 'a', pin: { groups: ['Work'] } }], groups: ['Work'], activeFilters: new Set(['Work']), query: 'group:Work' });
+  assert.ok(!/delete-group|gtag-x/.test(bar) && !/data-action="delete-group"/.test(coreSrc), 'no hover x that deletes a group on a filter chip');
+  assert.ok(/class="filter-tag group-tag active"/.test(bar), 'an active group chip');
+  assert.ok((coreSrc.match(/renderChip\(\{/g) || []).length >= 3, 'the chip bar (icon facets + group chips) and the options panel chips share renderChip');
+  assert.ok(rules(popupCss).some((r) => r.sel.split(/,\s*/).includes('.filter-tag.active') && /var\(--accent-bg\)/.test(r.body) && /color:\s*var\(--accent\)/.test(r.body)), 'active chip = the accent tint');
+  assert.ok(!rules(popupCss).some((r) => /\.filter-tag\.group-tag$/.test(r.sel) && /--accent/.test(r.body)), 'idle group chips are text colours, never accent');
+  assert.ok(!/borders="borderless"\][^{]*\.filter-tag/.test(popupCss), 'no filled-chip variant');
+  // Selection bar in the chip bar's place, at its height.
+  const shell = ui.renderPopupShell({});
+  assert.ok(/<div class="chip-row">\s*<div class="group-filters"[^>]*><\/div>\s*<div class="selection-bar hidden"/.test(shell), 'the selection bar shares the chip row');
+  assert.ok(rules(popupCss).some((r) => r.sel === '.chip-row:has(> .selection-bar:not(.hidden)) > .group-filters' && /visibility:\s*hidden/.test(r.body)), 'the chips step aside while selecting');
+  assert.ok(rules(popupCss).some((r) => /\.chip-row > \.group-filters, \.chip-row > \.selection-bar/.test(r.sel) && /grid-area:\s*1 \/ 1/.test(r.body)), 'both in one grid cell: no height change');
+  const selBar = rules(popupCss).find((r) => r.sel === '.selection-bar');
+  assert.ok(selBar && !/background|border/.test(selBar.body), 'no tinted band, no border');
+  // Empty states: ONE renderer, both consumers.
+  for (const [name, html] of [['index.html', appHtml], ['site/index.html', siteHtml]]) {
+    assert.ok(/emptyHtml:\s*\(\)\s*=>\s*Core\.renderEmptyState\(/.test(html), `${name} renders the shared empty states`);
+    assert.ok(!/class="empty"/.test(html), `${name} still builds its own empty markup`);
+    // Similar highlight: the controller owns it; the host routes hover to it.
+    assert.ok(/["']mouseover["'],\s*\([^)]*\)\s*=>\s*controller\.onMouseover\(/.test(html) && /["']mouseout["'],\s*\([^)]*\)\s*=>\s*controller\.onMouseout\(/.test(html), `${name} routes hover to the shared controller (similar clips)`);
+    assert.ok(/selection:\s*controller \? controller\.selection\(\) : null/.test(html), `${name} paints rows from the controller's selection state (cursor, checked, held, similar)`);
+  }
+  for (const kind of ['no-clips', 'no-match', 'filtered', 'empty-group']) assert.ok(ui.renderEmptyState({ kind }).includes(`data-empty="${kind}"`), `empty state ${kind}`);
+  assert.strictEqual(ui.emptyStateKind({ total: 0, query: 'x' }), 'no-clips');
+  assert.strictEqual(ui.emptyStateKind({ total: 5, query: 'zzz' }), 'no-match');
+  assert.strictEqual(ui.emptyStateKind({ total: 5, query: 'group:Work' }), 'empty-group');
+  assert.strictEqual(ui.emptyStateKind({ total: 5, query: 'is:pinned since:7d' }), 'filtered');
+  assert.ok(ui.renderEmptyState({ total: 5, query: 'zzz' }).includes('data-action="clear-search-filters"'), 'a no-match state offers the way out');
+  assert.ok(ui.renderEmptyState({ kind: 'no-match', nudgeHtml: '<b>n</b>' }).includes('<div class="empty-nudge"><b>n</b></div>'), 'the nudge slot is there for the search work');
+  // Similar rows: a neutral wash + a dim dotted edge, never the selection hue
+  // (the cursor / checked rows own --accent-bg), and a pin edge wins over it.
+  const similarRule = rules(popupCss).find((r) => r.sel === '.item.similar');
+  assert.ok(similarRule && /var\(--hover\)/.test(similarRule.body) && !/--accent/.test(similarRule.body) && /--row-edge:[^;]*var\(--text-dim\)/.test(similarRule.body), 'similar rows: a neutral wash + dim edge, no accent');
+  const cssRules = rules(popupCss);
+  assert.ok(cssRules.findIndex((r) => r.sel === '.item.similar') < cssRules.findIndex((r) => r.sel === '.item.has-pin'), 'the pin edge wins over the similar edge (later rule)');
+  // Meta line: group names whole or not at all (a wrapping, clipped box), never fragments.
+  assert.ok(/<span class="meta-tags"><button class="meta-tag"/.test(meta), 'meta: group names sit in one .meta-tags box');
+  const tagsRule = cssRules.find((r) => r.sel === '.meta-tags');
+  assert.ok(tagsRule && /flex-wrap:\s*wrap/.test(tagsRule.body) && /height:\s*var\(--meta-h\)/.test(tagsRule.body) && /overflow:\s*hidden/.test(tagsRule.body), 'a name that does not fit wraps out of the one-line box whole');
+  // The chip cell keeps a populated chip bar's height even when no chip exists,
+  // so the selection bar never pushes the list down.
+  const chipRow = cssRules.find((r) => r.sel === '.chip-row');
+  assert.ok(chipRow && /min-height:\s*max\(var\(--ctl-md\),\s*calc\(var\(--ctl-sm\) \+ 2 \* var\(--sp-1\)\)\)/.test(chipRow.body), 'the chip row reserves the bar height when the chip bar is empty');
 }
 
 console.log('ui-parity.test.js: all parity guards passed');

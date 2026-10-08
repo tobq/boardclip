@@ -73,6 +73,15 @@ function conceal(win) {
   }
   try { win.setSkipTaskbar(true); } catch {}
 }
+// The popup's open fade sets a layered alpha natively (not through setOpacity)
+// and then clears it: never on a window concealed by opacity, which that would
+// put back on screen. Cloaked windows fade for real (nothing is drawn).
+if (dwm) {
+  for (const name of ['setWindowAlpha', 'clearLayered']) {
+    const nativeFn = dwm[name];
+    dwm[name] = (win, ...rest) => (transparent.has(win) ? { ok: false, reason: 'qa-concealed' } : nativeFn(win, ...rest));
+  }
+}
 proto.show = function show() { conceal(this); return nativeShowInactive.call(this); };
 proto.showInactive = function showInactive() { conceal(this); return nativeShowInactive.call(this); };
 proto.focus = function focus() { record('window_focus_blocked'); };

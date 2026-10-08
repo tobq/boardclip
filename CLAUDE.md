@@ -416,7 +416,15 @@ build could re-trigger the race.
   -> `imageZoom.applyKey`) because macOS menu key equivalents beat the page; the demo uses the
   `controller.onKeydown` path. No async image decoding: rebuilt rows painted blank for a frame. Preview markup carries `width`/`height` + `--ar`/`--nw`; CSS width =
   min(row, height x ratio, real width). Stored dims match the real PNGs (checked on 1529 live images).
-- **Dev auto-reload** — `fs.watch` on `index.html` triggers `reloadIgnoringCache()` (debounced 300ms)
+- **Dev auto-reload** — `fs.watch` on index.html / clipboard-ui-core.js / the popup + token sheets
+  triggers `reloadIgnoringCache()` (debounced 300ms) ONLY when the file's size or mtime moved (fixed
+  2026-10-07, `26947e2`): with Windows last-access updates on (default "system managed"), a READ fires
+  the watcher, so opening an editor (which loads the same files) or an indexer/AV scan reloaded the
+  popup from scratch, list and icon font included. Never react to a bare watch event.
+- **Build info git is lock-free** (`lib/build-info.js`, `--no-optional-locks`, `b66ddcd`): its 1 s
+  timeout killed a slow `git status` while it held `.git/index.lock`, leaving a stale lock that blocked
+  every commit (and would block an install's updater pull). A 0-byte `index.lock` with no git running
+  = stale; remove it.
 
 ## AI Access (local MCP server)
 

@@ -496,10 +496,10 @@ async function writeInPlace(filePath, data) {
 
 // Settings keys dropped by removed features. Stripped on load so a file written by an
 // older build cannot keep dead state alive (the in-app AI search keys included a
-// plaintext API key). In-app AI search was removed 2026-09-02; the regex toggle
-// became the search mode on 2026-10-08 (regex_search: true loads as 'regex').
-const REMOVED_SETTING_KEYS = ['ai_search_endpoint', 'ai_search_key', 'ai_search_model', 'ai_search_scope', 'regex_search'];
-const SEARCH_MODE_VALUES = ['basic', 'regex', 'advanced'];
+// plaintext API key). In-app AI search was removed 2026-09-02; search_mode (a
+// three-way picker that lived for an hour on 2026-10-08) folds back into the
+// Regex toggle (regex_search, now per device).
+const REMOVED_SETTING_KEYS = ['ai_search_endpoint', 'ai_search_key', 'ai_search_model', 'ai_search_scope', 'search_mode'];
 
 function loadSettings() {
   try {
@@ -511,7 +511,7 @@ function loadSettings() {
     // (before the defaults fill in what it lacks).
     const promoted = appearance.migrateAppearanceSettings(loaded, { debugVariants: debugVariantsEnabled() });
     const merged = { ...DEFAULT_SETTINGS, ...(promoted && typeof promoted === 'object' ? promoted : {}) };
-    if (promoted && promoted.regex_search === true && !promoted.search_mode) merged.search_mode = 'regex';
+    if (promoted && promoted.search_mode === 'regex' && promoted.regex_search !== true) merged.regex_search = true;
     for (const key of REMOVED_SETTING_KEYS) delete merged[key];
     return merged;
   } catch {
@@ -1180,7 +1180,7 @@ function mergeGroups(local, remote) {
 // Settings the save-settings IPC may write without touching history or sync
 // (per-machine display knobs; the window surface reaches the windows through
 // its own broadcast).
-const LOCAL_ONLY_SETTING_KEYS = new Set(['image_preview_height', 'options_panel_height', 'surface_style', 'glass_scope', 'search_mode', 'find_mode', 'find_case']);
+const LOCAL_ONLY_SETTING_KEYS = new Set(['image_preview_height', 'options_panel_height', 'surface_style', 'glass_scope', 'regex_search', 'find_mode', 'find_case']);
 
 function remoteSettingsPayload() {
   const remoteSave = {
@@ -1213,12 +1213,11 @@ function remoteSettingsPayload() {
   // machine's screen and popup size.
   delete remoteSave.image_preview_height;
   delete remoteSave.options_panel_height;
-  // The search mode and the editor find's mode + match case: per surface, per
-  // device (each machine keeps the way it searches).
-  delete remoteSave.search_mode;
+  // The search field's Regex toggle and the editor find's Regex + match case:
+  // per device (each machine keeps the way it searches).
+  delete remoteSave.regex_search;
   delete remoteSave.find_mode;
   delete remoteSave.find_case;
-  delete remoteSave.regex_search;
   // AI Access: per-machine, never synced. (groups_shared_with_ai DOES sync - it
   // is user curation that should travel between machines.)
   delete remoteSave.mcp_secret;
@@ -6804,7 +6803,7 @@ function setupIPC() {
   ipcMain.handle('save-settings', (_, body) => {
     if (body.max_age_days !== undefined) settings.max_age_days = Math.max(1, parseInt(body.max_age_days));
     if (body.max_size_gb !== undefined) settings.max_size_gb = Math.max(0.1, parseFloat(body.max_size_gb));
-    if (body.search_mode !== undefined && SEARCH_MODE_VALUES.includes(body.search_mode)) settings.search_mode = body.search_mode;
+    if (body.regex_search !== undefined) settings.regex_search = !!body.regex_search;
     if (body.find_mode !== undefined && ['basic', 'regex'].includes(body.find_mode)) settings.find_mode = body.find_mode;
     if (body.find_case !== undefined) settings.find_case = !!body.find_case;
     if (body.theme_mode !== undefined && ['system', 'light', 'dark'].includes(body.theme_mode)) settings.theme_mode = body.theme_mode;

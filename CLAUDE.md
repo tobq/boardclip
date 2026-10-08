@@ -239,8 +239,8 @@ Otherwise the key passes through so normal numpad typing works. Main thread call
   field (Last 7 days -> `since:7d`); `OPTION_FIELDS` (derived: FIELD_INFO keys no facet row
   writes, minus is:/sort:/id:) are one key chip each, painted as the field paints a key
   (`queryTokenHtml` = lexQuery's `.qh-*` spans), a click appends `key:` and opens the
-  autocomplete on its values (outside Advanced it asks for the value instead, see Search modes);
-  `SYNTAX_NOTES` is ONE line PER MODE. All in one label | chips grid (Date / Type / Size / More). `SYNTAX_HELP`, `SYNTAX_FOOT`, FIELD_INFO
+  autocomplete on its values;
+  `SYNTAX_NOTES` is ONE line (-word, "a phrase", a OR b, (a b), /regex/). All in one label | chips grid (Date / Type / Size / More). `SYNTAX_HELP`, `SYNTAX_FOOT`, FIELD_INFO
   `group`/`example` are gone; ui-parity guards it. A bare known key (`title:`) lexes as a
   prefix (it used to paint as plain text until a value followed).
 - **Popup header + search field + options panel (2026-10-07, UI overhaul B)**: the popup header
@@ -266,7 +266,7 @@ Otherwise the key passes through so normal numpad typing works. Main thread call
   QA: `qa-ui-shots --only popup-chips-many`. macOS needs
   `acceptFirstMouse` on the popup (it never blur-hides, so it is often inactive; unverified on a Mac). The field is flat (no fill, `--line` hairline underline, accent on focus);
   `attachSearchBox` owns its chrome for app + demo: placeholder "Click here to search..." until
-  focused, clear / sort / mode chip + tune on the ONE `.bc-reveal` (grid 0fr -> 1fr width track, both
+  focused, clear / sort / Regex + tune on the ONE `.bc-reveal` (grid 0fr -> 1fr width track, both
   Forge belts) and the options panel (grid-rows fold + `inert`, facet chips from
   `Search.OPTION_FACETS` writing tokens via `applyFacet`; a chip-bar filter (is:pinned/image/
   numpad) is never a panel option, key chips + one notes line,
@@ -550,38 +550,46 @@ clear-all). All popup CSS + theme variables live in `site/shared/clipboard-popup
   Unknown `word:val` → stripped to `val` as free text + recorded in `parsed.unknown` for a
   hint. URL/Windows-path values (`http://`, `C:\`) are left verbatim. A quoted token is literal
   (`"-foo"`, `"title:x"`, `"OR"`); `/usr/bin` and an unclosed `/abc` are text.
-- **Search modes (2026-10-08, `SEARCH-MODES-PLAN.md`, the spec Forge's mode lane got too)**:
+- **One query language, a Regex TYPING toggle, the chip-row cluster (2026-10-08, `SEARCH-MODES-PLAN.md`)**:
   ONE scanner (`scanQuery`) feeds parse, lex, validate and the chip edits. `parseQuery` builds an
   AND/OR/NOT tree: top-level leaves fill the flat fields as before (now `num:1 num:2` = AND, flagged
   with an "OR" fix; a negated single-valued filter is IGNORED and flagged with its inverse), a
-  same-dimension OR of filter values is `anyOf` (the or/and pill: dims = group, kinds of clip
+  same-dimension OR of filter values is `anyOf` (dims = group, kinds of clip
   (image/text/url/multiline/rich), num; pinned and numpad are their own), anything else is
   `compound` (evaluated as a tree; a chip whose value sits inside one is greyed "part of a custom
   filter"). `terms` = every positive content term, the ones inside an OR too (highlight +
   relevance). ONE compile primitive `compileTerm(value, {regex, caseSensitive})` serves search, the
   row highlight (`termSpans`: every word marked; the old whole-query highlight marked nothing for
   two words) and the editor find (`findAllMatches`); `prepareQuery`/`matchesQuery` are gone.
-  The canonical query is ALWAYS Advanced text; `attachSearchBox` OWNS it (`getQuery`/`setQuery`,
-  onChange gets the query, consumers never read or write the input): Basic shows literal words +
-  pills, Regex one pattern + pills (`splitQuery`/`composeQuery`), Advanced the text. Switches
-  (`switchModeQuery`): into Advanced the query shows as is (Basic `-rf` appears as `"-rf"`, a
-  Regex as `/.../`: the format is learned); Basic <-> Regex keep the typed text; out of Advanced a
-  `compound` is dropped, named first in the mode list (`modeSwitchLoss`) and offered back with
-  Undo (toast). A second chip of an OR dimension ORs in (at its value order: chips in any order
-  write the same text); a click on a value in an OR takes it out; right-click excludes. The mode
-  chip = `Core.attachModeChip` (search box AND find bar): click cycles, hover-intent 160/160 ms
-  lists (each with an example, current ticked), a touch press or no `(hover: hover)` = tap lists,
-  Alt+R / Cmd+Option+R cycles (Shift back; the find bar's Alt+C / Cmd+Option+C = match case). A key or
-  prompt chip ("Since...", "Longer than...", "Lines..." ...) outside Advanced asks through
-  `dialogs.prompt` (placeholder + `validate`: a bad value is refused in place) -> `promptQuery`;
-  in Advanced it types the prefix. Settings: `search_mode`, `find_mode`, `find_case` are
-  LOCAL-ONLY (never synced); `regex_search: true` loads as 'regex' and the key is stripped (it
-  used to leak into sync writes). The editor hand-off is `Core.editorFindFor(query)` (its words
-  and patterns, never its filters; several terms = one regex alternation). MCP `search_clips` takes
-  the whole language; legacy `regex: true` = `legacyRegexQuery` (the free text as ONE regex).
-  QA: `qa-popup-header` (modes, pills, switch + Undo, touch, Alt+R, prompts), `qa-ui-shots`
-  `popup-search-basic-pills` / `-mode-menu` / `-advanced-or` / `editor-find-regex`. The older
-  QA steps type tokens, so they launch with `search_mode: 'advanced'`.
+  **The field's text IS the query, always; there are NO search modes** (a Basic / Regex / Advanced
+  picker with filter pills shipped in fadbba7 and was folded back the same day, owner: "the inline
+  or thing feels like duplication... basic basically just becomes regex off"). The Regex toggle
+  (`#regexBtn`, Alt+R / Cmd+Option+R) only TYPES for you: with it on, typing at a fresh spot (start,
+  after a space / `(` / lone `-` / `title:` / `text:`, or right after a regex) wraps the text in
+  `/.../` with the caret inside; a `/` inside is escaped, at the closing slash it steps over; an
+  emptied `//` goes with one Backspace; a paste is one term; a filter value or a quote is typed as
+  usual (`Search.regexTypingEdit` / `regexBackspaceEdit`, wired in `attachSearchBox`'s
+  `beforeinput`). Flipping the toggle wraps / unwraps the word at the caret (`toggleRegexAt`).
+  `attachSearchBox` owns the query (`getQuery`/`setQuery`, onChange); one toggle component
+  `Core.attachToggle` = the search box's Regex and the find bar's Regex + case (Alt+C).
+  **Chip row = [builtins] | [or/and][selected][excluded] | [usable by use][greyed]**
+  (`renderFilterBar`): the selection moves to the front between `.cluster-sep` hairlines, led by a
+  `.conn-toggle` once two or more of the dimension are joined (`Search.dimConnective`; a click =
+  `setDimConnective`, written `group:A OR group:B` vs side by side); the options panel's Type row
+  leads with the same `connToggleHtml`. Chips glide on every repaint (`Core.flipChildren`, FLIP via
+  `element.animate`, keyed by data-group / data-filter / data-dim; instant under reduced motion).
+  A second chip of an OR dimension ORs in (at its value order: chips in any order write the same
+  text); a click on a value in an OR takes it out; right-click excludes. "And" of disjoint groups
+  shows nothing, so the census greys every other chip (correct, not a bug). Key / "Since..."
+  chips write their prefix into the field (the autocomplete offers values; `FIELD_EXAMPLE` is the
+  tooltip example). Settings: `regex_search`, `find_mode`, `find_case` are LOCAL-ONLY (never
+  synced); the hour-old `search_mode: 'regex'` migrates to `regex_search: true` and is stripped.
+  The editor hand-off is `Core.editorFindFor(query)` (its words and patterns, never its filters;
+  several terms = one regex alternation). MCP `search_clips` takes the whole language; legacy
+  `regex: true` = `legacyRegexQuery` (the free words as ONE /regex/). QA: `qa-popup-header`
+  (regex typing, Alt+R wrap/unwrap, the cluster + or/and + exclude + glide, the Type row),
+  `qa-ui-shots` `popup-chips-cluster` / `popup-search-regex-typing` / `-advanced-or` /
+  `editor-find-regex`.
 - **Group usage = ONE decayed score (2026-10-08, owner)**: `Search.groupWeights(list)` = each
   group's clips weighted by `decayWeight(age, 14 d)` (ts moves on every use; parents count their
   sub-groups; kept per list + hour). It orders the chip row (`buildTagTree(groups, {weights,

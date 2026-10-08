@@ -10,9 +10,8 @@
 // id — is a field on the doc.
 //
 // Grammar (colon-uniform, quote-aware, `-` negates any token, unknown `word:val` is stripped
-// to `val` as free text + recorded so a typo can't silently flood). This is the Advanced
-// mode's text; the canonical query is ALWAYS this text, whatever mode the field shows
-// (splitQuery / composeQuery turn it into a Basic or Regex view and back):
+// to `val` as free text + recorded so a typo can't silently flood). The field's text IS
+// the query (the Regex toggle only types /.../ for you: regexTypingEdit):
 //   free text                bare words / "quoted phrase" -> literal substring over
 //                            title+body+groups (always literal: no implicit regex)
 //   /pattern/                one regular expression term (case-insensitive, `.` never
@@ -1291,12 +1290,8 @@
   // Walks the EXACT raw text (whitespace + quotes preserved, concat(text) === input) into
   // typed segments: prefix | value | neg | quote | regex | op | unknown | ws. parseQuery
   // stays the semantic authority; this only decides colors, from the same scanner.
-  // The search modes: 'advanced' = the whole language; 'basic' = the field is
-  // literal words (quotes still make a phrase); 'regex' = the field is one regex.
-  const SEARCH_MODES = ['basic', 'regex', 'advanced'];
-  function normalizeMode(mode) { return SEARCH_MODES.includes(mode) ? mode : 'basic'; }
   const REGEX_META = /[[\]().*+?|^$\\{}]/;
-  function pushValueSegs(segs, value, regexAware, plainQuotes) {
+  function pushValueSegs(segs, value, regexAware, plainQuotes) { // plainQuotes: a quote is a pattern character
     let buf = '';
     let kind = null;
     const flush = () => { if (buf && kind) segs.push({ kind, text: buf }); buf = ''; kind = null; };
@@ -1309,12 +1304,12 @@
   }
   // What is INVALID comes from validateQuery (ONE rule): its problemRanges are
   // painted 'unknown', exactly the bad key or value and nothing around it.
-  // opts: { mode, groups, problems (the caller's validateQuery result, e.g.
-  // with pending ones left out; else every non-pending problem of the text) }.
+  // opts: { groups, problems (the caller's validateQuery result, e.g. with
+  // pending ones left out; else every non-pending problem of the text) }.
   function lexQuery(text, opts) {
     const o = opts || {};
     const segs = lexSegments(text, o);
-    const problems = o.problems || validateQuery(text, { mode: o.mode, groups: o.groups }).filter((p) => !p.pending);
+    const problems = o.problems || validateQuery(text, { groups: o.groups }).filter((p) => !p.pending);
     return problems.length ? markRanges(segs, problemRanges(problems), 'unknown') : segs;
   }
   // Split segments at range edges and give the covered parts `kind`.
@@ -1337,20 +1332,8 @@
     }
     return out;
   }
-  // Words and the spaces between them, for the Basic and Regex views.
-  function lexPlain(s, regexAware) {
-    const segs = [];
-    for (const part of s.split(/(\s+)/)) {
-      if (!part) continue;
-      if (/^\s+$/.test(part)) segs.push({ kind: 'ws', text: part }); else pushValueSegs(segs, part, regexAware, regexAware);
-    }
-    return segs;
-  }
   function lexSegments(text, opts) {
-    const o = opts || {};
     const s = String(text || '');
-    const mode = o.mode ? normalizeMode(o.mode) : 'advanced';
-    if (mode !== 'advanced') return lexPlain(s, mode === 'regex');
     const segs = [];
     let pos = 0;
     for (const tok of scanQuery(s)) {
@@ -1401,20 +1384,8 @@
     id: { desc: 'clip id contains' },
     sort: { desc: 'order results: newest or best match first', short: 'o', values: { new: 'newest first', best: 'best match first' } },
   };
-  // What a value prompt asks (an options-panel "Since..." chip, or a key chip
-  // in Basic / Regex mode, where the field is not syntax): the question and an
-  // example answer.
-  const FIELD_ASK = {
-    title: { ask: 'Title contains', example: 'a word or a phrase' },
-    text: { ask: 'Text contains', example: 'a word or a phrase' },
-    group: { ask: 'In group', example: 'a group name' },
-    num: { ask: 'On numpad key', example: '1 to 9' },
-    since: { ask: 'Since when?', example: '3d, 12h or 2026-01-31' },
-    before: { ask: 'Before when?', example: '3d, 12h or 2026-01-31' },
-    len: { ask: 'How many characters?', example: '>200, <80 or 50-200' },
-    lines: { ask: 'How many lines?', example: '>10, <3 or 2-5' },
-    words: { ask: 'How many words?', example: '>100, <20 or 10-50' },
-  };
+  // An example value per key a prompt chip types (its tooltip).
+  const FIELD_EXAMPLE = { since: '3d, 12h or 2026-01-31', before: '3d, 12h or 2026-01-31', len: '>200, <80 or 50-200', lines: '>10, <3 or 2-5', words: '>100, <20 or 10-50' };
   const SINCE_PRESETS = Object.keys(FIELD_INFO.since.values);
   // Derived views of FIELD_INFO (kept as exports): 'title:' -> its description /
   // its short alias ('t:').
@@ -1424,10 +1395,10 @@
   // The search options panel's facet rows: the less-used filters, one click each.
   // Chips write tokens through applyFacet (the query text stays the single source
   // of truth) and paint their state from facetTokenState. `prompt` options take
-  // a value of the user's (promptOptionState / promptQuery): in Advanced their
-  // prefix goes into the field for typing, elsewhere a small prompt asks for
-  // it; `prompt.op` = a size direction (> longer, < shorter) a bare number
-  // takes; `prompt.active` = the lit chip's label. ONE table: the panel and the
+  // a value of the user's: their prefix (with `prompt.op`, a size direction:
+  // len:> / len:<) goes into the field for typing and the autocomplete offers
+  // values; promptOptionState lights them, `prompt.active` is the lit label.
+  // `dim`: the row's values are one OR dimension (its or / and toggle). ONE table: the panel and the
   // availability census both read it. A filter the chip bar already owns (is:pinned,
   // is:image, is:numpad = BUILTIN_TO_IS) never appears here: one filter, one place,
   // and the panel's toggle lights only for the panel's own filters.
@@ -1439,7 +1410,7 @@
       { label: 'Since...', token: { kind: 'since' }, prompt: { active: 'Since {v}' } },
       { label: 'Before...', token: { kind: 'before' }, prompt: { active: 'Before {v}' } },
     ] },
-    { id: 'type', label: 'Type', options: [
+    { id: 'type', label: 'Type', dim: 'type', options: [
       { label: 'Text', token: { kind: 'is', value: 'text' } },
       { label: 'Link', token: { kind: 'is', value: 'url' } },
       { label: 'Multi-line', token: { kind: 'is', value: 'multiline' } },
@@ -1475,24 +1446,6 @@
     const v = BOUND_FACETS.includes(k) ? (opt.prompt.op && cur.op === opt.prompt.op ? String(cur.n) : serializeBound(cur)) : String(cur);
     return opt.prompt.active.replace('{v}', v);
   }
-  // The query after a prompt's answer: { query } or { error } (the answer is
-  // not a valid value). key: a FIELD_ASK key; op: a size direction a bare
-  // number takes (len, Longer than: 200 -> len:>200). A value already there
-  // leaves the query as it is (a prompt never toggles a filter off).
-  function promptQuery(query, key, answer, opts) {
-    const o = opts || {};
-    const raw = String(answer == null ? '' : answer).trim();
-    if (!raw) return { query: String(query || '') };
-    const value = BOUND_FACETS.includes(key) && o.op && /^d+$/.test(raw) ? `${o.op}${raw}` : raw;
-    const tokenText = `${key}:${quoteToken(value)}`;
-    const problems = validateQuery(tokenText, { mode: 'advanced', groups: o.groups });
-    if (problems.length) return { error: describeProblem(problems[0]) };
-    const q = String(query || '');
-    if (key === 'title' || key === 'text') return { query: addToken(q, tokenText) };
-    const token = key === 'group' || key === 'num' ? { kind: key, value: key === 'num' ? Number(value) : value } : { kind: key, value };
-    if (facetTokenState(parseQuery(q), token) === 'include') return { query: q };
-    return { query: applyFacet(q, token, 'include') };
-  }
   // The panel teaches the grammar the way Forge's does: a toggle WRITES its
   // token into the field (Last 7 days -> since:7d), so the format is learned by
   // using it. What no toggle writes gets one key chip each (OPTION_FIELDS: a
@@ -1503,27 +1456,14 @@
   const PANEL_TAUGHT_ELSEWHERE = new Set(['is', 'sort', 'id']);
   const OPTION_FIELDS = Object.keys(FIELD_INFO).filter((k) => !PANEL_TAUGHT_ELSEWHERE.has(k)
     && !OPTION_FACETS.some((row) => row.options.some((opt) => opt.token.kind === k)));
-  // One line per mode: what the field means there (Basic's words are literal,
-  // Regex's text is one pattern, Advanced is the whole language).
-  const SYNTAX_NOTES = {
-    basic: [
-      { text: 'every word must match' },
-      { code: '"a phrase"', text: 'matches exactly' },
-      { text: 'right-click a filter to exclude it' },
-    ],
-    regex: [
-      { text: 'the field is one regular expression' },
-      { code: '.', text: 'stays on one line' },
-      { text: 'right-click a filter to exclude it' },
-    ],
-    advanced: [
-      { code: '-word', text: 'excludes' },
-      { code: '"a phrase"', text: 'exact' },
-      { code: 'a OR b', text: 'either' },
-      { code: '(a b)', text: 'groups' },
-      { code: '/regex/', text: 'a pattern' },
-    ],
-  };
+  // The few rules no key shows: ONE line.
+  const SYNTAX_NOTES = [
+    { code: '-word', text: 'excludes' },
+    { code: '"a phrase"', text: 'exact' },
+    { code: 'a OR b', text: 'either' },
+    { code: '(a b)', text: 'groups' },
+    { code: '/regex/', text: 'a pattern' },
+  ];
   // The query text a facet token stands for (its chip tooltip).
   function facetTokenText(token) {
     if (SINGLE_FACETS.includes(token.kind)) return `${token.kind}:${token.value == null ? '' : token.value}`;
@@ -1540,7 +1480,7 @@
   }
 
   // ── autocomplete (Forge querySuggest rules) ──
-  // suggestQuery(text, caret, { groups, mode }) -> null, or { kind: 'key' | 'value',
+  // suggestQuery(text, caret, { groups, groupWeights }) -> null, or { kind: 'key' | 'value',
   // replaceStart, replaceEnd, query (the typed key / value fragment), quoted,
   // suggestions: [{ text, label, hint, continuation }] }. Rules: nothing on an
   // empty box or an empty token; only with the caret at the END of a token
@@ -1548,9 +1488,8 @@
   // (is:pinned, since:7d, num:3, an exact group) offers nothing more.
   // `continuation`: the row's text starts with what was typed, so the rest of
   // it can be painted as a ghost (ghostCompletion) or filled in
-  // (uniqueCompletion). Only Advanced has keys to offer: Basic and Regex
-  // fields are plain text, so they get nothing. A term may sit inside a
-  // group ('(gro' offers group:), and after a term an 'o' offers OR.
+  // (uniqueCompletion). A term may sit inside a group ('(gro' offers
+  // group:), and after a term an 'o' offers OR; a /regex/ offers nothing.
   function isValidTimeSpec(v) {
     const s = String(v || '').trim();
     return resolveTimeMs(s, 0) != null; // exactly the rule resolveTimeMs filters by
@@ -1583,7 +1522,6 @@
   }
   function suggestQuery(text, caret, opts) {
     const o = opts || {};
-    if (o.mode && normalizeMode(o.mode) !== 'advanced') return null;
     const whole = tokenAtCaret(text, caret);
     if (!whole) return null;
     // Group openers before the term are not part of it.
@@ -1746,21 +1684,13 @@
     }
     return undefined;
   }
-  // validateQuery(text, { mode, groups, caret }). The field's text in its
-  // mode: Basic is plain words (nothing to flag), Regex one pattern (flagged
-  // when broken), Advanced the whole language. A problem may carry `fix`
+  // validateQuery(text, { groups, caret }). A problem may carry `fix`
   // ({ start, end, text }: the one-click repair the hint offers) beside its
   // `didYouMean` label.
   function validateQuery(text, opts) {
     const o = opts || {};
     const s = String(text || '');
     const caret = o.caret == null ? null : o.caret;
-    const mode = o.mode ? normalizeMode(o.mode) : 'advanced';
-    if (mode === 'basic') return [];
-    if (mode === 'regex') {
-      const err = s.trim() ? regexError(s) : null;
-      return err ? [{ start: 0, end: s.length, valueStart: 0, token: s, key: '', value: s, kind: 'invalid-regex', message: `Not a valid regular expression: ${err}.`, pending: caret === s.length }] : [];
-    }
     // Every group path a group: value can name (Work/Clients also offers Work).
     const groupPaths = [...new Set((o.groups || []).flatMap((g) => normalizeTagName(g).split('/').filter(Boolean).map((_, i, a) => a.slice(0, i + 1).join('/'))))];
     const problems = [];
@@ -2172,47 +2102,19 @@
     return { dim: best.dim, label: best.label, count: best.count, time: !!best.time, query: next };
   }
 
-  // ── search modes: the field's view of the ONE canonical query ──
-  // The query text is always Advanced syntax (what search, chips, the census
-  // and AI tools read). Basic and Regex show it as the field's text plus
-  // pills: splitQuery(query, mode) -> { text, words, pills, dropped };
-  // composeQuery(mode, text, pills) -> the query again. Basic text = the
-  // literal words (a phrase keeps its quotes); Regex text = the first /regex/
-  // term, else the words read as one pattern. Pills hold everything else: a
-  // filter, an excluded word, a scoped term, another /regex/. The values of
-  // one OR dimension are ONE pill with a connective: { conn: 'or' } for
-  // group:A OR group:B, 'and' for group:A group:B, none for a single value.
-  // dropped: the custom expressions a pill cannot show (a OR b, -(a b)): a
-  // switch out of Advanced removes them (switchModeQuery says which).
-  // pill: { key, kind: 'facet' | 'token', field?, dim?, conn?, neg?,
-  //         values?: [{ value, text }], text (its query tokens) }.
-  function basicWordsOf(text) {
-    const out = [];
-    let cur = '';
-    let phrase = false;
-    let inQuote = false;
-    const s = String(text || '');
-    const flush = () => { if (cur) out.push({ value: cur, phrase }); cur = ''; phrase = false; };
-    for (const ch of s) {
-      if (ch === '"') { inQuote = !inQuote; phrase = true; continue; }
-      if (!inQuote && isSpace(ch)) { flush(); continue; }
-      cur += ch;
-    }
-    flush();
-    return out;
-  }
-  // Would Advanced read this bare word as exactly itself (a literal term)?
-  function literalInAdvanced(word) {
+  // ── the Regex toggle: typing makes /regex/ terms, visibly ──
+  // The query text is the ONE source of truth (no hidden mode): with the toggle
+  // on, what is typed at a fresh spot is wrapped in /.../ with the caret
+  // inside, so the field shows (and teaches) exactly what it searches. The
+  // toggle itself wraps or unwraps the word at the caret. All pure, so the box
+  // only applies the { text, caret } they return.
+  // Would this bare word read as exactly itself (a literal term)?
+  function isLiteralWord(word) {
     const p = parseQuery(word);
     const c = p.content[0];
     return p.items.length === 1 && p.content.length === 1 && !c.neg && !c.regex && c.scope === 'any' && c.value === word && !p.unknown.length && !p.syntax.length;
   }
-  // Basic text -> query text: every word literal, quoted where Advanced would
-  // read it as syntax (-x, key:val, OR, (x), /x/).
-  function basicToQuery(text) {
-    return basicWordsOf(text).map((w) => (w.phrase || !literalInAdvanced(w.value) ? `"${w.value}"` : w.value)).join(' ');
-  }
-  // Regex text -> query text: /pattern/, its unescaped slashes escaped.
+  // Text -> one /regex/ term: its unescaped slashes escaped.
   function regexToQuery(text) {
     const s = String(text || '');
     if (!s.trim()) return '';
@@ -2223,96 +2125,121 @@
     }
     return `/${out}/`;
   }
+  // A pattern as plain text: its escaped slashes back to slashes.
   function regexText(pattern) { return String(pattern || '').replace(/\\\//g, '/'); }
-  function splitQuery(query, mode) {
-    const m = normalizeMode(mode);
-    const q = String(query == null ? '' : query);
-    if (m === 'advanced') return { text: q, words: [], pills: [], dropped: [] };
-    const p = parseQuery(q);
-    const words = [];
-    const pills = [];
-    const dropped = [];
-    const dims = new Map();
-    let regexTerm = null;
-    if (m === 'regex') {
-      const first = p.items.find((it) => it.kind === 'leaf' && it.leaf.field === 'content' && it.leaf.regex && !it.leaf.neg && it.leaf.scope === 'any');
-      if (first) regexTerm = first;
+  // The scanner's term covering the caret (or ending at it).
+  function termAt(text, caret) {
+    for (const tok of scanQuery(text)) if (tok.t === 'term' && caret >= tok.start && caret <= tok.end) return tok;
+    return null;
+  }
+  const CONTENT_KEY_BEFORE = /(?:^|[\s(])-?(?:title|t|text|b|body):$/i;
+  const escapeSlashes = (s) => String(s).replace(/\//g, '\\/');
+  // What typing `typed` at a collapsed caret does with the toggle on:
+  // { text, caret }, or null (the field inserts it as usual). Inside a /regex/
+  // a typed '/' is escaped, and at the closing slash it steps over it; at a
+  // fresh spot (after a space, a '(', a lone '-', a title: / text: key, or
+  // right after another regex) the text starts a new /.../ term.
+  function regexTypingEdit(text, caret, typed) {
+    const s = String(text || '');
+    const t = String(typed || '');
+    if (!t || /[\r\n]/.test(t)) return null;
+    const tok = termAt(s, caret);
+    if (tok && tok.regex && caret > tok.regex.open && caret <= tok.regex.close) {
+      if (t === '/' && caret === tok.regex.close) return { text: s, caret: caret + 1 };
+      let slashes = 0;
+      for (let k = caret - 1; k >= 0 && s[k] === '\\'; k -= 1) slashes += 1;
+      if (!t.includes('/') || (t === '/' && slashes % 2 === 1)) return null;
+      const ins = escapeSlashes(t);
+      return { text: s.slice(0, caret) + ins + s.slice(caret), caret: caret + ins.length };
     }
-    const tokenPill = (it) => pills.push({ key: `t${pills.length}:${it.text}`, kind: 'token', neg: !!it.leaf.neg, field: it.leaf.field, text: it.text });
-    for (const it of p.items) {
-      if (it.kind === 'compound') { dropped.push({ text: q.slice(it.start, it.end) }); continue; }
-      if (it.kind === 'any') {
-        pills.push({ key: `any:${it.any.dim}`, kind: 'facet', field: it.any.field, dim: it.any.dim, conn: 'or', values: it.any.members.map((x) => ({ value: x.value, text: x.text })), text: it.any.members.map((x) => x.text).join(' OR ') });
-        continue;
-      }
-      const l = it.leaf;
-      if (it === regexTerm) continue;
-      if (l.field === 'content' && !l.neg && l.scope === 'any' && !l.regex && !regexTerm) { words.push({ value: l.value, phrase: /\s/.test(l.value) }); continue; }
-      const dim = !l.neg ? facetDim(l.field, l.value) : null;
-      if (dim && OR_DIMS.has(dim)) {
-        let pill = dims.get(dim);
-        if (!pill) { pill = { key: `dim:${dim}`, kind: 'facet', field: l.field, dim, conn: null, values: [], text: '' }; dims.set(dim, pill); pills.push(pill); }
-        pill.values.push({ value: l.value, text: it.text });
-        pill.conn = pill.values.length > 1 ? 'and' : null;
-        pill.text = pill.values.map((x) => x.text).join(' ');
-        continue;
-      }
-      tokenPill(it);
+    if (/^\s+$/.test(t)) return null;
+    let before = s.slice(0, caret);
+    const after = s.slice(caret);
+    if (insideQuote(s, caret)) return null;
+    const lead = /^\s/.test(t) ? t.match(/^\s+/)[0] : '';
+    const body = t.slice(lead.length).replace(/\s+$/, '');
+    if (!body) return null;
+    const afterRegex = tok && tok.regex && caret === tok.end;
+    const fresh = afterRegex || !before || /[\s(]$/.test(before) || /(?:^|[\s(])-$/.test(before) || CONTENT_KEY_BEFORE.test(before);
+    if (!fresh || (after && !/^[\s)]/.test(after))) return null;
+    if (afterRegex) before += ' ';
+    // A typed '/' opens an empty pair (the next key goes inside).
+    const term = body === '/' ? '//' : `/${escapeSlashes(body)}/`;
+    const next = before + lead + term + after;
+    return { text: next, caret: before.length + lead.length + term.length - 1 };
+  }
+  // Backspace with the toggle on: an emptied term (//) goes as a pair.
+  function regexBackspaceEdit(text, caret) {
+    const s = String(text || '');
+    if (s[caret - 1] !== '/' || s[caret] !== '/') return null;
+    const okBefore = caret - 1 === 0 || /[\s(-]/.test(s[caret - 2]) || CONTENT_KEY_BEFORE.test(s.slice(0, caret - 1));
+    const okAfter = caret + 1 === s.length || /[\s)]/.test(s[caret + 1]);
+    return okBefore && okAfter ? { text: s.slice(0, caret - 1) + s.slice(caret + 1), caret: caret - 1 } : null;
+  }
+  // The toggle on the word at the caret: on wraps a plain word in /.../ (the
+  // text as typed, now read as a pattern; title:foo -> title:/foo/), off
+  // unwraps a /regex/ to its text (quoted where it would read as syntax).
+  // { text, caret }, or null when the caret is on no such word.
+  function toggleRegexAt(text, caret, on) {
+    const s = String(text || '');
+    const tok = termAt(s, caret);
+    if (!tok) return null;
+    const neg = tok.neg ? '-' : '';
+    if (on) {
+      if (tok.regex) return null;
+      const body = tok.body;
+      const m = body[0] !== '"' ? KEY_TOKEN_RE.exec(body) : null;
+      const canon = m ? PREFIX_ALIASES[m[1].toLowerCase()] : null;
+      if (m && m[2] && !CONTENT_KEYS.has(canon)) return null; // a filter, not words
+      const key = m && CONTENT_KEYS.has(canon) ? `${m[1]}:` : '';
+      const value = (key ? m[2] : body).replace(/"/g, '');
+      if (!value) return null;
+      const term = `${neg}${key}${regexToQuery(value)}`;
+      return { text: s.slice(0, tok.start) + term + s.slice(tok.end), caret: tok.start + term.length - 1 };
     }
-    const text = regexTerm ? regexText(regexTerm.leaf.value)
-      : m === 'regex' ? words.map((w) => w.value).join(' ')
-        : words.map((w) => (w.phrase ? `"${w.value}"` : w.value)).join(' ');
-    return { text, words, pills, dropped };
+    if (!tok.regex) return null;
+    const key = s.slice(tok.start + neg.length, tok.regex.open);
+    const plain = regexText(tok.regex.pattern);
+    const lit = isLiteralWord(plain) ? plain : `"${plain.replace(/"/g, '')}"`;
+    const term = `${neg}${key}${lit}`;
+    return { text: s.slice(0, tok.start) + term + s.slice(tok.end), caret: tok.start + term.length };
   }
-  function composeQuery(mode, text, pills) {
-    const m = normalizeMode(mode);
-    const head = m === 'regex' ? regexToQuery(text) : m === 'basic' ? basicToQuery(text) : String(text || '').trim();
-    return [head, ...(pills || []).map((p) => p.text)].filter((x) => x && x.trim()).join(' ');
-  }
-  // Switching the field from one mode to another: { query, text, pills,
-  // dropped }. Into Advanced the query is shown as it is (Basic words already
-  // quoted where they look like syntax, a Regex already /.../), so the switch
-  // teaches the format. Out of Advanced every filter and extra term becomes a
-  // pill; a custom expression cannot, so it is dropped (and listed: the caller
-  // warns first and offers Undo). Between Basic and Regex the text stays as
-  // typed, read the other way. viewText: what the field shows now.
-  function switchModeQuery(query, from, to, viewText) {
-    const a = normalizeMode(from);
-    const b = normalizeMode(to);
-    const q = String(query == null ? '' : query);
-    if (a === b || b === 'advanced') return { query: q, text: q, pills: [], dropped: [] };
-    if (a === 'advanced') {
-      const v = splitQuery(q, b);
-      return { query: composeQuery(b, v.text, v.pills), text: v.text, pills: v.pills, dropped: v.dropped };
-    }
-    const text = viewText == null ? splitQuery(q, a).text : String(viewText);
-    const pills = splitQuery(q, a).pills;
-    return { query: composeQuery(b, text, pills), text, pills, dropped: [] };
-  }
-  // What a switch to `mode` would remove (the mode menu names it first).
-  function modeSwitchLoss(query, from, to) {
-    return normalizeMode(from) === 'advanced' && normalizeMode(to) !== 'advanced' ? splitQuery(query, to).dropped : [];
-  }
-  // The old regex flag (an AI tool's regex: true, a saved regex toggle): the
-  // query's free text, read as ONE regex.
+  // The old regex flag (an AI tool's regex: true): the query's plain words,
+  // read as ONE regex (filters and other terms stay as they are).
   function legacyRegexQuery(query) {
-    const v = splitQuery(query, 'basic');
-    return composeQuery('regex', v.words.map((w) => w.value).join(' '), v.pills);
+    const q = String(query == null ? '' : query);
+    const p = parseQuery(q);
+    const words = p.items.filter((it) => it.kind === 'leaf' && it.leaf.field === 'content' && !it.leaf.neg && !it.leaf.regex && it.leaf.scope === 'any');
+    if (!words.length) return q;
+    const term = regexToQuery(words.map((w) => w.leaf.value).join(' '));
+    return editFacets(q, p, ({ remove, edits }) => {
+      edits.push({ start: words[0].start, end: words[0].end, text: term });
+      words.slice(1).forEach(remove);
+    });
   }
-  // A pill's or/and connective, flipped: the query with that pill's tokens
-  // rewritten (group:A OR group:B <-> group:A group:B).
-  function setPillConnective(query, mode, pill, conn) {
-    const v = splitQuery(query, mode);
-    const at = v.pills.findIndex((x) => x.key === pill.key);
-    if (at < 0 || !pill.values || pill.values.length < 2) return String(query || '');
-    const sep = conn === 'and' ? ' ' : ' OR ';
-    const pills = v.pills.map((x, i) => (i === at ? { ...x, conn, text: x.values.map((y) => y.text).join(sep) } : x));
-    return composeQuery(mode, v.text, pills);
+  // ── the or / and of one OR dimension (groups, kinds of clip, numpad keys):
+  // the chip row's leading toggle and the panel's ──
+  // 'or' (an OR of its values), 'and' (two or more side by side), or null
+  // (fewer than two values to join).
+  function dimConnective(parsed, dim) {
+    const any = (parsed.anyOf || []).filter((g) => g.dim === dim);
+    const leaves = (parsed.items || []).filter((it) => it.kind === 'leaf' && !it.leaf.neg && facetDim(it.leaf.field, it.leaf.value) === dim);
+    const n = any.reduce((sum, g) => sum + g.values.length, 0) + leaves.length;
+    if (n < 2) return null;
+    return any.length ? 'or' : 'and';
   }
-  // The query without one pill.
-  function removePill(query, mode, pill) {
-    const v = splitQuery(query, mode);
-    return composeQuery(mode, v.text, v.pills.filter((x) => x.key !== pill.key));
+  // Every top-level value of that dimension joined one way, written where the
+  // first one was: group:A OR group:B <-> group:A group:B.
+  function setDimConnective(query, dim, conn) {
+    const text = String(query == null ? '' : query);
+    const p = parseQuery(text);
+    const items = p.items.filter((it) => (it.kind === 'leaf' && !it.leaf.neg && facetDim(it.leaf.field, it.leaf.value) === dim) || (it.kind === 'any' && it.any.dim === dim));
+    const parts = items.flatMap((it) => (it.kind === 'any' ? it.any.members.map((m) => m.text) : [it.text]));
+    if (parts.length < 2) return text;
+    return editFacets(text, p, ({ remove, edits }) => {
+      edits.push({ start: items[0].start, end: items[0].end, text: parts.join(conn === 'and' ? ' ' : ' OR ') });
+      items.slice(1).forEach(remove);
+    });
   }
 
   // ── paste: a multi-word plain-text snippet searches as ONE phrase (Forge
@@ -2321,11 +2248,9 @@
   // words are not split by single spaces: a phrase is a plain substring test, so
   // a line break, a tab or a double space inside it would stop it matching the
   // very clip it was copied from (pasted raw, its words are AND-ed instead).
-  // In Basic nothing is syntax, so only the spacing rule applies.
-  function quotePastedText(text, mode) {
+  function quotePastedText(text) {
     const collapsed = String(text || '').trim();
     if (!/\s/.test(collapsed) || /[^ \S]| {2}/.test(collapsed)) return null;
-    if (normalizeMode(mode || 'advanced') === 'basic') return `"${collapsed.replace(/"/g, '')}"`;
     const p = parseQuery(collapsed);
     if (anyFilterActive(p) || p.sort || p.compound.length || p.content.some((c) => c.scope !== 'any' || c.regex || c.neg)) return null;
     return `"${collapsed.replace(/"/g, '')}"`;
@@ -2344,8 +2269,8 @@
     anyFilterActive, hasSearchTerms, isEmptyQuery, resolveTimeMs,
     matchDoc, relevanceScore, recencyScore, decayWeight, groupWeights, compareGroupUse, rankMode, filterRankIndexes, bodyIndexOf,
     compileTerm, escapeRegExp, termSpans, firstMatchIndex,
-    SEARCH_MODES, normalizeMode, splitQuery, composeQuery, switchModeQuery, modeSwitchLoss, legacyRegexQuery,
-    setPillConnective, removePill, promptOptionState, promptOptionLabel, promptQuery, FIELD_ASK,
+    regexTypingEdit, regexBackspaceEdit, toggleRegexAt, legacyRegexQuery, dimConnective, setDimConnective,
+    promptOptionState, promptOptionLabel, FIELD_EXAMPLE,
     fuzzyMatch, fuzzyFloor,
     lexQuery, suggestQuery,
     BUILTIN_TO_IS, IS_TO_BUILTIN, IS_VALUES, RECOGNIZED_PREFIXES, NON_FILTER_SCHEMES,

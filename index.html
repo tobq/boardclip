@@ -125,8 +125,8 @@ if (window.api.getSettings) window.api.getSettings().then(s => {
   applyAppearance({ ...(rt.appearance || {}), surfaceStyle: rt.surface_style || 'solid' });
   if (s.image_preview_height != null) imageZoom.load(s.image_preview_height);
   searchBox.setOptionsHeight(s.options_panel_height);
-  // The saved search mode applies from the first open.
-  searchBox.setMode(s.search_mode, { load: true });
+  // The saved Regex toggle applies from the first open.
+  searchBox.setRegex(!!s.regex_search, { load: true });
 }).catch(() => {});
 if (window.api.onSurfaceChanged) window.api.onSurfaceChanged((style) => applyAppearance({ surfaceStyle: style === 'solid' ? 'solid' : 'glass' }));
 if (window.api.onAppearanceChanged) window.api.onAppearanceChanged(applyAppearance);
@@ -229,7 +229,8 @@ function renderGroupFilters() {
   const key = JSON.stringify([[...fs.active].sort(), [...fs.excluded].sort(), !!query, groups, census.id]);
   if (key === filterBarKey) return;
   filterBarKey = key;
-  el.innerHTML = Core.renderFilterBar({ items, groups, activeFilters: fs.active, excludedFilters: fs.excluded, query, builtinCounts, groupCounts, census });
+  // A chip that joins or leaves the selection glides to its place.
+  Core.flipChildren(el, () => { el.innerHTML = Core.renderFilterBar({ items, groups, activeFilters: fs.active, excludedFilters: fs.excluded, query, builtinCounts, groupCounts, census }); });
   recordRendererPerf('filters.render_bar', startedAt, { groups: groups.length }, 40);
 }
 
@@ -255,7 +256,7 @@ function applyFilter() {
     // Only when the list IS empty: the one filter whose removal brings clips back.
     emptyHtml: () => Core.renderEmptyState({ total: items.length, query, groups, nudgeHtml: Core.renderRelaxNudge(Core.search.bestRelaxation(searchDocs, query, { searchTextLower, cache: relaxCache })) }),
   });
-  recordRendererPerf('list.apply_filter', startedAt, { rendered: renderedCount(), mode: searchBox.getMode() }, 60);
+  recordRendererPerf('list.apply_filter', startedAt, { rendered: renderedCount(), regex: searchBox.getRegex() }, 60);
 }
 function renderedCount() { const w = clipList.window(); return w.end - w.start; }
 
@@ -352,6 +353,7 @@ const appAdapter = {
   protectedGroups: () => new Set([aiGroupName]),
   // A chip/tag click rewrites the query TEXT (bar is source of truth). filter is a builtin
   // id (__pinned__/__images__/__numbered__) or a group name; intent is include|exclude.
+  getQuery: () => query,
   setFilterIntent: (filter, intent) => {
     const token = String(filter).startsWith('__') ? { kind: 'builtin', value: filter } : { kind: 'group', value: filter };
     query = Core.search.applyFacet(query, token, intent);
@@ -512,19 +514,15 @@ function onQueryChanged(v) {
   updateSortButton();
   scheduleRerenderList();
 }
-// The shared search box (Core.attachSearchBox) OWNS the query: its field shows it in the
-// search mode (Basic / Regex / Advanced, the mode chip), filters as pills, live syntax
-// highlighting + autocomplete; every change of the query reaches onQueryChanged.
+// The shared search box (Core.attachSearchBox): live syntax highlighting, autocomplete, the
+// options panel and the Regex toggle (it types /.../ for you); every change of the query
+// reaches onQueryChanged, and the app hands it changes with searchBox.setQuery.
 const searchBox = Core.attachSearchBox(searchEl, {
   getGroups: () => groups,
   getCensus: (parsed) => censusCache.get(parsed),
   onChange: onQueryChanged,
-  // The search mode: per device (local-only setting, never synced).
-  saveMode: (mode) => window.api.saveSettings({ search_mode: mode }),
-  // A mode switch that removed part of the search offers Undo; a key chip
-  // outside Advanced asks for its value.
-  toast: (opts) => Core.showActionToast(toast, opts),
-  prompt: (opts) => appDialogs.prompt(opts),
+  // The Regex toggle: per device (local-only setting, never synced).
+  saveRegex: (on) => window.api.saveSettings({ regex_search: on }),
   // The options panel's height: per machine (dragged on its bottom edge).
   saveOptionsHeight: (px) => window.api.saveSettings({ options_panel_height: px }),
 });

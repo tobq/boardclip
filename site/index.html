@@ -127,7 +127,7 @@
       <dl class="spec">
         <div>
           <dt>Search with filters</dt>
-          <dd>Plain words match titles and text, exactly as typed. Filters narrow the list, and a right-click excludes one. One click switches to Regex for a pattern, or to Advanced for OR, brackets and every filter as text.
+          <dd>Plain words match titles and text, exactly as typed. Filters narrow the list, and a right-click excludes one. Turn on Regex and what you type becomes a /pattern/; OR, brackets and every filter work as text too.
             <span class="tries">
               <button class="try" type="button" data-try="group:work">group:work</button>
               <button class="try" type="button" data-try="is:pinned">is:pinned</button>
@@ -225,7 +225,7 @@
         closeBtn: "demo-close-button",
         search: "demo-search",
         searchClear: "demo-clear-search",
-        modeBtn: "demo-mode",
+        regexBtn: "demo-regex",
         sortBtn: "demo-sort",
         groupFilters: "filter-chips",
         list: "clip-list",
@@ -559,13 +559,16 @@
     const demoCensus = Core.createCensusCache({ docs: demoSearchDocs, groups: () => labels });
     function renderFilterChips() {
       const fs = facetState();
-      filterChips.innerHTML = Core.renderFilterBar({
-        items: clips,
-        groups: labels,
-        activeFilters: fs.active,
-        excludedFilters: fs.excluded,
-        query: state.query,
-        census: demoCensus.get(state.query),
+      // A chip that joins or leaves the selection glides to its place.
+      Core.flipChildren(filterChips, () => {
+        filterChips.innerHTML = Core.renderFilterBar({
+          items: clips,
+          groups: labels,
+          activeFilters: fs.active,
+          excludedFilters: fs.excluded,
+          query: state.query,
+          census: demoCensus.get(state.query),
+        });
       });
     }
 
@@ -762,6 +765,7 @@
       itemById: (id) => clips.find((item) => Core.itemId(item) === id),
       numpadMap: () => Core.numpadMap(clips),
       protectedGroups: () => new Set(),
+      getQuery: () => state.query,
       setFilterIntent: (filter, intent) => {
         const token = String(filter).startsWith("__") ? { kind: "builtin", value: filter } : { kind: "group", value: filter };
         state.query = Core.search.applyFacet(state.query, token, intent);
@@ -939,26 +943,23 @@
     demoWindowEl.addEventListener("mouseover", (event) => controller.onMouseover(event));
     demoWindowEl.addEventListener("mouseout", (event) => controller.onMouseout(event));
 
-    // The shared search box, same as the app popup: it owns the query (the field
-    // shows it in the search mode, filters as pills), live highlighting,
-    // autocomplete and the options panel. The panel height and the search
-    // mode are kept per visitor in localStorage (the app keeps them per device).
+    // The shared search box, same as the app popup: live highlighting,
+    // autocomplete, the options panel and the Regex toggle (it types /.../ for
+    // you). The panel height and the Regex toggle are kept per visitor in
+    // localStorage (the app keeps them per device).
     const DEMO_OPTIONS_HEIGHT_KEY = "boardclip-demo-options-height";
-    const DEMO_SEARCH_MODE_KEY = "boardclip-demo-search-mode";
+    const DEMO_REGEX_KEY = "boardclip-demo-regex";
     const DEMO_FIND_PREFS_KEY = "boardclip-demo-find";
     let demoOptionsHeight = 0;
-    let demoSearchMode = "basic";
+    let demoRegex = false;
     try { demoOptionsHeight = Number(localStorage.getItem(DEMO_OPTIONS_HEIGHT_KEY)) || 0; } catch {}
-    try { demoSearchMode = localStorage.getItem(DEMO_SEARCH_MODE_KEY) || "basic"; } catch {}
+    try { demoRegex = localStorage.getItem(DEMO_REGEX_KEY) === "1"; } catch {}
     const demoSearchBox = Core.attachSearchBox(search, {
-      mode: demoSearchMode,
-      saveMode: (mode) => { try { localStorage.setItem(DEMO_SEARCH_MODE_KEY, mode); } catch {} },
+      regex: demoRegex,
+      saveRegex: (on) => { try { localStorage.setItem(DEMO_REGEX_KEY, on ? "1" : "0"); } catch {} },
       getGroups: () => labels,
       getCensus: (parsed) => demoCensus.get(parsed),
       onChange: (v) => { state.query = v; controller.onQueryChange(); renderClips(); },
-      menuHost: demoWindowEl,
-      toast: (opts) => Core.showActionToast(demoToast, opts),
-      prompt: (opts) => dialogs.prompt(opts),
       optionsHeight: demoOptionsHeight,
       saveOptionsHeight: (px) => { try { localStorage.setItem(DEMO_OPTIONS_HEIGHT_KEY, String(px)); } catch {} },
     });

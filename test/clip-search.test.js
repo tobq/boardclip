@@ -208,10 +208,6 @@ const idsOf = (items, parsed, opts) => S.filterRankIndexes(items, parsed, opts).
   assert.ok(S.validateQuery('(a b', { caret: 4 })[0].pending);
   assert.strictEqual(S.validateQuery('/[a/')[0].kind, 'invalid-regex');
   assert.deepStrictEqual(S.validateQuery('[a'), [], 'a bracket in plain text is fine');
-  // Modes: Basic validates nothing, Regex the whole field as one pattern.
-  assert.deepStrictEqual(S.validateQuery('(a OR', { mode: 'basic' }), []);
-  assert.strictEqual(S.validateQuery('(a', { mode: 'regex' })[0].kind, 'invalid-regex');
-  assert.deepStrictEqual(S.validateQuery('a b', { mode: 'regex' }), []);
 }
 
 // ── ONE compile primitive (search, highlight, the editor's find) ──
@@ -234,57 +230,61 @@ const idsOf = (items, parsed, opts) => S.filterRankIndexes(items, parsed, opts).
   assert.strictEqual(S.firstMatchIndex(S.parseQuery('zz OR bb'), 'aa bb cc zz'), 3);
 }
 
-// ── search modes: views, switches, pills ──
+// ── the Regex toggle types /regex/ terms (the text stays the one query) ──
 {
-  // Basic: words are literal; what looks like syntax is quoted in the query.
-  assert.strictEqual(S.composeQuery('basic', 'rm -rf group:x OR (a)', []), 'rm "-rf" "group:x" "OR" "(a)"');
-  assert.strictEqual(S.composeQuery('basic', '"a b" c', []), '"a b" c');
-  assert.strictEqual(S.composeQuery('regex', 'a/b c', []), '/a\\/b c/');
-  assert.strictEqual(S.composeQuery('regex', '  ', []), '');
-  // Split: text + pills; Basic <- query round trip.
-  let v = S.splitQuery('rm "-rf" group:Work OR group:Ideas since:7d -group:Old title:x -foo /re/ is:pinned', 'basic');
-  assert.strictEqual(v.text, 'rm -rf');
-  assert.deepStrictEqual(v.pills.map((p) => p.text), ['group:Work OR group:Ideas', 'since:7d', '-group:Old', 'title:x', '-foo', '/re/', 'is:pinned']);
-  assert.strictEqual(v.pills[0].conn, 'or');
-  assert.strictEqual(S.composeQuery('basic', v.text, v.pills), 'rm "-rf" group:Work OR group:Ideas since:7d -group:Old title:x -foo /re/ is:pinned');
-  v = S.splitQuery('group:A group:B x', 'basic');
-  assert.deepStrictEqual(v.pills.map((p) => [p.conn, p.text]), [['and', 'group:A group:B']], 'values of one dimension are ONE pill');
-  // Regex: the first /regex/ is the text; words become pills then.
-  v = S.splitQuery('/a\\/b/ foo /c/ is:image', 'regex');
-  assert.strictEqual(v.text, 'a/b');
-  assert.deepStrictEqual(v.pills.map((p) => p.text), ['foo', '/c/', 'is:image']);
-  assert.strictEqual(S.splitQuery('foo bar', 'regex').text, 'foo bar', 'no regex: the words, read as a pattern');
-  // Switches.
-  let sw = S.switchModeQuery('rm "-rf" group:A', 'basic', 'advanced');
-  assert.strictEqual(sw.text, 'rm "-rf" group:A', 'into Advanced: the query as it is (the format is learned)');
-  sw = S.switchModeQuery('/a.c/ is:text', 'regex', 'advanced');
-  assert.strictEqual(sw.text, '/a.c/ is:text');
-  sw = S.switchModeQuery('rm "-rf" is:text', 'basic', 'regex', 'rm -rf');
-  assert.strictEqual(sw.query, '/rm -rf/ is:text', 'Basic -> Regex keeps the text as typed');
-  sw = S.switchModeQuery('(a OR b) c group:X', 'advanced', 'basic');
-  assert.deepStrictEqual(sw.dropped.map((d) => d.text), ['(a OR b)']);
-  assert.strictEqual(sw.query, 'c group:X');
-  assert.deepStrictEqual(S.modeSwitchLoss('a OR b', 'advanced', 'regex').map((d) => d.text), ['a OR b']);
-  assert.deepStrictEqual(S.modeSwitchLoss('group:A OR group:B', 'advanced', 'basic'), [], 'an OR pill survives');
-  // Pill edits.
-  const pill = S.splitQuery('x group:A OR group:B', 'basic').pills[0];
-  assert.strictEqual(S.setPillConnective('x group:A OR group:B', 'basic', pill, 'and'), 'x group:A group:B');
-  const andPill = S.splitQuery('x group:A group:B', 'basic').pills[0];
-  assert.strictEqual(S.setPillConnective('x group:A group:B', 'basic', andPill, 'or'), 'x group:A OR group:B');
-  assert.strictEqual(S.removePill('x group:A OR group:B since:7d', 'basic', pill), 'x since:7d');
-  // The legacy regex flag: the free text as one regex.
+  const type = (text, caret, typed) => S.regexTypingEdit(text, caret, typed);
+  assert.deepStrictEqual(type('', 0, 'c'), { text: '/c/', caret: 2 }, 'a fresh spot starts a /regex/, caret inside');
+  assert.strictEqual(type('/c/', 2, 'o'), null, 'inside one: typed as usual');
+  assert.deepStrictEqual(type('/co/', 2, '/'), { text: '/c\\/o/', caret: 4 }, 'a / inside is escaped');
+  assert.deepStrictEqual(type('/co/', 3, '/'), { text: '/co/', caret: 4 }, 'a / at the closing slash steps over it');
+  assert.strictEqual(type('/a\\/', 3, '/'), null, 'after a backslash a / is the user\'s own escape');
+  assert.deepStrictEqual(type('/co/', 4, 'x'), { text: '/co/ /x/', caret: 7 }, 'right after one: a new term');
+  assert.deepStrictEqual(type('foo ', 4, 'x'), { text: 'foo /x/', caret: 6 }, 'after a space: a new term');
+  assert.strictEqual(type('foo', 3, 'x'), null, 'inside a plain word: typed as usual');
+  assert.deepStrictEqual(type('title:', 6, 'x'), { text: 'title:/x/', caret: 8 }, 'after title: a scoped term');
+  assert.strictEqual(type('group:', 6, 'x'), null, 'a filter value stays a value');
+  assert.deepStrictEqual(type('-', 1, 'x'), { text: '-/x/', caret: 3 }, 'after a lone minus: an excluded term');
+  assert.deepStrictEqual(type('(', 1, 'x'), { text: '(/x/', caret: 3 });
+  assert.strictEqual(type('"ab', 3, 'x'), null, 'inside quotes: typed as usual');
+  assert.strictEqual(type('', 0, ' '), null);
+  assert.deepStrictEqual(type('', 0, '/'), { text: '//', caret: 1 }, 'a typed / opens an empty pair');
+  assert.deepStrictEqual(type('', 0, 'a/b c'), { text: '/a\\/b c/', caret: 7 }, 'a paste is one term');
+  assert.deepStrictEqual(S.regexBackspaceEdit('a //', 3), { text: 'a ', caret: 2 }, 'an emptied // goes as a pair');
+  assert.strictEqual(S.regexBackspaceEdit('a/b', 2), null);
+  assert.ok(S.parseQuery(type('', 0, 'c').text).content[0].regex, 'what it writes parses as a regex');
+  // The toggle wraps / unwraps the word at the caret (as typed: now read as a pattern).
+  assert.deepStrictEqual(S.toggleRegexAt('foo colou?r', 8, true), { text: 'foo /colou?r/', caret: 12 });
+  assert.deepStrictEqual(S.toggleRegexAt('title:x', 3, true), { text: 'title:/x/', caret: 8 });
+  assert.deepStrictEqual(S.toggleRegexAt('-"a b"', 2, true), { text: '-/a b/', caret: 5 });
+  assert.strictEqual(S.toggleRegexAt('group:x', 3, true), null, 'a filter is not words');
+  assert.deepStrictEqual(S.toggleRegexAt('foo /a b/', 6, false), { text: 'foo "a b"', caret: 9 }, 'off: back to text, quoted where needed');
+  assert.deepStrictEqual(S.toggleRegexAt('/a\\/b/', 2, false), { text: 'a/b', caret: 3 });
+  assert.strictEqual(S.toggleRegexAt('foo ', 4, true), null, 'no word at the caret');
+  // The old regex flag (AI tools): the plain words as ONE regex.
   assert.strictEqual(S.legacyRegexQuery('\\d+ foo group:A'), '/\\d+ foo/ group:A');
-  // Autocomplete: only Advanced offers keys; a group opener is skipped; OR after a term.
-  assert.strictEqual(S.suggestQuery('ti', 2, { mode: 'basic' }), null);
+  assert.strictEqual(S.legacyRegexQuery('group:A'), 'group:A');
+}
+
+// ── the or / and of an OR dimension (the chip row's leading toggle, the panel's Type row) ──
+{
+  assert.strictEqual(S.dimConnective(S.parseQuery('group:A'), 'group'), null, 'one value: nothing to join');
+  assert.strictEqual(S.dimConnective(S.parseQuery('group:A OR group:B'), 'group'), 'or');
+  assert.strictEqual(S.dimConnective(S.parseQuery('group:A x group:B'), 'group'), 'and');
+  assert.strictEqual(S.dimConnective(S.parseQuery('-group:A group:B'), 'group'), null, 'an exclusion is not joined');
+  assert.strictEqual(S.setDimConnective('x group:A OR group:B', 'group', 'and'), 'x group:A group:B');
+  assert.strictEqual(S.setDimConnective('group:A x group:B', 'group', 'or'), 'group:A OR group:B x');
+  assert.strictEqual(S.setDimConnective('is:text OR is:url', 'type', 'and'), 'is:text is:url');
+  assert.strictEqual(S.setDimConnective('group:A', 'group', 'and'), 'group:A');
+}
+
+// ── autocomplete + highlight of the one language ──
+{
   assert.ok(S.suggestQuery('(gro', 4, {}).suggestions.some((s) => s.text === 'group:'));
   assert.strictEqual(S.suggestQuery('(gro', 4, {}).replaceStart, 1);
   assert.ok(S.suggestQuery('foo o', 5, {}).suggestions.some((s) => s.text === 'OR'));
   assert.ok(!S.suggestQuery('o', 1, {}).suggestions.some((s) => s.text === 'OR'), 'no OR before any term');
   assert.ok(S.suggestQuery('len:', 4, {}).suggestions.some((s) => s.text === 'len:>100'), 'size presets');
   assert.ok(S.suggestQuery('len:>', 5, {}).suggestions.every((s) => s.text.startsWith('len:>')));
-  // Highlight per mode: Basic paints words, Regex the pattern, Advanced the language.
-  assert.ok(S.lexQuery('group:x', { mode: 'basic' }).every((s) => s.kind !== 'prefix'));
-  assert.ok(S.lexQuery('a.c', { mode: 'regex' }).some((s) => s.kind === 'regex' && s.text === '.'));
   const lx = S.lexQuery('-(a OR /b./) title:/c/');
   assert.strictEqual(lx.map((s) => s.text).join(''), '-(a OR /b./) title:/c/');
   assert.ok(lx.some((s) => s.kind === 'op' && s.text === 'OR') && lx.some((s) => s.kind === 'op' && s.text === '('));
@@ -415,7 +415,7 @@ const idsOf = (items, parsed, opts) => S.filterRankIndexes(items, parsed, opts).
   // Every option is a real grammar token: its text parses back to the same state.
   for (const row of S.OPTION_FACETS) {
     for (const opt of row.options) {
-      if (opt.prompt) { assert.ok(S.RECOGNIZED_PREFIXES.has(opt.token.kind) && S.FIELD_ASK[opt.token.kind], `${opt.label}: ${opt.token.kind} is a recognised prefix with a prompt`); continue; }
+      if (opt.prompt) { assert.ok(S.RECOGNIZED_PREFIXES.has(opt.token.kind) && S.FIELD_EXAMPLE[opt.token.kind], `${opt.label}: ${opt.token.kind} is a recognised prefix with an example`); continue; }
       const text = S.facetTokenText(opt.token);
       assert.strictEqual(S.facetTokenState(S.parseQuery(text), opt.token), 'include', `${opt.label}: "${text}" parses back to its own chip`);
       assert.strictEqual(S.applyFacet('', opt.token, 'include'), text, `${opt.label}: the chip writes "${text}"`);

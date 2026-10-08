@@ -75,7 +75,6 @@ async function main() {
     name: 'popup',
     settings: {
       diagnostics_enabled: PERF, // perf mode: the renderer logs every refresh/rebuild with ms
-      search_mode: 'advanced', // the checks type the language's tokens (is:, group:, ...)
       max_age_days: 365,
       max_size_gb: 5,
     },
@@ -638,7 +637,7 @@ async function main() {
     const focusPair = async (win, target) => cdp.eval(`(async () => {
       document.hasFocus = () => ${win ? 'true' : 'false'};
       const el = ${target || 'searchEl'};
-      if (el !== searchEl) modeBtn.closest('.bc-reveal').classList.add('open'); // the tools show while the row is focused
+      if (el !== searchEl) regexBtn.closest('.bc-reveal').classList.add('open'); // the tools show while the row is focused
       el.focus();
       window.dispatchEvent(new Event('${win ? 'focus' : 'blur'}'));
       const row = document.querySelector('.search-row');
@@ -652,7 +651,7 @@ async function main() {
     const focusedWin = await focusPair(true);
     check('focus state: window unfocused = no accent line AND the idle placeholder', !unfocused.hasFocus && !unfocused.lit && unfocused.ph === 'Click here to search...' && unfocused.line !== focusedWin.line, JSON.stringify(unfocused));
     check('focus state: field + window focused = accent line AND "Search..."', focusedWin.hasFocus && focusedWin.lit && focusedWin.ph === 'Search...', JSON.stringify(focusedWin));
-    const onTool = await focusPair(true, 'modeBtn');
+    const onTool = await focusPair(true, 'regexBtn');
     check('focus state: Tab onto a field button keeps the accent line AND "Search..." together', onTool.active && onTool.lit && onTool.ph === 'Search...', JSON.stringify(onTool));
 
     // 17. Navigation guard (LAST: a failure would replace the popup page): a

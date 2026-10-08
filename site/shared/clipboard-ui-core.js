@@ -466,18 +466,26 @@
         html: builtinFilterIconHtml(filter, options),
       });
     }
-    // Groups: the chips that would show something first (the row is one line,
-    // so greyed chips never push usable ones out of sight), each tier by use.
+    // Groups: the selection first, as one cluster led by its or / and (once
+    // two or more groups are joined), then the excluded ones; then the chips
+    // that would show something, then the greyed ones (the row is one line, so
+    // greyed chips never push usable ones out of sight); each part by use. A
+    // chip that is selected or unselected glides to its new place
+    // (flipChildren, the consumer's paint).
     const tier = verdict ? (g) => { const v = verdict({ kind: 'group', value: g }); return v.enabled ? 0 : v.kind === 'structural' ? 2 : 1; } : null;
     const weights = options.groupWeights || (census && census.groupWeights) || Search.groupWeights(items);
-    html += renderTagTreeMenu(buildTagTree(groups, { weights, tier }), {
-      mode: 'filter',
-      items,
-      activeFilters,
-      excludedFilters,
-      groupCounts,
-      verdict,
-    });
+    const tree = buildTagTree(groups, { weights, tier });
+    const holds = (node, set) => set.has(node.name) || node.children.some((child) => holds(child, set));
+    const selected = tree.filter((node) => holds(node, activeFilters));
+    const excluded = tree.filter((node) => !selected.includes(node) && holds(node, excludedFilters));
+    const rest = tree.filter((node) => !selected.includes(node) && !excluded.includes(node));
+    const treeOpts = { mode: 'filter', items, activeFilters, excludedFilters, groupCounts, verdict };
+    const sep = '<span class="cluster-sep" aria-hidden="true"></span>';
+    if (selected.length || excluded.length) {
+      html += sep + connToggleHtml('group', Search.dimConnective(Search.parseQuery(query), 'group'), 'groups')
+        + renderTagTreeMenu(selected, treeOpts) + renderTagTreeMenu(excluded, treeOpts) + (rest.length ? sep : '');
+    }
+    html += renderTagTreeMenu(rest, treeOpts);
     if ((activeFilters.size || excludedFilters.size) && !query) {
       html += '<span class="filter-tag clear-filter icon-filter" data-action="clear-search-filters" title="Clear filters" aria-label="Clear filters"><span class="mi">close</span></span>';
     }
@@ -811,7 +819,7 @@
       closeBtn: 'closeBtn',
       search: 'search',
       searchClear: 'searchClear',
-      modeBtn: 'modeBtn',
+      regexBtn: 'regexBtn',
       sortBtn: 'sortBtn',
       searchOptsBtn: 'searchOptsBtn',
       searchOpts: 'searchOpts',
@@ -842,11 +850,11 @@
           <button class="icon-btn close-btn${closeCls}" id="${esc(ids.closeBtn)}" type="button" title="Close (Esc)" aria-label="Close"><span class="mi">close</span></button>
         </header>
         <div class="search-row">
-          <div class="search-field"><div class="search-input-wrap"><input class="search" id="${esc(ids.search)}" type="text" placeholder="Click here to search..." aria-label="Search clips" autocomplete="off" spellcheck="false"></div><div class="search-pills" role="list" aria-label="Active filters" hidden></div></div>
+          <div class="search-field"><input class="search" id="${esc(ids.search)}" type="text" placeholder="Click here to search..." aria-label="Search clips" autocomplete="off" spellcheck="false"></div>
           <span class="bc-reveal" data-reveal="clear"><span class="bc-reveal-inner"><button class="icon-btn search-clear" id="${esc(ids.searchClear)}" type="button" tabindex="-1" title="Clear search" aria-label="Clear search"><span class="mi">close</span></button></span></span>
           <span class="bc-reveal" data-reveal="sort"><span class="bc-reveal-inner"><button class="icon-btn sort-btn" id="${esc(ids.sortBtn)}" type="button" title="Sort results" aria-label="Sort results"><span class="mi">sort</span></button></span></span>
           <span class="bc-reveal" data-reveal="tools"><span class="bc-reveal-inner">
-            <button class="icon-btn mode-btn" id="${esc(ids.modeBtn)}" type="button" aria-haspopup="menu" title="Search mode" aria-label="Search mode: Basic"><span class="mi">text_fields</span></button>
+            <button class="icon-btn rx-btn" id="${esc(ids.regexBtn)}" type="button" aria-pressed="false" title="Regex" aria-label="Regex"><span class="mi">regular_expression</span></button>
             <button class="icon-btn opts-btn" id="${esc(ids.searchOptsBtn)}" type="button" title="Search options" aria-label="Search options" aria-expanded="false" aria-controls="${esc(ids.searchOpts)}"><span class="mi">tune</span></button>
           </span></span>
         </div>
@@ -1323,6 +1331,31 @@
     if (!Number.isFinite(n)) return 0;
     return /ms$/.test(v) ? n : n * 1000;
   }
+  // Re-render a strip (mutate) and glide every child that moved to its new
+  // place (FLIP): a child keeps its identity by its chip's data-group /
+  // data-filter, or a toggle's data-dim. Instant under reduced motion
+  // (--dur 0) or in a hidden page.
+  function flipChildren(el, mutate) {
+    const motion = el && typeof document !== 'undefined' && document.visibilityState !== 'hidden' && el.getClientRects().length > 0 && motionMs(el) > 0;
+    const keyOf = (child) => {
+      const chip = child.matches('[data-group], [data-filter], [data-dim]') ? child : child.querySelector('[data-group], [data-filter]');
+      return chip ? chip.dataset.group || chip.dataset.filter || `dim:${chip.dataset.dim}` : '';
+    };
+    const before = new Map();
+    if (motion) for (const child of el.children) { const k = keyOf(child); if (k) before.set(k, child.getBoundingClientRect()); }
+    mutate();
+    if (!motion || !before.size) return;
+    const ms = motionMs(el);
+    for (const child of el.children) {
+      const was = before.get(keyOf(child));
+      if (!was) continue;
+      const now = child.getBoundingClientRect();
+      const dx = was.left - now.left;
+      const dy = was.top - now.top;
+      if (Math.abs(dx) < 1 && Math.abs(dy) < 1) continue;
+      if (child.animate) child.animate([{ transform: `translate(${dx}px, ${dy}px)` }, { transform: 'none' }], { duration: ms, easing: 'ease' });
+    }
+  }
   // ── One-line strip that scrolls sideways (the popup's chip row, a clip
   // window's keys): the sideways scroll fade, and a plain wheel scrolls it
   // sideways while it overflows (most mice have no sideways wheel). Returns
@@ -1473,8 +1506,8 @@
     const x = extra || {};
     const tokenText = Search && Search.facetTokenText ? Search.facetTokenText(opt.token) : '';
     const label = opt.prompt && state === 'include' && x.label ? x.label : opt.label;
-    const ask = opt.prompt && Search.FIELD_ASK ? Search.FIELD_ASK[opt.token.kind] : null;
-    const title = x.reason || (opt.prompt ? (state === 'include' ? 'Remove this filter' : `${ask ? `${ask.ask} ${ask.example}` : opt.label}`) : tokenText);
+    const example = opt.prompt && Search.FIELD_EXAMPLE ? Search.FIELD_EXAMPLE[opt.token.kind] : '';
+    const title = x.reason || (opt.prompt ? (state === 'include' ? 'Remove this filter' : `Add ${opt.token.kind}:${opt.prompt.op || ''} and type ${example}`) : tokenText);
     return renderChip({
       tag: 'button',
       cls: `facet-opt${disabledChipClass(x)}`,
@@ -1489,25 +1522,28 @@
     return x && x.disabled ? ` is-disabled${x.disabledKind === 'structural' ? ' dis-structural' : ''}` : '';
   }
   // A query token painted exactly as the search field paints it (lexQuery's
-  // .qh-* spans; mode = the field's mode), so the panel shows the syntax the
-  // field will show.
-  function queryTokenHtml(text, mode) {
+  // .qh-* spans), so the panel shows the syntax the field will show.
+  function queryTokenHtml(text) {
     if (!Search || !Search.lexQuery) return escapeHtml(text);
-    return Search.lexQuery(String(text), { mode: mode || 'advanced' }).map((seg) => `<span class="qh-${seg.kind}">${escapeHtml(seg.text)}</span>`).join('');
+    return Search.lexQuery(String(text)).map((seg) => `<span class="qh-${seg.kind}">${escapeHtml(seg.text)}</span>`).join('');
+  }
+  // The or / and of one OR dimension (the chip row's groups, the panel's
+  // Type row): shown once it joins two or more values; a click flips them.
+  function connToggleHtml(dim, conn, what) {
+    if (!conn) return '';
+    const title = conn === 'or' ? `Any of these ${what}. Click: all of them` : `All of these ${what}. Click: any of them`;
+    return `<button class="conn-toggle" type="button" data-dim="${escapeHtml(dim)}" data-conn="${conn}" title="${escapeHtml(title)}" aria-label="${escapeHtml(title)}">${conn}</button>`;
   }
   // census: Search.facetCensus for this query (null = everything enabled). An
   // option the census hides (a kind absent from all history) is left out.
-  // mode: the field's search mode (its notes line; key chips type in Advanced
-  // and ask for a value elsewhere).
-  function renderSearchFacets(query, census, mode) {
+  function renderSearchFacets(query, census) {
     if (!Search || !Search.OPTION_FACETS) return '';
-    const m = Search.normalizeMode ? Search.normalizeMode(mode) : 'advanced';
     const parsed = Search.parseQuery(query || '');
     // One unit per filter (label + its chips). Units FLOW (Forge's FacetRows):
     // side by side while they fit, one per line in a narrow popup, so a wide
     // popup has no dead half and a narrow one stacks them.
     const row = (label, html) => `<div class="opts-unit"><span class="opts-facet-label">${escapeHtml(label)}</span><div class="opts-facet-chips" role="group" aria-label="${escapeHtml(label)}">${html}</div></div>`;
-    const facets = Search.OPTION_FACETS.map((def, r) => row(def.label, def.options.map((opt, i) => {
+    const facets = Search.OPTION_FACETS.map((def, r) => row(def.label, (def.dim ? connToggleHtml(def.dim, Search.dimConnective(parsed, def.dim), 'kinds') : '') + def.options.map((opt, i) => {
       const probe = opt.prompt ? { kind: opt.token.kind } : opt.token;
       const state = opt.prompt ? Search.promptOptionState(parsed, def, opt) : Search.facetTokenState(parsed, probe);
       const v = census ? Search.facetOptionVerdict(census, parsed, probe, { selected: state !== null }) : { enabled: true };
@@ -1520,146 +1556,58 @@
       const f = Search.FIELD_INFO[key] || {};
       return renderChip({ tag: 'button', cls: 'opts-field', attrs: { 'data-insert': `${key}:`, title: `${key}: ${f.desc || ''}${f.short ? ` (or ${f.short}:)` : ''}` }, html: queryTokenHtml(`${key}:`) });
     }).join('');
-    const notes = ((Search.SYNTAX_NOTES || {})[m] || []).map((n) => (n.code ? `${queryTokenHtml(n.code, m === 'basic' ? 'basic' : m === 'regex' ? 'regex' : 'advanced')} ` : '') + escapeHtml(n.text)).join('<span class="opts-notes-sep" aria-hidden="true">·</span>');
+    const notes = (Search.SYNTAX_NOTES || []).map((n) => (n.code ? `${queryTokenHtml(n.code)} ` : '') + escapeHtml(n.text)).join('<span class="opts-notes-sep" aria-hidden="true">·</span>');
     return facets + (fields ? row('More', fields) : '') + (notes ? `<p class="opts-notes">${notes}</p>` : '');
   }
   function renderSearchOptions(query) {
     return `<div class="opts-facets">${renderSearchFacets(query)}</div>`;
   }
 
-  // ── the search-mode chip (the popup's search AND the editor's find bar) ──
-  // ONE control for the mode: a click cycles it, hovering lists the modes
-  // (each with an example, the current one ticked; a switch that would remove
-  // part of the search names it), and without a hover-capable pointer (or on
-  // a touch press) a tap lists them instead. Alt+R (Cmd+Option+R on macOS)
-  // cycles from anywhere in `scope`, Shift going back. A mode other than the
-  // first is lit, like any toggled in-field control.
-  //   opts: { modes, get(), set(mode), loss?(mode) -> text a switch would
-  //           remove, menuHost, scope }
-  const MODE_INFO = {
-    basic: { icon: 'text_fields', label: 'Basic', example: 'words, as typed' },
-    regex: { icon: 'regular_expression', label: 'Regex', example: 'colou?r' },
-    advanced: { icon: 'data_object', label: 'Advanced', example: 'a OR b -c is:image' },
-  };
-  const HOVER_INTENT_MS = 160; // Forge's hover-peek timing, open and close
+  // ── chord toggles: the search field's Regex, the find bar's Regex and match
+  // case (VS Code's find keys) ──
+  // Alt+key, Cmd+Option+key on macOS (Option alone types a character).
   function isMacPlatform() { return typeof navigator !== 'undefined' && /Mac/i.test(navigator.platform || ''); }
-  // The chord that cycles a search mode / toggles match case (VS Code's find
-  // keys): Alt+key, Cmd+Option+key on macOS (Option alone types a character).
-  function modeChord(e, code) {
+  function chordMatch(e, code) {
     if (!e || e.code !== code) return false;
     return isMacPlatform() ? e.metaKey && e.altKey && !e.ctrlKey : e.altKey && !e.ctrlKey && !e.metaKey;
   }
-  function modeChordLabel(key) { return isMacPlatform() ? `⌥⌘${key}` : `Alt+${key}`; }
-  function attachModeChip(btn, opts) {
-    if (typeof document === 'undefined' || !btn) return { paint() {}, destroy() {}, close() {} };
+  function chordLabel(key) { return isMacPlatform() ? `\u2325\u2318${key}` : `Alt+${key}`; }
+  // A toggle button: lit (and aria-pressed) from get(); a click or its chord
+  // (while the focus is in scope) flips it through set(); a press never takes
+  // the focus from the field being typed in.
+  //   opts: { label, key ('R'), get(), set(on), hint? (the tooltip's second
+  //           sentence while on), scope }
+  function attachToggle(btn, opts) {
+    if (typeof document === 'undefined' || !btn) return { paint() {}, destroy() {} };
     const o = opts || {};
-    const modes = o.modes || Search.SEARCH_MODES;
-    const menu = createMenu(o.menuHost || document.body);
-    const canHover = typeof matchMedia === 'function' && matchMedia('(hover: hover)').matches;
-    const step = (dir) => modes[(modes.indexOf(o.get()) + (dir || 1) + modes.length) % modes.length];
-    let openTimer = null;
-    let closeTimer = null;
-    let hoverOpened = false;
-    let lastPointer = '';
-    let menuHtml = ''; // what the open list shows: repainted only when it changes (a press on a row survives)
-    const lossOf = (m) => (m !== o.get() && o.loss ? o.loss(m) : '');
-    function rowsHtml() {
-      const cur = o.get();
-      return modes.map((m) => {
-        const info = MODE_INFO[m];
-        const loss = lossOf(m);
-        return menuRowHtml({ icon: m === cur ? 'check' : '', check: m === cur, label: info.label, hint: loss ? `removes ${loss}` : info.example, cls: `mode-row${loss ? ' mode-loss' : ''}`, role: 'menuitemradio', attrs: { 'data-mode': m, 'aria-checked': String(m === cur) } });
-      }).join('');
-    }
-    function paint() {
-      const cur = o.get();
-      const info = MODE_INFO[cur] || MODE_INFO.basic;
-      const icon = btn.querySelector('.mi');
-      if (icon) icon.textContent = info.icon;
-      btn.classList.toggle('active', cur !== modes[0]);
-      const next = step(1);
-      const loss = lossOf(next);
-      btn.title = `${info.label} search. Click for ${MODE_INFO[next].label}${loss ? ` (removes ${loss})` : ''}, ${modeChordLabel('R')}`;
-      btn.setAttribute('aria-label', `Search mode: ${info.label}`);
-      const root = menu.root();
-      const html = root ? rowsHtml() : '';
-      if (root && html !== menuHtml) { root.innerHTML = html; menuHtml = html; }
-    }
-    function openMenu(keyboard) {
-      clearTimeout(openTimer);
-      const r = btn.getBoundingClientRect();
-      menuHtml = rowsHtml();
-      menu.open({ x: r.left, y: r.bottom + 4, aboveY: r.top, html: menuHtml, className: 'mode-menu', keyboard: !!keyboard, anchor: btn, onClose: () => { hoverOpened = false; btn.setAttribute('aria-expanded', 'false'); } });
-      btn.setAttribute('aria-expanded', 'true');
-      const root = menu.root();
-      if (!root) return;
-      root.addEventListener('click', (e) => {
-        const row = e.target.closest('[data-mode]');
-        if (!row) return;
-        e.stopPropagation();
-        menu.close();
-        o.set(row.dataset.mode);
-      });
-      root.addEventListener('pointerenter', () => clearTimeout(closeTimer));
-      root.addEventListener('pointerleave', () => { if (hoverOpened) scheduleClose(); });
-    }
-    function scheduleClose() {
-      clearTimeout(closeTimer);
-      closeTimer = setTimeout(() => { if (hoverOpened) menu.close(); }, HOVER_INTENT_MS);
-    }
-    const onPointerDown = (e) => { lastPointer = e.pointerType || ''; };
-    const onEnter = (e) => {
-      if (!canHover || e.pointerType === 'touch') return;
-      clearTimeout(closeTimer);
-      if (menu.isOpen()) return;
-      clearTimeout(openTimer);
-      openTimer = setTimeout(() => { hoverOpened = true; openMenu(false); }, HOVER_INTENT_MS);
+    const paint = () => {
+      const on = !!o.get();
+      btn.classList.toggle('active', on);
+      btn.setAttribute('aria-pressed', String(on));
+      btn.setAttribute('aria-label', o.label);
+      btn.title = `${o.label}: ${on ? 'on' : 'off'} (${chordLabel(o.key)})${on && o.hint ? `. ${o.hint}` : ''}`;
     };
-    const onLeave = () => { clearTimeout(openTimer); if (hoverOpened) scheduleClose(); };
-    const onClick = (e) => {
-      e.preventDefault();
-      clearTimeout(openTimer);
-      const touch = lastPointer === 'touch' || !canHover;
-      lastPointer = '';
-      if (touch) { if (menu.isOpen()) menu.close(); else openMenu(false); return; }
-      o.set(step(1));
-    };
-    const onKey = (e) => {
-      if (e.key === 'ArrowDown') { e.preventDefault(); e.stopPropagation(); openMenu(true); }
-    };
-    const scope = o.scope || null;
+    const flip = () => { o.set(!o.get()); paint(); };
+    const onClick = (e) => { e.preventDefault(); flip(); };
+    const onMouseDown = (e) => { if (e.button === 0 && document.activeElement && /^(INPUT|TEXTAREA)$/.test(document.activeElement.tagName)) e.preventDefault(); };
     const onDocKey = (e) => {
-      if (!modeChord(e, 'KeyR') || e.repeat) return;
+      if (!chordMatch(e, `Key${o.key}`) || e.repeat) return;
       const active = document.activeElement;
-      if (scope && !(scope.contains(active) || (active === document.body && scope === document.documentElement))) return;
+      if (!(o.scope.contains(active) || (active === document.body && o.scope === document.documentElement))) return;
       e.preventDefault();
       e.stopPropagation();
-      o.set(step(e.shiftKey ? -1 : 1));
+      flip();
     };
-    btn.addEventListener('pointerdown', onPointerDown);
-    btn.addEventListener('pointerenter', onEnter);
-    btn.addEventListener('pointerleave', onLeave);
     btn.addEventListener('click', onClick);
-    btn.addEventListener('keydown', onKey);
-    if (scope) document.addEventListener('keydown', onDocKey, true);
-    // The button never takes the focus from the field it belongs to.
-    const onMouseDown = (e) => { if (e.button === 0 && document.activeElement && document.activeElement.tagName === 'INPUT') e.preventDefault(); };
     btn.addEventListener('mousedown', onMouseDown);
+    if (o.scope) document.addEventListener('keydown', onDocKey, true);
     paint();
     return {
       paint,
-      close: () => menu.close(),
       destroy() {
-        clearTimeout(openTimer);
-        clearTimeout(closeTimer);
-        menu.close();
-        btn.removeEventListener('pointerdown', onPointerDown);
-        btn.removeEventListener('pointerenter', onEnter);
-        btn.removeEventListener('pointerleave', onLeave);
         btn.removeEventListener('click', onClick);
-        btn.removeEventListener('keydown', onKey);
         btn.removeEventListener('mousedown', onMouseDown);
-        if (scope) document.removeEventListener('keydown', onDocKey, true);
+        if (o.scope) document.removeEventListener('keydown', onDocKey, true);
       },
     };
   }
@@ -1670,23 +1618,19 @@
   // you type, plus a token autocomplete dropdown (prefixes, group names, is:/sort: values,
   // since: presets, num:). It also owns the field's chrome, for the app popup AND the
   // demo: the placeholder ("Click here to search..." until focused), the in-field
-  // buttons on the shared reveal (clear with text, sort with a query, the mode chip +
+  // buttons on the shared reveal (clear with text, sort with a query, Regex +
   // options while focused or in use) and the options panel (the "tune" toggle).
-  // It OWNS the query: the canonical text (Advanced syntax, what search and the
-  // chips read) is getQuery(); the field shows it in the search mode (Basic:
-  // literal words; Regex: one pattern; Advanced: the whole language) with the
-  // filters as pills in Basic and Regex (Search.splitQuery / composeQuery).
-  //   opts: { mode, saveMode?(mode), getGroups(): string[], onChange(query), onEnter?(),
+  // The field's text IS the query. The Regex toggle (Alt+R, Cmd+Option+R on
+  // macOS) types /.../ for you: what is typed at a fresh spot becomes a regex
+  // term with the caret inside (Search.regexTypingEdit), and the toggle wraps or
+  // unwraps the word at the caret, so the field always shows what it searches.
+  //   opts: { regex, saveRegex?(on), getGroups(): string[], onChange(query), onEnter?(),
   //           getCensus?(parsed), optionsHeight?: px (0 = default), saveOptionsHeight?(px | 0),
-  //           sizeRoot?: element the panel is sized against (default: the popup),
-  //           menuHost?: where the mode list mounts, toast?({ message, actionLabel,
-  //           onAction }) (a switch that removed part of the search offers Undo),
-  //           prompt?({ title, placeholder, validate }) -> Promise<string|null> (a value
-  //           for a key or "Since..." chip outside Advanced) }
-  // Returns { refresh(), getQuery(), setQuery(query), getMode(), setMode(mode),
+  //           sizeRoot?: element the panel is sized against (default: the popup) }
+  // Returns { refresh(), getQuery(), setQuery(query), getRegex(), setRegex(on, { load }),
   //           isSuggestOpen(), isOptionsOpen(), openOptions(), closeOptions({ instant })
   //           -> bool, setOptionsHeight(px), destroy() }.
-  // The input keeps its id; the consumer reads the query from onChange, never the input.
+  // The input keeps its id; the consumer hands the query over with setQuery and reads it from onChange.
   const SEARCH_PLACEHOLDER_IDLE = 'Click here to search...';
   // The Best/Recent sort toggle's look for the effective mode ('best' | 'new'),
   // painted by both popups (attachSearchBox decides when it is shown).
@@ -1709,13 +1653,8 @@
     const getGroups = o.getGroups || (() => []);
     const row = inputEl.closest('.search-row') || inputEl.parentElement;
     const field = inputEl.parentElement;
-    // The query and how the field shows it.
-    let mode = Search.normalizeMode(o.mode);
     let query = '';
-    let pills = []; // Basic / Regex: the filters (Search.splitQuery's pills)
-    const pillsEl = row ? row.querySelector('.search-pills') : null;
-    const pillsFade = pillsEl ? attachSideScroll(pillsEl) : null;
-    const queryFromField = () => (mode === 'advanced' ? inputEl.value : Search.composeQuery(mode, inputEl.value, pills));
+    let regexOn = !!o.regex;
     const emit = () => { if (o.onChange) o.onChange(query); };
     // Backdrop mirror: a div exactly under the input, carrying the SAME text metrics.
     const backdrop = document.createElement('div');
@@ -1784,13 +1723,13 @@
       let segs = [];
       let shown = [];
       if (Search && Search.validateQuery) {
-        const all = Search.validateQuery(value, { mode, groups: getGroups(), caret: caretAt() });
+        const all = Search.validateQuery(value, { groups: getGroups(), caret: caretAt() });
         // A token still being typed at the caret (a regex mid-group) is flagged
         // only once typing pauses.
         shown = all.filter((p) => !p.pending || pendingShown === value);
         clearTimeout(pendingTimer);
         if (all.some((p) => p.pending) && pendingShown !== value) pendingTimer = setTimeout(() => { pendingShown = inputEl.value; paintHighlight(); }, 700);
-        segs = Search.lexQuery(value, { mode, problems: shown });
+        segs = Search.lexQuery(value, { problems: shown });
       }
       backdrop.innerHTML = segs.map((s) => `<span class="qh-${s.kind}">${escapeHtml(s.text)}</span>`).join('')
         + (ghost ? `<span class="qh-ghost">${escapeHtml(ghost)}</span>` : '');
@@ -1835,8 +1774,7 @@
       const optionFilters = !!(parsed && Search.optionFacetsActive && Search.optionFacetsActive(parsed));
       if (clearReveal) clearReveal.classList.toggle('open', query.length > 0);
       if (sortReveal) sortReveal.classList.toggle('open', !!query.trim());
-      if (toolsReveal) toolsReveal.classList.toggle('open', focusInside || value.length > 0 || pills.length > 0 || mode !== 'basic' || panelOpen);
-      if (modeChip) modeChip.paint();
+      if (toolsReveal) toolsReveal.classList.toggle('open', focusInside || value.length > 0 || regexOn || panelOpen);
       if (optsBtn) {
         optsBtn.classList.toggle('active', panelOpen || optionFilters);
         optsBtn.setAttribute('aria-expanded', String(panelOpen));
@@ -1850,14 +1788,14 @@
       if (!facetsEl) return;
       const parsed = Search.parseQuery(query);
       const census = o.getCensus ? o.getCensus(parsed) : null;
-      const key = `${Search.facetKey(parsed)}\u0001${census ? census.id || 'c' : ''}\u0001${mode}`;
+      const key = `${Search.facetKey(parsed)}\u0001${census ? census.id || 'c' : ''}`
       if (facetsKey === key) return;
       facetsKey = key;
       // A rebuild must not drop a keyboard user's place: the focused chip's twin
       // takes the focus back (else it falls to <body> and Tab starts over).
       const focused = facetsEl.contains(document.activeElement) ? document.activeElement : null;
       const place = focused && focused.dataset ? `.facet-opt[data-row="${focused.dataset.row}"][data-opt="${focused.dataset.opt}"]` : null;
-      facetsEl.innerHTML = renderSearchFacets(query, census, mode);
+      facetsEl.innerHTML = renderSearchFacets(query, census);
       const twin = place ? facetsEl.querySelector(place) : null;
       if (twin) twin.focus({ preventScroll: true });
     }
@@ -1878,8 +1816,8 @@
     function computeSuggest() {
       const caret = caretAt();
       const parked = parkedFor !== null && parkedFor === inputEl.value;
-      const census = o.getCensus && mode === 'advanced' ? o.getCensus(Search.parseQuery(query)) : null;
-      suggestRes = !parked && caret != null && Search && Search.suggestQuery ? Search.suggestQuery(inputEl.value, caret, { groups: getGroups(), mode, groupWeights: census && census.groupWeights }) : null;
+      const census = o.getCensus ? o.getCensus(Search.parseQuery(inputEl.value)) : null;
+      suggestRes = !parked && caret != null && Search && Search.suggestQuery ? Search.suggestQuery(inputEl.value, caret, { groups: getGroups(), groupWeights: census && census.groupWeights }) : null;
       ghost = suggestRes && Search.ghostCompletion ? Search.ghostCompletion(inputEl.value, caret, suggestRes) : '';
       suggestFor = inputEl.value;
     }
@@ -1904,166 +1842,50 @@
       closeSuggest();
       suggestRes = null;
       ghost = '';
-      query = queryFromField();
+      query = inputEl.value;
       paintHighlight();
       syncControls();
       emit();
       return true;
     }
-    // A programmatic change of the FIELD's text (a suggestion, a hint's fix, a
-    // pasted phrase, a key chip in Advanced): repaint, then hand the new query
-    // to the consumer like typed input.
+    // A programmatic change of the query (a suggestion, a hint's fix, a pasted
+    // phrase, a panel chip, a regex typed for you): repaint, then hand the new
+    // query to the consumer like typed input.
     function commitValue(next, caret) {
       closeSuggest(); // its rows (and their replace ranges) belong to the old text
       autoFill = null;
       inputEl.value = next;
       const at = caret == null ? next.length : caret;
       inputEl.setSelectionRange(at, at);
-      query = queryFromField();
+      query = inputEl.value;
       computeSuggest();
       paintHighlight();
       syncControls();
       emit();
     }
-    // The field shows `query` in the current mode. The typed text stays as it
-    // is when it still says the same (a chip changed only the pills), so the
-    // caret never jumps.
-    function showQuery(next) {
-      query = String(next == null ? '' : next);
-      if (mode === 'advanced') {
-        pills = [];
-        if (inputEl.value !== query) inputEl.value = query;
-      } else {
-        const v = Search.splitQuery(query, mode);
-        pills = v.pills;
-        if (Search.composeQuery(mode, inputEl.value, []) !== Search.composeQuery(mode, v.text, [])) inputEl.value = v.text;
-        // The query reads back from the field from now on.
-        query = queryFromField();
-      }
-      renderPills();
+    const commitQuery = (next) => commitValue(String(next == null ? '' : next));
+    // ── the Regex toggle ──
+    // On: what is typed at a fresh spot becomes a /regex/ term (beforeinput).
+    // Flipping it wraps or unwraps the word at the caret; a saved state
+    // arriving (how.load) changes nothing in the field.
+    function setRegex(on, how) {
+      const next = !!on;
+      if (next === regexOn) return;
+      regexOn = next;
+      const load = !!(how && how.load);
+      if (o.saveRegex && !load) o.saveRegex(regexOn);
+      const caret = caretAt();
+      const r = !load && caret != null && document.activeElement === inputEl ? Search.toggleRegexAt(inputEl.value, caret, regexOn) : null;
+      if (r) commitValue(r.text, r.caret); else { paintHighlight(); syncControls(); }
+      if (rxToggle) rxToggle.paint();
     }
-    // A programmatic change of the QUERY (a panel chip, a pill, a prompt):
-    // shown, then handed to the consumer.
-    function commitQuery(next) {
-      closeSuggest();
-      autoFill = null;
-      showQuery(next);
-      computeSuggest();
-      paintHighlight();
-      syncControls();
-      emit();
-    }
-    // ── pills (Basic / Regex): the filters of the query, after the text ──
-    // A value pill shows its key once and its values with the or/and
-    // connective between them (a click flips it); a token pill is the token
-    // painted as Advanced would. x removes a pill; a right-click excludes a
-    // filter value (or clears an exclusion), like the chips.
-    function pillHtml(p, i) {
-      const x = `<button class="pill-x" type="button" tabindex="-1" data-pill-x="${i}" title="Remove" aria-label="Remove ${escapeHtml(p.text)}"><span class="mi">close</span></button>`;
-      let body;
-      if (p.kind === 'facet') {
-        const key = p.field === 'is' ? 'is:' : `${p.field}:`;
-        const conn = p.conn ? `<button class="pill-conn" type="button" tabindex="-1" data-pill-conn="${i}" title="${p.conn === 'or' ? 'Either matches. Click: both must match' : 'Both must match. Click: either matches'}">${p.conn}</button>` : '';
-        body = `<span class="qh-prefix">${escapeHtml(key)}</span>` + p.values.map((v) => `<span class="pill-value" data-pill-value="${i}" data-value="${escapeHtml(String(v.value))}">${escapeHtml(String(v.value))}</span>`).join(conn);
-      } else {
-        body = queryTokenHtml(p.text);
-      }
-      return `<span class="filter-tag search-pill${p.neg ? ' excluded-pill' : ''}" role="listitem" data-pill="${i}" title="${escapeHtml(p.text)}">${body}${x}</span>`;
-    }
-    function renderPills() {
-      if (!pillsEl) return;
-      const show = mode !== 'advanced' && pills.length > 0;
-      pillsEl.hidden = !show;
-      pillsEl.innerHTML = show ? pills.map(pillHtml).join('') : '';
-      if (pillsFade) pillsFade.refresh();
-    }
-    const pillAt = (el, attr) => { const i = Number(el.getAttribute(attr)); return pills[i] || null; };
-    const onPillsMousedown = (e) => { if (e.button === 0 && document.activeElement === inputEl) e.preventDefault(); };
-    const onPillsClick = (e) => {
-      const xBtn = e.target.closest('[data-pill-x]');
-      const connBtn = e.target.closest('[data-pill-conn]');
-      if (xBtn) { e.preventDefault(); const p = pillAt(xBtn, 'data-pill-x'); if (p) commitQuery(Search.removePill(query, mode, p)); return; }
-      if (connBtn) { e.preventDefault(); const p = pillAt(connBtn, 'data-pill-conn'); if (p) commitQuery(Search.setPillConnective(query, mode, p, p.conn === 'or' ? 'and' : 'or')); }
-    };
-    const onPillsContextmenu = (e) => {
-      const pillEl = e.target.closest('[data-pill]');
-      if (!pillEl) return;
-      e.preventDefault();
-      e.stopPropagation();
-      const p = pillAt(pillEl, 'data-pill');
-      if (!p) return;
-      const valueEl = e.target.closest('[data-pill-value]');
-      if (p.kind === 'facet') {
-        const v = valueEl ? valueEl.dataset.value : String(p.values[0].value);
-        const token = { kind: p.field === 'is' ? 'is' : p.field, value: p.field === 'num' ? Number(v) : v };
-        commitQuery(Search.applyFacet(query, token, 'exclude'));
-        return;
-      }
-      // An excluded value clears; a word or a scoped term flips its sign; a
-      // single-valued filter (a date, a size) has no exclusion.
-      const one = Search.parseQuery(p.text);
-      const leaf = one.items.length === 1 && one.items[0].kind === 'leaf' ? one.items[0].leaf : null;
-      if (!leaf) return;
-      if (leaf.neg && (leaf.field === 'group' || leaf.field === 'is' || leaf.field === 'num')) {
-        commitQuery(Search.applyFacet(query, { kind: leaf.field, value: leaf.value }, 'exclude'));
-      } else if (leaf.field === 'content') {
-        const flipped = leaf.neg ? p.text.replace(/^-/, '') : `-${p.text}`;
-        const v = Search.splitQuery(query, mode);
-        commitQuery(Search.composeQuery(mode, v.text, v.pills.map((x) => (x.key === p.key ? { ...x, text: flipped } : x))));
-      }
-    };
-    if (pillsEl) {
-      pillsEl.addEventListener('mousedown', onPillsMousedown);
-      pillsEl.addEventListener('click', onPillsClick);
-      pillsEl.addEventListener('contextmenu', onPillsContextmenu);
-    }
-    // ── the search mode ──
-    // A switch rewrites the field (into Advanced the query shows as it is, so
-    // the format is learned; out of it the filters become pills). Part of the
-    // search no pill can show (a OR b) is named in the mode list first and,
-    // when a switch removes it anyway, offered back with Undo.
-    // how.load: the saved mode arriving (not the user's switch: nothing saved).
-    function setMode(next, how) {
-      const to = Search.normalizeMode(next);
-      if (to === mode) return;
-      const before = { mode, text: inputEl.value, query };
-      const sw = Search.switchModeQuery(query, mode, to, inputEl.value);
-      mode = to;
-      if (o.saveMode && !(how && how.load)) o.saveMode(mode);
-      pills = to === 'advanced' ? [] : sw.pills;
-      inputEl.value = to === 'advanced' ? sw.query : sw.text;
-      query = queryFromField();
-      const at = inputEl.value.length;
-      try { inputEl.setSelectionRange(at, at); } catch {}
-      closeSuggest();
-      facetsKey = null;
-      renderPills();
-      computeSuggest();
-      paintHighlight();
-      syncControls();
-      emit();
-      if (sw.dropped.length && o.toast) {
-        o.toast({ message: `${MODE_INFO[to].label} search: removed ${sw.dropped.map((d) => d.text).join(', ')}`, actionLabel: 'Undo', onAction: () => {
-          mode = before.mode;
-          if (o.saveMode) o.saveMode(mode);
-          pills = mode === 'advanced' ? [] : Search.splitQuery(before.query, mode).pills;
-          inputEl.value = before.text;
-          query = before.query;
-          facetsKey = null;
-          renderPills();
-          paintHighlight();
-          syncControls();
-          emit();
-        } });
-      }
-    }
-    const modeBtn = row ? row.querySelector('.mode-btn') : null;
-    const lossText = (to) => Search.modeSwitchLoss(query, mode, to).map((d) => d.text).join(', ');
-    const modeChip = modeBtn ? attachModeChip(modeBtn, {
-      get: () => mode,
-      set: setMode,
-      loss: lossText,
-      menuHost: o.menuHost,
+    const rxBtn = row ? row.querySelector('.rx-btn') : null;
+    const rxToggle = rxBtn ? attachToggle(rxBtn, {
+      label: 'Regex',
+      key: 'R',
+      hint: 'What you type becomes /pattern/',
+      get: () => regexOn,
+      set: (on) => setRegex(on),
       scope: o.sizeRoot || inputEl.closest('.bc-popup') || document.documentElement,
     }) : null;
     function applySuggestion(i) {
@@ -2139,27 +1961,14 @@
       const opt = rowDef && rowDef.options[Number(chip.dataset.opt)];
       return opt ? { chip, opt } : null;
     }
-    // A key to give a value to (a key chip, a "Since..." chip): in Advanced its
-    // prefix goes on the end of the field for typing (the autocomplete offers
-    // the values); elsewhere the field is not syntax, so a prompt asks for the
-    // value and the filter lands as a pill. op: a size direction a bare
-    // number takes (Longer than: 200 -> len:>200).
+    // A key to give a value to (a key chip, a "Since..." chip): its prefix
+    // goes on the end of the field for typing (the autocomplete offers the
+    // values). op: a size direction (len:> / len:<).
     function askForValue(key, op) {
-      if (mode === 'advanced' || !o.prompt) {
-        if (mode !== 'advanced') setMode('advanced');
-        const base = inputEl.value.replace(/\s+$/, '');
-        commitValue(`${base}${base ? ' ' : ''}${key}:${op || ''}`);
-        inputEl.focus();
-        updateSuggest();
-        return;
-      }
-      const ask = (Search.FIELD_ASK && Search.FIELD_ASK[key]) || { ask: key, example: '' };
-      const validate = (answer) => { const r = Search.promptQuery(query, key, answer, { op, groups: getGroups() }); return r.error || null; };
-      Promise.resolve(o.prompt({ title: ask.ask, placeholder: ask.example, validate })).then((answer) => {
-        if (answer == null) return;
-        const r = Search.promptQuery(query, key, answer, { op, groups: getGroups() });
-        if (!r.error) commitQuery(r.query);
-      });
+      const base = inputEl.value.replace(/\s+$/, '');
+      commitValue(`${base}${base ? ' ' : ''}${key}:${op || ''}`);
+      inputEl.focus();
+      updateSuggest();
     }
     function applyOption(opt, intent) {
       if (opt.prompt) {
@@ -2175,6 +1984,14 @@
       commitQuery(Search.applyFacet(query, opt.token, single ? 'include' : intent));
     }
     const onPanelClick = (e) => {
+      // A row's or / and: its values joined the other way.
+      const conn = e.target.closest('.conn-toggle[data-dim]');
+      if (conn) {
+        e.preventDefault();
+        e.stopPropagation();
+        commitQuery(Search.setDimConnective(query, conn.dataset.dim, conn.dataset.conn === 'or' ? 'and' : 'or'));
+        return;
+      }
       // A key chip: its prefix goes on the end of the query (a space before it)
       // and the field takes the typing, with the autocomplete on its values.
       const key = e.target.closest('.opts-field');
@@ -2234,11 +2051,23 @@
     if (clearBtn) clearBtn.tabIndex = -1;
     if (row) row.addEventListener('mousedown', onRowMousedown);
 
-    const onBeforeInput = (e) => { lastInputType = e.inputType || ''; };
+    // With Regex on, typing at a fresh spot starts a /regex/ term, a '/' in one
+    // is escaped, and an emptied // goes as a pair (Search.regexTypingEdit).
+    const onBeforeInput = (e) => {
+      lastInputType = e.inputType || '';
+      if (!regexOn || e.isComposing || inputEl.selectionStart !== inputEl.selectionEnd) return;
+      const caret = inputEl.selectionStart;
+      const r = e.inputType === 'insertText' ? Search.regexTypingEdit(inputEl.value, caret, e.data)
+        : e.inputType === 'deleteContentBackward' ? Search.regexBackspaceEdit(inputEl.value, caret) : null;
+      if (!r) return;
+      e.preventDefault();
+      commitValue(r.text, r.caret);
+      if (e.inputType === 'insertText') updateSuggest();
+    };
     const onInput = () => {
       if (autoFill && autoFill.text !== inputEl.value) autoFill = null; // typed over (or deleted) the fill
       updateSuggest();
-      if (!maybeAutoFill()) { query = queryFromField(); paintHighlight(); syncControls(); emit(); }
+      if (!maybeAutoFill()) { query = inputEl.value; paintHighlight(); syncControls(); emit(); }
       lastCaret = caretAt(); // the keyup that follows is not a caret move
     };
     const onScroll = () => { backdrop.scrollLeft = inputEl.scrollLeft; };
@@ -2301,12 +2130,18 @@
     const onPaste = (e) => {
       const raw = rawPaste && Date.now() - rawPaste < 1000;
       rawPaste = false;
-      if (raw || mode === 'regex' || !Search || !Search.quotePastedText) return;
+      if (raw || !Search || !Search.quotePastedText) return;
       const v = inputEl.value;
       const start = inputEl.selectionStart == null ? v.length : inputEl.selectionStart;
       const end = inputEl.selectionEnd == null ? v.length : inputEl.selectionEnd;
+      // Regex on: the pasted text is a pattern too.
+      if (regexOn && start === end) {
+        const r = Search.regexTypingEdit(v, start, e.clipboardData ? e.clipboardData.getData('text') : '');
+        if (r) { e.preventDefault(); commitValue(r.text, r.caret); }
+        return;
+      }
       if (Search.insideQuote(v, start)) return;
-      const quoted = Search.quotePastedText(e.clipboardData ? e.clipboardData.getData('text') : '', mode);
+      const quoted = Search.quotePastedText(e.clipboardData ? e.clipboardData.getData('text') : '');
       if (!quoted) return;
       e.preventDefault();
       const before = start > 0 && !/\s/.test(v[start - 1]) ? ' ' : '';
@@ -2343,19 +2178,17 @@
     inputEl.addEventListener('mouseup', onCaretMove);
     if (typeof window !== 'undefined') { window.addEventListener('focus', onWindowFocus); window.addEventListener('blur', onWindowFocus); }
     if (row) { row.addEventListener('focusin', onRowFocusChange); row.addEventListener('focusout', onRowFocusChange); }
-    inputEl.value = '';
-    renderPills();
+    query = inputEl.value;
     paintHighlight();
     syncControls();
     return {
       refresh,
       getQuery: () => query,
       // The consumer changed the query (cleared it, a chip bar click, the
-      // empty state's nudge): shown in the current mode. No onChange (the
-      // consumer already has it).
-      setQuery: (next) => { const given = String(next == null ? '' : next); showQuery(given); refresh(); if (query !== given) emit(); },
-      getMode: () => mode,
-      setMode: (next, how) => setMode(next, how),
+      // empty state's nudge). No onChange (the consumer already has it).
+      setQuery: (next) => { query = String(next == null ? '' : next); if (inputEl.value !== query) inputEl.value = query; refresh(); },
+      getRegex: () => regexOn,
+      setRegex: (on, how) => setRegex(on, how),
       isSuggestOpen: () => suggestOpen,
       isOptionsOpen: () => panelOpen,
       openOptions: () => setPanel(true),
@@ -2364,13 +2197,7 @@
       setOptionsHeight: (px) => { optionsHeight = Math.max(0, Math.round(Number(px) || 0)); if (panelOpen) applyOptionsHeight(effectiveOptionsHeight()); },
       destroy() {
         clearTimeout(pendingTimer);
-        if (modeChip) modeChip.destroy();
-        if (pillsEl) {
-          pillsEl.removeEventListener('mousedown', onPillsMousedown);
-          pillsEl.removeEventListener('click', onPillsClick);
-          pillsEl.removeEventListener('contextmenu', onPillsContextmenu);
-        }
-        if (pillsFade) pillsFade.detach();
+        if (rxToggle) rxToggle.destroy();
         inputEl.removeEventListener('beforeinput', onBeforeInput);
         inputEl.removeEventListener('input', onInput);
         inputEl.removeEventListener('paste', onPaste);
@@ -3434,7 +3261,7 @@
     // Buttons are the shared .btn set: Cancel is the default button, the
     // confirm is .primary, or .danger when the caller passes {danger:true}.
     const confirmEl = make('<div class="dialog"><h3 data-x="title"></h3><p data-x="msg"></p><div class="dialog-preview" data-x="preview"></div><div class="dialog-btns"><button type="button" class="btn" data-x="no"></button><button type="button" class="btn primary" data-x="yes"></button></div></div>');
-    const promptEl = make('<div class="dialog"><h3 data-x="title"></h3><input class="prompt-input" type="text" autocomplete="off" spellcheck="false" data-x="input"><p class="prompt-error" data-x="error" role="alert" hidden></p><div class="dialog-btns"><button type="button" class="btn" data-x="no"></button><button type="button" class="btn primary" data-x="yes"></button></div></div>');
+    const promptEl = make('<div class="dialog"><h3 data-x="title"></h3><input class="prompt-input" type="text" autocomplete="off" spellcheck="false" data-x="input"><div class="dialog-btns"><button type="button" class="btn" data-x="no"></button><button type="button" class="btn primary" data-x="yes"></button></div></div>');
     const q = (parent, name) => parent.querySelector(`[data-x="${name}"]`);
     let activeCancel = null;
     // Keys: Esc cancels. Enter confirms a non-destructive dialog; a destructive
@@ -3443,8 +3270,7 @@
     // red button needs a click or a deliberate Tab to it. Focus moves into the
     // dialog (the field, else the default button) and goes back on close when
     // it came from a field or the keyboard.
-    // accept(value): a value it refuses (returns false) keeps the dialog open.
-    function run(overlay, setup, getValue, focusEl, danger, accept) {
+    function run(overlay, setup, getValue, focusEl, danger) {
       return new Promise((resolve) => {
         setup();
         overlay.classList.add('show');
@@ -3462,7 +3288,7 @@
           if (restore) back.focus({ preventScroll: true });
           resolve(value);
         };
-        const onYes = () => { const v = getValue(); if (accept && v != null && accept(v) === false) return; finish(v); };
+        const onYes = () => finish(getValue());
         const onNo = () => finish(getValue(true));
         const onBackdrop = (e) => { if (e.target === overlay) onNo(); };
         const onKey = (e) => {
@@ -3505,32 +3331,16 @@
         q(confirmEl, 'no').textContent = o.cancelLabel || 'Cancel';
       }, (cancelled) => !cancelled, q(confirmEl, o.danger ? 'no' : 'yes'), !!o.danger);
     }
-    // opts: { title, value, placeholder (an example answer), okLabel,
-    // cancelLabel, validate(value) -> an error to show (the dialog stays open)
-    // or null }.
     function prompt(opts) {
       const o = typeof opts === 'string' ? { title: opts } : (opts || {});
       const input = q(promptEl, 'input');
-      const error = q(promptEl, 'error');
-      const showError = (text) => { error.textContent = text || ''; error.hidden = !text; };
-      const onInput = () => showError('');
-      input.addEventListener('input', onInput);
-      const accept = typeof o.validate === 'function' ? (value) => {
-        const problem = o.validate(value);
-        if (!problem) return true;
-        showError(problem);
-        input.focus();
-        return false;
-      } : null;
       const result = run(promptEl, () => {
         q(promptEl, 'title').textContent = o.title || '';
         input.value = o.value || '';
-        input.placeholder = o.placeholder || '';
-        showError('');
         q(promptEl, 'yes').textContent = o.okLabel || 'OK';
         q(promptEl, 'no').textContent = o.cancelLabel || 'Cancel';
-      }, (cancelled) => cancelled ? null : (input.value.trim() || null), input, false, accept);
-      return result.then((v) => { input.removeEventListener('input', onInput); return v; });
+      }, (cancelled) => cancelled ? null : (input.value.trim() || null), input, false);
+      return result;
     }
     return {
       confirm,
@@ -4850,6 +4660,9 @@
       }
       const selSimilar = t.closest('[data-action="select-similar"]');
       if (selSimilar) { event.stopPropagation(); if (!selSimilar.disabled) selectSimilar(selSimilar.dataset.id); return true; }
+      // The chip row's or / and: the selected groups joined the other way.
+      const conn = t.closest('.conn-toggle[data-dim]');
+      if (conn && a.getQuery && a.setQuery) { event.stopPropagation(); a.setQuery(Search.setDimConnective(a.getQuery(), conn.dataset.dim, conn.dataset.conn === 'or' ? 'and' : 'or')); render(); return true; }
       const ftag = t.closest(FILTER_TARGET);
       // A greyed chip (the availability census: it would show nothing) is inert.
       if (ftag && ftag.getAttribute('aria-disabled') === 'true') { event.stopPropagation(); return true; }
@@ -5322,7 +5135,7 @@
       })}
       <div class="bc-find" data-x="findbar" hidden>
         <input class="bc-find-input" type="text" placeholder="Find" spellcheck="false" autocomplete="off" data-x="findinput">
-        <button class="icon-btn mode-btn" type="button" data-x="findmode" aria-haspopup="menu" title="Find mode" aria-label="Find mode: Basic"><span class="mi">text_fields</span></button>
+        <button class="icon-btn rx-btn" type="button" data-x="findregex" aria-pressed="false" title="Regex" aria-label="Regex"><span class="mi">regular_expression</span></button>
         <button class="icon-btn case-btn" type="button" data-x="findcase" aria-pressed="false" title="Match case" aria-label="Match case"><span class="mi">match_case</span></button>
         <span class="bc-find-count" data-x="findcount"></span>
         <button class="icon-btn" type="button" data-x="findprev" title="Previous (Shift+Enter)"><span class="mi">keyboard_arrow_up</span></button>
@@ -5347,7 +5160,7 @@
     const saveStateEl = q('savestate');
     const findBar = q('findbar');
     const findInput = q('findinput');
-    const findModeBtn = q('findmode');
+    const findRegexBtn = q('findregex');
     const findCaseBtn = q('findcase');
     const findCount = q('findcount');
     const findHl = q('findhl');
@@ -5370,10 +5183,8 @@
     function emitInput() { if (o.onInput) o.onInput(payload()); }
     const saveFindPrefs = () => { if (o.saveFindPrefs) o.saveFindPrefs({ mode: findMode, caseSensitive: findCase }); };
     function updateFindButtons() {
-      if (findModeChip) findModeChip.paint();
-      findCaseBtn.classList.toggle('active', findCase);
-      findCaseBtn.setAttribute('aria-pressed', String(findCase));
-      findCaseBtn.title = `Match case (${modeChordLabel('C')})`;
+      if (findRegexToggle) findRegexToggle.paint();
+      if (findCaseToggle) findCaseToggle.paint();
     }
     // The bar's title field: an untitled note shows its first line, dim.
     function updateTitleHint() { titleInput.placeholder = untitledHint(area.value); }
@@ -5610,18 +5421,21 @@
       else if (e.key === 'Escape') { e.preventDefault(); closeFind(); }
     });
     const refind = () => { updateFindButtons(); findIdx = -1; recomputeMatches(); selectMatch({ preserveFocus: true }); };
-    // The same mode chip as the popup's search, with its two find modes.
-    const findModeChip = attachModeChip(findModeBtn, {
-      modes: ['basic', 'regex'],
-      get: () => findMode,
-      set: (m) => { findMode = m === 'regex' ? 'regex' : 'basic'; saveFindPrefs(); refind(); findInput.focus(); },
-      menuHost: o.menuHost,
+    // The shared chord toggles: Regex (Alt+R) and match case (Alt+C).
+    const findRegexToggle = attachToggle(findRegexBtn, {
+      label: 'Regex',
+      key: 'R',
+      get: () => findMode === 'regex',
+      set: (on) => { findMode = on ? 'regex' : 'basic'; saveFindPrefs(); refind(); },
       scope: findBar,
     });
-    const toggleCase = () => { findCase = !findCase; saveFindPrefs(); refind(); };
-    findCaseBtn.onclick = () => { toggleCase(); findInput.focus(); };
-    findCaseBtn.addEventListener('mousedown', (e) => { if (e.button === 0) e.preventDefault(); });
-    findBar.addEventListener('keydown', (e) => { if (modeChord(e, 'KeyC') && !e.repeat) { e.preventDefault(); e.stopPropagation(); toggleCase(); } });
+    const findCaseToggle = attachToggle(findCaseBtn, {
+      label: 'Match case',
+      key: 'C',
+      get: () => findCase,
+      set: (on) => { findCase = !!on; saveFindPrefs(); refind(); },
+      scope: findBar,
+    });
     q('findprev').onclick = () => step(-1);
     q('findnext').onclick = () => step(1);
     q('findclose').onclick = closeFind;
@@ -6678,7 +6492,8 @@
     createClipController,
     findAllMatches,
     editorFindFor,
-    attachModeChip,
+    flipChildren,
+    attachToggle,
     countWords,
     editorSaveState,
     lineNumberAtIndex,

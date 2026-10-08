@@ -39,23 +39,15 @@ jobs:
               Copy-Item (Get-ChildItem dist -Filter "*.exe" | Where-Object { $_.Name -notlike "*Setup*" } | Select-Object -First 1).FullName "release/BoardClip-Windows-Portable.exe"
             artifacts: |
               release/*.exe
-          - name: macOS Intel
-            runner: macos-15-intel
-            script: dist:mac
-            prepare_assets: |
-              New-Item -ItemType Directory -Force release | Out-Null
-              Copy-Item "dist/BoardClip-*.dmg" "release/BoardClip-macOS-Intel.dmg"
-              Copy-Item "dist/BoardClip-*-mac.zip" "release/BoardClip-macOS-Intel.zip"
-            artifacts: |
-              release/*.dmg
-              release/*.zip
-          - name: macOS Apple Silicon
+          # ONE universal app (Apple Silicon + Intel in one bundle), so nobody
+          # picks an architecture.
+          - name: macOS
             runner: macos-15
             script: dist:mac
             prepare_assets: |
               New-Item -ItemType Directory -Force release | Out-Null
-              Copy-Item "dist/BoardClip-*-arm64.dmg" "release/BoardClip-macOS-Apple-Silicon.dmg"
-              Copy-Item "dist/BoardClip-*-arm64-mac.zip" "release/BoardClip-macOS-Apple-Silicon.zip"
+              Copy-Item (Get-ChildItem dist -Filter "BoardClip-*.dmg" | Select-Object -First 1).FullName "release/BoardClip-macOS.dmg"
+              Copy-Item (Get-ChildItem dist -Filter "BoardClip-*-mac.zip" | Select-Object -First 1).FullName "release/BoardClip-macOS.zip"
             artifacts: |
               release/*.dmg
               release/*.zip
@@ -83,10 +75,19 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # macOS signing + notarisation switch on by themselves once these
+      # secrets exist (a Developer ID Application certificate as base64 .p12
+      # + its password, and an Apple ID app-specific password + team id);
+      # without them the build is unsigned, as before. Windows never sees them.
       - name: Build binaries
         run: npm run ${{ matrix.platform.script }}
         env:
-          CSC_IDENTITY_AUTO_DISCOVERY: false
+          CSC_IDENTITY_AUTO_DISCOVERY: ${{ matrix.platform.name == 'macOS' && secrets.MAC_CSC_LINK != '' }}
+          CSC_LINK: ${{ matrix.platform.name == 'macOS' && secrets.MAC_CSC_LINK || '' }}
+          CSC_KEY_PASSWORD: ${{ matrix.platform.name == 'macOS' && secrets.MAC_CSC_KEY_PASSWORD || '' }}
+          APPLE_ID: ${{ matrix.platform.name == 'macOS' && secrets.APPLE_ID || '' }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ matrix.platform.name == 'macOS' && secrets.APPLE_APP_SPECIFIC_PASSWORD || '' }}
+          APPLE_TEAM_ID: ${{ matrix.platform.name == 'macOS' && secrets.APPLE_TEAM_ID || '' }}
 
       - name: Prepare release assets
         shell: pwsh
@@ -123,3 +124,14 @@ jobs:
           files: release/*
           body: |
             Rolling build from `${{ github.sha }}`, auto-published on every push to `main`.
+
+      # A name this build no longer makes (the per-architecture macOS files
+      # before the universal app) goes, so the rolling release only ever
+      # serves current binaries.
+      - name: Drop stale assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view latest --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' | while read -r name; do
+            if [ ! -e "release/$name" ]; then gh release delete-asset latest "$name" --repo "$GITHUB_REPOSITORY" --yes; fi
+          done

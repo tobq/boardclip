@@ -4973,7 +4973,7 @@ function createTray() {
   let trayIcon;
   if (process.platform === 'darwin' && fs.existsSync(TRAY_TEMPLATE_ICON_PATH)) {
     // Menu bar: the monochrome template glyph (iconTemplate.png + @2x, from
-    // scripts/sync-icons.ps1). macOS keeps only a template's alpha channel, so
+    // assets/boardclip-tray.svg via scripts/render-icons.js). macOS keeps only a template's alpha channel, so
     // the full-colour app icon - an opaque rounded square - showed as a solid
     // white box up there.
     trayIcon = nativeImage.createFromPath(TRAY_TEMPLATE_ICON_PATH);

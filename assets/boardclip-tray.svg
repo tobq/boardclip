@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">
+  <!-- The macOS menu-bar template: the logo's clipboard alone, black on
+       transparent, its clip slot and text lines cut out (macOS keeps only the
+       alpha and paints it in the menu bar's colour). -->
+  <path fill="#000000" fill-rule="evenodd" d="M4.6 1.6h-.1A2.5 2.5 0 0 0 2 4.1v8.4A2.5 2.5 0 0 0 4.5 15h7a2.5 2.5 0 0 0 2.5-2.5V4.1a2.5 2.5 0 0 0-2.5-2.5h-.1A1.6 1.6 0 0 0 9.8.2H6.2a1.6 1.6 0 0 0-1.6 1.4ZM6.5 1.2h3a.7.7 0 0 1 0 1.4h-3a.7.7 0 0 1 0-1.4ZM4.8 6.2h6.4a.75.75 0 0 1 0 1.5H4.8a.75.75 0 0 1 0-1.5Zm0 3h6.4a.75.75 0 0 1 0 1.5H4.8a.75.75 0 0 1 0-1.5Zm0 3h4a.75.75 0 0 1 0 1.5h-4a.75.75 0 0 1 0-1.5Z"/>
+</svg>

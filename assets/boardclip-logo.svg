@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- BoardClip: the clipboard in the accent blue on the app's graphite, a
+       copy behind it (the history). The one logo source: scripts/render-icons.js
+       draws every app, installer and site icon from it. -->
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#262b33"/>
+      <stop offset="1" stop-color="#0f1216"/>
+    </linearGradient>
+    <linearGradient id="board" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#60a5fa"/>
+      <stop offset="1" stop-color="#2563eb"/>
+    </linearGradient>
+    <filter id="lift" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#000000" flood-opacity=".45"/>
+    </filter>
+  </defs>
+  <rect width="512" height="512" rx="115" fill="url(#tile)"/>
+  <rect x="2" y="2" width="508" height="508" rx="113" fill="none" stroke="#ffffff" stroke-opacity=".09" stroke-width="4"/>
+  <rect x="183" y="160" width="200" height="264" rx="36" fill="#3b82f6" fill-opacity=".32"/>
+  <g filter="url(#lift)">
+    <rect x="131" y="116" width="214" height="290" rx="38" fill="url(#board)"/>
+    <rect x="184" y="88" width="108" height="58" rx="24" fill="#e6e8eb"/>
+  </g>
+  <rect x="171" y="208" width="134" height="22" rx="11" fill="#ffffff"/>
+  <rect x="171" y="258" width="134" height="22" rx="11" fill="#ffffff" fill-opacity=".62"/>
+  <rect x="171" y="308" width="90" height="22" rx="11" fill="#ffffff" fill-opacity=".62"/>
+</svg>

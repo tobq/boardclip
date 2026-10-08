@@ -66,6 +66,15 @@
   --red-500: #f87171;
   --red-600: #dc2626;
 
+  /* The OS's own window-control colours, for the windows a page draws (the
+     website demo, Core.attachWebWindow): macOS traffic lights and their
+     glyph ink, the Windows close button's red. Never a UI accent. */
+  --os-mac-close: #ff5f57;
+  --os-mac-min: #febc2e;
+  --os-mac-max: #28c840;
+  --os-mac-ink: #00000099;
+  --os-win-close: #c42b1c;
+
   /* Spacing scale (4/8-based) */
   --sp-1: 2px;  --sp-2: 4px;  --sp-3: 6px;  --sp-4: 8px;   --sp-5: 10px;
   --sp-6: 12px; --sp-7: 14px; --sp-8: 16px; --sp-10: 20px; --sp-12: 24px;
@@ -205,7 +214,7 @@
   --mark-bg: color-mix(in srgb, var(--accent) 16%, transparent);
   --mark-bg-current: color-mix(in srgb, var(--accent) 40%, transparent);
   --mark-fg: var(--blue-600);
-  --glass-tint: rgba(255, 255, 255, .5);
+  --glass-tint: rgba(255, 255, 255, .84); /* light stays light over a dark desktop / dark system acrylic (.5 went mid-grey) */
   --canvas: var(--bg);
 }
 
@@ -233,6 +242,8 @@
   /* A field is a dark WASH, as on solid light (a white one vanished on any
      light frost and on the opaque white menu: dialogs, the demo page). */
   --input: color-mix(in srgb, var(--g-900) 6%, transparent);
+  /* What shows through can still darken the frost: dim text one step darker keeps it readable. */
+  --text-dim: var(--g-600);
 }
 
 /* Accent: blue is the default (no block). accent-bg / mark-bg / focus ring

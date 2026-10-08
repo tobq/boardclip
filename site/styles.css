@@ -89,7 +89,6 @@ body {
   padding-block: calc(var(--sp-12) * 2) var(--section-gap);
 }
 .hero-copy { min-width: 0; max-width: 480px; }
-.eyebrow { margin: 0 0 var(--sp-5); color: var(--accent-text); }
 .hero h1 {
   margin: 0;
   font-size: var(--fs-hero);
@@ -212,12 +211,13 @@ body {
 /* ---------- The live demo: the app popup at its default size ---------- */
 .demo {
   position: relative;
+  z-index: 2; /* over the page dim, and its windows over the rest of the page */
   min-width: 0;
   display: grid;
   gap: var(--sp-8);
 }
 /* min-width 0: a grid item otherwise grows to the popup's one-line chip row. */
-.demo-stage { --glow: 46%; position: relative; isolation: isolate; min-width: 0; }
+.demo-stage { --glow: 46%; position: relative; isolation: isolate; min-width: 0; height: var(--demo-h); }
 :root[data-theme="light"] .demo-stage { --glow: 30%; }
 .demo-stage::before,
 .demo-stage::after {
@@ -243,14 +243,19 @@ body {
   -webkit-mask-image: radial-gradient(closest-side, var(--white) 55%, transparent);
   mask-image: radial-gradient(closest-side, var(--white) 55%, transparent);
 }
-/* The window frame. Inside it everything comes from clipboard-popup.css; the
-   base text settings and the zero margin/padding reset mirror the app's window
-   sheet (clipboard-window.css, which the page must not load), so unstyled text
-   and elements render exactly as they do in the app. */
+/* The window frame (the popup, and the clip window beside it: windows on the
+   page, Core.attachWebWindow, which places them once moved or resized; until
+   then the popup fills its slot). Inside it everything comes from
+   clipboard-popup.css; the base text settings and the zero margin/padding
+   reset mirror the app's window sheet (clipboard-window.css, which the page
+   must not load), so unstyled text and elements render exactly as they do in
+   the app. */
 .demo-window {
-  position: relative;
+  position: absolute;
+  left: 0;
+  top: 0;
   width: 100%;
-  height: var(--demo-h);
+  height: 100%;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -329,18 +334,77 @@ body {
 /* Glass: --canvas is the glass tint, so blurring the page behind stands in
    for the OS acrylic / vibrancy the real window sits on. */
 .demo-window[data-surface="glass"] { backdrop-filter: var(--glass-blur); -webkit-backdrop-filter: var(--glass-blur); }
-/* Toast, dialogs, lightbox and editor stay inside the frame (the shared CSS
-   positions them fixed for the real window). */
+/* Toast, dialogs and the clip window's view stay inside their frame (the
+   shared CSS positions them fixed for the real window). */
 .demo-window .toast,
 .demo-window .overlay,
 .demo-window .bc-editor-overlay { position: absolute; }
-.demo-lightbox { cursor: zoom-out; }
-.demo-lightbox img {
-  max-width: 86%;
-  max-height: 78%;
+.demo-window .bc-editor-overlay .bc-editor { box-shadow: none; }
+
+/* The dock under the demo: BoardClip's icon (a click opens the popup, as its
+   tray icon does; marked while the popup is open) and a minimised window.
+   The mark is the visitor's OS's: a dot on macOS, a short bar on Windows. */
+.demo-dock {
+  justify-self: center;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2);
   border-radius: var(--r-panel);
-  box-shadow: 0 8px 24px var(--shadow);
-  background: var(--surface);
+  background: color-mix(in srgb, var(--surface) 72%, transparent);
+  box-shadow: 0 0 0 1px var(--line), 0 10px 28px -12px var(--shadow);
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
+}
+.dock-item {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: calc(var(--ctl-lg) + var(--sp-6));
+  height: calc(var(--ctl-lg) + var(--sp-6));
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-ctl);
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  transition: background-color var(--dur) var(--ease), transform 160ms var(--ease);
+}
+.dock-item:hover { background: var(--hover); }
+.dock-item:active { transform: scale(.92); }
+.dock-item img { display: block; width: 28px; height: 28px; }
+.dock-item::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: 1px;
+  width: 4px;
+  height: 4px;
+  border-radius: var(--r-chip);
+  background: var(--text-dim);
+  transform: translateX(-50%);
+  opacity: 0;
+  transition: opacity var(--dur) var(--ease);
+}
+.demo-dock[data-os="win"] .dock-item::after { width: var(--sp-6); height: 3px; background: var(--accent); }
+.dock-item.running::after, .dock-item.dock-win::after { opacity: 1; }
+.demo-dock[data-os="win"] .dock-win::after { width: var(--sp-3); background: var(--text-dim); }
+
+/* The page dims while the guide starts (the demo stays lit above it), then
+   eases back over 10 s; at once when the visitor takes over. */
+.demo-dim {
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+  background: var(--scrim);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 10s cubic-bezier(.4, 0, .2, 1);
+}
+.demo-dim.on { opacity: 1; transition-duration: 900ms; }
+.demo-dim.quick { transition-duration: 700ms; }
+@media (prefers-reduced-motion: reduce) {
+  .demo-dim { display: none; }
 }
 .demo-caption {
   margin: 0;

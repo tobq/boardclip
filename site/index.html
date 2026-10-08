@@ -6,6 +6,7 @@
   <title>BoardClip - clipboard history for Windows and macOS</title>
   <meta name="description" content="BoardClip is a free, open-source clipboard history app for Windows and macOS: search with filters, pins and groups, numpad quick-paste, image clips, a built-in editor, and sync between your computers without an account.">
   <link rel="canonical" href="https://boardclip.app/">
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
   <link rel="icon" type="image/png" href="favicon.png">
   <link rel="apple-touch-icon" href="favicon.png">
   <script>
@@ -31,7 +32,7 @@
 <body>
   <header class="topbar wrap">
     <a class="brand" href="./" aria-label="BoardClip home">
-      <img src="favicon.png" width="20" height="20" alt="">
+      <img src="favicon.svg" width="20" height="20" alt="">
       <span>BoardClip</span>
     </a>
     <nav class="nav" aria-label="Site">
@@ -48,9 +49,9 @@
   </header>
 
   <main>
+    <div class="demo-dim" id="demo-dim" aria-hidden="true"></div>
     <section class="hero wrap" aria-labelledby="hero-title">
       <div class="hero-copy">
-        <p class="overline eyebrow">Clipboard history for Windows and macOS</p>
         <h1 id="hero-title">Everything you copy, <span class="hero-accent">one keystroke away.</span></h1>
         <p class="lede">BoardClip keeps the text and images you copy in a small popup you can search and paste from. It is free, open source, and your history stays on your own disk.</p>
 
@@ -89,8 +90,7 @@
             </div>
             <div class="get-builds" role="group" aria-label="Other builds">
               <button class="btn quiet sm" type="button" data-download-os="win">Windows</button>
-              <button class="btn quiet sm" type="button" data-download-os="mac-arm">Mac Apple Silicon</button>
-              <button class="btn quiet sm" type="button" data-download-os="mac-intel">Mac Intel</button>
+              <button class="btn quiet sm" type="button" data-download-os="mac">Mac</button>
               <button class="btn quiet sm" type="button" data-download-os="linux">Linux</button>
             </div>
           </div>
@@ -116,6 +116,10 @@
       <div class="demo" aria-label="Interactive BoardClip demo">
         <div class="demo-stage">
           <div class="demo-window bc-popup" id="demo-window"></div>
+          <div class="demo-window demo-clipwin bc-popup" id="demo-clipwin" hidden><div class="bc-editor-overlay show" id="demo-editor-overlay"></div></div>
+        </div>
+        <div class="demo-dock" id="demo-dock" role="toolbar" aria-label="Open windows">
+          <button class="dock-item running" id="demo-dock-app" type="button" title="BoardClip" aria-label="BoardClip"><img src="favicon.svg" width="28" height="28" alt=""></button>
         </div>
         <div class="demo-guide" id="demo-guide" aria-hidden="true">
           <span class="demo-guide-pulse"></span>
@@ -242,17 +246,20 @@
         settingsCloseBtn: "demo-settings-close",
       },
       settingsNote: "Demo",
+      showCloseButtons: true,
       headerActionsHtml: '<button class="icon-btn" id="demo-new-note" type="button" title="New note" aria-label="New note"><span class="mi">edit_note</span></button>',
       settingsBodyHtml: Core.renderSettingsBody(),
     });
-    // Toast + lightbox live INSIDE the demo window so they inherit the popup
-    // theme variables. The confirm/prompt dialogs come from the SHARED
-    // Core.createDialogs (same implementation the desktop app uses).
+    // The toast lives INSIDE the demo window so it inherits the popup theme
+    // variables. The confirm/prompt dialogs come from the SHARED
+    // Core.createDialogs (same implementation the desktop app uses). The clip
+    // window (editor, image viewer, Unify) is its own window beside it, as in
+    // the app, and both are themed alike (demoRoots).
     demoWindowEl.insertAdjacentHTML("beforeend", `
       <div class="toast" id="demo-toast">Copied</div>
-      <div class="overlay demo-lightbox" id="demo-lightbox"><img alt="clip image" id="demo-lightbox-img"></div>
-      <div class="bc-editor-overlay" id="demo-editor-overlay"></div>
     `);
+    const clipWinEl = document.getElementById("demo-clipwin");
+    const demoRoots = [demoWindowEl, clipWinEl];
     const dialogs = Core.createDialogs(demoWindowEl);
     const osLabels = {
       mac: "macOS terminal",
@@ -279,17 +286,11 @@
         note: "Downloads the Windows installer directly.",
         url: `${releaseBase}BoardClip-Setup-Windows.exe`
       },
-      "mac-arm": {
+      mac: {
         title: "Download for Mac",
-        label: "Download Apple Silicon",
-        note: "For M-series Macs. Switch to Intel Mac if you need the older build.",
-        url: `${releaseBase}BoardClip-macOS-Apple-Silicon.dmg`
-      },
-      "mac-intel": {
-        title: "Download for Mac",
-        label: "Download Intel Mac",
-        note: "For older Intel Macs. Switch to Apple Silicon for M-series Macs.",
-        url: `${releaseBase}BoardClip-macOS-Intel.dmg`
+        label: "Download for Mac",
+        note: "One app for Apple Silicon and Intel Macs. If macOS says it cannot verify BoardClip on first open, go to System Settings > Privacy & Security and choose Open Anyway.",
+        url: `${releaseBase}BoardClip-macOS.dmg`
       },
       linux: {
         title: "Download for Linux",
@@ -400,9 +401,7 @@
     }
 
     function detectedDownloadOS() {
-      const os = detectOS();
-      if (os === "mac") return "mac-arm";
-      return os;
+      return detectOS();
     }
 
     function setDownload(os) {
@@ -770,6 +769,11 @@
     const demoAdapter = {
       dialogs,
       menuHost: demoWindowEl,
+      // A menu opens in the window it was opened from (the popup or the clip window).
+      menuHostAt: (x, y) => {
+        const at = document.elementFromPoint(x, y);
+        return (at && at.closest(".bc-ww")) || demoWindowEl;
+      },
       deletedToast: "Deleted",
       itemById: (id) => clips.find((item) => Core.itemId(item) === id),
       numpadMap: () => Core.numpadMap(clips),
@@ -831,7 +835,7 @@
       },
       // The editor menu's "Revert to original": the editor's own revert (Undo in its toast).
       revertClip: () => { if (demoEditor) demoEditor.revert(); },
-      openImage: (item) => { if (item && item.imageSrc) openLightbox(item.imageSrc); },
+      openImage: (item) => openDemoViewer(item),
       openImageExternal: (item) => { if (item && item.imageSrc) window.open(item.imageSrc, "_blank"); },
       // A web page cannot hand the OS a file: drag the image's URL (most apps
       // and browsers fetch it on drop) plus Chrome's DownloadURL (drop on the
@@ -868,6 +872,7 @@
         const set = new Set(ids);
         // Deleting the open editor's clip closes it (no closing commit), as the app's window does.
         if (demoEditor && set.has(demoEditorClipId)) closeDemoEditor();
+        if (demoViewerId && set.has(demoViewerId)) closeDemoViewer();
         const snaps = clips.filter((clip) => set.has(Core.itemId(clip))).map((clip) => ({ ...clip }));
         clips = clips.filter((clip) => !set.has(Core.itemId(clip)));
         return snaps;
@@ -908,7 +913,7 @@
       },
       render: () => renderClips(),
       // Mutations repaint the list AND the open editor's tag strip (no-op when closed).
-      refresh: () => { renderClips(); refreshDemoEditorTags(); },
+      refresh: () => { renderClips(); refreshClipWindowTags(); },
     };
     const controller = Core.createClipController(demoAdapter);
     const demoList = Core.createClipList({
@@ -981,10 +986,33 @@
       optionsHeight: demoOptionsHeight,
       saveOptionsHeight: (px) => { try { localStorage.setItem(DEMO_OPTIONS_HEIGHT_KEY, String(px)); } catch {} },
     });
-    // The popup header: a click focuses the search (as in the app); a web page
-    // cannot move its window, so a drag is a no-op here.
-    Core.attachWindowDrag(demoMainView.querySelector(".sticky"), { onClick: () => search.focus() });
-    Core.attachWindowDrag(settingsPanel.querySelector(".settings-hdr"), {});
+    // The popup is a window on the page (the shared Core.attachWebWindow): its
+    // header moves it (a click focuses the search, as in the app), its edges
+    // resize it, its close sends it to the dock, whose BoardClip icon opens it
+    // again, as the app's tray icon does. No maximise: the app's popup has none.
+    const popupWin = Core.attachWebWindow(demoWindowEl, { minWidth: 320, minHeight: 320 });
+    popupWin.handle(demoMainView.querySelector(".sticky"), { onClick: () => search.focus() });
+    popupWin.handle(settingsPanel.querySelector(".settings-hdr"), {});
+    const demoDock = document.getElementById("demo-dock");
+    const dockApp = document.getElementById("demo-dock-app");
+    demoDock.dataset.os = Core.webWindowOs();
+    function closePopup() {
+      controller.closeMenu();
+      dockApp.classList.remove("running");
+      popupWin.close();
+    }
+    function openPopup() {
+      dockApp.classList.add("running");
+      if (popupWin.isOpen()) popupWin.focus(); else popupWin.open();
+      search.focus({ preventScroll: true });
+    }
+    document.getElementById("demo-close-button").addEventListener("click", closePopup);
+    document.getElementById("demo-settings-close").addEventListener("click", closePopup);
+    dockApp.addEventListener("click", openPopup);
+    // An example search on a closed popup opens it first.
+    document.addEventListener("click", (event) => {
+      if (event.target.closest && event.target.closest("[data-try]") && !popupWin.isOpen()) openPopup();
+    }, true);
     clearSearch.addEventListener("click", () => {
       clearSearchAndFilters();
       search.focus();
@@ -1011,20 +1039,102 @@
 
     // Keyboard nav (arrows/Enter/Escape + multi-select) when focus is inside the
     // demo window, so the demo honors its own "type, press Enter, and paste" pitch.
-    demoWindowEl.addEventListener("keydown", (event) => {
-      const lightbox = document.getElementById("demo-lightbox");
-      if (lightbox.classList.contains("show")) {
-        if (event.key === "Escape") { event.preventDefault(); closeLightbox(); }
-        return;
-      }
-      controller.onKeydown(event);
-    });
+    demoWindowEl.addEventListener("keydown", (event) => controller.onKeydown(event));
 
-    // The demo mounts the SAME shared Core.createEditor the desktop app uses,
-    // in an in-page overlay (a web page can't open an OS window). Editing an
-    // existing clip commits in place; a null id is a new note that becomes a
-    // clip on first commit. One editor open at a time in the demo.
+    // ONE clip window (the editor, the image viewer, Unify), a window on the
+    // page like the app's own windows: the shared Core.attachWebWindow moves,
+    // resizes, maximises, minimises (into the dock) and closes it, with the
+    // visitor's OS controls and motion. Opening another clip replaces what it
+    // shows; it opens where the visitor last left it.
     const demoEditorOverlay = document.getElementById("demo-editor-overlay");
+    let clipDockItem = null;
+    let clipView = { icon: "edit_note", title: "" };
+    let clipMounts = 0; // a late close never clears a newer view
+    let clipPlaced = false;
+    const clipWin = Core.attachWebWindow(clipWinEl, {
+      minWidth: 320,
+      minHeight: 240,
+      maximizable: true,
+      dockTarget: () => clipDockItem,
+      onMinimize: () => addClipDockItem(),
+      onRestore: () => removeClipDockItem(),
+    });
+    clipWinEl.addEventListener("click", (event) => controller.onClick(event));
+    Core.installSubmenuAutoflip(clipWinEl);
+    function addClipDockItem() {
+      removeClipDockItem();
+      clipDockItem = document.createElement("button");
+      clipDockItem.type = "button";
+      clipDockItem.className = "dock-item dock-win";
+      clipDockItem.title = clipView.title;
+      clipDockItem.setAttribute("aria-label", clipView.title);
+      clipDockItem.innerHTML = `<span class="mi lg">${clipView.icon}</span>`;
+      clipDockItem.addEventListener("click", () => clipWin.restore());
+      demoDock.appendChild(clipDockItem);
+    }
+    function removeClipDockItem() {
+      if (clipDockItem) clipDockItem.remove();
+      clipDockItem = null;
+    }
+    function showClipWindow(viewEl, view) {
+      clipMounts += 1;
+      clipView = view;
+      demoEditorOverlay.innerHTML = "";
+      demoEditorOverlay.appendChild(viewEl);
+      clipWin.handle(viewEl.querySelector(".bc-bar"), { ignore: "input.bc-bar-title" });
+      if (clipWin.isMinimized()) { clipWin.restore(); return; }
+      if (clipWin.isOpen()) { clipWin.focus(); return; }
+      clipWin.open();
+      if (clipPlaced) return;
+      clipPlaced = true; // first open: cascaded from the popup, as an OS places a new window
+      const p = popupWin.bounds();
+      clipWin.place({ left: p.left + 36, top: p.top + 36, width: Math.min(480, window.innerWidth - 32), height: 420 });
+    }
+    function hideClipWindow() {
+      const mounts = clipMounts;
+      removeClipDockItem();
+      if (popupWin.isOpen()) search.focus({ preventScroll: true });
+      clipWin.close().then(() => { if (mounts === clipMounts) demoEditorOverlay.innerHTML = ""; });
+    }
+    // What the window shows now goes (its edits saved) before another clip opens there.
+    function retireClipView() {
+      if (demoEditor) { demoEditor.commit(); demoEditor.destroy(); }
+      demoEditor = null;
+      demoEditorClipId = null;
+      demoViewer = null;
+      demoViewerId = null;
+    }
+    let demoViewer = null;
+    let demoViewerId = null;
+    function closeDemoViewer() {
+      demoViewer = null;
+      demoViewerId = null;
+      hideClipWindow();
+    }
+    // Images open in the shared image viewer (Core.createImageViewer), as the app's viewer window.
+    function openDemoViewer(item) {
+      if (!item || !item.imageSrc) return;
+      retireClipView();
+      const id = Core.itemId(item);
+      const title = Core.titleOf(item) || "Image";
+      demoViewer = Core.createImageViewer({
+        src: item.imageSrc,
+        title,
+        onMenu: (x, y) => controller.openClipMenu(id, x, y, "viewer"),
+        onClose: closeDemoViewer,
+      });
+      demoViewerId = id;
+      showClipWindow(demoViewer.el, { icon: "image", title });
+      demoViewer.setTags(item);
+      demoViewer.focus();
+    }
+    function refreshClipWindowTags() {
+      refreshDemoEditorTags();
+      if (demoViewer && demoViewerId) {
+        const clip = clips.find((item) => Core.itemId(item) === demoViewerId);
+        if (clip) demoViewer.setTags(clip);
+      }
+    }
     // Right-click on the editor chrome (not the text, where the browser menu
     // belongs) opens the same clip menu as its "...", like the app editor window.
     demoEditorOverlay.addEventListener("contextmenu", (event) => {
@@ -1037,12 +1147,10 @@
     let demoEditor = null;
     let demoEditorClipId = null; // current clip behind the open editor (null = uncommitted new note)
     function closeDemoEditor() {
-      demoEditorOverlay.classList.remove("show");
-      demoEditorOverlay.innerHTML = "";
       if (demoEditor) demoEditor.destroy();
       demoEditor = null;
       demoEditorClipId = null;
-      search.focus();
+      hideClipWindow();
     }
     // Title-bar tag strip on the demo editor - same shared strip as the app's
     // editor window; commit-on-add works because ensureClipId (below) commits
@@ -1060,8 +1168,7 @@
       let currentTitle = clip ? Core.titleOf(clip) : "";
       const sourceGroups = id == null ? Core.sourceGroupsFromFilters(facetState().active) : [];
       sourceGroups.forEach((group) => { if (!labels.includes(group)) labels.push(group); });
-      demoEditorOverlay.innerHTML = "";
-      if (demoEditor) demoEditor.destroy();
+      retireClipView();
       demoEditorClipId = id;
       demoEditor = Core.createEditor({
         initialText: currentText,
@@ -1071,8 +1178,8 @@
         // (a visitor's old { mode: 'regex' } reads as Regex on)
         findPrefs: (() => { try { const p = JSON.parse(localStorage.getItem(DEMO_FIND_PREFS_KEY) || "{}") || {}; return { regex: !!p.regex || p.mode === "regex", caseSensitive: !!p.caseSensitive }; } catch { return {}; } })(),
         saveFindPrefs: (prefs) => { try { localStorage.setItem(DEMO_FIND_PREFS_KEY, JSON.stringify(prefs)); } catch {} },
-        menuHost: demoWindowEl,
         initialFocusTitle: !!options.focusTitle,
+        windowDrag: clipWin.move,
         title: clip ? "Edit clip" : "New clip",
         onCommit: (payload) => {
           const nextText = String(payload && payload.text || "");
@@ -1103,8 +1210,7 @@
         // through the popup's controller in the editor context.
         ...(id != null ? { onMenu: (x, y) => { if (demoEditorClipId != null) controller.openClipMenu(demoEditorClipId, x, y, "editor"); } } : {}),
       });
-      demoEditorOverlay.appendChild(demoEditor.el);
-      demoEditorOverlay.classList.add("show");
+      showClipWindow(demoEditor.el, { icon: "edit_note", title: currentTitle || (clip ? "Edit clip" : "New note") });
       demoEditor.focus();
       refreshDemoEditorTags();
     }
@@ -1126,8 +1232,8 @@
       const unionGroups = new Set(sources.flatMap(Core.groupsOf));
       let acc = clipSnapshot(sources[0]);
       let step = 0;
-      const overlay = demoEditorOverlay;
-      const abort = () => { overlay.classList.remove("show"); overlay.innerHTML = ""; search.focus(); };
+      retireClipView();
+      const abort = () => hideClipWindow();
       function commit() {
         const srcIds = new Set(sources.map((c) => Core.itemId(c)));
         clips = clips.filter((c) => !srcIds.has(Core.itemId(c)));
@@ -1144,7 +1250,6 @@
       }
       function mountStep() {
         const right = clipSnapshot(sources[step + 1]);
-        overlay.innerHTML = "";
         const view = Core.createReconciliationView({
           record: {
             id: `demo-unify-${step}`,
@@ -1162,28 +1267,20 @@
             if (step >= total) commit(); else mountStep();
           },
           onClose: abort,
+          windowDrag: clipWin.move,
         });
-        overlay.appendChild(view.el);
-        overlay.classList.add("show");
+        showClipWindow(view.el, { icon: "merge", title: "Unify clips" });
       }
       mountStep();
     }
 
-    function openLightbox(src) {
-      document.getElementById("demo-lightbox-img").src = src;
-      document.getElementById("demo-lightbox").classList.add("show");
-    }
-    function closeLightbox() {
-      document.getElementById("demo-lightbox").classList.remove("show");
-    }
-    document.getElementById("demo-lightbox").addEventListener("click", closeLightbox);
 
 
     const detectedOS = detectOS();
     const themeQuery = matchMedia("(prefers-color-scheme: dark)");
     let demoThemeMode = "system"; // system | light | dark - chosen via Settings > Theme
     function applyDemoTheme() {
-      Core.applyTheme(demoWindowEl, demoThemeMode, themeQuery.matches);
+      for (const root of demoRoots) Core.applyTheme(root, demoThemeMode, themeQuery.matches);
       Core.setActiveThemeSeg(document.getElementById("themeMode"), demoThemeMode);
     }
     document.getElementById("themeMode").addEventListener("click", (event) => {
@@ -1240,13 +1337,13 @@
           else if (DEMO_LOOK_KEYS[key] && DEMO_LOOK_KEYS[key][1].includes(value)) demoLook[DEMO_LOOK_KEYS[key][0]] = value;
         }
         try { localStorage.setItem(DEMO_VARIANT_KEY, JSON.stringify(demoLook)); } catch {}
-        Core.applyAppearance(demoWindowEl, demoAppearance());
+        for (const root of demoRoots) Core.applyAppearance(root, demoAppearance());
         demoSettingsUi.update(demoLook);
       },
-      preview: (look) => Core.applyAppearance(demoWindowEl, { ...demoAppearance(), ...look }),
+      preview: (look) => { for (const root of demoRoots) Core.applyAppearance(root, { ...demoAppearance(), ...look }); },
     });
     demoSettingsUi.update({ ...demoLook, systemAccent: demoSystemAccent, glassSupported: true });
-    Core.applyAppearance(demoWindowEl, demoAppearance());
+    for (const root of demoRoots) Core.applyAppearance(root, demoAppearance());
     themeQuery.addEventListener("change", applyDemoTheme);
     applyDemoTheme();
     setDownload(detectedDownloadOS());
@@ -1256,18 +1353,36 @@
     if (location.hash === "#update") {
       requestAnimationFrame(() => document.getElementById("update")?.scrollIntoView());
     }
-    // ── The guide: the first time a visitor moves the mouse while the demo is
-    // in view, a cursor shows it working (types a search, clicks a filter,
-    // right-clicks a clip for its menu, clears it) through the demo's own
-    // controls, so what it shows is what a click does. It plays once, and any
-    // input of the visitor's (or any click it did not make) stops it for good.
-    // No tour on touch screens or under reduced motion.
+    // ── The guide: when a visitor moves the mouse while the demo is in view, a
+    // cursor shows it working (types a search, clicks a filter, right-clicks a
+    // clip for its menu, clears it) through the demo's own controls, so what it
+    // shows is what a click does. The rest of the page dims as it starts and
+    // eases back over 10 s. Any input of the visitor's (or any click it did
+    // not make) stops a run, and it comes back, waiting longer each time,
+    // until the visitor has done a few things in the demo themselves. No tour
+    // on touch screens or under reduced motion.
     const demoColumn = document.querySelector(".demo");
     const demoGuide = document.getElementById("demo-guide");
     const demoGuideTip = document.getElementById("demo-guide-tip");
-    const tour = { timer: 0, wake: null, started: false, stopped: false, acting: false, inView: false, left: "" };
+    const demoDim = document.getElementById("demo-dim");
+    const PLAYED_ENOUGH = 3; // the visitor's own presses / keys in the demo
+    const TOUR_AGAIN_MS = 12000; // the wait before a second run (doubles each run)
+    const TOUR_IDLE_MS = 8000; // nor while the visitor is busy in the demo
+    const tour = { timer: 0, wake: null, run: 0, runs: 0, running: false, pending: false, acting: false, inView: false, left: "", played: 0, lastOwn: 0, nextAt: 0 };
     const tourAllowed = () => !matchMedia("(prefers-reduced-motion: reduce)").matches && matchMedia("(hover: hover) and (pointer: fine)").matches;
-    const tourWait = (ms) => new Promise((resolve) => { tour.wake = resolve; tour.timer = setTimeout(resolve, ms); }).then(() => !tour.stopped);
+    const tourWait = (ms) => {
+      const run = tour.run;
+      return new Promise((resolve) => { tour.wake = resolve; tour.timer = setTimeout(resolve, ms); }).then(() => tour.running && tour.run === run);
+    };
+    function dimPage() {
+      demoDim.classList.remove("quick");
+      demoDim.classList.add("on");
+      setTimeout(() => demoDim.classList.remove("on"), 1400); // then its 10 s ease back
+    }
+    function undimPage() {
+      demoDim.classList.add("quick");
+      demoDim.classList.remove("on");
+    }
     // Glide the cursor to a point of el (at: offset in el, else its centre), with
     // a tip under it; returns that point in viewport coordinates.
     function guideTo(el, tip, at) {
@@ -1287,21 +1402,30 @@
       try { run(); } finally { tour.acting = false; }
       tour.left = state.query; // what the tour has left in the demo
     }
-    // Hand over: the cursor goes, and a demo the tour left mid-way (a half-typed
-    // search, a filter, an open menu) is put back, so the visitor's own input
-    // lands on a clean demo. Their input runs after this (a capture listener).
-    function stopTour() {
-      if (tour.stopped) return;
-      tour.stopped = true;
+    // A run ends: the cursor goes, and a demo the tour left mid-way (a
+    // half-typed search, a filter, an open menu) is put back, so the visitor's
+    // own input lands on a clean demo (it runs after this: a capture
+    // listener). handover = the visitor took over: the page undims at once.
+    // The next run waits twice as long as the last.
+    function endTour(handover) {
+      if (!tour.running) return;
+      tour.running = false;
+      tour.run += 1;
       clearTimeout(tour.timer);
       if (tour.wake) tour.wake();
       demoGuide.classList.remove("show");
+      if (handover) undimPage();
       if (tour.left && state.query === tour.left) {
         tour.acting = true;
         try { controller.closeMenu(); clearSearchAndFilters(); } finally { tour.acting = false; }
       }
+      tour.left = "";
+      tour.nextAt = Date.now() + TOUR_AGAIN_MS * 2 ** Math.max(0, tour.runs - 1);
     }
     async function runTour(from) {
+      tour.running = true;
+      tour.runs += 1;
+      dimPage();
       // Appear where the visitor's mouse is (kept inside the demo column), then glide.
       const host = demoColumn.getBoundingClientRect();
       demoGuide.classList.add("jump");
@@ -1340,26 +1464,36 @@
       if (!(await tourWait(1000))) return;
       guideClick(() => clearSearchAndFilters()); // the X's own action, minus its focus (the tour never takes the keyboard)
       if (!(await tourWait(1600))) return;
-      tour.stopped = true;
-      demoGuide.classList.remove("show");
+      endTour(false);
     }
     new IntersectionObserver((entries) => { tour.inView = entries.some((e) => e.isIntersecting); }, { threshold: 0.6 }).observe(demoWindowEl);
     window.addEventListener("pointermove", (event) => {
-      if (tour.started || tour.stopped || !event.isTrusted || event.pointerType !== "mouse" || !tour.inView || !tourAllowed()) return;
-      tour.started = true;
+      if (tour.running || tour.pending || tour.played >= PLAYED_ENOUGH || !event.isTrusted || event.pointerType !== "mouse") return;
+      const now = Date.now();
+      if (now < tour.nextAt || now - tour.lastOwn < TOUR_IDLE_MS || !tour.inView || !tourAllowed() || !popupWin.isOpen()) return;
+      tour.pending = true;
       const from = { x: event.clientX, y: event.clientY };
-      tour.timer = setTimeout(() => runTour(from), 600);
+      tour.timer = setTimeout(() => {
+        tour.pending = false;
+        if (tour.inView && popupWin.isOpen() && tour.played < PLAYED_ENOUGH && Date.now() - tour.lastOwn >= TOUR_IDLE_MS) runTour(from);
+      }, 600);
     }, { passive: true });
-    // Hands off: the visitor's own input in the demo (or on an example search),
-    // any click the tour did not make, or leaving the page.
+    // Hands off: the visitor's own input in the demo (or on an example search)
+    // counts toward having played and ends a run; so does any click the tour
+    // did not make, or leaving the page.
     for (const type of ["pointerdown", "keydown", "contextmenu", "click", "wheel", "focusin"]) {
       document.addEventListener(type, (event) => {
-        if (tour.acting || tour.stopped) return;
+        if (tour.acting || !event.isTrusted) return;
         const inDemo = demoColumn.contains(event.target) || !!(event.target.closest && event.target.closest("[data-try]"));
-        if (inDemo || (tour.started && type !== "wheel" && type !== "focusin")) stopTour();
+        if (inDemo) {
+          tour.lastOwn = Date.now();
+          if (type === "pointerdown" || type === "keydown") tour.played += 1;
+          if (tour.pending) { clearTimeout(tour.timer); tour.pending = false; }
+        }
+        if (tour.running && (inDemo || (type !== "wheel" && type !== "focusin"))) endTour(true);
       }, { capture: true, passive: true });
     }
-    document.addEventListener("visibilitychange", () => { if (document.hidden && tour.started) stopTour(); });
+    document.addEventListener("visibilitychange", () => { if (document.hidden) endTour(true); });
     renderClips();
   </script>
 </body>

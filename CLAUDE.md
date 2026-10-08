@@ -146,10 +146,17 @@ Otherwise the key passes through so normal numpad typing works. Main thread call
 - **`app.dock.hide()`** hides dock icon — tray-only app
 - **Template tray icon**: `trayIcon.setTemplateImage(true)` for menu bar dark/light mode.
   It MUST be `iconTemplate.png` (+`@2x`): the monochrome clipboard glyph, black on transparent,
-  drawn by `scripts/sync-icons.ps1` (`Save-TrayTemplate`, same source as the app icon). macOS
+  rendered from `assets/boardclip-tray.svg` (see "Logo" below). macOS
   keeps only a template's alpha channel, so the full-colour `icon.png` (an opaque rounded
   square) rendered as a solid white box in the menu bar (fixed 2026-09-03). Never `resize()` the
   template; `createFromPath` picks the `@2x` itself.
+- **Logo = ONE vector source (2026-10-09)**: `assets/boardclip-logo.svg` (the clipboard in the
+  accent blue on the app's graphite, a copy behind it) + `assets/boardclip-tray.svg` (the macOS
+  template glyph). `npm run sync:icons` (`scripts/render-icons.js`, Electron, canvas in a hidden
+  window) draws EVERY size from the vector: icon.png 256 / @2x 512, assets/boardclip-icon.png,
+  a multi-size .ico (16-256, one PNG per size), site/favicon.png + favicon.svg, iconTemplate
+  16 / @2x 32. Compare designs with `npx electron scripts/render-icons.js --preview a.svg b.svg
+  --out <dir>`. The PowerShell drawer (`sync-icons.ps1`, purple + mint) is gone.
 - **`~/Applications/BoardClip.app` launcher** (`scripts/create-macos-launcher.sh`, rebuilt by
   `update.sh`): Finder shows a bundle icon ONLY from an `.icns` named by `CFBundleIconFile`;
   the script builds `Resources/icon.icns` from `icon@2x.png` with `sips` + `iconutil` and
@@ -249,7 +256,8 @@ Otherwise the key passes through so normal numpad typing works. Main thread call
   pixel; release within 4 px = click (focus the search), further = `window.api.windowDrag`
   (`window-drag` IPC, main `setBounds` of the SENDER from its bounds at the press, size kept,
   clamped to the desktop by `windowDragBounds`, three phases only; a drag mid-open-slide settles
-  the slide first; a closed popup drops its drag start; the demo passes no move). A press whose
+  the slide first; a closed popup drops its drag start; the demo's move is its web window's, see
+  "Demo windows"). A press whose
   release is lost ends at the next buttonless move / lostpointercapture. An EMPTY search field is
   header too (drag moves, click focuses it: nothing to select); with text, a drag selects text.
   The chip row (`.group-filters`, `Core.attachChipStrip`) is ONE line that scrolls sideways
@@ -514,6 +522,26 @@ clear-all). All popup CSS + theme variables live in `site/shared/clipboard-popup
   and keep popup CSS/theme vars only in the shared sheet. Run `npm test`.
 - `applyGroupAssign` (main.js) TOGGLES group membership; the per-clip group chip
   is therefore add-or-remove on both sides (no separate unassign endpoint).
+- **Demo windows (2026-10-09, owner: "why cant we drag windows in the browser... even resize...
+  allow maximise close etc, mimic animations/buttons of local user OS")**: the demo popup and ONE
+  clip window (editor, image viewer, Unify; it replaced the in-popup overlay AND the image
+  lightbox) are windows on the page through the shared `Core.attachWebWindow` (the generic
+  layer; the app's windows are real OS windows): moved by their handles (`handle(el)` =
+  `attachWindowDrag` whose `move` now also gets `{cx, cy, x, y}` in CSS px), resized from 8
+  edge / corner grips (`.bc-ww-rs`), raised + `data-active` on a press, maximised to the
+  viewport (FLIP), minimised into the dock, opened / closed, all with the visitor's OS motion
+  (mac softer, Windows snappier; none under reduced motion). `renderWindowBar({webControls})`
+  (non-native = the demo) draws the OS controls: macOS traffic lights first (grey while
+  inactive), Windows caption buttons last (close red); close carries `data-x="close"` so the
+  view's own close runs. The popup has no maximise (the app's has none); its close goes to the
+  dock under the demo, whose BoardClip icon reopens it (the tray icon). Menus open in the window
+  they came from (adapter `menuHostAt(x, y)` -> `createMenu` picks its host per open); the
+  clip window gets `controller.onClick` + `installSubmenuAutoflip` itself; both roots wear the
+  theme / appearance (`demoRoots`). The guide tour dims the page (`.demo-dim` = `--scrim`, 10 s
+  ease back) and comes back after 12 s, 24 s, 48 s... until the visitor has made 3 presses /
+  keys in the demo (`PLAYED_ENOUGH`), never while they are busy (8 s idle). QA:
+  `qa-ui-shots --only site-windows` (real CDP mouse drags: header move, corner resize, cascade,
+  max / restore, dock min / restore, close, reopen).
 - **Editor find highlight** (`createEditor` in `clipboard-ui-core.js`): matches are painted
   by a backdrop `<div class="bc-editor-hl">` that mirrors the textarea's text (transparent
   text + `<mark>` spans) behind a transparent textarea — the standard "highlight in a
@@ -735,7 +763,8 @@ clear-all). All popup CSS + theme variables live in `site/shared/clipboard-popup
   clear under glass) on every theme/accent/surface change via `window-chrome` ->
   `setTitleBarOverlay` / `setWindowButtonPosition`. clientHeight, not the full 32px: the
   bar's bottom hairline must run on under the caption buttons. No close button in the
-  app's bars (`nativeControls: true`); the demo overlay keeps one. Two tones per window (see
+  app's bars (`nativeControls: true`); the demo's clip window draws the visitor's OS controls
+  (`webControls`, see "Demo windows"). Two tones per window (see
   "Two tones" below: bars a `--surface` band, content on `--canvas`). Bounds save the
   NORMAL bounds + `maximized` (`trackWindowBounds`); a maximised window comes back
   maximised only on a hand-off open, because `maximize()` shows AND activates (the QA
@@ -1005,7 +1034,9 @@ clear-all). All popup CSS + theme variables live in `site/shared/clipboard-popup
   canvas and was the hardest line over a glass desktop). Under glass the band is a LIFT over the
   ONE scrim (dark: white 6 %, light: white 70 %), so it reads lighter than the content whatever
   the desktop is (a g-850 mix inverted over bright desktops); no second blur (qa-ui-shots
-  glass-popup / glass-all check it). The results list has the shared scroll-edge fade
+  glass-popup / glass-all check it). The light scrim is white 84 % with dim text g-600 on it: at
+  50 % a dark desktop or a dark system acrylic turned the list mid-grey (owner 2026-10-09: "can
+  barely see shit in light theme"). The results list has the shared scroll-edge fade
   (`createClipList` -> `attachScrollFade(listEl, 'panel')`, `scroll-padding-block` keeps the
   cursor row out of it). Light `--hover`
   is 7 % so it reads on white; `.item.similar` = `--similar-mix` of `--hover` (60 % dark, 35 %
@@ -1178,6 +1209,18 @@ Desktop app distribution has TWO consistent paths, both driven by `main`:
   that the site's `/releases/latest/download/...` button points at. So the
   download stays in lockstep with `main` — no version tag needed. (Packaged
   installs still don't self-update; that'd need electron-updater — not wired.)
+  **macOS = ONE universal app (2026-10-09)**: `BoardClip-macOS.dmg` / `.zip` (Apple Silicon +
+  Intel; `mac.target` arch `universal`, built on `macos-15`). koffi ships a prebuilt .node per
+  arch that is IDENTICAL in both slices, so `x64ArchFiles: **/koffi/**` (else @electron/universal
+  throws "same in both x64 and arm64 builds"). The publish job drops assets this build no longer
+  makes (the old `-Apple-Silicon` / `-Intel` files). Unverifiable on Windows: the first push is
+  the test. **Gatekeeper "Not Opened / could not verify"** = unsigned + unnotarised. The
+  workflow signs + notarises the mac build by itself once these repo secrets exist:
+  `MAC_CSC_LINK` (Developer ID Application cert, base64 .p12), `MAC_CSC_KEY_PASSWORD`,
+  `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID` (Windows never sees them; hardened
+  runtime with `assets/entitlements.mac.plist` = electron-builder's defaults + Apple Events for
+  the osascript paste path). Until then the site's Mac note says System Settings > Privacy &
+  Security > Open Anyway; the curl install (git clone) is never quarantined.
 Tagging is optional/archival now, not required to ship.
 
 ## Debugging

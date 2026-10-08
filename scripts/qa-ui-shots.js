@@ -990,19 +990,88 @@ const STEPS = [
     const result = await req;
     if (!/denied/.test(result)) throw new Error(`approval request ended with ${result}`);
   } },
-  // The demo's editor overlay: the same shared .bc-bar as the app's window,
-  // with its own close (a web page has no OS window controls).
-  { name: 'site-editor', run: async (c) => {
+  // The demo's windows (Core.attachWebWindow): the popup and its clip window
+  // are windows on the page. Real mouse input (CDP) drags the popup by its
+  // header and resizes it from a corner; the clip window (the same shared
+  // .bc-bar as the app's window, with the visitor's OS controls drawn in it)
+  // maximises to the viewport and back, minimises into the dock and comes
+  // back from it, and closes; the popup closes to the dock and its icon opens
+  // it again. Reduced motion is emulated so every step lands at once.
+  { name: 'site-windows', run: async (c) => {
     const page = await c.sb.openWindow(c.site.url, { theme: c.theme });
+    await page.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false });
+    await page.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
     await page.waitFor(`document.readyState === 'complete' && !!document.getElementById('demo-new-note')`, 'site loaded');
     await page.fontsReady();
-    const bar = await page.eval(`(() => { document.getElementById('demo-new-note').click(); const o = document.getElementById('demo-editor-overlay'); o.scrollIntoView({ block: 'center' });
-      const b = o.querySelector('.bc-bar'); return { bar: !!b, close: !!(b && b.querySelector('[data-x="close"] .mi')), title: !!(b && b.querySelector('input.bc-bar-title')) }; })()`);
-    c.note('site-editor', bar);
-    if (!bar.bar || !bar.close || !bar.title) throw new Error(`demo editor bar: ${J(bar)}`);
-    await qa.sleep(300);
-    const r = await page.eval(`(() => { const e = document.querySelector('.bc-popup').getBoundingClientRect(); return { x: e.x, y: e.y, width: e.width, height: e.height }; })()`);
-    await c.shot(page, 'site-editor', { clip: { ...r, scale: 1 } });
+    const rect = (sel) => page.eval(`(() => { const e = document.querySelector(${J(sel)}); if (!e || e.hidden) return null; const r = e.getBoundingClientRect(); return { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) }; })()`);
+    const mouse = async (type, x, y) => page.send('Input.dispatchMouseEvent', { type, x, y, button: 'left', buttons: type === 'mouseReleased' ? 0 : 1, clickCount: 1, pointerType: 'mouse' });
+    const drag = async (x0, y0, x1, y1) => {
+      await page.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: x0, y: y0, buttons: 0, pointerType: 'mouse' });
+      await mouse('mousePressed', x0, y0);
+      for (let k = 1; k <= 6; k += 1) await mouse('mouseMoved', Math.round(x0 + (x1 - x0) * k / 6), Math.round(y0 + (y1 - y0) * k / 6));
+      await mouse('mouseReleased', x1, y1);
+      await qa.sleep(120);
+    };
+    await page.eval(`(document.getElementById('demo-window').scrollIntoView({ block: 'center' }), true)`);
+    await qa.sleep(200);
+    // Drag the popup by its header (the count / blank part of the header).
+    const p0 = await rect('#demo-window');
+    await drag(p0.x + 40, p0.y + 14, p0.x - 160, p0.y + 26);
+    const p1 = await rect('#demo-window');
+    c.note('site-windows-drag', { p0, p1 });
+    if (Math.abs(p1.x - (p0.x - 200)) > 2 || Math.abs(p1.y - (p0.y + 12)) > 2) throw new Error(`popup header drag: ${J({ p0, p1 })}`);
+    // Resize from its bottom-right corner.
+    await drag(p1.x + p1.w - 2, p1.y + p1.h - 2, p1.x + p1.w + 58, p1.y + p1.h - 62);
+    const p2 = await rect('#demo-window');
+    c.note('site-windows-resize', p2);
+    if (Math.abs(p2.w - (p1.w + 60)) > 2 || Math.abs(p2.h - (p1.h - 60)) > 2) throw new Error(`popup corner resize: ${J({ p1, p2 })}`);
+    // A clip window: the editor, cascaded from the popup, with OS controls.
+    const bar = await page.eval(`(() => { document.getElementById('demo-new-note').click(); const b = document.querySelector('#demo-clipwin .bc-bar'); return { bar: !!b, os: b && b.dataset.os, close: !!(b && b.querySelector('[data-wc="close"][data-x="close"]')), min: !!(b && b.querySelector('[data-wc="min"]')), max: !!(b && b.querySelector('[data-wc="max"]')), title: !!(b && b.querySelector('input.bc-bar-title')) }; })()`);
+    await qa.sleep(200);
+    const e0 = await rect('#demo-clipwin');
+    c.note('site-windows-editor', { bar, e0 });
+    if (!bar.bar || !bar.close || !bar.min || !bar.max || !bar.title || !e0) throw new Error(`demo editor window: ${J({ bar, e0 })}`);
+    if (Math.abs(e0.x - (p2.x + 36)) > 2 || Math.abs(e0.y - (p2.y + 36)) > 2) throw new Error(`the clip window opens cascaded from the popup: ${J({ p2, e0 })}`);
+    const both = await page.eval(`(() => { const a = document.getElementById('demo-window').getBoundingClientRect(); const b = document.getElementById('demo-clipwin').getBoundingClientRect(); const x = Math.min(a.x, b.x) - 24, y = Math.min(a.y, b.y) - 24; return { x, y, width: Math.max(a.right, b.right) + 24 - x, height: Math.max(a.bottom, b.bottom) + 96 - y }; })()`);
+    await c.shot(page, 'site-windows', { clip: { ...both, scale: 1 } });
+    // Its bar drags it (the empty part of the bar).
+    await drag(e0.x + e0.w - 200, e0.y + 14, e0.x + e0.w - 260, e0.y + 54);
+    const e1 = await rect('#demo-clipwin');
+    if (Math.abs(e1.x - (e0.x - 60)) > 2 || Math.abs(e1.y - (e0.y + 40)) > 2) throw new Error(`clip window bar drag: ${J({ e0, e1 })}`);
+    // Maximise: the viewport; then back.
+    await page.eval(`(document.querySelector('#demo-clipwin [data-wc="max"]').click(), true)`);
+    await qa.sleep(150);
+    const em = await rect('#demo-clipwin');
+    const vp = await page.eval('({ w: document.documentElement.clientWidth, h: innerHeight })');
+    c.note('site-windows-max', { em, vp });
+    if (em.x !== 0 || em.y !== 0 || Math.abs(em.w - vp.w) > 1 || Math.abs(em.h - vp.h) > 1) throw new Error(`maximise: ${J({ em, vp })}`);
+    await c.shot(page, 'site-windows-max');
+    await page.eval(`(document.querySelector('#demo-clipwin [data-wc="max"]').click(), true)`);
+    await qa.sleep(150);
+    const er = await rect('#demo-clipwin');
+    if (Math.abs(er.x - e1.x) > 2 || Math.abs(er.y - e1.y) > 2 || Math.abs(er.w - e1.w) > 2) throw new Error(`restore: ${J({ e1, er })}`);
+    // Minimise into the dock, then back from it.
+    await page.eval(`(document.querySelector('#demo-clipwin [data-wc="min"]').click(), true)`);
+    await qa.sleep(150);
+    const docked = await page.eval(`({ hidden: document.getElementById('demo-clipwin').hidden, items: document.querySelectorAll('#demo-dock .dock-win').length })`);
+    if (!docked.hidden || docked.items !== 1) throw new Error(`minimise: ${J(docked)}`);
+    await c.shot(page, 'site-windows-dock', { clip: { ...both, scale: 1 } });
+    await page.eval(`(document.querySelector('#demo-dock .dock-win').click(), true)`);
+    await qa.sleep(150);
+    const back = await page.eval(`({ hidden: document.getElementById('demo-clipwin').hidden, items: document.querySelectorAll('#demo-dock .dock-win').length })`);
+    if (back.hidden || back.items !== 0) throw new Error(`restore from the dock: ${J(back)}`);
+    // Close it, then close the popup and open it again from the dock.
+    await page.eval(`(document.querySelector('#demo-clipwin [data-x="close"]').click(), true)`);
+    await qa.sleep(150);
+    await page.eval(`(document.getElementById('demo-close-button').click(), true)`);
+    await qa.sleep(150);
+    const closed = await page.eval(`({ clip: document.getElementById('demo-clipwin').hidden, popup: document.getElementById('demo-window').hidden, running: document.getElementById('demo-dock-app').classList.contains('running') })`);
+    if (!closed.clip || !closed.popup || closed.running) throw new Error(`close: ${J(closed)}`);
+    await page.eval(`(document.getElementById('demo-dock-app').click(), true)`);
+    await qa.sleep(150);
+    const reopened = await page.eval(`({ popup: !document.getElementById('demo-window').hidden, running: document.getElementById('demo-dock-app').classList.contains('running'), focus: document.activeElement && document.activeElement.id })`);
+    c.note('site-windows-reopen', reopened);
+    if (!reopened.popup || !reopened.running || reopened.focus !== 'demo-search') throw new Error(`reopen from the dock: ${J(reopened)}`);
   } },
   // The demo editor on a clip IS the app editor: its "..." opens the editor
   // clip menu (Revert to original, no "Open in editor"), Revert offers Undo in
@@ -1028,7 +1097,7 @@ const STEPS = [
       if (!menuBtn) return { id, menuBtn: false, surface, glass: pop.dataset.surface, scope: pop.dataset.glassScope || 'popup' };
       menuBtn.click();
       await new Promise((r) => setTimeout(r, 120));
-      const menu = pop.querySelector('.bc-menu');
+      const menu = document.querySelector('#demo-clipwin .bc-menu');
       const rows = menu ? [...menu.querySelectorAll('[data-action]')].map((b) => b.dataset.action) : [];
       const revert = menu && menu.querySelector('[data-action="revert"]');
       if (revert) revert.click();

@@ -693,7 +693,7 @@ async function main() {
     await popup.eval(`(searchBox.closeOptions({ instant: true }), clearSearchAndFilters(), true)`);
     await sleep(150);
 
-    // --- the website demo: same shell, click focuses, drag is a no-op ----------
+    // --- the website demo: same shell, click focuses, a drag moves its web window ----
     const site = await qa.startStaticServer(require('path').join(qa.ROOT, 'site'));
     try {
       const page = await sb.openWindow(site.url, { width: 1280, height: 900 });
@@ -703,14 +703,18 @@ async function main() {
       await sleep(300);
       const gear = await page.eval(`Math.round(document.querySelector('#demo-settings-button .mi').getBoundingClientRect().width)`);
       check('demo: icons render from the vendored font', gear > 0 && gear <= 20, `gear ${gear}px`);
-      const dc = await page.centerOf('#clip-count');
+      let dc = await page.centerOf('#clip-count');
       const winBefore = await sb.mainEval(`__qa.electron.BrowserWindow.getAllWindows().find((w) => /127\\.0\\.0\\.1/.test(w.webContents.getURL())).getBounds()`);
+      const popBefore = await page.eval(`(() => { const r = document.getElementById('demo-window').getBoundingClientRect(); return { x: Math.round(r.x), y: Math.round(r.y) }; })()`);
       await page.mouse('mousePressed', dc.x, dc.y, { button: 'left', buttons: 1, clickCount: 1 });
       await page.mouse('mouseMoved', dc.x + 40, dc.y + 20, { button: 'left', buttons: 1 });
       await page.mouse('mouseReleased', dc.x + 40, dc.y + 20, { button: 'left', buttons: 0, clickCount: 1 });
       await sleep(250);
       const winAfter = await sb.mainEval(`__qa.electron.BrowserWindow.getAllWindows().find((w) => /127\\.0\\.0\\.1/.test(w.webContents.getURL())).getBounds()`);
-      check('demo: a header drag is a no-op (focus unchanged, window unmoved)', J(winBefore) === J(winAfter) && await page.eval(`document.activeElement.id !== 'demo-search'`), `${J(winBefore)} -> ${J(winAfter)}`);
+      const popAfter = await page.eval(`(() => { const r = document.getElementById('demo-window').getBoundingClientRect(); return { x: Math.round(r.x), y: Math.round(r.y) }; })()`);
+      // A page cannot move its OS window: the demo popup is a window ON the page (Core.attachWebWindow).
+      check('demo: a header drag moves the demo window on the page (the OS window stays, focus unchanged)', J(winBefore) === J(winAfter) && popAfter.x - popBefore.x === 40 && popAfter.y - popBefore.y === 20 && await page.eval(`document.activeElement.id !== 'demo-search'`), `${J(popBefore)} -> ${J(popAfter)}`);
+      dc = await page.centerOf('#clip-count');
       await page.mouse('mousePressed', dc.x, dc.y, { button: 'left', buttons: 1, clickCount: 1 });
       await page.mouse('mouseReleased', dc.x, dc.y, { button: 'left', buttons: 0, clickCount: 1 });
       await sleep(300);

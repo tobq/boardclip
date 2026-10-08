@@ -402,13 +402,19 @@ const siteCss = read('site/styles.css');
   // One bar: every clip-window factory renders it, nothing else draws a bar.
   for (const name of ['createEditor', 'createImageViewer', 'createReconciliationView']) {
     assert.ok(fnSrc(name).includes('renderWindowBar({'), `${name} renders the shared .bc-bar`);
-    assert.ok(/close: !o\.nativeControls/.test(fnSrc(name)), `${name}: the close button only without native window controls`);
+    assert.ok(/webControls: !o\.nativeControls/.test(fnSrc(name)), `${name}: page-drawn OS controls only without native window controls`);
   }
   assert.ok(!/bc-editor-bar|bc-editor-title|bc-title-opts|bc-title-use|bc-actions-stacked|bc-pending-chip/.test(coreSrc + popupCss), 'the old bar / title row / stacked footer / pending pill are gone');
-  assert.strictEqual((coreSrc.match(/<div class="bc-bar">/g) || []).length, 1, 'one .bc-bar markup (renderWindowBar)');
+  assert.strictEqual((coreSrc.match(/<div class="bc-bar"/g) || []).length, 1, 'one .bc-bar markup (renderWindowBar)');
   const bar = ui.renderWindowBar({ title: '<span class="bc-bar-title"></span>', tags: true, actions: '<button data-x="menu"></button>' });
   assert.ok(/^<div class="bc-bar"><button class="star"[^>]*><span class="mi">star<\/span><\/button><span class="bc-bar-title"><\/span><div class="bc-tag-strip"[^>]*><\/div><span class="bc-bar-spacer"><\/span><div class="bc-bar-actions"><button data-x="menu"><\/button><\/div><\/div>$/.test(bar), 'bar anatomy: star, title, keys, spacer (drag region), actions');
-  assert.ok(!bar.includes('data-x="close"') && ui.renderWindowBar({ close: true }).includes('<span class="mi">close</span>'), 'a close only on request (the demo overlay), as the shared mi glyph');
+  assert.ok(!bar.includes('data-x="close"') && !bar.includes('data-wc'), 'no window controls unless asked (the app: the OS draws them)');
+  // A window on a page (the demo) draws the visitor's OS controls: Windows
+  // caption buttons after the actions (node has no navigator: not a Mac), the
+  // close carrying data-x="close" so the window's own close runs.
+  const webBar = ui.renderWindowBar({ webControls: true, actions: '<i></i>' });
+  assert.ok(/<div class="bc-bar-actions"><i><\/i><\/div><div class="bc-wc" data-os="win"><button[^>]*data-wc="min"[\s\S]*data-wc="max"[\s\S]*data-wc="close" data-x="close"/.test(webBar), 'web controls: min, max, close after the actions on Windows');
+  assert.ok(/data-wc="close" data-x="close"[\s\S]*data-wc="min"[\s\S]*data-wc="max"/.test(ui.renderWebWindowControls('mac')), 'web controls: the traffic lights close, min, max on macOS');
   // No custom close in the app's windows: every factory call there asks for native controls.
   assert.strictEqual((editorHtml.match(/nativeControls: true/g) || []).length, 2, 'editor.html: the editor AND the merge view use the native window controls');
   assert.ok(viewerHtml.includes('nativeControls: true'), 'viewer.html uses the native window controls');
@@ -560,13 +566,22 @@ const siteCss = read('site/styles.css');
   const rules = (css) => [...stripComments(css).matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((m) => ({ sel: m[1].trim(), body: m[2] }));
   assert.ok(typeof ui.attachWindowDrag === 'function', 'core must export attachWindowDrag');
   for (const [name, html] of [['index.html', appHtml], ['site/index.html', siteHtml]]) {
-    assert.ok(/Core\.attachWindowDrag\([^\n]*\.sticky/.test(html), `${name} must attach the shared window drag to the popup header (.sticky)`);
-    assert.ok(/Core\.attachWindowDrag\([^\n]*\.settings-hdr/.test(html), `${name} must attach the shared window drag to the settings header`);
+    // The app drags its OS window; the demo hands its headers to its web window (attachWebWindow's handle = attachWindowDrag).
+    assert.ok(/(Core\.attachWindowDrag|popupWin\.handle)\([^\n]*\.sticky/.test(html), `${name} must attach the shared window drag to the popup header (.sticky)`);
+    assert.ok(/(Core\.attachWindowDrag|popupWin\.handle)\([^\n]*\.settings-hdr/.test(html), `${name} must attach the shared window drag to the settings header`);
     assert.ok(/closeSearchOptions:\s*\(\)\s*=>/.test(html), `${name} adapter must let Esc close the options panel (closeSearchOptions)`);
     assert.ok(!/(searchClear|clearSearch|sortBtn|demoSortBtn)\.classList\.toggle\(\s*["']show["']/.test(html), `${name} toggles a search button itself; the shared reveal (attachSearchBox) owns their visibility`);
     assert.ok(/Core\.paintSortButton\(/.test(html) && !/Sorted by/.test(html), `${name} paints the sort toggle through the shared Core.paintSortButton, never its own copy`);
   }
   assert.ok(/Core\.attachWindowDrag\([^\n]*move:\s*window\.api\.windowDrag/.test(appHtml), 'the app header drag moves the window through window.api.windowDrag');
+  // The demo's windows are web windows (one shared implementation): the popup
+  // and ONE clip window (editor, image viewer, Unify), menus opened in the
+  // window they came from, no in-popup lightbox or overlay left.
+  assert.ok(typeof ui.attachWebWindow === 'function', 'core must export attachWebWindow');
+  assert.ok(/Core\.attachWebWindow\(demoWindowEl/.test(siteHtml) && /Core\.attachWebWindow\(clipWinEl/.test(siteHtml), 'the demo popup and its clip window are web windows');
+  assert.ok(/menuHostAt:/.test(siteHtml) && /createMenu\(a\.menuHostAt \|\| a\.menuHost/.test(coreSrc), 'demo menus open in the window they were opened from (menuHostAt)');
+  assert.ok(!/demo-lightbox|openLightbox/.test(siteHtml) && /Core\.createImageViewer\(/.test(siteHtml), 'demo images open in the shared image viewer, not a lightbox');
+  assert.ok(/windowDrag: clipWin\.move/.test(siteHtml), 'the demo clip window title drags the window (the app idle-title rule)');
   assert.ok(!/attachWindowDrag\([^\n]*move:/.test(siteHtml), 'the demo header drag has no move (a page cannot move its window)');
   assert.ok(typeof ui.paintSortButton === 'function' && !/Sorted by[^\n]*—/.test(coreSrc), 'the shared sort toggle copy has no em dash');
   assert.ok(/windowDrag:\s*\(phase, dx, dy\)\s*=>\s*ipcRenderer\.send\('window-drag'/.test(preload), 'preload exposes windowDrag over the window-drag channel');

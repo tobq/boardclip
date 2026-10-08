@@ -1107,10 +1107,12 @@
   // ── Window drag on a header (one helper for every popup header) ──
   // A press on a non-control pixel of `el` is captured: released within 4 px it
   // is a click (opts.onClick, e.g. focus the search), dragged further it moves
-  // the window (opts.move(phase, dx, dy), phase 'start' | 'move' | 'end', dx/dy =
+  // the window (opts.move(phase, dx, dy, at), phase 'start' | 'move' | 'end', dx/dy =
   // the pointer's SCREEN delta since the press, so a window moving under the
-  // pointer never feeds back). The app's move asks main to move the sender's
-  // window; the demo passes none (a drag is a no-op). Replaces
+  // pointer never feeds back; at = { cx, cy } the same delta in CSS px and
+  // { x, y } the pointer, for a window on a page). The app's move asks main to
+  // move the sender's window; the demo's moves its web window
+  // (attachWebWindow). Replaces
   // -webkit-app-region: drag, which swallowed every click and double-click
   // maximised the window. Controls (buttons, fields, chips, menus, the options
   // panel) are left alone, except an EMPTY text field: it has nothing to
@@ -1152,7 +1154,7 @@
     let swallowClick = false;
     const onPointerDown = (e) => {
       if (e.button !== 0 || e.pointerType === 'touch' || isControl(e.target)) return;
-      press = { id: e.pointerId, x: e.screenX, y: e.screenY, dragging: false, field: emptyField(e.target) ? e.target : null };
+      press = { id: e.pointerId, x: e.screenX, y: e.screenY, cx: e.clientX, cy: e.clientY, dragging: false, field: emptyField(e.target) ? e.target : null };
       try { el.setPointerCapture(e.pointerId); } catch {}
     };
     // The page must not take focus (or start a text selection) from a header press.
@@ -1164,12 +1166,13 @@
       if ((e.buttons & 1) === 0) { finish(e, true); return; }
       const dx = e.screenX - press.x;
       const dy = e.screenY - press.y;
+      const at = { cx: e.clientX - press.cx, cy: e.clientY - press.cy, x: e.clientX, y: e.clientY };
       if (!press.dragging) {
         if (Math.hypot(dx, dy) <= WINDOW_DRAG_SLOP) return;
         press.dragging = true;
-        if (o.move) o.move('start', 0, 0);
+        if (o.move) o.move('start', 0, 0, { cx: 0, cy: 0, x: press.cx, y: press.cy });
       }
-      if (o.move) o.move('move', Math.round(dx), Math.round(dy));
+      if (o.move) o.move('move', Math.round(dx), Math.round(dy), at);
     };
     const finish = (e, cancelled) => {
       if (!press || (e && e.pointerId !== press.id)) return;
@@ -2339,10 +2342,12 @@
   // Opened from the keyboard, the first row takes focus; opened with the
   // mouse, nothing moves until the first arrow key. Focus that went into the
   // menu goes back to the opener on close. The mouse works as it always did.
+  // host: the element menus mount in (and stay inside), or a function (x, y) ->
+  // element picking it per open (the demo: the window the menu was opened from).
   function createMenu(host) {
     if (typeof document === 'undefined') return { open() {}, close() {}, isOpen: () => false, root: () => null };
-    const mount = host || document.body;
-    const boundsEl = mount === document.body || mount === document.documentElement ? document : mount;
+    let mount = document.body;
+    let boundsEl = document;
     trackInputModality();
     let el = null;
     let onClosed = null;
@@ -2488,6 +2493,8 @@
         for (const node of el.querySelectorAll('.tag-menu-node.open')) if (!node.contains(row)) shut(node);
         if (focusedItem() && document.activeElement !== row && !isOff(row)) focusItem(row);
       });
+      mount = (typeof host === 'function' ? host(o.x, o.y) : host) || document.body;
+      boundsEl = mount === document.body || mount === document.documentElement ? document : mount;
       mount.appendChild(el);
       const isBody = mount === document.body || mount === document.documentElement;
       const hostRect = mount.getBoundingClientRect();
@@ -4209,7 +4216,9 @@
     // implementation). selectedIds = the checked set (bulk target); focusId =
     // the keyboard cursor (single, paints `.selected`). visibleIds() +
     // renderSelection() are the only new adapter hooks the consumers must give.
-    const menu = createMenu(a.menuHost || a.dialogHost);
+    // menuHostAt(x, y): a host per open (the demo's menus open in the window
+    // they were opened from); else every menu mounts in menuHost.
+    const menu = createMenu(a.menuHostAt || a.menuHost || a.dialogHost);
     // Keep hover submenus (filter bar, pickers, popover menus) inside the window.
     installSubmenuAutoflip(a.menuHost || (typeof document !== 'undefined' ? document : null));
     const selectedIds = new Set();
@@ -5100,19 +5109,20 @@
   // case), an optional dim context label, the clip's keys strip (`tags`: its
   // numpad key and groups, as on the row's meta line), a spacer (the window's
   // drag region), the quiet actions. The app's windows
-  // draw no close button: the OS controls replace it (attachWindowControls
-  // reserves their room). The demo overlay has none, so it keeps one.
-  //   o: { lead, title, context, tags, actions, close }
+  // draw no window controls: the OS draws its own (attachWindowControls
+  // reserves their room). A window on a page (the demo, webControls) draws the
+  // visitor's OS controls itself, at that OS's end of the bar
+  // (renderWebWindowControls; attachWebWindow runs them).
+  //   o: { lead, title, context, tags, actions, webControls }
   function renderWindowBar(o) {
     const opts = o || {};
-    const close = opts.close
-      ? '<button class="icon-btn" type="button" data-x="close" title="Close (Esc)" aria-label="Close"><span class="mi">close</span></button>'
-      : '';
+    const os = opts.webControls ? webWindowOs() : '';
+    const controls = os ? renderWebWindowControls(os) : '';
     const star = opts.tags ? '<button class="star" type="button" data-x="pin" data-action="pin" title="Pin" aria-label="Pin" aria-pressed="false" hidden><span class="mi">star</span></button>' : '';
-    return `<div class="bc-bar">${opts.lead || ''}${star}${opts.title || ''}`
+    return `<div class="bc-bar"${os ? ` data-os="${os}"` : ''}>${os === 'mac' ? controls : ''}${opts.lead || ''}${star}${opts.title || ''}`
       + (opts.context ? `<span class="bc-bar-context" data-x="context">${escapeHtml(opts.context)}</span>` : '')
       + (opts.tags ? '<div class="bc-tag-strip" data-x="tags" hidden></div>' : '')
-      + `<span class="bc-bar-spacer"></span><div class="bc-bar-actions">${opts.actions || ''}${close}</div></div>`;
+      + `<span class="bc-bar-spacer"></span><div class="bc-bar-actions">${opts.actions || ''}</div>${os === 'win' ? controls : ''}</div>`;
   }
   // The bar's editable title: a flat field sized to its text, so the rest of
   // the bar stays a drag region. An untitled clip shows its first line (or
@@ -5190,6 +5200,295 @@
     schedule();
     return { refresh: schedule };
   }
+  // ── Windows on a page (the website demo) ──
+  // The app's windows are real OS windows: the OS draws their controls, moves
+  // them, resizes them and animates them. A page draws what the OS would:
+  // renderWebWindowControls = the visitor's OS controls (macOS traffic lights
+  // at the bar's left, Windows caption buttons at its right; close carries
+  // data-x="close", so the window's own close runs), and attachWebWindow makes
+  // an absolutely placed element a window: moved by its handles
+  // (attachWindowDrag's move), resized from its edges and corners, raised and
+  // marked active on a press (an inactive macOS window greys its lights),
+  // maximised to the viewport (its max control, or a double-click on a
+  // handle; dragging a maximised window brings it back under the pointer),
+  // minimised into a dock target, opened and closed, each with that OS's
+  // motion (none under reduced motion).
+  function webWindowOs() { return isMacPlatform() ? 'mac' : 'win'; }
+  const WC_GLYPHS = {
+    win: {
+      min: '<svg viewBox="0 0 10 10" aria-hidden="true"><path d="M0 5.5h10"/></svg>',
+      max: '<svg class="wc-norm" viewBox="0 0 10 10" aria-hidden="true"><rect x=".5" y=".5" width="9" height="9" rx="1.5"/></svg>'
+        + '<svg class="wc-max" viewBox="0 0 10 10" aria-hidden="true"><rect x=".5" y="2.5" width="7" height="7" rx="1.5"/><path d="M2.5 2.5V2A1.5 1.5 0 0 1 4 .5h4A1.5 1.5 0 0 1 9.5 2v4A1.5 1.5 0 0 1 8 7.5h-.5"/></svg>',
+      close: '<svg viewBox="0 0 10 10" aria-hidden="true"><path d="M.5.5l9 9m0-9l-9 9"/></svg>',
+    },
+    mac: {
+      close: '<svg viewBox="0 0 12 12" aria-hidden="true"><path d="M3.8 3.8l4.4 4.4m0-4.4L3.8 8.2"/></svg>',
+      min: '<svg viewBox="0 0 12 12" aria-hidden="true"><path d="M3 6h6"/></svg>',
+      max: '<svg class="wc-norm" viewBox="0 0 12 12" aria-hidden="true"><path class="wc-fill" d="M3.3 3.3h4.2L3.3 7.5zM8.7 8.7H4.5l4.2-4.2z"/></svg>'
+        + '<svg class="wc-max" viewBox="0 0 12 12" aria-hidden="true"><path class="wc-fill" d="M5.6 5.6H1.8l3.8-3.8zM6.4 6.4h3.8l-3.8 3.8z"/></svg>',
+    },
+  };
+  function renderWebWindowControls(os) {
+    const g = WC_GLYPHS[os === 'mac' ? 'mac' : 'win'];
+    const btn = (kind, label) => `<button class="bc-wc-btn" type="button" data-wc="${kind}"${kind === 'close' ? ' data-x="close"' : ''} tabindex="-1" title="${label}" aria-label="${label}">${g[kind]}</button>`;
+    const order = os === 'mac' ? [['close', 'Close'], ['min', 'Minimise'], ['max', 'Maximise']] : [['min', 'Minimise'], ['max', 'Maximise'], ['close', 'Close']];
+    return `<div class="bc-wc" data-os="${os === 'mac' ? 'mac' : 'win'}">${order.map(([k, l]) => btn(k, l)).join('')}</div>`;
+  }
+  // The page's windows, for z-order and the active mark.
+  const webWindows = new Set();
+  let webWindowZ = 1;
+  let webWindowBlur = false;
+  // opts: { os, minWidth, minHeight, maximizable, resizable (default true),
+  //         dockTarget() -> element to minimise into, onMinimize(), onRestore() }
+  // Returns { el, move, handle(el, dragOpts), open(), close(), minimize(),
+  //   restore(), toggleMaximize(), isOpen(), isMinimized(), isMaximized(),
+  //   focus(), place(rect), bounds() } (bounds in the offset parent's px).
+  function attachWebWindow(win, opts) {
+    if (typeof document === 'undefined' || !win) return null;
+    const o = opts || {};
+    const os = o.os || webWindowOs();
+    const minW = o.minWidth || 280;
+    const minH = o.minHeight || 200;
+    const KEEP = 96; // px of a window that always stay on the page
+    // Motion: macOS a touch slower and softer, Windows quicker and snappier.
+    const M = os === 'mac'
+      ? { open: 220, close: 170, min: 480, max: 320, ease: 'cubic-bezier(.2,.9,.25,1)', easeIn: 'cubic-bezier(.55,.05,.7,.4)' }
+      : { open: 190, close: 150, min: 250, max: 240, ease: 'cubic-bezier(.1,.9,.2,1)', easeIn: 'cubic-bezier(.7,0,1,.5)' };
+    win.classList.add('bc-ww');
+    win.dataset.os = os;
+    webWindows.add(win);
+    let saved = null; // the bounds before maximising
+    let minimized = false;
+    let anim = null;
+    let seq = 0; // the latest open / close / minimise / restore wins
+    const reduced = () => typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
+    function play(frames, ms, easing) {
+      if (anim) { anim.cancel(); anim = null; }
+      if (reduced() || typeof win.animate !== 'function') return Promise.resolve();
+      const a = win.animate(frames, { duration: ms, easing, fill: 'forwards' });
+      anim = a;
+      return a.finished.then(() => {}, () => {});
+    }
+    function settle() { if (anim) { anim.cancel(); anim = null; } }
+    const bounds = () => ({ left: win.offsetLeft, top: win.offsetTop, width: win.offsetWidth, height: win.offsetHeight });
+    function place(r) {
+      const st = win.style;
+      st.left = `${Math.round(r.left)}px`;
+      st.top = `${Math.round(r.top)}px`;
+      st.width = `${Math.round(r.width)}px`;
+      st.height = `${Math.round(r.height)}px`;
+      win.dataset.placed = '';
+    }
+    // KEEP px stay on the page: across the viewport, down from the page top.
+    function clamp(r, bottom) {
+      const desk = (win.offsetParent || document.body).getBoundingClientRect();
+      const x = desk.left + r.left;
+      const nx = Math.min(Math.max(x, KEEP - r.width), window.innerWidth - KEEP);
+      const y = desk.top + window.scrollY + r.top;
+      const ny = Math.min(Math.max(y, 0), Math.max(0, (bottom || document.documentElement.scrollHeight) - KEEP));
+      return { ...r, left: r.left + (nx - x), top: r.top + (ny - y) };
+    }
+    function focus() {
+      if (win.dataset.active === undefined || Number(win.style.zIndex) !== webWindowZ) win.style.zIndex = String(++webWindowZ);
+      for (const w of webWindows) if (w !== win) delete w.dataset.active;
+      win.dataset.active = '';
+    }
+    win.addEventListener('pointerdown', focus, true);
+    win.addEventListener('focusin', focus);
+    if (!webWindowBlur) {
+      webWindowBlur = true; // a press on the page outside every window: none is active
+      document.addEventListener('pointerdown', (e) => {
+        for (const w of webWindows) if (w.contains(e.target)) return;
+        for (const w of webWindows) delete w.dataset.active;
+      }, true);
+    }
+    function syncMax() {
+      const label = saved ? 'Restore' : 'Maximise';
+      for (const b of win.querySelectorAll('[data-wc="max"]')) { b.title = label; b.setAttribute('aria-label', label); }
+    }
+    const flip = (a, b) => `translate(${a.left - b.left}px, ${a.top - b.top}px) scale(${a.width / b.width}, ${a.height / b.height})`;
+    function setMaximized(on, instant) {
+      if (!!saved === !!on || (on && !o.maximizable)) return;
+      settle();
+      const first = win.getBoundingClientRect();
+      if (on) {
+        saved = bounds();
+        Object.assign(win.style, { position: 'fixed', left: '0px', top: '0px', width: '100%', height: '100%' });
+        win.dataset.max = '';
+      } else {
+        win.style.position = '';
+        delete win.dataset.max;
+        place(saved);
+        saved = null;
+      }
+      syncMax();
+      if (instant) return;
+      const last = win.getBoundingClientRect();
+      if (!last.width || !last.height) return;
+      play([{ transformOrigin: '0 0', transform: flip(first, last) }, { transformOrigin: '0 0', transform: 'none' }], M.max, M.ease).then(settle);
+    }
+    let drag = null;
+    function move(phase, _dx, _dy, at) {
+      if (phase === 'start') {
+        focus();
+        settle();
+        let from = bounds();
+        if (saved && at) {
+          // Off the top of a maximised window: back to its size, its bar
+          // under the pointer at the same place along it.
+          const frac = at.x / Math.max(1, window.innerWidth);
+          const size = { width: saved.width, height: saved.height };
+          setMaximized(false, true);
+          const desk = (win.offsetParent || document.body).getBoundingClientRect();
+          from = { ...size, left: at.x - desk.left - frac * size.width, top: at.y - desk.top - 14 };
+          place(from);
+        }
+        drag = { from, bottom: document.documentElement.scrollHeight };
+        win.classList.add('bc-ww-moving');
+        return;
+      }
+      if (!drag) return;
+      if (phase === 'move' && at) place(clamp({ ...drag.from, left: drag.from.left + at.cx, top: drag.from.top + at.cy }, drag.bottom));
+      if (phase === 'end') { drag = null; win.classList.remove('bc-ww-moving'); }
+    }
+    // A handle (a header, a bar): drags move the window, a double-click on
+    // its empty part maximises / restores it.
+    function handle(el, dragOpts) {
+      if (!el) return { destroy() {} };
+      const d = attachWindowDrag(el, { ...(dragOpts || {}), move });
+      const skip = `${WINDOW_DRAG_IGNORE}${dragOpts && dragOpts.ignore ? `, ${dragOpts.ignore}` : ''}`;
+      const onDbl = (e) => { if (o.maximizable && !(e.target.closest && e.target.closest(skip))) setMaximized(!saved); };
+      el.addEventListener('dblclick', onDbl);
+      syncMax();
+      return { destroy() { d.destroy(); el.removeEventListener('dblclick', onDbl); } };
+    }
+    // Edges and corners resize (none while maximised).
+    if (o.resizable !== false) {
+      for (const dir of ['n', 'e', 's', 'w', 'ne', 'nw', 'se', 'sw']) {
+        const grip = document.createElement('div');
+        grip.className = 'bc-ww-rs';
+        grip.dataset.rs = dir;
+        grip.setAttribute('aria-hidden', 'true');
+        win.appendChild(grip);
+        let rs = null;
+        grip.addEventListener('pointerdown', (e) => {
+          if (e.button !== 0 || saved) return;
+          e.preventDefault();
+          e.stopPropagation();
+          focus();
+          rs = { id: e.pointerId, x: e.clientX, y: e.clientY, from: bounds() };
+          try { grip.setPointerCapture(e.pointerId); } catch {}
+          win.classList.add('bc-ww-sizing');
+        });
+        grip.addEventListener('pointermove', (e) => {
+          if (!rs || e.pointerId !== rs.id) return;
+          const f = rs.from;
+          const dx = e.clientX - rs.x;
+          const dy = e.clientY - rs.y;
+          const r = { ...f };
+          if (dir.includes('e')) r.width = Math.max(minW, f.width + dx);
+          if (dir.includes('s')) r.height = Math.max(minH, f.height + dy);
+          if (dir.includes('w')) { r.width = Math.max(minW, f.width - dx); r.left = f.left + f.width - r.width; }
+          if (dir.includes('n')) { r.height = Math.max(minH, f.height - dy); r.top = f.top + f.height - r.height; }
+          place(r);
+        });
+        const end = (e) => {
+          if (!rs || e.pointerId !== rs.id) return;
+          rs = null;
+          try { grip.releasePointerCapture(e.pointerId); } catch {}
+          win.classList.remove('bc-ww-sizing');
+        };
+        grip.addEventListener('pointerup', end);
+        grip.addEventListener('pointercancel', end);
+        grip.addEventListener('lostpointercapture', end);
+      }
+    }
+    win.addEventListener('click', (e) => {
+      const b = e.target.closest && e.target.closest('[data-wc]');
+      if (!b || !win.contains(b)) return;
+      if (b.dataset.wc === 'min') minimize();
+      else if (b.dataset.wc === 'max') setMaximized(!saved);
+    });
+    window.addEventListener('resize', () => {
+      if (!saved && !win.hidden && win.dataset.placed !== undefined) place(clamp(bounds()));
+    });
+    // Toward the dock target: where the window's centre goes and how small.
+    function towardDock(r) {
+      const t = o.dockTarget && o.dockTarget();
+      const tr = t ? t.getBoundingClientRect() : null;
+      const box = tr && tr.width ? tr : { left: r.left + r.width / 2, top: window.innerHeight, width: 0, height: 0 };
+      return {
+        dx: box.left + box.width / 2 - (r.left + r.width / 2),
+        dy: box.top + box.height / 2 - (r.top + r.height / 2),
+        s: Math.max(0.04, Math.min(0.3, (box.width || 24) / Math.max(1, r.width))),
+      };
+    }
+    function dockFrames(r) {
+      const { dx, dy, s } = towardDock(r);
+      const end = { transform: `translate(${dx}px, ${dy}px) scale(${s})`, opacity: os === 'mac' ? 0.2 : 0 };
+      // macOS pours the window into the dock (its genie, approximated: it
+      // narrows first, then drops); Windows shrinks it toward the taskbar.
+      const mid = os === 'mac' ? [{ transform: `translate(${dx * 0.3}px, ${dy * 0.18}px) scale(${0.55 + s / 2}, 0.9)`, opacity: 1, offset: 0.4 }] : [];
+      return [{ transform: 'none', opacity: 1 }, ...mid, end].map((k) => ({ transformOrigin: '50% 50%', ...k }));
+    }
+    async function open() {
+      const my = ++seq;
+      minimized = false;
+      win.hidden = false;
+      focus();
+      await play([{ opacity: 0, transform: `scale(${os === 'mac' ? 0.96 : 0.92})` }, { opacity: 1, transform: 'none' }], M.open, M.ease);
+      if (my === seq) settle();
+    }
+    async function close() {
+      if (win.hidden) { minimized = false; return; }
+      const my = ++seq;
+      await play([{ opacity: 1, transform: 'none' }, { opacity: 0, transform: `scale(${os === 'mac' ? 0.96 : 0.94})` }], M.close, M.easeIn);
+      if (my !== seq) return;
+      win.hidden = true;
+      settle();
+      if (saved) setMaximized(false, true);
+      delete win.dataset.active;
+    }
+    async function minimize() {
+      if (minimized || win.hidden) return;
+      const my = ++seq;
+      minimized = true;
+      if (o.onMinimize) o.onMinimize(); // the dock shows its entry first, so the window flies into it
+      const r = win.getBoundingClientRect();
+      await play(dockFrames(r), M.min, M.easeIn);
+      if (my !== seq) return;
+      win.hidden = true;
+      settle();
+      delete win.dataset.active;
+    }
+    async function restore() {
+      if (!minimized) { focus(); return; }
+      const my = ++seq;
+      minimized = false;
+      win.hidden = false;
+      focus();
+      const frames = dockFrames(win.getBoundingClientRect()).reverse().map((k) => ({ ...k, offset: k.offset != null ? 1 - k.offset : undefined }));
+      if (o.onRestore) o.onRestore();
+      await play(frames.map(({ offset, ...k }) => (offset == null ? k : { ...k, offset })), M.min * 0.8, M.ease);
+      if (my === seq) settle();
+    }
+    return {
+      el: win,
+      move,
+      handle,
+      open,
+      close,
+      minimize,
+      restore,
+      toggleMaximize: () => setMaximized(!saved),
+      isOpen: () => !win.hidden,
+      isMinimized: () => minimized,
+      isMaximized: () => !!saved,
+      focus,
+      place: (r) => place(clamp(r)),
+      bounds,
+    };
+  }
   // Shared plain-text editor — ONE implementation mounted by BOTH the desktop
   // app (in its own window) and the website demo (in an in-page overlay).
   // Edits are captured live: every keystroke fires onInput (the host persists
@@ -5216,7 +5515,7 @@
       ${renderWindowBar({
         title: barTitleField('titleinput', 'Title (click to rename)'),
         tags: true,
-        close: !o.nativeControls,
+        webControls: !o.nativeControls,
         actions: `<button class="icon-btn" type="button" data-x="find" title="Find (${modKeyLabel()}+F)" aria-label="Find"><span class="mi">search</span></button>${
           o.onMenu ? '<button class="icon-btn" type="button" data-x="menu" title="More actions" aria-label="More actions"><span class="mi">more_horiz</span></button>' : ''}`,
       })}
@@ -5610,7 +5909,7 @@
         lead: o.onDragOut ? '<span class="bc-drag-handle" data-x="drag" draggable="true" role="button" title="Drag the image into another app or a folder" aria-label="Drag the image out"><span class="mi">image</span></span>' : '',
         title: '<span class="bc-bar-title" data-x="title"></span>',
         tags: true,
-        close: !o.nativeControls,
+        webControls: !o.nativeControls,
         actions: '<button class="icon-btn" type="button" data-x="menu" title="More actions" aria-label="More actions"><span class="mi">more_horiz</span></button>',
       })}
       <div class="bc-viewer-stage" data-x="stage"><img class="bc-viewer-img" data-x="img" alt="clip image" draggable="false"></div>
@@ -5973,7 +6272,7 @@
       ${renderWindowBar({
         title: barTitleField('title', 'Title of the merged clip'),
         context: record.title || o.title || 'Sync conflict',
-        close: !o.nativeControls,
+        webControls: !o.nativeControls,
         actions: `<span class="bc-chg-count" data-x="chgcount"></span>
           <button class="icon-btn" type="button" data-x="prevchg" title="Previous change (Alt+Up)" aria-label="Previous change"><span class="mi">keyboard_arrow_up</span></button>
           <button class="icon-btn" type="button" data-x="nextchg" title="Next change (Alt+Down)" aria-label="Next change"><span class="mi">keyboard_arrow_down</span></button>
@@ -6529,6 +6828,9 @@
     attachSearchBox,
     paintSortButton,
     attachWindowDrag,
+    attachWebWindow,
+    renderWebWindowControls,
+    webWindowOs,
     attachScrollFade,
     attachSideScroll,
     attachChipStrip,

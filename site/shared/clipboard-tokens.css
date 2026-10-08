@@ -135,7 +135,7 @@
   --bg: var(--g-950);
   --surface-solid: var(--g-850);
   --surface2-solid: var(--g-800);
-  --input-solid: var(--g-900);
+  --input-solid: color-mix(in srgb, var(--g-100) 7%, transparent); /* a wash: lifts the band, the canvas and menus alike */
   --surface: var(--surface-solid);
   --surface2: var(--surface2-solid);
   --input: var(--input-solid);
@@ -146,7 +146,7 @@
   --text-dim: var(--g-400);
   --line: var(--g-750);
   --line-strong: var(--g-700);
-  --line-faint: var(--g-900);
+  --line-faint: color-mix(in srgb, var(--g-050) 7%, transparent);
   --hover: color-mix(in srgb, var(--g-100) 6%, transparent);
   --similar-mix: 60%;                     /* a similar row's wash, as a share of --hover (.item.similar) */
   --accent: var(--blue-500);
@@ -167,13 +167,14 @@
   --mark-bg-current: color-mix(in srgb, var(--accent) 50%, transparent);
   --mark-fg: var(--blue-300);
   --glass-tint: rgba(15, 18, 22, .62);
+  --canvas: var(--bg);
 }
 :root[data-theme="light"], .bc-popup[data-theme="light"] {
   color-scheme: light;
   --bg: var(--g-050);
   --surface-solid: var(--white);
   --surface2-solid: var(--g-050);
-  --input-solid: color-mix(in srgb, var(--g-900) 6%, var(--white)); /* a fill that reads on white without a border */
+  --input-solid: color-mix(in srgb, var(--g-900) 6%, transparent); /* a wash: reads on white and on the grey canvas */
   --surface: var(--surface-solid);
   --surface2: var(--surface2-solid);
   --input: var(--input-solid);
@@ -205,24 +206,29 @@
   --mark-bg-current: color-mix(in srgb, var(--accent) 40%, transparent);
   --mark-fg: var(--blue-600);
   --glass-tint: rgba(255, 255, 255, .5);
+  --canvas: var(--bg);
 }
 
 /* (c) VARIANT OVERRIDES - small, disjoint sets, authored after the
    theme blocks so they win by source order at equal specificity. */
 
-/* Surface: glass makes card surfaces translucent so the OS acrylic/
-   vibrancy backdrop shows through. color-mix can't read the token it
-   is redefining, so these are authored per-theme (higher specificity
-   than the plain theme block, so they also win cleanly). "solid" is a
-   no-op that exists so the switcher can force glass off. A field stays
-   a step stronger than --surface so it reads without a border. */
+/* Surface: under glass the OS acrylic / vibrancy shows through. The
+   content (--canvas) is the one scrim; the chrome band (--surface) is a
+   LIFT over it, lighter than the content whatever the desktop is (two
+   tones, as on solid); a field is a wash over either. color-mix can't
+   read the token it is redefining, so these are authored per-theme
+   (higher specificity than the plain theme block, so they also win
+   cleanly). "solid" is a no-op that exists so the switcher can force
+   glass off. */
 :root[data-theme="dark"][data-surface="glass"], .bc-popup[data-theme="dark"][data-surface="glass"] {
-  --surface: color-mix(in srgb, var(--g-850) 58%, transparent);
+  --canvas: var(--glass-tint);
+  --surface: color-mix(in srgb, var(--white) 6%, transparent);
   --surface2: color-mix(in srgb, var(--g-800) 58%, transparent);
-  --input: color-mix(in srgb, var(--g-900) 62%, transparent);
+  --input: color-mix(in srgb, var(--g-100) 8%, transparent);
 }
 :root[data-theme="light"][data-surface="glass"], .bc-popup[data-theme="light"][data-surface="glass"] {
-  --surface: color-mix(in srgb, var(--white) 54%, transparent);   /* whiter + more translucent so the blur shows */
+  --canvas: var(--glass-tint);
+  --surface: color-mix(in srgb, var(--white) 70%, transparent);   /* the band: a white lift over the scrim, the blur still shows */
   --surface2: color-mix(in srgb, var(--white) 72%, transparent);  /* WHITE, not grey - brighter frost for hover/selected */
   /* A field is a dark WASH, as on solid light (a white one vanished on any
      light frost and on the opaque white menu: dialogs, the demo page). */

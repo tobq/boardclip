@@ -489,12 +489,12 @@ const STEPS = [
       return { lines: tops.size, overflow: el.scrollWidth > el.clientWidth + 1, left: el.style.getPropertyValue('--fade-left'), right: el.style.getPropertyValue('--fade-right'), expanded: el.classList.contains('expanded'), h: Math.round(el.getBoundingClientRect().height) };
     })()`);
     const one = await strip();
-    if (one.lines !== 1 || !one.overflow || one.right !== '24px' || one.left !== '0px') throw new Error(`collapsed chip row is not one masked line: ${J(one)}`);
+    if (one.lines !== 1 || !one.overflow || one.right !== '36px' || one.left !== '0px') throw new Error(`collapsed chip row is not one masked line: ${J(one)}`);
     await c.shot(c.popup, 'popup-chips-many');
     await c.popup.eval(`(() => { const el = document.querySelector('.group-filters'); el.scrollLeft = 120; el.dispatchEvent(new Event('scroll')); return true; })()`);
     await qa.sleep(350);
     const mid = await strip();
-    if (mid.left !== '24px' || mid.right !== '24px') throw new Error(`scrolled chip row should fade both edges: ${J(mid)}`);
+    if (mid.left !== '36px' || mid.right !== '36px') throw new Error(`scrolled chip row should fade both edges: ${J(mid)}`);
     await c.shot(c.popup, 'popup-chips-many-scrolled');
     await c.popup.eval(`(document.getElementById('search').focus(), true)`);
     await c.popup.click('#searchOptsBtn');
@@ -781,11 +781,19 @@ const STEPS = [
       await qa.sleep(300);
       const p = await c.popup.eval(`(() => {
         const paint = (sel) => [...document.querySelectorAll(sel)].map((el) => getComputedStyle(el).backgroundColor).filter((bg) => bg !== 'rgba(0, 0, 0, 0)' && bg !== 'transparent');
-        return { surface: document.documentElement.dataset.surface, painted: ['body', '.main-view', '.sticky', '.sticky header', '.search-row', '.chip-row', '.group-filters', '.list-wrap', '.list'].flatMap((sel) => paint(sel).map((bg) => sel + ' ' + bg)) };
+        const alpha = (bg) => { const i = bg.lastIndexOf('/'); if (i >= 0) return parseFloat(bg.slice(i + 1)); if (bg.indexOf('rgba(') === 0) return parseFloat(bg.slice(bg.lastIndexOf(',') + 1)); return 1; };
+        const blurred = [...document.querySelectorAll('*')].filter((el) => { const b = getComputedStyle(el).backdropFilter; return b && b !== 'none' && !el.closest('.img-actions'); /* the image rows' frosted chip frosts the picture, not the window */ }).map((el) => el.className || el.tagName);
+        const band = getComputedStyle(document.querySelector('.sticky')).backgroundColor;
+        return { surface: document.documentElement.dataset.surface, band, bandAlpha: alpha(band), blurred,
+          painted: ['body', '.main-view', '.sticky header', '.search-row', '.chip-row', '.group-filters', '.list-wrap', '.list'].flatMap((sel) => paint(sel).map((bg) => sel + ' ' + bg)) };
       })()`);
       c.note('glass-popup', p);
       await c.shot(c.popup, 'glass-popup');
-      if (p.painted.length) throw new Error(`a popup band paints its own layer under glass: ${J(p.painted)}`);
+      // Two tones under glass: the canvas is the one scrim, the header band a
+      // translucent lift over it, and nothing adds a second blur.
+      if (p.painted.length) throw new Error(`a canvas layer paints over the glass scrim: ${J(p.painted)}`);
+      if (!(p.bandAlpha > 0 && p.bandAlpha < 1)) throw new Error(`the header band must be a translucent lift under glass: ${J(p)}`);
+      if (p.blurred.length) throw new Error(`a second blur layer: ${J(p.blurred)}`);
     } finally {
       await c.popup.eval(`window.api.saveSettings({ surface_style: 'solid' })`); // the seed's look
       await c.popup.waitFor(`document.documentElement.dataset.surface === 'solid'`, 'popup back to solid', 8000);
@@ -798,7 +806,10 @@ const STEPS = [
     await qa.sleep(400);
     const bands = (page) => page.eval(`(() => {
       const paint = (sel) => [...document.querySelectorAll(sel)].map((el) => getComputedStyle(el).backgroundColor).filter((bg) => bg !== 'rgba(0, 0, 0, 0)' && bg !== 'transparent');
-      return { surface: document.documentElement.dataset.surface, painted: ['.bc-editor', '.bc-reconcile', '.bc-bar', '.bc-find', '.bc-editor-foot', '.bc-merge-heads', '.bc-reconcile-actions', '.CodeMirror', '.CodeMirror-merge-gap', 'body'].flatMap((sel) => paint(sel).map((bg) => sel + ' ' + bg)) };
+      const alpha = (bg) => { const i = bg.lastIndexOf('/'); if (i >= 0) return parseFloat(bg.slice(i + 1)); if (bg.indexOf('rgba(') === 0) return parseFloat(bg.slice(bg.lastIndexOf(',') + 1)); return 1; };
+      return { surface: document.documentElement.dataset.surface,
+        painted: ['.bc-editor', '.bc-reconcile', '.CodeMirror', '.CodeMirror-merge-gap', 'body'].flatMap((sel) => paint(sel).map((bg) => sel + ' ' + bg)),
+        opaqueBands: ['.bc-bar', '.bc-find', '.bc-editor-foot', '.bc-merge-heads', '.bc-reconcile-actions'].flatMap((sel) => paint(sel).filter((bg) => alpha(bg) >= 1).map((bg) => sel + ' ' + bg)) };
     })()`);
     try {
       const ed = await c.sb.newPage(/editor\.html/, () => c.popup.eval(`window.api.openEditor(${J(c.ids.plan)}, {})`), { label: 'editor (glass)' });
@@ -813,7 +824,10 @@ const STEPS = [
       const u = await bands(un);
       c.note('glass-unify', u);
       await c.shot(un, 'glass-unify');
-      if (e.painted.length || u.painted.length) throw new Error(`a band paints its own layer under glass: ${J([e.painted, u.painted])}`);
+      // Two tones under glass: content paints nothing over the scrim, the bars
+      // are translucent lifts (never an opaque slab).
+      if (e.painted.length || u.painted.length) throw new Error(`a content layer paints over the glass scrim: ${J([e.painted, u.painted])}`);
+      if (e.opaqueBands.length || u.opaqueBands.length) throw new Error(`a bar is opaque under glass: ${J([e.opaqueBands, u.opaqueBands])}`);
     } finally {
       await c.sb.mainEval(`(__qa.electron.BrowserWindow.getAllWindows().filter((w) => /editor\\.html/.test(w.webContents.getURL())).forEach((w) => w.close()), true)`);
       await c.popup.eval(`window.api.saveSettings({ surface_style: 'solid', glass_scope: 'popup' })`); // the seed's look
@@ -901,7 +915,7 @@ const STEPS = [
       const original = area.value;
       area.value = original + ' EDITED';
       area.dispatchEvent(new Event('input', { bubbles: true }));
-      const surface = getComputedStyle(overlay.querySelector('.bc-editor')).backgroundColor;
+      const surface = getComputedStyle(overlay).backgroundColor; // the canvas the editor sits on
       const menuBtn = overlay.querySelector('[data-x="menu"]');
       if (!menuBtn) return { id, menuBtn: false, surface, glass: pop.dataset.surface, scope: pop.dataset.glassScope || 'popup' };
       menuBtn.click();
@@ -919,8 +933,8 @@ const STEPS = [
       return { id, menuBtn: true, rows, reverted: afterRevert === original, undoClass, undone: area.value === original + ' EDITED', surface, glass: pop.dataset.surface, scope: pop.dataset.glassScope || 'popup' };
     })()`);
     c.note('site-editor-menu', got);
-    const want = c.theme === 'dark' ? 'rgb(20, 23, 27)' : 'rgb(255, 255, 255)';
-    if (got.surface !== want) throw new Error(`demo editor paints ${got.surface}, the app editor window paints ${want}: ${J(got)}`);
+    const want = c.theme === 'dark' ? 'rgb(11, 13, 16)' : 'rgb(244, 245, 247)'; // --bg: the app editor window's solid canvas
+    if (got.surface !== want) throw new Error(`demo editor canvas is ${got.surface}, the app editor window's is ${want}: ${J(got)}`);
     if (!got.menuBtn || !got.rows.includes('revert') || got.rows.includes('edit')) throw new Error(`demo editor menu is not the editor's: ${J(got)}`);
     if (!got.reverted || !/btn quiet sm accent/.test(got.undoClass || '') || !got.undone) throw new Error(`Revert / Undo: ${J(got)}`);
     await page.eval(`(() => { const x = document.querySelector('#demo-editor-overlay [data-x="close"]'); if (x) x.click(); return true; })()`);

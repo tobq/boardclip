@@ -20,7 +20,7 @@ body {
   font-weight: var(--fw-regular);
   line-height: var(--lh-ui);
   color: var(--text);
-  background: var(--surface);
+  background: var(--canvas);
 }
 
 /* Glass: the OS provides the real blur (macOS vibrancy / Windows 11 acrylic)
@@ -31,6 +31,6 @@ body {
   backdrop-filter: var(--glass-blur); -webkit-backdrop-filter: var(--glass-blur);
 }
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
-  :root[data-surface="glass"] body { background: var(--surface); }
+  :root[data-surface="glass"] body { background: var(--canvas); }
   :root[data-surface="glass"] body::before { display: none; }
 }

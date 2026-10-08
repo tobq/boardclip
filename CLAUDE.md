@@ -258,7 +258,12 @@ Otherwise the key passes through so normal numpad typing works. Main thread call
   glide both ways, instant under reduced motion or a hidden page). Its top-level group submenus
   are `popover="manual"` shown in the TOP LAYER by `installSubmenuAutoflip`
   (`placeTopLayerSubmenu`): a scrolling, masked strip would clip a nested absolute submenu, and a
-  mask clips every descendant, fixed ones included. QA: `qa-ui-shots --only popup-chips-many`. macOS needs
+  mask clips every descendant, fixed ones included. They follow their chip when the strip scrolls
+  (closed once it leaves view) and close on window blur and `controller.closeMenu()` (popup reset;
+  `Core.closeTopLayerSubmenus`): `popover="manual"` has no light dismiss. The strip fade is
+  'panel' (36 px) so it always overlaps the last visible chip; a wheel is taken only when the strip
+  actually moves (at an end the page scrolls). A toggle mid-glide reverses from the drawn rects.
+  QA: `qa-ui-shots --only popup-chips-many`. macOS needs
   `acceptFirstMouse` on the popup (it never blur-hides, so it is often inactive; unverified on a Mac). The field is flat (no fill, `--line` hairline underline, accent on focus);
   `attachSearchBox` owns its chrome for app + demo: placeholder "Click here to search..." until
   focused, clear / sort / regex + tune on the ONE `.bc-reveal` (grid 0fr -> 1fr width track, both
@@ -647,8 +652,8 @@ clear-all). All popup CSS + theme variables live in `site/shared/clipboard-popup
   clear under glass) on every theme/accent/surface change via `window-chrome` ->
   `setTitleBarOverlay` / `setWindowButtonPosition`. clientHeight, not the full 32px: the
   bar's bottom hairline must run on under the caption buttons. No close button in the
-  app's bars (`nativeControls: true`); the demo overlay keeps one. ONE surface per window
-  (root `--surface`, every band transparent: one frost under glass). Bounds save the
+  app's bars (`nativeControls: true`); the demo overlay keeps one. Two tones per window (see
+  "Two tones" below: bars a `--surface` band, content on `--canvas`). Bounds save the
   NORMAL bounds + `maximized` (`trackWindowBounds`); a maximised window comes back
   maximised only on a hand-off open, because `maximize()` shows AND activates (the QA
   sandbox turns it into a work-area `setBounds`). Unify/conflict keep their own
@@ -670,6 +675,9 @@ clear-all). All popup CSS + theme variables live in `site/shared/clipboard-popup
   commit first, re-query the id, then act; measure the anchor rect *before* awaiting (the commit
   refresh replaces the button). The old chip strip with an x (`renderClipTagChips`, `.gtag-x`,
   `untag`) is gone.
+- **The popup opens at the REAL cursor** (`getCursorScreenPoint`): a QA check that compares two
+  opens must pin it in the sandbox main (`qa-popup-header` stubs `screen.getCursorScreenPoint`
+  for its slide/drag runs), or the owner moving the mouse fails it.
 - **Hermetic Electron QA**: `BOARDCLIP_DATA_DIR` relocates data and may be a legitimate user
   configuration. Set **`BOARDCLIP_ISOLATED=1`** as well for throwaway instances; only that
   explicit flag suppresses cloud account discovery/sync probing. JSON loaders accept an initial
@@ -891,15 +899,29 @@ clear-all). All popup CSS + theme variables live in `site/shared/clipboard-popup
   (sentence-case label for a control group / pane: options rows, settings list titles, merge
   heads), `.bc-bar` window bar (every clip window + the approval prompt), one scrollbar, one
   `::selection`, one floating-surface rule, and `clipboard-window.css` = the window base sheet
-  (body paints `--surface`, glass scrim) every window links. GOTCHAS: Chromium 121+ IGNORES
+  (body paints `--canvas`, glass scrim) every window links. GOTCHAS: Chromium 121+ IGNORES
   `::-webkit-scrollbar` on an element that sets `scrollbar-width`/`scrollbar-color` (only the
   `@supports not` fallback may set them); a ROLE token resolved on `:root` misses a `.bc-popup`
   variant override of the primitive it points at (density/corners remap the role tokens
   themselves; derived tokens like `--edge-ctl` live in the `[data-theme]` block for that reason).
-- **ONE sheet per window**: the popup body and the demo frame paint `--surface`, the header
-  (`.sticky`) and the list sit on it transparent (under glass the scrim is the only frost), with
-  ONE `--line` hairline under the header, the same one `.settings-hdr` and `.bc-bar` draw
-  (owner 2026-10-08: the header/body divider is a cue to read the UI, keep it); `--bg` is only a well (expanded preview, viewer matte, approval card). Light `--hover`
+- **Two tones, every window (owner 2026-10-08: "it was 2 tone before... did u not get what i
+  meant?", a hairline alone was NOT it)**: chrome = a band in `--surface` (the popup header with
+  search, options panel and chip row; `.settings-hdr`; every `.bc-bar`, `.bc-editor-foot`,
+  `.bc-merge-heads`, `.bc-reconcile-actions`), ending on the `--line` hairline; content sits
+  on `--canvas` (role token: solid = `--bg`, glass = `--glass-tint`), painted ONLY by the
+  window (`body` in clipboard-window.css, `.demo-window`, the demo's `.bc-editor-overlay`); the
+  content roots (`.settings-view`, `.bc-editor`, `.bc-viewer`, `.bc-reconcile`, list) paint
+  nothing. Raised things on the canvas use `--surface` (expanded preview, approval card). The
+  editor's find row is a band too (its bottom hairline IS the field underline, accent on focus);
+  the approval prompt has a foot band (countdown + decisions) like the editor's foot. Tokens that
+  sit on BOTH tones are washes, never opaque fills tuned to one base: `--input` (dark: a light
+  g-100 wash, light: a g-900 tint) and dark `--line-faint` (an opaque g-900 vanished on the g-950
+  canvas and was the hardest line over a glass desktop). Under glass the band is a LIFT over the
+  ONE scrim (dark: white 6 %, light: white 70 %), so it reads lighter than the content whatever
+  the desktop is (a g-850 mix inverted over bright desktops); no second blur (qa-ui-shots
+  glass-popup / glass-all check it). The results list has the shared scroll-edge fade
+  (`createClipList` -> `attachScrollFade(listEl, 'panel')`, `scroll-padding-block` keeps the
+  cursor row out of it). Light `--hover`
   is 7 % so it reads on white; `.item.similar` = `--similar-mix` of `--hover` (60 % dark, 35 %
   light), so hover stays the strongest neutral row state. The theme blocks keep the solid values
   as `--surface-solid`/`--surface2-solid`/`--input-solid` (glass overrides `--surface`): the
@@ -956,8 +978,8 @@ clear-all). All popup CSS + theme variables live in `site/shared/clipboard-popup
   `secondaryWindowSurfaceOptions()` and records what it got with `noteSecondarySurface` (a macOS
   window created solid stays opaque until reopened). Live toggles without recreating a window:
   `applySurfaceToPopup()` / `applySurfaceToWindows()` (mac keeps `transparent:true` +
-  `setVibrancy`, Win `setBackgroundMaterial`). Each window has exactly ONE frosted layer: its root
-  paints the one `--surface`, every inner band is transparent. `notifyColorSchemeChanged` must
+  `setVibrancy`, Win `setBackgroundMaterial`). Each window has exactly ONE frosted layer (the
+  scrim); its bars are translucent `--surface` lifts, its content paints nothing. `notifyColorSchemeChanged` must
   NOT stamp an opaque bg over live glass. The glass scrim (`:root[data-surface="glass"]
   body::before`, `--glass-tint` + `backdrop-filter`) lives in `clipboard-window.css`; the OS
   provides the real blur behind a transparent window. Every window renders the SAME appearance

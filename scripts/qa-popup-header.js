@@ -455,8 +455,12 @@ async function main() {
         }, 400);
       }, 600));
     })`, { timeoutMs: 10000 });
+    // The popup opens at the REAL cursor (the owner may be using the machine),
+    // so both opens get one pinned cursor point, restored afterwards.
+    await sb.mainEval(`(() => { const s = __qa.electron.screen; s.__qaCursor = s.getCursorScreenPoint; const b = s.getPrimaryDisplay().workArea; s.getCursorScreenPoint = () => ({ x: Math.round(b.x + b.width / 2), y: Math.round(b.y + b.height / 3) }); return true; })()`);
     const slidePlain = await slideRun(false);
     const slideDrag = await slideRun(true);
+    await sb.mainEval(`(() => { const s = __qa.electron.screen; if (s.__qaCursor) { s.getCursorScreenPoint = s.__qaCursor; delete s.__qaCursor; } return true; })()`);
     const pulledBack = slideDrag.trace.filter(([t, y]) => t >= 40 && y !== slidePlain.final.y + 40);
     check('a drag during the open slide moves from the resting place and is never pulled back', slideDrag.final.y === slidePlain.final.y + 40 && pulledBack.length === 0,
       J({ rest: slidePlain.final.y, final: slideDrag.final.y, off: pulledBack.slice(0, 5) }));

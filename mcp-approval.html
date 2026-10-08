@@ -20,7 +20,13 @@
      once], with "for this session" / "always" as quiet options above it. */
   body { user-select:none; }
   /* The bar is the shared window bar (.bc-bar: drag region, --bar-h, the title in sentence case). */
+  /* Two tones, as in every window: the request on the canvas, the decision
+     (countdown, the session / always options, Deny / Allow once) on a foot
+     band like the editor's, held at the bottom. */
+  body { display:flex; flex-direction:column; }
   .wrap { padding:var(--sp-5) var(--gutter) var(--sp-6); display:flex; flex-direction:column; gap:var(--sp-4); }
+  .foot { margin-top:auto; padding:var(--sp-5) var(--gutter); display:flex; flex-direction:column; gap:var(--sp-4);
+          background:var(--surface); border-top:1px solid var(--line); }
   .who { font-size:var(--fs-meta); line-height:var(--lh-ui); color:var(--text-dim); }
   .who b { color:var(--text); font-weight:var(--fw-strong); }
   .head { display:flex; gap:var(--sp-5); align-items:center; }
@@ -34,7 +40,7 @@
   .facts { display:grid; grid-template-columns:auto 1fr; gap:var(--sp-1) var(--sp-4); font-size:var(--fs-meta); }
   .facts dt { color:var(--text-dim); }
   .facts dd { color:var(--text); word-break:break-word; }
-  .card { background:var(--bg); border-radius:var(--r-panel); padding:var(--sp-4) var(--sp-5); }
+  .card { background:var(--surface); border-radius:var(--r-panel); padding:var(--sp-4) var(--sp-5); }
   .card .overline { margin-bottom:var(--sp-2); }
   .detail { font-family:var(--font-mono); font-size:var(--fs-ui); line-height:var(--lh-text); color:var(--text);
             white-space:pre-wrap; word-break:break-word; max-height:88px; overflow:auto; }
@@ -61,6 +67,8 @@
       <div class="label overline" id="detailLabel">Clip text</div>
       <div class="detail" id="detail"></div>
     </div>
+  </div>
+  <div class="foot" id="foot">
     <div>
       <div class="meter" id="meter"><span id="meterBar"></span></div>
       <div class="countdown"><span id="countLabel">Denies automatically if you don't respond</span><span id="countNum"></span></div>
@@ -115,8 +123,10 @@
   if (window.approval.onAppearanceChanged) window.approval.onAppearanceChanged(applyLook);
 
   function fit() {
-    const h = Math.ceil(document.getElementById('wrap').getBoundingClientRect().bottom) + 4;
-    if (window.approval && window.approval.resize) window.approval.resize(h);
+    // The natural height of bar + request + foot (the foot's margin-top:auto
+    // only takes up slack, so it never feeds back into the measure).
+    const h = ['.bc-bar', '#wrap', '#foot'].reduce((sum, sel) => { const el = document.querySelector(sel); return sum + (el ? el.getBoundingClientRect().height : 0); }, 0);
+    if (window.approval && window.approval.resize) window.approval.resize(Math.ceil(h));
   }
   function decide(choice) {
     if (decided || !current) return;

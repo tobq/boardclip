@@ -218,13 +218,13 @@ body {
   font-weight: var(--fw-regular);
   line-height: var(--lh-ui);
   color: var(--text);
-  background: var(--surface);
+  background: var(--canvas);
   border-radius: var(--r-panel);
   box-shadow: 0 8px 24px var(--shadow), 0 0 0 1px var(--menu-edge);
 }
 :where(.demo-window, .demo-window *) { margin: 0; padding: 0; }
-/* Glass: --surface is translucent, so blurring the page behind stands in for
-   the OS acrylic / vibrancy the real window sits on. */
+/* Glass: --canvas is the glass tint, so blurring the page behind stands in
+   for the OS acrylic / vibrancy the real window sits on. */
 .demo-window[data-surface="glass"] { backdrop-filter: var(--glass-blur); -webkit-backdrop-filter: var(--glass-blur); }
 /* Toast, dialogs, lightbox and editor stay inside the frame (the shared CSS
    positions them fixed for the real window). */

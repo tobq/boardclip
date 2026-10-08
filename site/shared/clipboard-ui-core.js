@@ -1345,12 +1345,19 @@
   function attachSideScroll(el) {
     if (!el) return null;
     if (el._bcSideScroll) return el._bcSideScroll;
-    const fade = attachScrollFade(el, 'box', { axis: 'x' });
+    // 'panel' (36 px): long enough to overlap the last visible chip, so a cut
+    // edge always reads as "more this way", wherever a chip happens to end.
+    const fade = attachScrollFade(el, 'panel', { axis: 'x' });
+    // A reveal inside (the window bar's ghosts) changes only the scroll width.
+    el.addEventListener('transitionrun', fade.refresh);
+    el.addEventListener('transitionend', fade.refresh);
     el.addEventListener('wheel', (e) => {
       if (e.ctrlKey || e.metaKey || !e.deltaY || Math.abs(e.deltaX) >= Math.abs(e.deltaY)) return;
+      if (e.target && e.target.closest && e.target.closest('.tag-submenu')) return;
       if (el.scrollWidth <= el.clientWidth + 1 || getComputedStyle(el).overflowX === 'visible') return;
+      const before = el.scrollLeft;
       el.scrollLeft += e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY;
-      e.preventDefault();
+      if (el.scrollLeft !== before) e.preventDefault();
     }, { passive: false });
     el._bcSideScroll = fade;
     return fade;
@@ -1379,6 +1386,11 @@
       const next = !!open;
       if (next === expanded) return;
       expanded = next;
+      const chips = Array.from(el.children);
+      // Measured BEFORE settle(): a toggle mid-glide starts from where the
+      // chips are drawn right now, not from the aborted glide's end.
+      const before = chips.map((chip) => chip.getBoundingClientRect());
+      const fromHeight = el.getBoundingClientRect().height;
       settle();
       const ms = motionMs(el);
       if ((how && how.instant) || !ms || document.hidden || !el.getClientRects().length) {
@@ -1387,9 +1399,6 @@
         if (side) side.refresh();
         return;
       }
-      const chips = Array.from(el.children);
-      const before = chips.map((chip) => chip.getBoundingClientRect());
-      const fromHeight = el.getBoundingClientRect().height;
       el.classList.toggle('expanded', next);
       if (!next) el.scrollLeft = 0;
       const toHeight = el.getBoundingClientRect().height;
@@ -2341,6 +2350,10 @@
     sub.style.left = `${Math.round(left)}px`;
     sub.style.top = `${Math.round(top)}px`;
   }
+  function closeTopLayerSubmenus(rootEl) {
+    const root = rootEl || (typeof document !== 'undefined' ? document : null);
+    if (root && typeof root._bcCloseTopLayer === 'function') root._bcCloseTopLayer();
+  }
   function installSubmenuAutoflip(rootEl) {
     if (typeof document === 'undefined' || !rootEl || rootEl._bcAutoflip) return;
     rootEl._bcAutoflip = true;
@@ -2363,6 +2376,30 @@
     }, 0);
     rootEl.addEventListener('mouseout', () => { if (shownTopLayer.size) closeStale(); });
     rootEl.addEventListener('focusout', () => { if (shownTopLayer.size) closeStale(); });
+    const closeAll = () => {
+      for (const sub of shownTopLayer) {
+        if (sub.isConnected && sub.matches(':popover-open')) { try { sub.hidePopover(); } catch {} }
+      }
+      shownTopLayer.clear();
+    };
+    rootEl._bcCloseTopLayer = closeAll;
+    if (typeof window !== 'undefined') window.addEventListener('blur', closeAll);
+    rootEl.addEventListener('scroll', (event) => {
+      const scroller = event.target;
+      if (!shownTopLayer.size || !scroller || !scroller.contains) return;
+      for (const sub of shownTopLayer) {
+        const node = sub.parentElement;
+        if (!node || !scroller.contains(node)) continue;
+        const nr = node.getBoundingClientRect();
+        const sr = scroller.getBoundingClientRect();
+        if (nr.right < sr.left || nr.left > sr.right) {
+          shownTopLayer.delete(sub);
+          try { sub.hidePopover(); } catch {}
+        } else {
+          placeTopLayerSubmenu(node, sub, rootEl);
+        }
+      }
+    }, true);
     rootEl.addEventListener('focusin', (event) => {
       const node = event.target && event.target.closest ? event.target.closest('.tag-menu-node.has-children') : null;
       const sub = node ? node.querySelector(':scope > .tag-submenu[popover]') : null;
@@ -3255,6 +3292,9 @@
 
     const laidOut = () => !!listEl && listEl.clientHeight > 0;
     const notifyRendered = () => { if (o.onRendered) o.onRendered(); };
+    // The results fade out at an edge while more is past it, like every other
+    // scroller (the CSS keeps the keyboard cursor clear of the fades).
+    if (listEl) attachScrollFade(listEl, 'panel');
     function toEl(row) {
       if (row && typeof row !== 'string') return row;
       const t = document.createElement('template');
@@ -4718,7 +4758,9 @@
       heldId: () => heldId,
       // The popup was hidden: the pointer is no longer over a row (its tint goes).
       forgetPointer: () => { if (hoverId != null) { hoverId = null; refreshSimilar(); } },
-      closeMenu: () => menu.close(), // popup hide/reset must not leave a stale popover
+      // Popup hide/reset must not leave a stale popover, nor a chip's
+      // top-layer submenu (popover="manual": nothing else closes it then).
+      closeMenu: () => { menu.close(); closeTopLayerSubmenus(a.menuHost || (typeof document !== 'undefined' ? document : null)); },
     };
   }
   // Pure find helpers (shared by the editor's find bar). findAllMatches returns
@@ -6218,6 +6260,7 @@
     attachScrollFade,
     attachSideScroll,
     attachChipStrip,
+    closeTopLayerSubmenus,
     resolveFadeVars,
     FADE_PRESETS,
     attachResizeHandle,

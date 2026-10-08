@@ -121,12 +121,14 @@
 
 .main-view { display: flex; flex-direction: column; flex: 1; min-height: 0; height: 100%; }
 .main-view.hidden { display: none; }
-/* The popup is ONE sheet: the window (body, or the demo's frame) paints the
-   surface and the header and the list sit on it (under glass, no second frost
-   band). ONE hairline divides the header from the body, the same full-width
-   --line every bar draws (.settings-hdr, .bc-bar): it says where the controls
-   end and the clips begin. */
-.sticky { flex-shrink: 0; background: transparent; padding-bottom: var(--sp-2); border-bottom: 1px solid var(--line); z-index: 10; position: relative; }
+/* TWO tones, the same in every window: the chrome (the popup's header with
+   the search, the options panel and the chips; the settings header; every
+   window bar and foot) is a band in --surface, the content (the results, the
+   settings body, the editor's text, the viewer) sits on --canvas, which the
+   window (body, or the demo's frame) paints; the band ends on the --line
+   hairline. Under glass --surface is a translucent lift over the one scrim
+   (no second blur). */
+.sticky { flex-shrink: 0; background: var(--surface); padding-bottom: var(--sp-2); border-bottom: 1px solid var(--line); z-index: 10; position: relative; }
 /* The header (and the settings header) are NOT -webkit-app-region: drag: that
    swallowed every click and double-click-maximised. Core.attachWindowDrag owns
    them: a click focuses the search, a press-and-move past 4 px moves the window. */
@@ -286,7 +288,7 @@
    the mask fade (.bc-scroll-fade-x), every chip once the search options panel
    is open (.expanded, wrapped). .strip-moving is the switch: the row's height
    follows while each chip glides to its new place (FLIP). */
-.group-filters { display: flex; align-items: center; gap: var(--sp-2); padding: var(--sp-1) var(--gutter); box-sizing: border-box;
+.group-filters { display: flex; align-items: center; gap: var(--sp-2); padding: var(--sp-1) var(--gutter) var(--sp-1) calc(var(--gutter) - var(--sp-2)); box-sizing: border-box;
                  flex-wrap: nowrap; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; position: relative; z-index: 30; }
 .group-filters::-webkit-scrollbar { display: none; }
 .group-filters > * { flex-shrink: 0; }
@@ -326,7 +328,10 @@
 .list-newest .mi.sm { font-size: var(--icon-sm); }
 .list-newest-dot { display: none; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
 .list-newest.has-new .list-newest-dot { display: inline-block; }
-.list { flex: 1; overflow-y: auto; padding: 0 0 var(--sp-4); min-height: 0; }
+/* The results fade out at an edge while more is past it (the shared
+   .bc-scroll-fade, Core.createClipList); scroll-padding keeps the keyboard
+   cursor out of the fades when it is scrolled into view. */
+.list { flex: 1; overflow-y: auto; padding: 0 0 var(--sp-4); min-height: 0; scroll-padding-block: 36px; }
 .item { padding: var(--sp-4) var(--gutter); cursor: pointer; transition: background-color var(--dur) var(--ease); position: relative; border-bottom: 1px solid var(--line-faint); color: inherit; }
 /* Row states: hover = the --hover overlay; the keyboard cursor (the row Enter
    pastes) = --accent-bg; a candidate duplicate of the hovered or cursor row
@@ -401,7 +406,7 @@
 .clip-title + .preview { margin-top: var(--sp-1); }
 .preview { font-size: var(--fs-ui); line-height: var(--lh-text); color: var(--text-dim); font-family: var(--font-mono); }
 .preview.collapsed { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.preview.expanded { white-space: pre-wrap; word-break: break-word; max-height: 300px; overflow-y: auto; background: var(--bg); border-radius: var(--r-2); padding: var(--sp-4); margin: var(--sp-1) 0; }
+.preview.expanded { white-space: pre-wrap; word-break: break-word; max-height: 300px; overflow-y: auto; background: var(--surface); border-radius: var(--r-2); padding: var(--sp-4); margin: var(--sp-1) 0; }
 /* Image previews render at --clip-img-h (Ctrl+wheel / Settings, default 60px),
    capped by --clip-img-cap (the list's visible height, set by Core.createImageZoom)
    so one preview never outgrows the list. The wrapper is the picture's box (so
@@ -485,10 +490,10 @@
 .empty-nudge-btn .mi { font-size: var(--icon-sm); color: var(--accent); }
 .empty-nudge-btn:hover { background: var(--hover); color: var(--text); }
 
-.settings-view { display: none; flex-direction: column; height: 100%; color: var(--text); background: var(--surface); }
+.settings-view { display: none; flex-direction: column; height: 100%; color: var(--text); background: transparent; }
 .settings-view.show { display: flex; }
 .settings-hdr { display: flex; align-items: center; flex-shrink: 0; height: var(--bar-h); padding: 0 var(--edge-ctl); gap: var(--sp-3);
-                 border-bottom: 1px solid var(--line); }
+                 border-bottom: 1px solid var(--line); background: var(--surface); }
 .settings-hdr h2 { font-size: var(--fs-ui); font-weight: var(--fw-strong); flex: 1; margin: 0; color: var(--text); }
 .settings-body { flex: 1; min-height: 0; overflow-y: auto; padding: var(--sp-6) var(--gutter); }
 /* Settings (Core.renderSettingsBody, Core.renderSettingsItem): ONE row grid and
@@ -651,7 +656,7 @@ mark { background: var(--mark-bg); color: var(--mark-fg); border-radius: var(--r
    --line hairline, so the writing surface is never grey under white chrome.
    Under glass the root goes transparent too and the window's single scrim
    (clipboard-window.css) is the only frost. */
-.bc-editor { display: flex; flex-direction: column; height: 100%; width: 100%; background: var(--surface); color: var(--text); min-height: 0; }
+.bc-editor { display: flex; flex-direction: column; height: 100%; width: 100%; background: transparent; color: var(--text); min-height: 0; }
 /* ONE window bar (.bc-bar, Core.renderWindowBar): [lead] title [context]
    [tags] spacer actions. It is the window's drag region (a double-click
    maximises on Windows, zooms or minimises per the macOS setting); its
@@ -660,7 +665,7 @@ mark { background: var(--mark-bg); color: var(--mark-fg); border-radius: var(--r
    lights' inset on the left (macOS, --wc-left from main), the caption
    buttons' width on the right (Windows, the Window Controls Overlay env()). */
 .bc-bar { -webkit-app-region: drag; display: flex; align-items: center; gap: var(--sp-3); height: var(--bar-h); flex-shrink: 0;
-          padding: 0 var(--edge-ctl) 0 var(--gutter); border-bottom: 1px solid var(--line); background: transparent; color: var(--text); }
+          padding: 0 var(--edge-ctl) 0 var(--gutter); border-bottom: 1px solid var(--line); background: var(--surface); color: var(--text); }
 :root[data-window-controls="left"] .bc-bar { padding-left: var(--wc-left, var(--gutter)); }
 :root[data-window-controls="right"] { --wc-right: calc(100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw)); }
 :root[data-window-controls="right"] .bc-bar { padding-right: max(var(--edge-ctl), calc(var(--wc-right) + var(--sp-2))); }
@@ -705,12 +710,14 @@ input.bc-bar-title::placeholder { color: var(--text-dim); font-weight: var(--fw-
 .bc-tag-strip .meta-tag { flex: 0 0 auto; }
 .bc-bar:hover .bc-tag-strip .bc-reveal.meta-reveal, .bc-bar:focus-within .bc-tag-strip .bc-reveal.meta-reveal { grid-template-columns: 1fr; }
 .bc-bar:hover .bc-tag-strip .meta-reveal > .bc-reveal-inner, .bc-bar:focus-within .bc-tag-strip .meta-reveal > .bc-reveal-inner { visibility: visible; content-visibility: visible; }
-/* Find: flat like the popup's search field: ONE hairline under the field AND
-   its buttons (the regex toggle, count, arrows, close), accent while anything
-   in it has the focus; the close's glyph ends on the gutter. */
-.bc-find { -webkit-app-region: no-drag; display: flex; align-items: center; gap: var(--sp-1); margin: var(--sp-2) var(--gutter); padding: 0; flex-shrink: 0; background: transparent;
-           box-shadow: inset 0 -1px 0 var(--line); transition: box-shadow var(--dur) var(--ease); }
-.bc-find:focus-within { box-shadow: inset 0 -1px 0 var(--accent); }
+/* Find: chrome, so a band under the window bar like the merge pane heads
+   (--surface, ending on the --line hairline). The band's hairline IS the
+   field's underline: accent while anything in it has the focus (one line,
+   never a field underline 4 px above a band edge). The close's glyph ends on
+   the gutter. */
+.bc-find { -webkit-app-region: no-drag; display: flex; align-items: center; gap: var(--sp-1); margin: 0; padding: var(--sp-1) var(--gutter); flex-shrink: 0;
+           background: var(--surface); border-bottom: 1px solid var(--line); transition: border-color var(--dur) var(--ease); }
+.bc-find:focus-within { border-bottom-color: var(--accent); }
 .bc-find[hidden] { display: none; }
 .bc-find > :last-child { margin-right: calc(var(--edge-ctl) - var(--gutter)); }
 .bc-find-input { flex: 1; min-width: 0; height: var(--ctl-md); background: transparent; border: none; border-radius: 0; color: var(--text); font: inherit; font-size: var(--fs-text);
@@ -736,7 +743,7 @@ input.bc-bar-title::placeholder { color: var(--text-dim); font-weight: var(--fw-
 /* Footer: stats left; the clipboard follow state, the live save state (or the
    viewer's zoom controls) right. */
 .bc-editor-foot { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-5); padding: 0 var(--gutter); height: var(--ctl-lg); flex-shrink: 0;
-                  border-top: 1px solid var(--line); background: transparent; font-size: var(--fs-meta); color: var(--text-dim); }
+                  border-top: 1px solid var(--line); background: var(--surface); font-size: var(--fs-meta); color: var(--text-dim); }
 .bc-editor-foot > [data-x="stats"], .bc-editor-foot > [data-x="dims"] { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bc-editor-foot-end { display: flex; align-items: center; gap: var(--sp-5); flex-shrink: 0; }
 /* Text ends on the gutter: a trailing quiet button (the viewer's 100%) pulls
@@ -767,8 +774,8 @@ input.bc-bar-title::placeholder { color: var(--text-dim); font-weight: var(--fw-
 /* In-app image viewer: same window chrome as the editor (the .bc-bar + foot on
    the one surface); the stage is the image's matte, centres the image and
    hosts zoom/pan (transform-positioned <img>). */
-.bc-viewer { display: flex; flex-direction: column; height: 100%; width: 100%; background: var(--surface); color: var(--text); min-height: 0; outline: none; }
-.bc-viewer-stage { position: relative; flex: 1; min-height: 0; overflow: hidden; background: var(--bg); }
+.bc-viewer { display: flex; flex-direction: column; height: 100%; width: 100%; background: transparent; color: var(--text); min-height: 0; outline: none; }
+.bc-viewer-stage { position: relative; flex: 1; min-height: 0; overflow: hidden; background: var(--canvas); }
 .bc-viewer-img { position: absolute; left: 0; top: 0; transform-origin: 0 0; user-select: none; image-rendering: auto; }
 :root[data-surface="glass"] .bc-viewer, :root[data-surface="glass"] .bc-viewer-stage { background: transparent; }
 /* Demo overlay host: the editor floats over the demo popup, standing in for
@@ -777,8 +784,8 @@ input.bc-bar-title::placeholder { color: var(--text-dim); font-weight: var(--fw-
    (it re-takes the solid surface tokens the popup's glass overrides, so it
    paints exactly the app editor's --surface); All windows = one frosted
    layer over the list (the window roots inside go transparent above). */
-.bc-editor-overlay { position: absolute; inset: 0; z-index: 40; display: none; background: var(--surface); }
-.bc-popup:not([data-glass-scope="all"]) .bc-editor-overlay { --surface: var(--surface-solid); --surface2: var(--surface2-solid); --input: var(--input-solid); }
+.bc-editor-overlay { position: absolute; inset: 0; z-index: 40; display: none; background: var(--canvas); }
+.bc-popup:not([data-glass-scope="all"]) .bc-editor-overlay { --canvas: var(--bg); --surface: var(--surface-solid); --surface2: var(--surface2-solid); --input: var(--input-solid); }
 .bc-popup[data-surface="glass"][data-glass-scope="all"] .bc-editor-overlay { background: var(--glass-tint); -webkit-backdrop-filter: var(--glass-blur); backdrop-filter: var(--glass-blur); }
 .bc-editor-overlay.show { display: block; }
 .bc-editor-overlay .bc-editor { box-shadow: 0 8px 30px var(--shadow); }
@@ -786,12 +793,12 @@ input.bc-bar-title::placeholder { color: var(--text-dim); font-weight: var(--fw-
    Current (read-only) | Result (editable) | Incoming (read-only); 2-pane =
    Current (edited in place into the result) | Incoming. One plane: the root
    paints the window surface, heads / panes / gap / footer are transparent. */
-.bc-reconcile { display: flex; flex-direction: column; height: 100%; width: 100%; background: var(--surface); color: var(--text); min-height: 0; }
+.bc-reconcile { display: flex; flex-direction: column; height: 100%; width: 100%; background: transparent; color: var(--text); min-height: 0; }
 /* Pane heads aligned to the addon's pane widths (2-pane 47%/6%, 3-pane
    31%/3.5%): the pane's name, its title as a one-click pick when the two
    titles differ (the result's title is the bar's field), and the whole-side
    accept at the end of the head of the pane it takes. */
-.bc-merge-heads { flex-shrink: 0; display: flex; align-items: center; height: var(--ctl-lg); border-bottom: 1px solid var(--line); background: transparent; }
+.bc-merge-heads { flex-shrink: 0; display: flex; align-items: center; height: var(--ctl-lg); border-bottom: 1px solid var(--line); background: var(--surface); }
 .bc-merge-head { display: flex; align-items: center; gap: var(--sp-2); min-width: 0; height: 100%; padding: 0 var(--sp-2) 0 var(--sp-4); container: bc-head / inline-size; }
 /* The first head starts on the window's gutter, like the bar title above it
    and the first pane's text below it (one left edge). */
@@ -899,7 +906,7 @@ input.bc-bar-title::placeholder { color: var(--text-dim); font-weight: var(--fw-
    Unify's last step, and a fixed width keeps it from reflowing under a cursor
    that is about to click. */
 .bc-reconcile-actions { position: relative; flex-shrink: 0; display: flex; align-items: center; justify-content: center; gap: var(--sp-3); padding: var(--sp-3) var(--gutter);
-                        border-top: 1px solid var(--line); background: transparent; }
+                        border-top: 1px solid var(--line); background: var(--surface); }
 .bc-reconcile-actions .btn.primary { min-width: 10.5em; }
 /* A multi-step Unify's "Step 2 of 3": on the footer's left gutter, out of the
    flow, so the buttons stay centred and never move between steps. */

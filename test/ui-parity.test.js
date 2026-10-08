@@ -428,12 +428,12 @@ const siteCss = read('site/styles.css');
   }
   assert.ok(/const maximized = childWin\.isMaximized\(\) \|\| childWin\.isFullScreen\(\);\s*const \{ x, y, width, height \} = maximized \? childWin\.getNormalBounds\(\) : childWin\.getBounds\(\);/.test(mainSrc), 'a maximised window saves its NORMAL bounds + the flag');
   assert.ok(/saved\.maximized !== true \|\| \(options && options\.keepPopup\)/.test(mainSrc), 'maximised state comes back only on a hand-off open (maximize() activates)');
-  // ONE surface per clip window: the roots paint it, every band is transparent.
+  // TWO tones per clip window: the chrome (bar, foot, merge heads and footer)
+  // is a --surface band; the content shows the window's --canvas (the roots and
+  // the text / find layers paint nothing).
   const rule = (sel) => (popupCss.match(new RegExp(`(^|\\n)${sel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} \\{([^}]*)\\}`)) || [])[2] || '';
-  for (const sel of ['.bc-editor', '.bc-viewer', '.bc-reconcile']) assert.ok(/background: var\(--surface\)/.test(rule(sel)), `${sel} paints the window's one surface`);
-  for (const sel of ['.bc-bar', '.bc-find', '.bc-editor-foot', '.bc-merge-heads', '.bc-reconcile-actions', '.bc-editor-area-wrap']) {
-    assert.ok(/background: transparent/.test(rule(sel)), `${sel} is transparent (one layer, also under glass)`);
-  }
+  for (const sel of ['.bc-editor', '.bc-viewer', '.bc-reconcile', '.bc-editor-area-wrap']) assert.ok(/background: transparent/.test(rule(sel)), `${sel} shows the window's canvas`);
+  for (const sel of ['.bc-bar', '.bc-find', '.bc-editor-foot', '.bc-merge-heads', '.bc-reconcile-actions']) assert.ok(/background: var\(--surface\)/.test(rule(sel)), `${sel} is a --surface band`);
   assert.ok(/\.bc-merge-host \.CodeMirror-merge-gap \{ background: transparent; border: 0; \}/.test(popupCss), 'the merge gap has no fill and no box');
   assert.ok(!/CodeMirror-merge-pane[^{]*\{[^}]*opacity/.test(popupCss), 'no read-only pane dimming');
   assert.ok(/-connect \{ fill: var\(--green-bg\); stroke: none; \}/.test(popupCss), 'connectors: one green layer, no stroke');
@@ -962,16 +962,22 @@ const siteCss = read('site/styles.css');
   const stripComments = (css) => css.replace(/\/\*[\s\S]*?\*\//g, '');
   const rules = (css) => [...stripComments(css).matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((m) => ({ sel: m[1].trim(), body: m[2] }));
   const ruleOf = (sel) => rules(popupCss).find((r) => r.sel === sel);
-  // The popup is ONE sheet: the window paints --surface, the header nothing.
-  assert.ok(/body \{[^}]*background: var\(--surface\);/.test(stripComments(windowCss)), 'every window body paints --surface (--bg is a well)');
-  assert.ok(/background: transparent/.test(ruleOf('.sticky').body), 'the popup header paints no second band (one frost under glass)');
+  // Two tones (owner 2026-10-08: "it was 2 tone before"): every window paints
+  // --canvas (solid --bg, glass the tint), every header / bar is a --surface band.
+  assert.ok(/body \{[^}]*background: var\(--canvas\);/.test(stripComments(windowCss)), 'every window body paints --canvas');
+  for (const sel of ['.sticky', '.settings-hdr']) assert.ok(/background: var\(--surface\)/.test(ruleOf(sel).body), `${sel} is the --surface band over the canvas`);
+  assert.ok(/background: transparent/.test(ruleOf('.settings-view').body), 'the settings body shows the canvas');
+  assert.ok(/attachScrollFade\(listEl, 'panel'\)/.test(coreSrc), 'the results list has the shared scroll-edge fade');
+  for (const theme of ['dark', 'light']) {
+    assert.ok(new RegExp(`\\[data-theme="${theme}"\\]\\[data-surface="glass"\\][^{]*\\{[^}]*--canvas: var\\(--glass-tint\\)`).test(tokensCss), `${theme} glass: the canvas is the glass tint`);
+  }
   // The demo's editor overlay is the app editor WINDOW: solid --surface unless Glass on: All windows.
   for (const theme of ['dark', 'light']) {
     const block = (tokensCss.match(new RegExp(`:root\\[data-theme="${theme}"\\], \\.bc-popup\\[data-theme="${theme}"\\] \\{([^}]*)\\}`)) || [])[1] || '';
     assert.ok(/--surface: var\(--surface-solid\);/.test(block) && /--surface-solid:/.test(block), `${theme}: --surface is the solid surface the overlay can re-take`);
   }
   assert.ok(/--surface: var\(--surface-solid\)/.test(ruleOf('.bc-popup:not([data-glass-scope="all"]) .bc-editor-overlay').body), 'the demo editor (Glass on: Popup only) paints the app editor\'s solid surface');
-  assert.ok(/background: var\(--surface\)/.test(ruleOf('.bc-editor-overlay').body) && !/var\(--bg\)/.test(ruleOf('.bc-editor-overlay').body), 'the overlay host is the window surface, not the page --bg');
+  assert.ok(/background: var\(--canvas\)/.test(ruleOf('.bc-editor-overlay').body) && /--canvas: var\(--bg\)/.test(ruleOf('.bc-popup:not([data-glass-scope="all"]) .bc-editor-overlay').body), 'the overlay host is the window canvas (solid under Glass on: Popup only)');
   assert.ok(/setOrClear\('data-glass-scope', o\.glassScope, 'popup'\)/.test(coreSrc) && /glassScope: demoLook\.glassScope/.test(siteHtml), 'the demo passes Glass on to its window');
   assert.ok(/onMenu: \(x, y\) => \{[^}]*controller\.openClipMenu\(demoEditorClipId, x, y, "editor"\)/.test(siteHtml) && /revertClip: \(\) => \{ if \(demoEditor\) demoEditor\.revert\(\); \}/.test(siteHtml), 'the demo editor has the app editor\'s clip menu, Revert included');
   assert.ok(/toastEl: document\.getElementById\('toast'\)/.test(read('editor.html')) && /toastEl: demoToast/.test(siteHtml) && /showActionToast\(o\.toastEl, \{ message: 'Reverted to the original', actionLabel: 'Undo'/.test(coreSrc), 'Revert to original offers Undo, app and demo');

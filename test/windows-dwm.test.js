@@ -103,16 +103,15 @@ assert.ok(/function unparkPopup[\s\S]{0,100}windowsDwm\.setParked\(win, false\)/
 assert.ok(/function showPopup\(\)[\s\S]{0,2800}win\.setPosition\(px, motion === 'none' \? py : py \+ POPUP_SLIDE_PX\);[\s\S]{0,200}const reveal = \(\) => \{[\s\S]{0,260}const fade = motion === 'fade' && beginPopupFade\(\);\s*unparkPopup\(\);[\s\S]{0,200}slidePopupInto\(px, py, \{ fade \}\)/.test(main),
   'show moves the cloaked window, sets a solid window\'s alpha to 0 while still cloaked, then unparks, then slides (+ fades)');
 // The motion per open (plan I): glass on Windows never fades (a layered window
-// drops the acrylic), macOS fades, solid Windows fades ONLY with
-// BOARDCLIP_SOLID_FADE=1 until a frame recording is clean (the owner's ship
-// rule; qa-appearance.js turns it on), reduced motion does neither.
+// drops the acrylic), macOS and solid Windows fade (recorded clean on screen
+// 2026-10-08; BOARDCLIP_SOLID_FADE=0 turns it off), reduced motion does neither.
 {
   const at = main.indexOf('function popupOpenMotion()');
   const motion = main.slice(at, main.indexOf('\n}\n', at));
   assert.ok(/getAnimationSettings\(\)[\s\S]{0,120}prefersReducedMotion[\s\S]{0,80}return 'none'/.test(motion), 'reduced motion skips the open animation');
   assert.ok(/process\.platform === 'darwin'\) return 'fade'/.test(motion), 'macOS fades (window alpha; vibrancy survives)');
   assert.ok(/return glassOn\(\) \|\| !solidFadeEnabled\(\) \? 'slide' : 'fade';/.test(motion), 'Windows: glass slides only, solid fades only when enabled');
-  assert.ok(/function solidFadeEnabled\(\) \{\s*return process\.env\.BOARDCLIP_SOLID_FADE === '1';\s*\}/.test(main), 'the Windows Solid fade is off unless BOARDCLIP_SOLID_FADE=1 (no recording yet)');
+  assert.ok(/function solidFadeEnabled\(\) \{\s*return process\.env\.BOARDCLIP_SOLID_FADE !== '0';\s*\}/.test(main), 'the Windows Solid fade is on by default (recorded clean), BOARDCLIP_SOLID_FADE=0 turns it off');
   assert.ok(/function setPopupAlpha[\s\S]{0,200}windowsDwm\.setWindowAlpha\(win, alpha\)[\s\S]{0,80}win\.setOpacity\(alpha\)/.test(main), 'Windows alpha goes through windows-dwm, macOS through setOpacity');
   assert.ok(/function endPopupFade[\s\S]{0,300}windowsDwm\.clearLayered\(win\)[\s\S]{0,250}win\.setOpacity\(1\)/.test(main), 'the fade always ends opaque and, on Windows, no longer layered');
   assert.ok(/else \{\s*popupSlideTarget = null;\s*if \(fade\) endPopupFade\(\);/.test(main), 'the finished slide ends the fade');

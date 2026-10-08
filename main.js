@@ -4567,18 +4567,15 @@ function waitForPopupFrame(capMs = 120) {
 //   and slides up. No fade: a layered window drops the acrylic, and the
 //   backdrop cannot be crossfaded either (both recorded frame by frame
 //   2026-10-07: a see-through or a grey two-step).
-// - 'fade': macOS (vibrancy survives window alpha), and Windows + solid ONLY
-//   with BOARDCLIP_SOLID_FADE=1: the same slide with the window alpha 0 -> 1 on
-//   the same ease. Windows + solid (and every Windows 10, which has no acrylic)
-//   otherwise keeps the shipped slide: the owner's ship rule for the open
-//   animation is a clean frame-by-frame recording, and the Solid fade so far is
-//   verified as window STATE only (qa-appearance.js, in a cloaked sandbox that
-//   draws nothing), not on screen where the layered-style flip at its end could
-//   show a two-step. Flip the default once a recording on an idle machine is clean.
+// - 'fade': macOS (vibrancy survives window alpha) and Windows + solid (every
+//   Windows 10 too, which has no acrylic): the same slide with the window alpha
+//   0 -> 1 on the same ease. Recorded frame by frame on screen 2026-10-08:
+//   background and content fade together, and the layered-style flip at the end
+//   shows nothing. BOARDCLIP_SOLID_FADE=0 is the kill switch.
 // - 'none': the OS asks for reduced motion (or no rich animation, e.g. a remote
 //   session): straight to the resting place. Linux keeps its plain show.
 function solidFadeEnabled() {
-  return process.env.BOARDCLIP_SOLID_FADE === '1';
+  return process.env.BOARDCLIP_SOLID_FADE !== '0';
 }
 function popupOpenMotion() {
   if (process.platform !== 'win32' && process.platform !== 'darwin') return 'none';

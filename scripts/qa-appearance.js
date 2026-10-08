@@ -2,9 +2,9 @@
 // Sandbox proof for the main-process appearance plumbing, against this
 // checkout in an isolated, cloaked instance (scripts/lib/qa-sandbox.js; no
 // window reaches the desktop, nothing touches the real clipboard):
-//  0. Windows + Solid by DEFAULT keeps the shipped slide (no alpha call, never
-//     layered): the fade is opt-in (BOARDCLIP_SOLID_FADE=1) until a frame
-//     recording is clean, so the steps below turn it on in the sandbox;
+//  0. Windows + Solid with the kill switch BOARDCLIP_SOLID_FADE=0 keeps the
+//     plain slide (no alpha call, never layered); the fade is the default
+//     (recorded clean on screen 2026-10-08), so the steps below turn it back on;
 //  1. open fade, Windows + Solid: the window alpha rises 0 -> 1 on the slide's
 //     ease, then the window is NOT layered any more (WS_EX_LAYERED cleared,
 //     alpha 255, Electron opacity 1) at its resting place;
@@ -104,22 +104,23 @@ const SETUP = `(() => {
       check('the OS accent is the one Settings shows', !facts.settingsAccent || rt.system_accent === facts.settingsAccent, `${rt.system_accent} vs Settings ${facts.settingsAccent} (Electron: ${facts.electronAccent})`);
     }
 
-    // ---- 0. Windows + Solid by default: the shipped slide, no fade ----
+    // ---- 0. Windows + Solid with the kill switch: the plain slide, no fade ----
     if (IS_WIN) {
+      await sb.mainEval(`(process.env.BOARDCLIP_SOLID_FADE = '0', true)`);
       await sb.mainEval('__reset()');
       await sb.mainEval('__toggle()');
       await qa.sleep(450);
       const r0 = await rec();
       const st0 = await popupState();
       const ys0 = r0.pos.map((p) => p.y);
-      check('solid open, default: no alpha call (the fade is opt-in until recorded)', r0.alpha.filter((x) => x.popup).length === 0);
-      check('solid open, default: never layered, opacity 1, the 10 px slide', st0.layered && st0.layered.layered === false && st0.opacity === 1
+      check('solid open, kill switch: no alpha call', r0.alpha.filter((x) => x.popup).length === 0);
+      check('solid open, kill switch: never layered, opacity 1, the 10 px slide', st0.layered && st0.layered.layered === false && st0.opacity === 1
         && ys0.length >= 3 && ys0[0] === st0.bounds.y + 10 && ys0[ys0.length - 1] === st0.bounds.y, JSON.stringify({ l: st0.layered, n: ys0.length }));
       await closePopup();
       await sb.mainEval(`(process.env.BOARDCLIP_SOLID_FADE = '1', true)`);
     }
 
-    // ---- 1. open fade, Windows + Solid (BOARDCLIP_SOLID_FADE=1) ----
+    // ---- 1. open fade, Windows + Solid (the default) ----
     await sb.mainEval('__reset()');
     await sb.mainEval('__toggle()');
     await qa.sleep(450);

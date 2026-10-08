@@ -22,8 +22,8 @@
 //   is:url is:multiline is:rich   body is a link / spans lines / carries HTML or RTF
 //   id:PREFIX                clip id contains PREFIX
 //   sort:new|best            explicit ranking override
-// The user-facing reference for all of this is SYNTAX_HELP (rendered by the search
-// options panel) - keep it in step with the parser.
+// The user-facing reference is the search options panel (OPTION_FACETS, OPTION_FIELDS,
+// SYNTAX_NOTES) plus the autocomplete's hints (FIELD_INFO) - keep them in step with the parser.
 // Free text + title:/text: honour the caller's regex flag (the app's `.*` toggle); every
 // other facet is an enum/number/time spec, never a regex.
 
@@ -804,14 +804,15 @@
       pos = tok.start + tok.text.length;
       let body = tok.text;
       if (body[0] === '-' && body.length > 1) { segs.push({ kind: 'neg', text: '-' }); body = body.slice(1); }
+      // A bare known key (`title:`, its value still to type) is already a key.
       const m = KEY_TOKEN_RE.exec(body);
-      if (m && m[2] && m[2][0] !== '/' && m[2][0] !== '\\') {
+      if (m && m[2][0] !== '/' && m[2][0] !== '\\') {
         const key = m[1].toLowerCase();
         if (RECOGNIZED_PREFIXES.has(key)) {
           segs.push({ kind: 'prefix', text: body.slice(0, m[1].length + 1) });
           const canon = PREFIX_ALIASES[key];
           const contentScope = canon === 'title' || canon === 'text';
-          pushValueSegs(segs, m[2], contentScope && !!o.regex);
+          if (m[2]) pushValueSegs(segs, m[2], contentScope && !!o.regex);
           continue;
         }
       }
@@ -824,23 +825,22 @@
   // ── what each filter and value means: ONE table, keyed by prefix AND value.
   // The autocomplete rows read it (each row its own hint, never one hint
   // repeated down the list), the "Did you mean" / valid-values feedback lists
-  // its values, and the options panel's syntax reference (SYNTAX_HELP, below)
-  // is built from it, so a hint reads the same in both places. `short` = the
-  // short alias (PREFIX_ALIASES has them all); `group` = the reference's
-  // heading; `example` = a chip there that puts it in the query.
+  // its values, and the options panel's field keys (OPTION_FIELDS) take their
+  // tooltips from it, so a hint reads the same everywhere. `short` = the
+  // short alias (PREFIX_ALIASES has them all).
   const FIELD_INFO = {
-    title: { desc: 'match the clip title only', short: 't', group: 'Match', example: 't:todo' },
-    text: { desc: 'match the clip body only', short: 'b', group: 'Match', example: 'b:"api key"' },
-    group: { desc: 'in a group (and its sub-groups)', short: 'g', group: 'Filter', example: 'g:Work' },
-    is: { desc: 'kind of clip', group: 'Filter', values: { pinned: 'starred (pinned) clips', image: 'a picture', text: 'text, not a picture', numpad: 'on a numpad key', url: 'the clip is a link', multiline: 'spans several lines', rich: 'has HTML or RTF formatting' } },
-    num: { desc: 'on numpad key 1-9', short: 'n', group: 'Filter', example: 'n:3' },
-    since: { desc: 'newer than (1h, 7d or a date)', short: 's', group: 'Range', example: 's:24h', values: { '1h': 'the last hour', '24h': 'the last day', '7d': 'the last week', '30d': 'the last month' } },
-    before: { desc: 'older than (1h, 7d or a date)', short: 'bf', group: 'Range', example: 'bf:2026-01-31', values: { '1h': 'an hour ago', '24h': 'a day ago', '7d': 'a week ago', '30d': 'a month ago' } },
-    len: { desc: 'character count (>100, 50-200)', short: 'l', group: 'Range', example: 'len:>500' },
-    lines: { desc: 'line count (>3)', short: 'ln', group: 'Range', example: 'lines:>10' },
-    words: { desc: 'word count (<20)', short: 'wd', group: 'Range', example: 'wd:<5' },
-    id: { desc: 'clip id starts with', group: 'Filter' },
-    sort: { desc: 'order results: newest or best match first', short: 'o', group: 'Order', example: 'o:best', values: { new: 'newest first', best: 'best match first' } },
+    title: { desc: 'match the clip title only', short: 't' },
+    text: { desc: 'match the clip body only', short: 'b' },
+    group: { desc: 'in a group (and its sub-groups)', short: 'g' },
+    is: { desc: 'kind of clip', values: { pinned: 'starred (pinned) clips', image: 'a picture', text: 'text, not a picture', numpad: 'on a numpad key', url: 'the clip is a link', multiline: 'spans several lines', rich: 'has HTML or RTF formatting' } },
+    num: { desc: 'on numpad key 1-9', short: 'n' },
+    since: { desc: 'newer than (1h, 7d or a date)', short: 's', values: { '1h': 'the last hour', '24h': 'the last day', '7d': 'the last week', '30d': 'the last month' } },
+    before: { desc: 'older than (1h, 7d or a date)', short: 'bf', values: { '1h': 'an hour ago', '24h': 'a day ago', '7d': 'a week ago', '30d': 'a month ago' } },
+    len: { desc: 'character count (>100, 50-200)', short: 'l' },
+    lines: { desc: 'line count (>3)', short: 'ln' },
+    words: { desc: 'word count (<20)', short: 'wd' },
+    id: { desc: 'clip id starts with' },
+    sort: { desc: 'order results: newest or best match first', short: 'o', values: { new: 'newest first', best: 'best match first' } },
   };
   const IS_SUGGESTIONS = IS_VALUES.map((v) => 'is:' + v);
   const SINCE_PRESETS = Object.keys(FIELD_INFO.since.values);
@@ -849,31 +849,6 @@
   const PREFIX_HINTS = Object.fromEntries(Object.entries(FIELD_INFO).map(([k, f]) => [`${k}:`, f.desc]));
   const PREFIX_SHORT = Object.fromEntries(Object.entries(FIELD_INFO).filter(([, f]) => f.short).map(([k, f]) => [`${k}:`, `${f.short}:`]));
 
-  // The user-facing syntax reference (the search options panel renders exactly
-  // this, under its group headings). Built from FIELD_INFO next to the parser:
-  // one row per field (num: and the is: values spelled out), plus the rows for
-  // what is not a field (free words, exclusion, the regex toggle), so help can
-  // never drift from the grammar or from the autocomplete's own hints.
-  const SYNTAX_GROUPS = ['Match', 'Filter', 'Range', 'Order'];
-  const SYNTAX_EXTRA = {
-    Match: [
-      { token: 'word  "a phrase"', desc: 'match anywhere (title, body, groups)', example: '"q3 report"' },
-      { token: '-word  -group:x', desc: 'exclude: put - in front of any word or filter', example: '-is:image' },
-    ],
-    MatchEnd: [{ token: '.*  (button)', desc: 'words and title: / text: values as regular expressions' }],
-  };
-  function fieldSyntaxRows(name, f) {
-    const short = f.short ? `  ${f.short}:` : '';
-    if (name === 'is') return Object.entries(f.values).map(([v, d]) => ({ group: f.group, token: `is:${v}`, desc: d }));
-    if (name === 'num') return [{ group: f.group, token: `num:1-9${short}`, desc: f.desc, example: f.example }];
-    return [{ group: f.group, token: `${name}:${short}`, desc: f.desc, example: f.example }];
-  }
-  const SYNTAX_HELP = SYNTAX_GROUPS.flatMap((group) => [
-    ...(SYNTAX_EXTRA[group] || []).map((r) => ({ group, ...r })),
-    ...Object.entries(FIELD_INFO).filter(([, f]) => f.group === group).flatMap(([name, f]) => fieldSyntaxRows(name, f)),
-    ...(group === 'Match' ? SYNTAX_EXTRA.MatchEnd.map((r) => ({ group, ...r })) : []),
-  ]);
-  const SYNTAX_FOOT = 'Words and filters combine with AND: a clip must match all of them';
   // The search options panel's facet rows: the less-used filters, one click each.
   // Chips write tokens through applyFacet (the query text stays the single source
   // of truth) and paint their state from facetTokenState. `prompt` options insert
@@ -899,6 +874,21 @@
       { label: 'Over 500 chars', token: { kind: 'len', value: '>500' } },
       { label: 'Over 10 lines', token: { kind: 'lines', value: '>10' } },
     ] },
+  ];
+  // The panel teaches the grammar the way Forge's does: a toggle WRITES its
+  // token into the field (Last 7 days -> since:7d), so the format is learned by
+  // using it. What no toggle writes gets one key chip each (OPTION_FIELDS: a
+  // click puts `title:` in the field to type the value), and the few rules no
+  // key shows are one line (SYNTAX_NOTES). Derived: a field a facet row writes
+  // is taught by that row; is: has the chips, sort: the field's own button,
+  // id: is for tools.
+  const PANEL_TAUGHT_ELSEWHERE = new Set(['is', 'sort', 'id']);
+  const OPTION_FIELDS = Object.keys(FIELD_INFO).filter((k) => !PANEL_TAUGHT_ELSEWHERE.has(k)
+    && !OPTION_FACETS.some((row) => row.options.some((opt) => opt.token.kind === k)));
+  const SYNTAX_NOTES = [
+    { code: '-word', text: 'excludes' },
+    { code: '"a phrase"', text: 'matches exactly' },
+    { text: 'every term must match' },
   ];
   // The query text a facet token stands for (its chip tooltip).
   function facetTokenText(token) {
@@ -1492,7 +1482,7 @@
     fuzzyMatch, fuzzyFloor,
     lexQuery, suggestQuery,
     BUILTIN_TO_IS, IS_TO_BUILTIN, IS_VALUES, RECOGNIZED_PREFIXES, NON_FILTER_SCHEMES,
-    SYNTAX_HELP, SYNTAX_FOOT, PREFIX_HINTS, OPTION_FACETS, facetTokenText, optionFacetsActive,
+    PREFIX_HINTS, OPTION_FACETS, OPTION_FIELDS, SYNTAX_NOTES, facetTokenText, optionFacetsActive,
     FIELD_INFO, facetKey, applySuggestion, ghostCompletion, uniqueCompletion,
     validateQuery, describeProblem, problemRanges, levenshtein,
     facetCensus, facetOptionVerdict, structuralReason, censusKey, FAILURE_CAP,

@@ -231,8 +231,11 @@
       attrs: { 'data-group': group, title, 'aria-label': group, 'aria-disabled': disabled ? 'true' : null },
       html: `<span class="tag-label">${text}</span>${caret}`,
     });
+    // popover="manual": the chip row is a one-line strip that scrolls under a
+    // mask, which would clip a nested submenu; installSubmenuAutoflip shows it
+    // in the top layer instead, beside its chip.
     const children = hasChildren
-      ? `<div class="tag-submenu" role="menu">${renderTagTreeMenu(node.children, opts, depth + 1)}</div>`
+      ? `<div class="tag-submenu" role="menu" popover="manual">${renderTagTreeMenu(node.children, opts, depth + 1)}</div>`
       : '';
     return `<span class="tag-menu-node${hasChildren ? ' has-children' : ''}">${control}${children}</span>`;
   }
@@ -579,18 +582,31 @@
   // changes height, and nothing is reserved when unset.
   function renderClipMeta(item) {
     const isImage = item && item.type === 'image';
-    const np = numpadOf(item);
     let html = `<span class="meta-time" data-relative-ts="${item.ts || 0}">${ago(item.ts)}</span>`;
     html += isImage
       ? `<span class="meta-size">${escapeHtml(`${item.width || '?'}x${item.height || '?'}`)}</span>`
       : `<span class="meta-size">${String(item && item.text || '').length.toLocaleString()} chars</span>`;
+    return html + renderClipKeys(item);
+  }
+  // A clip's keys: the numpad badge, its group names and the hover ghosts #
+  // and + on the shared reveal. ONE renderer for a row's meta line AND a clip
+  // window's title bar (opts.inWindow), so a clip's pin / key / groups read
+  // and work the same everywhere. In a window there is no list to filter: a
+  // name opens the group picker (where it is checked, so a click removes it).
+  // `item` null = a new note, not a clip yet: just the ghosts (commit-on-add).
+  function renderClipKeys(item, opts) {
+    const inWindow = !!(opts && opts.inWindow);
+    const np = item ? numpadOf(item) : null;
+    let html = '';
     if (np) html += `<button class="meta-np" type="button" data-action="numpad-open" title="Numpad key ${np}: change or remove" aria-label="Numpad key ${np}">#${np}</button>`;
-    const groups = groupsOf(item);
+    const groups = item ? groupsOf(item) : [];
     if (groups.length) {
       html += '<span class="meta-tags">';
       for (const group of groups) {
         const g = escapeHtml(group);
-        html += `<button class="meta-tag" type="button" data-group="${g}" title="Filter by ${g} (right-click to exclude)">${g}</button>`;
+        html += inWindow
+          ? `<button class="meta-tag" type="button" data-action="tag-add" title="In ${g}: change groups">${g}</button>`
+          : `<button class="meta-tag" type="button" data-group="${g}" title="Filter by ${g} (right-click to exclude)">${g}</button>`;
       }
       html += '</span>';
     }
@@ -1111,22 +1127,6 @@
     const itemGroups = new Set(groupsOf(item));
     return withNewGroupRow(renderTagTreeMenu(buildTagTree([...(groups || []), ...itemGroups]), { mode: 'picker', itemGroups }), 'add-group');
   }
-  // Title-bar tag strip content (editor + viewer windows and the demo editor):
-  // the clip's groups as inert chips — reusing the EXACT filter-tag/group-tag
-  // visual and the hover-revealed gtag-x glyph — plus a compact "+" that opens
-  // the shared group picker. Chips carry data-strip-group (NOT data-group) so
-  // the controller's filter-intent branch can never mistake them for the
-  // popup's filter chips; only the × (untag) and + (tag-add) are actionable.
-  // `item` may be null (a new, not-yet-committed note): renders just the +.
-  function renderClipTagChips(item) {
-    let html = '';
-    for (const group of item ? groupsOf(item) : []) {
-      const label = escapeHtml(group);
-      html += `<span class="filter-tag group-tag" data-strip-group="${label}" title="${label}"><span class="tag-label">${label}</span><button class="gtag-x mi" type="button" data-action="untag" data-group="${label}" title="Remove from ${label}" aria-label="Remove ${label}">close</button></span>`;
-    }
-    html += '<button class="icon-btn tag-add-btn" type="button" data-action="tag-add" title="Add to group" aria-label="Add to group"><span class="mi">add</span></button>';
-    return html;
-  }
   // ONE menu-content builder for the multi-select bulk menu (shared by the
   // action bar's overflow and the right-click menu on a multi-selection). Bulk
   // actions carry their own data-action; the controller runs them against the
@@ -1183,7 +1183,9 @@
   // window; the demo passes none (a drag is a no-op). Replaces
   // -webkit-app-region: drag, which swallowed every click and double-click
   // maximised the window. Controls (buttons, fields, chips, menus, the options
-  // panel) are left alone.
+  // panel) are left alone, except an EMPTY text field: it has nothing to
+  // select, so it is header too (a drag moves the window, a click focuses the
+  // field). Once it holds text, a drag in it selects text as always.
   const WINDOW_DRAG_IGNORE = 'button, input, textarea, select, a[href], label, [contenteditable=""], [contenteditable="true"], '
     + '[role="button"], [role="separator"], [role="menuitem"], [data-action], [data-filter], [data-group], '
     + '.filter-tag, .search-suggest, .search-opts, .tag-submenu, .bc-menu';
@@ -1192,12 +1194,13 @@
     if (typeof document === 'undefined' || !el) return { destroy() {} };
     const o = opts || {};
     const ignoreSel = o.ignore ? `${WINDOW_DRAG_IGNORE}, ${o.ignore}` : WINDOW_DRAG_IGNORE;
-    const isControl = (target) => !!(target && target.closest && target.closest(ignoreSel));
+    const emptyField = (target) => !!(target && target.tagName === 'INPUT' && /^(text|search)$/.test(target.type) && !target.value && !target.readOnly && !target.disabled);
+    const isControl = (target) => !emptyField(target) && !!(target && target.closest && target.closest(ignoreSel));
     let press = null;
     let swallowClick = false;
     const onPointerDown = (e) => {
       if (e.button !== 0 || e.pointerType === 'touch' || isControl(e.target)) return;
-      press = { id: e.pointerId, x: e.screenX, y: e.screenY, dragging: false };
+      press = { id: e.pointerId, x: e.screenX, y: e.screenY, dragging: false, field: emptyField(e.target) ? e.target : null };
       try { el.setPointerCapture(e.pointerId); } catch {}
     };
     // The page must not take focus (or start a text selection) from a header press.
@@ -1225,6 +1228,8 @@
         if (o.move) o.move('end', 0, 0);
         swallowClick = true; // the click that follows the release is not a click
         setTimeout(() => { swallowClick = false; }, 0);
+      } else if (!cancelled && p.field) {
+        p.field.focus(); // a click on the empty field is a click on the field
       } else if (!cancelled && o.onClick) {
         o.onClick(e);
       }
@@ -1265,27 +1270,37 @@
     panel: { top: 36, bottom: 36 },
     box: { top: 24, bottom: 24 },
   };
-  // Pure: the fade sizes for a scroller's geometry.
-  function resolveFadeVars(m, sizes) {
+  // Pure: the fade sizes for a scroller's geometry. axis 'x' (a one-line strip
+  // that scrolls sideways) reads the horizontal geometry and returns
+  // { left, right } (the preset's top / bottom sizes), else { top, bottom }.
+  function resolveFadeVars(m, sizes, axis) {
+    if (axis === 'x') {
+      const hiddenLeft = m.scrollLeft > 2;
+      const hiddenRight = m.scrollLeft + m.clientWidth < m.scrollWidth - 2;
+      return { left: hiddenLeft ? sizes.top : 0, right: hiddenRight ? sizes.bottom : 0 };
+    }
     const hiddenAbove = m.scrollTop > 2;
     const hiddenBelow = m.scrollTop + m.clientHeight < m.scrollHeight - 2;
     return { top: hiddenAbove ? sizes.top : 0, bottom: hiddenBelow ? sizes.bottom : 0 };
   }
-  function attachScrollFade(el, preset) {
+  // opts.axis 'x': the mask runs left to right (.bc-scroll-fade-x).
+  function attachScrollFade(el, preset, opts) {
     if (!el) return { refresh() {}, detach() {} };
     const sizes = (preset && typeof preset === 'object') ? preset : (FADE_PRESETS[preset] || FADE_PRESETS.box);
-    el.classList.add('bc-scroll-fade');
+    const axis = opts && opts.axis === 'x' ? 'x' : 'y';
+    el.classList.add(axis === 'x' ? 'bc-scroll-fade-x' : 'bc-scroll-fade');
     // Write only a changed value: this runs on every scroll frame.
     const written = {};
     const put = (prop, value) => { if (written[prop] === value) return; written[prop] = value; el.style.setProperty(prop, value); };
-    let scrolled = null;
     const update = () => {
-      const v = resolveFadeVars(el, sizes);
-      put('--fade-top', `${v.top}px`);
-      put('--fade-bottom', `${v.bottom}px`);
-      // .is-scrolled while content is hidden above (the settings header's divider).
-      const now = el.scrollTop > 0;
-      if (now !== scrolled) { scrolled = now; el.classList.toggle('is-scrolled', now); }
+      const v = resolveFadeVars(el, sizes, axis);
+      if (axis === 'x') {
+        put('--fade-left', `${v.left}px`);
+        put('--fade-right', `${v.right}px`);
+      } else {
+        put('--fade-top', `${v.top}px`);
+        put('--fade-bottom', `${v.bottom}px`);
+      }
     };
     // Coalesced into one frame; a hidden page produces no frames, so it updates
     // at once there (the popup is laid out while hidden).
@@ -1313,6 +1328,88 @@
         if (mo) mo.disconnect();
       },
     };
+  }
+
+  // The theme's motion duration (--dur, 0ms under reduced motion) in ms.
+  function motionMs(el) {
+    if (typeof getComputedStyle !== 'function') return 0;
+    const v = String(getComputedStyle(el).getPropertyValue('--dur') || '').trim();
+    const n = parseFloat(v);
+    if (!Number.isFinite(n)) return 0;
+    return /ms$/.test(v) ? n : n * 1000;
+  }
+  // ── One-line strip that scrolls sideways (the popup's chip row, a clip
+  // window's keys): the sideways scroll fade, and a plain wheel scrolls it
+  // sideways while it overflows (most mice have no sideways wheel). Returns
+  // the fade's { refresh }.
+  function attachSideScroll(el) {
+    if (!el) return null;
+    if (el._bcSideScroll) return el._bcSideScroll;
+    const fade = attachScrollFade(el, 'box', { axis: 'x' });
+    el.addEventListener('wheel', (e) => {
+      if (e.ctrlKey || e.metaKey || !e.deltaY || Math.abs(e.deltaX) >= Math.abs(e.deltaY)) return;
+      if (el.scrollWidth <= el.clientWidth + 1 || getComputedStyle(el).overflowX === 'visible') return;
+      el.scrollLeft += e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY;
+      e.preventDefault();
+    }, { passive: false });
+    el._bcSideScroll = fade;
+    return fade;
+  }
+  // The popup's chip row: ONE line that scrolls sideways under the mask fade
+  // until the search options panel opens (attachSearchBox), then every chip,
+  // wrapped. The switch animates both ways (FLIP: each chip glides from where
+  // it was to where it lands while the row's height follows), so the line and
+  // the full set read as the same chips. Its group submenus open in the top
+  // layer (installSubmenuAutoflip), out of the strip's clip and mask.
+  function attachChipStrip(el) {
+    if (!el) return { setExpanded() {}, isExpanded: () => false };
+    if (el._bcChipStrip) return el._bcChipStrip;
+    const side = attachSideScroll(el);
+    let expanded = el.classList.contains('expanded');
+    let settleTimer = null;
+    const settle = () => {
+      clearTimeout(settleTimer);
+      settleTimer = null;
+      el.classList.remove('strip-moving');
+      el.style.height = '';
+      for (const chip of el.children) { chip.style.transform = ''; chip.style.transition = ''; }
+      if (side) side.refresh();
+    };
+    function setExpanded(open, how) {
+      const next = !!open;
+      if (next === expanded) return;
+      expanded = next;
+      settle();
+      const ms = motionMs(el);
+      if ((how && how.instant) || !ms || document.hidden || !el.getClientRects().length) {
+        el.classList.toggle('expanded', next);
+        if (!next) el.scrollLeft = 0;
+        if (side) side.refresh();
+        return;
+      }
+      const chips = Array.from(el.children);
+      const before = chips.map((chip) => chip.getBoundingClientRect());
+      const fromHeight = el.getBoundingClientRect().height;
+      el.classList.toggle('expanded', next);
+      if (!next) el.scrollLeft = 0;
+      const toHeight = el.getBoundingClientRect().height;
+      chips.forEach((chip, i) => {
+        const r = chip.getBoundingClientRect();
+        const dx = before[i].left - r.left;
+        const dy = before[i].top - r.top;
+        if (!dx && !dy) return;
+        chip.style.transition = 'none';
+        chip.style.transform = `translate(${dx}px, ${dy}px)`;
+      });
+      el.style.height = `${fromHeight}px`;
+      el.classList.add('strip-moving');
+      void el.offsetHeight; // commit the inverted start before the transitions run
+      el.style.height = `${toHeight}px`;
+      for (const chip of chips) { chip.style.transition = ''; chip.style.transform = ''; }
+      settleTimer = setTimeout(settle, ms + 60);
+    }
+    el._bcChipStrip = { setExpanded, isExpanded: () => expanded };
+    return el._bcChipStrip;
   }
 
   // ── Resize handle (Forge's ResizeHandle + useResizablePane, pointer events) ──
@@ -1372,8 +1469,10 @@
   }
 
   // ── Search options panel (the "tune" toggle under the search field) ──
-  // Facet rows (Core.search.OPTION_FACETS) as chips that write query tokens, then
-  // the syntax reference (Core.search.SYNTAX_HELP). The chip renderer takes the
+  // Facet rows (Core.search.OPTION_FACETS) as chips that write query tokens (the
+  // field shows what a toggle means: that is how the grammar is learned), the
+  // keys no toggle writes (OPTION_FIELDS) and one line of rules (SYNTAX_NOTES),
+  // all in ONE label | chips grid. The chip renderer takes the
   // state from the query (facetTokenState) plus an optional { disabled, reason },
   // so the availability census can grey an option out through the same markup.
   function renderFacetOption(opt, state, extra) {
@@ -1395,42 +1494,36 @@
   function disabledChipClass(x) {
     return x && x.disabled ? ` is-disabled${x.disabledKind === 'structural' ? ' dis-structural' : ''}` : '';
   }
+  // A query token painted exactly as the search field paints it (lexQuery's
+  // .qh-* spans), so the panel shows the syntax the field will show.
+  function queryTokenHtml(text) {
+    if (!Search || !Search.lexQuery) return escapeHtml(text);
+    return Search.lexQuery(String(text)).map((seg) => `<span class="qh-${seg.kind}">${escapeHtml(seg.text)}</span>`).join('');
+  }
   // census: Search.facetCensus for this query (null = everything enabled). An
   // option the census hides (a kind absent from all history) is left out.
   function renderSearchFacets(query, census) {
     if (!Search || !Search.OPTION_FACETS) return '';
     const parsed = Search.parseQuery(query || '');
-    return Search.OPTION_FACETS.map((row, r) => {
-      const chips = row.options.map((opt, i) => {
-        const probe = opt.prompt ? { kind: opt.token.kind } : opt.token;
-        const state = Search.facetTokenState(parsed, probe);
-        const v = census ? Search.facetOptionVerdict(census, parsed, probe, { selected: state !== null }) : { enabled: true };
-        if (v.hidden) return '';
-        return renderFacetOption(opt, state, { row: r, index: i, value: opt.prompt ? parsed[opt.token.kind] : '', disabled: !v.enabled, disabledKind: v.kind, reason: v.reason });
-      }).join('');
-      return `<span class="opts-facet-label">${escapeHtml(row.label)}</span><div class="opts-facet-chips" role="group" aria-label="${escapeHtml(row.label)}">${chips}</div>`;
+    const row = (label, html) => `<span class="opts-facet-label">${escapeHtml(label)}</span><div class="opts-facet-chips" role="group" aria-label="${escapeHtml(label)}">${html}</div>`;
+    const facets = Search.OPTION_FACETS.map((def, r) => row(def.label, def.options.map((opt, i) => {
+      const probe = opt.prompt ? { kind: opt.token.kind } : opt.token;
+      const state = Search.facetTokenState(parsed, probe);
+      const v = census ? Search.facetOptionVerdict(census, parsed, probe, { selected: state !== null }) : { enabled: true };
+      if (v.hidden) return '';
+      return renderFacetOption(opt, state, { row: r, index: i, value: opt.prompt ? parsed[opt.token.kind] : '', disabled: !v.enabled, disabledKind: v.kind, reason: v.reason });
+    }).join(''))).join('');
+    // A key chip puts its prefix in the field for typing (the autocomplete then
+    // offers its values); its tooltip is the autocomplete's own hint.
+    const fields = (Search.OPTION_FIELDS || []).map((key) => {
+      const f = Search.FIELD_INFO[key] || {};
+      return renderChip({ tag: 'button', cls: 'opts-field', attrs: { 'data-insert': `${key}:`, title: `${key}: ${f.desc || ''}${f.short ? ` (or ${f.short}:)` : ''}` }, html: queryTokenHtml(`${key}:`) });
     }).join('');
-  }
-  // The syntax reference: SYNTAX_HELP's rows under their group headings (Match /
-  // Filter / Range / Order), each description the same string the autocomplete
-  // shows (FIELD_INFO), an example as a chip that puts it in the query, and the
-  // one line on how everything combines.
-  function renderSearchSyntax() {
-    const rows = (Search && Search.SYNTAX_HELP) || [];
-    let group = null;
-    let html = '';
-    for (const h of rows) {
-      if (h.group && h.group !== group) { group = h.group; html += `<span class="bc-label opts-syntax-head">${escapeHtml(group)}</span>`; }
-      const example = h.example
-        ? renderChip({ tag: 'button', cls: 'opts-example', attrs: { 'data-insert': h.example, title: `Add ${h.example} to the search` }, html: `<code>${escapeHtml(h.example)}</code>` })
-        : '';
-      html += `<code>${escapeHtml(h.token)}</code><span>${escapeHtml(h.desc)}${example}</span>`;
-    }
-    if (Search && Search.SYNTAX_FOOT) html += `<span class="opts-syntax-foot">${escapeHtml(Search.SYNTAX_FOOT)}</span>`;
-    return html;
+    const notes = (Search.SYNTAX_NOTES || []).map((n) => (n.code ? `${queryTokenHtml(n.code)} ` : '') + escapeHtml(n.text)).join('<span class="opts-notes-sep" aria-hidden="true">·</span>');
+    return facets + (fields ? row('More', fields) : '') + (notes ? `<p class="opts-notes">${notes}</p>` : '');
   }
   function renderSearchOptions(query) {
-    return `<div class="opts-facets">${renderSearchFacets(query)}</div><div class="opts-syntax" aria-label="Search syntax">${renderSearchSyntax()}</div>`;
+    return `<div class="opts-facets">${renderSearchFacets(query)}</div>`;
   }
 
   // ── Search box enhancer: live query-syntax highlighting + autocomplete ──
@@ -1492,6 +1585,10 @@
     const scroller = panel ? panel.querySelector('.search-opts-scroll') : null;
     const facetsEl = panel ? panel.querySelector('.opts-facets') : null;
     const handle = panel ? panel.querySelector('.search-opts-resize') : null;
+    // The chip row is one line while the panel is shut and shows every chip
+    // while it is open: the panel is the "all filters" view.
+    const header = row ? row.closest('.sticky') : null;
+    const chipStrip = header && header.querySelector('.group-filters') ? attachChipStrip(header.querySelector('.group-filters')) : null;
     const sizeRoot = o.sizeRoot || inputEl.closest('.bc-popup') || document.documentElement;
     let suggestions = [];
     let active = -1;
@@ -1705,6 +1802,7 @@
       }
       panel.inert = !panelOpen;
       panel.setAttribute('aria-hidden', String(!panelOpen));
+      if (chipStrip) chipStrip.setExpanded(panelOpen, how);
       if (panelOpen) {
         closeSuggest(); // the panel opens under the field; a suggest list would cover its rows
         facetsKey = null;
@@ -1755,14 +1853,16 @@
       commitValue(Search.applyFacet(value, opt.token, single ? 'include' : intent));
     }
     const onPanelClick = (e) => {
-      // A syntax example: added to the query (a space before it), the field keeps typing.
-      const example = e.target.closest('.opts-example');
-      if (example && example.dataset.insert) {
+      // A key chip: its prefix goes on the end of the query (a space before it)
+      // and the field takes the typing, with the autocomplete on its values.
+      const key = e.target.closest('.opts-field');
+      if (key && key.dataset.insert) {
         e.preventDefault();
         e.stopPropagation();
         const base = inputEl.value.replace(/\s+$/, '');
-        commitValue(`${base}${base ? ' ' : ''}${example.dataset.insert}`);
+        commitValue(`${base}${base ? ' ' : ''}${key.dataset.insert}`);
         inputEl.focus();
+        updateSuggest();
         return;
       }
       const hit = facetFromEvent(e);
@@ -2222,9 +2322,52 @@
   // listener per consumer root covers the filter bar AND the popover menus (the
   // controller installs it automatically); keyboard-opened submenus are placed
   // by createMenu through the same fitSubmenu.
+  // A chip's submenu in the top layer (popover="manual", the chip row's): it
+  // escapes the strip's clip and mask, so it is placed by hand under its chip
+  // (left edges aligned, or right edges when that would overflow), clamped to
+  // the bounds, and shown while its chip or the submenu itself is hovered or
+  // holds the focus (it is still the chip node's DOM child, so :hover and
+  // :focus-within reach the node from inside it).
+  function placeTopLayerSubmenu(node, sub, boundsEl) {
+    const bound = (boundsEl === document || boundsEl === document.documentElement)
+      ? { left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight }
+      : boundsEl.getBoundingClientRect();
+    const nr = node.getBoundingClientRect();
+    const r = sub.getBoundingClientRect();
+    let left = nr.left;
+    if (left + r.width > bound.right - 4) left = Math.max(bound.left + 4, nr.right - r.width);
+    let top = nr.bottom;
+    if (top + r.height > bound.bottom - 4) top = Math.max(bound.top + 4, bound.bottom - 4 - r.height);
+    sub.style.left = `${Math.round(left)}px`;
+    sub.style.top = `${Math.round(top)}px`;
+  }
   function installSubmenuAutoflip(rootEl) {
     if (typeof document === 'undefined' || !rootEl || rootEl._bcAutoflip) return;
     rootEl._bcAutoflip = true;
+    const shownTopLayer = new Set();
+    const openTopLayer = (node, sub) => {
+      if (typeof sub.showPopover !== 'function') return;
+      if (!sub.matches(':popover-open')) { try { sub.showPopover(); } catch { return; } }
+      shownTopLayer.add(sub);
+      placeTopLayerSubmenu(node, sub, rootEl);
+    };
+    // A pointer or the focus leaving a chip (or its submenu): close every
+    // top-layer submenu whose chip no longer has either.
+    const closeStale = () => setTimeout(() => {
+      for (const sub of shownTopLayer) {
+        const node = sub.parentElement;
+        if (sub.isConnected && node && node.matches(':hover, :focus-within')) continue;
+        shownTopLayer.delete(sub);
+        if (sub.isConnected && sub.matches(':popover-open')) { try { sub.hidePopover(); } catch {} }
+      }
+    }, 0);
+    rootEl.addEventListener('mouseout', () => { if (shownTopLayer.size) closeStale(); });
+    rootEl.addEventListener('focusout', () => { if (shownTopLayer.size) closeStale(); });
+    rootEl.addEventListener('focusin', (event) => {
+      const node = event.target && event.target.closest ? event.target.closest('.tag-menu-node.has-children') : null;
+      const sub = node ? node.querySelector(':scope > .tag-submenu[popover]') : null;
+      if (sub) openTopLayer(node, sub);
+    });
     rootEl.addEventListener('mouseover', (event) => {
       const target = event.target;
       if (!target || !target.closest) return;
@@ -2232,6 +2375,7 @@
       if (!node) return;
       const sub = node.querySelector(':scope > .tag-submenu');
       if (!sub) return;
+      if (sub.hasAttribute('popover')) { openTopLayer(node, sub); return; }
       // setTimeout (not rAF): rAF is throttled to a halt in background tabs.
       // Bounds: the app popup IS the OS window (viewport); the demo popup is a
       // box embedded in the marketing page, so clamp to that box instead.
@@ -4286,17 +4430,10 @@
       const bulkGroupBtn = t.closest('[data-action="bulk-group"]');
       if (bulkGroupBtn) { event.stopPropagation(); bulkGroup(bulkGroupBtn.dataset.group); return true; }
       if (t.closest('[data-action="clear-search-filters"]')) { event.stopPropagation(); if (a.clearFilters) a.clearFilters(); if (a.focusSearch) a.focusSearch(); return true; }
-      // Title-bar tag strip: × on a chip removes the clip from that group…
-      const untag = t.closest('[data-action="untag"]');
-      if (untag) {
-        event.stopPropagation();
-        const strip = untag.closest('[data-id]');
-        if (strip && untag.dataset.group) { await a.toggleGroup(strip.dataset.id, untag.dataset.group); refresh(); }
-        return true;
-      }
-      // …and + opens the shared group picker. A strip without data-id is a new
-      // note that isn't a clip yet: commit-on-add — the host's ensureClipId
-      // force-commits the draft and returns the fresh content-addressed id.
+      // A clip's + (and, in a window bar, a group name) opens the shared group
+      // picker. A strip without data-id is a new note that isn't a clip yet:
+      // commit-on-add - the host's ensureClipId force-commits the draft and
+      // returns the fresh content-addressed id.
       const tagAdd = t.closest('[data-action="tag-add"]');
       if (tagAdd) {
         event.stopPropagation();
@@ -4311,13 +4448,17 @@
         openGroupPickerAt(id, r.left, r.bottom + 4, r.top - 4);
         return true;
       }
-      // A row's numpad badge / ghost # opens the keypad popover.
+      // A clip's numpad badge / ghost # opens the keypad popover (a new note
+      // commits first, like the +; the anchor is measured before that await).
       const npOpen = t.closest('[data-action="numpad-open"]');
       if (npOpen) {
         event.stopPropagation();
         const owner = npOpen.closest('[data-id]');
         const r = npOpen.getBoundingClientRect();
-        if (owner) openNumpadPickerAt(owner.dataset.id, r.left, r.bottom + 4, r.top - 4);
+        let id = owner ? owner.dataset.id : null;
+        if (!id && a.ensureClipId) id = await a.ensureClipId();
+        if (!id) { toast(a.emptyClipToast || 'Type something first'); return true; }
+        openNumpadPickerAt(id, r.left, r.bottom + 4, r.top - 4);
         return true;
       }
       const selSimilar = t.closest('[data-action="select-similar"]');
@@ -4352,7 +4493,15 @@
       const npBtn = t.closest('.np-btn');
       if (npBtn) { event.stopPropagation(); const item = npBtn.closest('[data-id]'); if (item) tryAssignNumpad(item.dataset.id, Number(npBtn.dataset.n)); return true; }
       const pin = t.closest('[data-action="pin"]');
-      if (pin) { event.stopPropagation(); await a.pin(pin.dataset.id); refresh(); return true; }
+      if (pin) {
+        event.stopPropagation();
+        let id = pin.dataset.id || null;
+        if (!id && a.ensureClipId) id = await a.ensureClipId();
+        if (!id) { toast(a.emptyClipToast || 'Type something first'); return true; }
+        await a.pin(id);
+        refresh();
+        return true;
+      }
       // The row's primary open button is the "normal" open: a hand-off (the
       // popup closes, like before). Only the detached "..."/right-click MENU's
       // Open in editor / Open image keeps the popup, alongside middle/alt-click.
@@ -4626,27 +4775,46 @@
     const lineTop = lineNumberAtIndex(text, index) * lh + pad;
     return Math.max(0, Math.floor(lineTop - view * 0.35));
   }
-  // Shared updater for the title-bar tag strip both createEditor and
-  // createImageViewer expose as setTags(item, opts). The strip carries the
-  // clip's data-id so the controller's untag/tag-add branches resolve their
-  // target exactly like the menu root does. `item` null + {allowAdd:true} is
-  // the new-note case (just the +, commit-on-add); null without it hides the
-  // strip (hosts that never call setTags keep today's chrome untouched).
+  // Shared updater for a clip window's bar, which createEditor and
+  // createImageViewer expose as setTags(item, opts): the star before the title
+  // and the keys strip after it (renderClipKeys, the row's own meta keys), so
+  // pin, numpad key and groups look and work as they do in the list. Both carry
+  // the clip's data-id, so the controller's pin / numpad-open / tag-add
+  // resolve their target exactly like a row's. `item` null + {allowAdd:true}
+  // is the new-note case (commit-on-add); null without it hides both (hosts
+  // that never call setTags keep the bar bare).
   function updateTagStrip(strip, item, opts) {
     if (!strip) return;
     const o = opts || {};
     const id = item ? itemId(item) : null;
-    if (!id && !o.allowAdd) { strip.hidden = true; strip.innerHTML = ''; delete strip.dataset.id; return; }
-    if (id) strip.dataset.id = id; else delete strip.dataset.id;
-    strip.innerHTML = renderClipTagChips(item);
-    strip.hidden = false;
+    const bar = strip.closest('.bc-bar');
+    const star = bar ? bar.querySelector('[data-x="pin"]') : null;
+    const shown = !!(id || o.allowAdd);
+    for (const el of [strip, star]) {
+      if (!el) continue;
+      if (id) el.dataset.id = id; else delete el.dataset.id;
+      el.hidden = !shown;
+    }
+    if (star) {
+      const pinned = !!(item && isPinned(item));
+      star.classList.toggle('active', pinned);
+      star.title = pinned ? 'Unpin' : 'Pin';
+      star.setAttribute('aria-label', star.title);
+      star.setAttribute('aria-pressed', String(pinned));
+      const glyph = star.querySelector('.mi');
+      if (glyph) glyph.classList.toggle('filled', pinned);
+    }
+    strip.innerHTML = shown ? renderClipKeys(item, { inWindow: true }) : '';
+    attachSideScroll(strip);
   }
   // ── ONE window bar (.bc-bar) for every clip window: the editor, the image
   // viewer and the merge view (unify + conflict), in the app's own windows and
   // in the demo's overlay. Left to right: an optional leading control (the
-  // viewer's drag-out handle), the clip's own title (an editable flat field or
-  // plain text, sentence case), an optional dim context label, the tag strip,
-  // a spacer (the window's drag region), the quiet actions. The app's windows
+  // viewer's drag-out handle), a clip window's star (with `tags`: the row's
+  // pin), the clip's own title (an editable flat field or plain text, sentence
+  // case), an optional dim context label, the clip's keys strip (`tags`: its
+  // numpad key and groups, as on the row's meta line), a spacer (the window's
+  // drag region), the quiet actions. The app's windows
   // draw no close button: the OS controls replace it (attachWindowControls
   // reserves their room). The demo overlay has none, so it keeps one.
   //   o: { lead, title, context, tags, actions, close }
@@ -4655,7 +4823,8 @@
     const close = opts.close
       ? '<button class="icon-btn" type="button" data-x="close" title="Close (Esc)" aria-label="Close"><span class="mi">close</span></button>'
       : '';
-    return `<div class="bc-bar">${opts.lead || ''}${opts.title || ''}`
+    const star = opts.tags ? '<button class="star" type="button" data-x="pin" data-action="pin" title="Pin" aria-label="Pin" aria-pressed="false" hidden><span class="mi">star</span></button>' : '';
+    return `<div class="bc-bar">${opts.lead || ''}${star}${opts.title || ''}`
       + (opts.context ? `<span class="bc-bar-context" data-x="context">${escapeHtml(opts.context)}</span>` : '')
       + (opts.tags ? '<div class="bc-tag-strip" data-x="tags" hidden></div>' : '')
       + `<span class="bc-bar-spacer"></span><div class="bc-bar-actions">${opts.actions || ''}${close}</div></div>`;
@@ -6041,12 +6210,14 @@
     renderBulkMenu,
     bulkGroupTreeHtml,
     clipGroupTreeHtml,
-    renderClipTagChips,
+    renderClipKeys,
     renderSelectionBar,
     attachSearchBox,
     paintSortButton,
     attachWindowDrag,
     attachScrollFade,
+    attachSideScroll,
+    attachChipStrip,
     resolveFadeVars,
     FADE_PRESETS,
     attachResizeHandle,

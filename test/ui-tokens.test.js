@@ -172,15 +172,13 @@ const approvalHtml = read('mcp-approval.html');
   assert.throws(() => blobStore.parseJsonText('not json'), 'genuinely invalid JSON must still throw');
 }
 
-// 10) The tag remove control is an icon BUTTON: it must stay keyboard-focusable
-//     WITHOUT `font: inherit` clobbering the Material Symbols ligature (that
-//     renders the literal word "close"), and its focus ring is the ONE shared
-//     :focus-visible ring (no bespoke outline, nothing on hover).
+// 10) An icon BUTTON must never carry the .mi class itself next to a rule that
+//     sets `font: inherit` on it (that clobbers the Material Symbols ligature and
+//     renders the literal word, e.g. "close"): glyphs live in a child
+//     <span class="mi">. The window bar's old chip x (.gtag-x) was the case; the
+//     bar now shows the row's own keys, so it is gone.
 {
-  const gtagRule = popupCss.split('\n').find((line) => line.trim().startsWith('.filter-tag .gtag-x {')) || '';
-  assert.ok(gtagRule, 'popup.css must style .filter-tag .gtag-x');
-  assert.ok(!/font:\s*inherit/.test(gtagRule), '.filter-tag .gtag-x must not set font: inherit (it overrides the .mi icon font)');
-  assert.ok(!/gtag-x[^{]*\{[^}]*outline:/.test(popupCss), 'the tag remove button must not draw its own outline (the shared focus ring covers it)');
+  assert.ok(!/gtag-x/.test(popupCss), 'the window bar chips with an x are gone (the bar shows the row\'s keys)');
 }
 
 // ---------------------------------------------------------------------------

@@ -158,6 +158,43 @@ async function main() {
     await sleep(300);
     const slopEnd = await bounds();
     check('a press that moves <= 4 px is a click (no move, search focused)', slopEnd.x === slopStart.x && slopEnd.y === slopStart.y && await popup.eval(`document.activeElement.id === 'search'`), `${J(slopStart)} -> ${J(slopEnd)}`);
+    // The EMPTY search field is header too: a drag on it moves the window, a
+    // click focuses it. With text in it, a drag selects text and never moves.
+    await popup.eval(`(document.getElementById('search').blur(), true)`);
+    await sleep(150);
+    const fAt = await popup.centerOf('#search');
+    const fStart = await bounds();
+    await popup.mouse('mousePressed', fAt.x, fAt.y, { button: 'left', buttons: 1, clickCount: 1 });
+    await popup.mouse('mouseMoved', fAt.x + 2, fAt.y + 1, { button: 'left', buttons: 1 });
+    await popup.mouse('mouseMoved', fAt.x + 25, fAt.y + 15, { button: 'left', buttons: 1 });
+    await sleep(300);
+    const fDuring = await bounds();
+    await popup.mouse('mouseReleased', fAt.x + 25, fAt.y + 15, { button: 'left', buttons: 0, clickCount: 1 });
+    await sleep(250);
+    check('a drag on the empty search field moves the window', fDuring.x - fStart.x === 25 && fDuring.y - fStart.y === 15, `${J(fStart)} -> ${J(fDuring)}`);
+    await sb.mainEval(`(() => { const w = __qa.electron.BrowserWindow.getAllWindows().find((x) => /index\\.html/.test(x.webContents.getURL())); w.setBounds(${J(fStart)}); return true; })()`);
+    await popup.eval(`(document.getElementById('search').blur(), true)`);
+    await sleep(150);
+    await popup.mouse('mousePressed', fAt.x, fAt.y, { button: 'left', buttons: 1, clickCount: 1 });
+    await popup.mouse('mouseReleased', fAt.x, fAt.y, { button: 'left', buttons: 0, clickCount: 1 });
+    await sleep(250);
+    check('a click on the empty search field focuses it', await popup.eval(`document.activeElement.id === 'search'`), await popup.eval(`document.activeElement.id || document.activeElement.tagName`));
+    await popup.eval(`(() => { const s = document.getElementById('search'); s.value = 'hello world'; s.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`);
+    await sleep(200);
+    const tStart = await bounds();
+    const tAt = await popup.centerOf('#search');
+    const textLeft = await popup.eval(`(() => { const r = document.getElementById('search').getBoundingClientRect(); return Math.round(r.left + 4); })()`);
+    await popup.mouse('mousePressed', textLeft, tAt.y, { button: 'left', buttons: 1, clickCount: 1 });
+    await popup.mouse('mouseMoved', textLeft + 20, tAt.y, { button: 'left', buttons: 1 });
+    await popup.mouse('mouseMoved', textLeft + 40, tAt.y + 10, { button: 'left', buttons: 1 });
+    await sleep(250);
+    const tDuring = await bounds();
+    await popup.mouse('mouseReleased', textLeft + 40, tAt.y + 10, { button: 'left', buttons: 0, clickCount: 1 });
+    await sleep(200);
+    const sel = await popup.eval(`(() => { const s = document.getElementById('search'); return s.selectionEnd - s.selectionStart; })()`);
+    check('with text in the field a drag selects text and never moves the window', J(tStart) === J(tDuring) && sel > 0, J({ tStart, tDuring, sel }));
+    await popup.eval(`(() => { const s = document.getElementById('search'); s.value = ''; s.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`);
+    await sleep(150);
     // Double-click on the header: no maximise (only a focus).
     await popup.mouse('mousePressed', at.x, at.y, { button: 'left', buttons: 1, clickCount: 1 });
     await popup.mouse('mouseReleased', at.x, at.y, { button: 'left', buttons: 0, clickCount: 1 });
@@ -201,10 +238,6 @@ async function main() {
     check('tune opens the panel (open, not inert, aria-expanded, lit)', p1.open && !p1.inert && p1.hidden === 'false' && p1.expanded === 'true' && p1.lit, J(p1));
     check('panel default height ~40 % of the popup', Math.abs(p1.h - Math.round(p1.win * 0.4)) <= 2 || p1.h === p1.content, `${p1.h}px of ${p1.win}px (content ${p1.content})`);
     check('panel shows a bottom fade while more is below, none at the top', p1.content > p1.h ? p1.fadeBottom === '24px' && p1.fadeTop === '0px' : true, J({ top: p1.fadeTop, bottom: p1.fadeBottom }));
-    await popup.eval(`(() => { const sc = document.querySelector('.search-opts-scroll'); sc.scrollTop = sc.scrollHeight; sc.dispatchEvent(new Event('scroll')); return true; })()`);
-    await sleep(200);
-    const pEnd = await panel();
-    check('at the end of the panel: top fade on, bottom fade off', pEnd.fadeTop === '24px' && pEnd.fadeBottom === '0px', J({ top: pEnd.fadeTop, bottom: pEnd.fadeBottom }));
     // A facet chip writes its token; the toggle stays lit while it is in the query.
     await popup.click('.facet-opt[data-row="0"][data-opt="1"]');
     await sleep(250);
@@ -213,19 +246,26 @@ async function main() {
     await popup.click('.facet-opt[data-row="0"][data-opt="1"]');
     await sleep(200);
     check('the same chip again removes it', (await popup.eval(`document.getElementById('search').value`)) === '');
-    // Resize: drag the handle up by 60 px (live), then persist.
+    // Resize: drag the handle up by 30 px (live), then persist. The panel is
+    // compact, so 30 px under its content is already a scroller.
     const hAt = await popup.centerOf('.search-opts-resize');
     await popup.mouse('mouseMoved', hAt.x, hAt.y);
     await popup.mouse('mousePressed', hAt.x, hAt.y, { button: 'left', buttons: 1, clickCount: 1 });
+    await popup.mouse('mouseMoved', hAt.x, hAt.y - 15, { button: 'left', buttons: 1 });
     await popup.mouse('mouseMoved', hAt.x, hAt.y - 30, { button: 'left', buttons: 1 });
-    await popup.mouse('mouseMoved', hAt.x, hAt.y - 60, { button: 'left', buttons: 1 });
     await sleep(200);
     const live = await panel();
-    await popup.mouse('mouseReleased', hAt.x, hAt.y - 60, { button: 'left', buttons: 0, clickCount: 1 });
+    await popup.mouse('mouseReleased', hAt.x, hAt.y - 30, { button: 'left', buttons: 0, clickCount: 1 });
     await sleep(500);
-    check('the handle resizes the panel live', live.h === p1.h - 60, `${p1.h} -> ${live.h}`);
+    check('the handle resizes the panel live', live.h === p1.h - 30, `${p1.h} -> ${live.h}`);
     const saved = await popup.eval(`window.api.getSettings().then((s) => s.options_panel_height)`);
-    check('the new height is saved per machine (options_panel_height)', saved === p1.h - 60, String(saved));
+    check('the new height is saved per machine (options_panel_height)', saved === p1.h - 30, String(saved));
+    const pShort = await panel();
+    check('a panel shorter than its content fades its bottom edge', pShort.content > pShort.h && pShort.fadeBottom === '24px' && pShort.fadeTop === '0px', J(pShort));
+    await popup.eval(`(() => { const sc = document.querySelector('.search-opts-scroll'); sc.scrollTop = sc.scrollHeight; sc.dispatchEvent(new Event('scroll')); return true; })()`);
+    await sleep(250);
+    const pEnd = await panel();
+    check('at the end of the panel: top fade on, bottom fade off', pEnd.fadeTop === '24px' && pEnd.fadeBottom === '0px', J({ top: pEnd.fadeTop, bottom: pEnd.fadeBottom }));
     // Clamp: never below 80 px.
     const h2 = await popup.centerOf('.search-opts-resize');
     await popup.mouse('mousePressed', h2.x, h2.y, { button: 'left', buttons: 1, clickCount: 1 });
@@ -301,10 +341,19 @@ async function main() {
     await sleep(300);
     const chipQ = await searchValue();
     check('a chip click drops suggestions computed for the old text', sugStale > 0 && (await suggestRows()) === 0 && /(^| )is:url( |$)/.test(chipQ) && /(^| )-is:image( |$)/.test(chipQ) && !/s:image/.test(chipQ.replace('-is:image', '')), J({ sugStale, q: chipQ }));
-    // Nothing in the panel takes the field's focus: a click on the reference text.
-    await popup.click('.opts-syntax span');
+    // Nothing in the panel takes the field's focus: a click on the notes line.
+    await popup.click('.opts-notes');
     await sleep(200);
-    check('a click on the panel\'s reference text keeps the field focused', (await activeDesc()) === 'search', await activeDesc());
+    check('a click on the panel\'s notes line keeps the field focused', (await activeDesc()) === 'search', await activeDesc());
+    // A key chip puts its prefix on the end of the query for typing, the field
+    // focused and the autocomplete on that key's values (num: = the keys 1-9).
+    await popup.eval(`(() => { const s = document.getElementById('search'); s.value = 'plan'; s.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`);
+    await sleep(150);
+    await popup.click('.opts-field[data-insert="num:"]');
+    await sleep(300);
+    const keyQ = await searchValue();
+    const keySug = await suggestRows();
+    check('a key chip adds its prefix, keeps the field focused and suggests its values', keyQ === 'plan num:' && (await activeDesc()) === 'search' && keySug > 0, J({ keyQ, keySug }));
     await popup.eval(`(() => { const s = document.getElementById('search'); s.value = ''; s.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`);
     await popup.eval(`(window.resetPopupState(), true)`);
     await sleep(300);

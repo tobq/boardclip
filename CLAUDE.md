@@ -231,12 +231,18 @@ Otherwise the key passes through so normal numpad typing works. Main thread call
 - **Search facets (2026-09-03)**: `len:` accepts ranges (`len:50-200`), plus `lines:`/`ln:` and
   `words:`/`wd:` with the same comparators, and `is:url` / `is:multiline` / `is:rich`. ONE
   table describes every field: `FIELD_INFO` in clip-search.js (`desc`, `short` alias, per-value
-  hints, `group` Match/Filter/Range/Order, `example`). The autocomplete hints, `PREFIX_HINTS` /
-  `PREFIX_SHORT` and the options panel's `SYNTAX_HELP` (+ `SYNTAX_FOOT`, the AND line) are all
-  DERIVED from it, so a hint reads the same everywhere (only free words, exclusion and the regex
-  toggle are hand rows). The panel shows group headings and each example as a chip that appends
-  it to the query. Add a facet = parser + a `FIELD_INFO` entry (+ an `OPTION_FACETS` row if it
-  deserves a one-click chip), nothing else.
+  hints). The autocomplete hints, `PREFIX_HINTS` / `PREFIX_SHORT` and the options panel's key
+  chips' tooltips are all DERIVED from it, so a hint reads the same everywhere. Add a facet =
+  parser + a `FIELD_INFO` entry (+ an `OPTION_FACETS` row if it deserves a one-click chip).
+- **Options panel = Forge's model, NO syntax table (2026-10-08, owner: "u learn the format from
+  the toggles... way less space")**: the toggles teach the grammar by WRITING their token into the
+  field (Last 7 days -> `since:7d`); `OPTION_FIELDS` (derived: FIELD_INFO keys no facet row
+  writes, minus is:/sort:/id:) are one key chip each, painted as the field paints a key
+  (`queryTokenHtml` = lexQuery's `.qh-*` spans), a click appends `key:` and opens the
+  autocomplete on its values; `SYNTAX_NOTES` is ONE line (-word, "a phrase", AND). All in one
+  label | chips grid (Date / Type / Size / More). `SYNTAX_HELP`, `SYNTAX_FOOT`, FIELD_INFO
+  `group`/`example` are gone; ui-parity guards it. A bare known key (`title:`) lexes as a
+  prefix (it used to paint as plain text until a value followed).
 - **Popup header + search field + options panel (2026-10-07, UI overhaul B)**: the popup header
   and the settings header are NOT `-webkit-app-region: drag` (it ate clicks, double-click
   maximised): `Core.attachWindowDrag(el, {onClick, move})` captures a press on a non-control
@@ -244,13 +250,21 @@ Otherwise the key passes through so normal numpad typing works. Main thread call
   (`window-drag` IPC, main `setBounds` of the SENDER from its bounds at the press, size kept,
   clamped to the desktop by `windowDragBounds`, three phases only; a drag mid-open-slide settles
   the slide first; a closed popup drops its drag start; the demo passes no move). A press whose
-  release is lost ends at the next buttonless move / lostpointercapture. macOS needs
+  release is lost ends at the next buttonless move / lostpointercapture. An EMPTY search field is
+  header too (drag moves, click focuses it: nothing to select); with text, a drag selects text.
+  The chip row (`.group-filters`, `Core.attachChipStrip`) is ONE line that scrolls sideways
+  under the sideways fade (`attachSideScroll` = `attachScrollFade(el, preset, {axis:'x'})` + a
+  plain wheel scrolls it) and shows every chip, wrapped, while the options panel is open (FLIP
+  glide both ways, instant under reduced motion or a hidden page). Its top-level group submenus
+  are `popover="manual"` shown in the TOP LAYER by `installSubmenuAutoflip`
+  (`placeTopLayerSubmenu`): a scrolling, masked strip would clip a nested absolute submenu, and a
+  mask clips every descendant, fixed ones included. QA: `qa-ui-shots --only popup-chips-many`. macOS needs
   `acceptFirstMouse` on the popup (it never blur-hides, so it is often inactive; unverified on a Mac). The field is flat (no fill, `--line` hairline underline, accent on focus);
   `attachSearchBox` owns its chrome for app + demo: placeholder "Click here to search..." until
   focused, clear / sort / regex + tune on the ONE `.bc-reveal` (grid 0fr -> 1fr width track, both
   Forge belts) and the options panel (grid-rows fold + `inert`, facet chips from
   `Search.OPTION_FACETS` writing tokens via `applyFacet`; a chip-bar filter (is:pinned/image/
-  numpad) is never a panel option, `SYNTAX_HELP` reference,
+  numpad) is never a panel option, key chips + one notes line,
   `Core.attachScrollFade` mask edges, `Core.attachResizeHandle` bottom edge). Panel height =
   `options_panel_height` (local-only, 0 = 40 % of the popup, max 70 %); Esc closes it first
   (`closeSearchOptions` adapter hook), `resetPopupState` shuts it. Reduced motion = `--dur: 0ms`
@@ -645,17 +659,17 @@ clear-all). All popup CSS + theme variables live in `site/shared/clipboard-popup
   and viewer zoom their IMAGES via `claimImageZoomKeys`. CDP screenshots never show the native
   caption buttons: capture the whole window with `PrintWindow(hwnd, dc, 2)` via koffi in a
   sandbox main eval (works on a cloaked window). macOS paths are reviewed, not run here.
-- **Title-bar tag strip** (editor, viewer, and demo) is single-sourced in
-  `clipboard-ui-core.js`: `renderClipTagChips` renders inert `.filter-tag.group-tag` chips,
-  keyboard-accessible hover/focus × controls, and the `+`; `updateTagStrip` keeps the current
-  content-addressed id on the strip. `openGroupPickerAt` reuses `clipGroupTreeHtml` and the
-  existing controller group mutations - never duplicate a picker or mutation path. New notes
-  supply `ensureClipId`: commit first, re-query the ID, then open the picker; capture the +
-  button rect *before* awaiting because the commit refresh replaces it in the DOM. The chip ×
-  is a real `<button class="gtag-x mi">` for keyboard access — do NOT give `.filter-tag .gtag-x`
-  `font: inherit`, it out-specifies `.mi` and renders the literal word "close" instead of the
-  Material Symbols glyph (guarded by `ui-tokens.test.js` #10); the accent ring is focus-visible
-  only, never on hover.
+- **A clip window's bar shows the clip exactly as its list row does (2026-10-08, owner: "pinning
+  of text editors inconsistent with the main view")**: the row's `.star` before the title and
+  the row's meta keys after it (ONE `renderClipKeys`: `#N` badge, group names, ghosts # and +
+  on the reveal, open while the bar is hovered / focused); `updateTagStrip` (setTags) paints
+  both and puts the clip's id on each. In a window a group name opens the picker (no list to
+  filter; the picker's check removes it). The strip scrolls sideways under the same fade as the
+  chip row. `openGroupPickerAt` reuses `clipGroupTreeHtml` and the controller's mutations -
+  never duplicate a picker or mutation path. New notes supply `ensureClipId`: pin, # and + all
+  commit first, re-query the id, then act; measure the anchor rect *before* awaiting (the commit
+  refresh replaces the button). The old chip strip with an x (`renderClipTagChips`, `.gtag-x`,
+  `untag`) is gone.
 - **Hermetic Electron QA**: `BOARDCLIP_DATA_DIR` relocates data and may be a legitimate user
   configuration. Set **`BOARDCLIP_ISOLATED=1`** as well for throwaway instances; only that
   explicit flag suppresses cloud account discovery/sync probing. JSON loaders accept an initial
@@ -883,8 +897,9 @@ clear-all). All popup CSS + theme variables live in `site/shared/clipboard-popup
   variant override of the primitive it points at (density/corners remap the role tokens
   themselves; derived tokens like `--edge-ctl` live in the `[data-theme]` block for that reason).
 - **ONE sheet per window**: the popup body and the demo frame paint `--surface`, the header
-  (`.sticky`) and the list sit on it transparent (no seam; under glass the scrim is the only
-  frost); `--bg` is only a well (expanded preview, viewer matte, approval card). Light `--hover`
+  (`.sticky`) and the list sit on it transparent (under glass the scrim is the only frost), with
+  ONE `--line` hairline under the header, the same one `.settings-hdr` and `.bc-bar` draw
+  (owner 2026-10-08: the header/body divider is a cue to read the UI, keep it); `--bg` is only a well (expanded preview, viewer matte, approval card). Light `--hover`
   is 7 % so it reads on white; `.item.similar` = `--similar-mix` of `--hover` (60 % dark, 35 %
   light), so hover stays the strongest neutral row state. The theme blocks keep the solid values
   as `--surface-solid`/`--surface2-solid`/`--input-solid` (glass overrides `--surface`): the

@@ -86,7 +86,7 @@
 }
 /* ONE small label, sentence case: names a group of controls or a pane inside
    a section (an options-panel row, a list in a settings section, a merge
-   pane head, a syntax group). Deliberately not an overline: it sits beside
+   pane head). Deliberately not an overline: it sits beside
    controls, where an uppercase heading would shout. */
 .bc-label, .opts-facet-label, .settings-list-title, .bc-head-label {
   font-size: var(--fs-meta); font-weight: var(--fw-regular); line-height: var(--lh-ui); color: var(--text-dim);
@@ -122,9 +122,11 @@
 .main-view { display: flex; flex-direction: column; flex: 1; min-height: 0; height: 100%; }
 .main-view.hidden { display: none; }
 /* The popup is ONE sheet: the window (body, or the demo's frame) paints the
-   surface, the header and the list sit on it, so there is no seam and, under
-   glass, no second frost band. */
-.sticky { flex-shrink: 0; background: transparent; padding-bottom: var(--sp-2); z-index: 10; position: relative; }
+   surface and the header and the list sit on it (under glass, no second frost
+   band). ONE hairline divides the header from the body, the same full-width
+   --line every bar draws (.settings-hdr, .bc-bar): it says where the controls
+   end and the clips begin. */
+.sticky { flex-shrink: 0; background: transparent; padding-bottom: var(--sp-2); border-bottom: 1px solid var(--line); z-index: 10; position: relative; }
 /* The header (and the settings header) are NOT -webkit-app-region: drag: that
    swallowed every click and double-click-maximised. Core.attachWindowDrag owns
    them: a click focuses the search, a press-and-move past 4 px moves the window. */
@@ -245,19 +247,12 @@
 .search-opts-clip { min-height: 0; overflow: hidden; display: flex; flex-direction: column; }
 .search-opts-scroll { max-height: var(--opts-h, 240px); overflow-y: auto; padding: var(--sp-2) var(--gutter) var(--sp-4); }
 .search-opts.resizing .search-opts-scroll { max-height: none; height: var(--opts-h, 240px); }
-.opts-facets { display: grid; grid-template-columns: max-content 1fr; gap: var(--sp-2) var(--sp-5); align-items: center; padding-bottom: var(--sp-5); }
+.opts-facets { display: grid; grid-template-columns: max-content 1fr; gap: var(--sp-2) var(--sp-5); align-items: center; }
 .opts-facet-chips { display: flex; flex-wrap: wrap; gap: var(--sp-1); }
-.opts-syntax { display: grid; grid-template-columns: fit-content(45%) 1fr; gap: var(--sp-2) var(--sp-6); align-items: baseline; }
-.opts-syntax code { font-family: var(--font-mono); font-size: var(--fs-meta); line-height: var(--lh-ui); color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
-.opts-syntax span { font-size: var(--fs-meta); line-height: var(--lh-ui); color: var(--text-dim); }
-/* A syntax group's heading (Match / Filter / Range / Order, the shared
-   .bc-label) spans both columns; the foot line says how it all combines. */
-.opts-syntax .opts-syntax-head { grid-column: 1 / -1; padding-top: var(--sp-4); color: var(--text-dim); }
-.opts-syntax .opts-syntax-head:first-child { padding-top: 0; }
-.opts-syntax .opts-syntax-foot { grid-column: 1 / -1; padding-top: var(--sp-4); }
-/* An example as a chip (the one chip spec): a click puts it in the query. */
-.opts-example { min-height: var(--ctl-sm); margin-left: var(--sp-2); vertical-align: baseline; }
-.opts-example code { font-family: var(--font-mono); font-size: var(--fs-meta); color: var(--text); white-space: pre; }
+/* A key chip paints its prefix as the field will (.qh-prefix), and the notes
+   their tokens (.qh-neg, .qh-quote): what the panel shows is what you type. */
+.opts-notes { grid-column: 2; margin: 0; padding-left: var(--sp-3); font-size: var(--fs-meta); line-height: var(--lh-ui); color: var(--text-dim); }
+.opts-notes-sep { margin: 0 var(--sp-2); }
 /* Bottom edge: the resize handle (Forge's ResizeHandle: a chrome-less strip,
    accent while hovered or dragged) over the panel's divider line. */
 .search-opts-resize { position: relative; flex-shrink: 0; height: var(--sp-3); cursor: row-resize; touch-action: none; }
@@ -277,8 +272,27 @@
   mask-image: linear-gradient(to bottom, transparent 0, black var(--fade-top), black calc(100% - var(--fade-bottom)), transparent 100%);
   transition: --fade-top var(--dur) var(--ease), --fade-bottom var(--dur) var(--ease);
 }
+/* The same fade sideways, for a one-line strip that scrolls (the chip row, a
+   window bar's keys): Core.attachScrollFade(el, preset, { axis: 'x' }). */
+@property --fade-left { syntax: "<length>"; inherits: false; initial-value: 0px; }
+@property --fade-right { syntax: "<length>"; inherits: false; initial-value: 0px; }
+.bc-scroll-fade-x {
+  -webkit-mask-image: linear-gradient(to right, transparent 0, black var(--fade-left), black calc(100% - var(--fade-right)), transparent 100%);
+  mask-image: linear-gradient(to right, transparent 0, black var(--fade-left), black calc(100% - var(--fade-right)), transparent 100%);
+  transition: --fade-left var(--dur) var(--ease), --fade-right var(--dur) var(--ease);
+}
 
-.group-filters { display: flex; align-items: center; gap: var(--sp-2); padding: var(--sp-1) var(--gutter) var(--sp-1); flex-wrap: wrap; overflow: visible; position: relative; z-index: 30; }
+/* The chip row (Core.attachChipStrip): ONE line that scrolls sideways under
+   the mask fade (.bc-scroll-fade-x), every chip once the search options panel
+   is open (.expanded, wrapped). .strip-moving is the switch: the row's height
+   follows while each chip glides to its new place (FLIP). */
+.group-filters { display: flex; align-items: center; gap: var(--sp-2); padding: var(--sp-1) var(--gutter); box-sizing: border-box;
+                 flex-wrap: nowrap; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; position: relative; z-index: 30; }
+.group-filters::-webkit-scrollbar { display: none; }
+.group-filters > * { flex-shrink: 0; }
+.group-filters.expanded { flex-wrap: wrap; overflow: visible; }
+.group-filters.strip-moving { overflow: hidden; transition: height var(--dur) var(--ease); }
+.group-filters.strip-moving > * { transition: transform var(--dur) var(--ease); }
 /* ONE chip (Core.renderChip): the chip bar's icon facets and group chips and
    the options panel's facet chips. Idle = dim text, no fill, no border; hover
    = text + the hover overlay; active (include) = the accent tint with a filled
@@ -299,13 +313,6 @@
 .filter-tag.is-disabled.dis-structural { opacity: .25; }
 .filter-tag:disabled:hover, .filter-tag.is-disabled:hover { background: transparent; color: var(--text-dim); }
 .filter-tag.clear-filter { width: var(--ctl-sm); padding: 0; }
-/* The editor / viewer title-bar strip's chips keep a hover-revealed x that
-   removes the clip from that group (the filter chips have none). */
-.filter-tag .gtag-x { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 14px; margin-left: 0; margin-right: calc(-1 * var(--sp-1)); padding: 0; border: 0; color: var(--text-dim); background: transparent; font-size: var(--icon-sm);
-                      width: 14px; height: 14px; line-height: 1; text-align: center; border-radius: 50%; cursor: pointer; opacity: 0; transition: opacity var(--dur) var(--ease), background-color var(--dur) var(--ease), color var(--dur) var(--ease); }
-.filter-tag:hover .gtag-x, .filter-tag:focus-within .gtag-x { opacity: 1; }
-.filter-tag .gtag-x:hover { color: var(--text); background: var(--hover); }
-.filter-tag .gtag-x:focus-visible { color: var(--text); background: var(--hover); } /* + the shared focus ring */
 
 /* The list sits in a wrapper so the "Newest" pill can float over its top edge
    without being part of the scrolled rows (Core.createClipList owns both). */
@@ -370,6 +377,12 @@
 .tag-submenu { display: none; position: absolute; top: 100%; left: 0; min-width: 150px; max-width: 240px; z-index: 70; }
 .tag-menu-node:hover > .tag-submenu, .tag-menu-node:focus-within > .tag-submenu { display: block; }
 .tag-submenu .tag-submenu { top: calc(-1 * var(--sp-2)); left: calc(100% - 1px); }
+/* A chip's submenu in the top layer (popover="manual", placed and shown by
+   installSubmenuAutoflip): its own box, and shown only while it is open (the
+   :hover rule above would otherwise show it in place inside the strip). */
+.group-filters .tag-menu-node > .tag-submenu[popover] { position: fixed; inset: auto; margin: 0; border: 0; overflow: visible; color: inherit; }
+.group-filters .tag-menu-node > .tag-submenu[popover]:not(:popover-open) { display: none; }
+.group-filters .tag-menu-node > .tag-submenu[popover]:popover-open { display: block; }
 /* A group chip's dropdown holds menu rows (renderTagTreeMenuNode, depth > 0):
    an excluded group is struck through like its chip, a greyed one dims in the
    chips' two tiers, and a parent row stays lit while its submenu is out. */
@@ -453,7 +466,7 @@
 .meta-np:hover, .meta-tag:hover, .meta-ghost:hover { color: var(--text); background: var(--hover); }
 .meta-ghost { display: inline-flex; align-items: center; justify-content: center; width: var(--meta-h); padding: 0; }
 .meta-ghost .mi { font-size: var(--icon-sm); }
-.meta > .meta-reveal { margin-left: calc(-1 * var(--sp-3)); --reveal-gap: var(--sp-3); }
+.meta > .meta-reveal, .bc-tag-strip > .meta-reveal { margin-left: calc(-1 * var(--sp-3)); --reveal-gap: var(--sp-3); }
 .meta-reveal .bc-reveal-inner { gap: var(--sp-1); }
 /* Empty list (Core.renderEmptyState): a quiet icon, what is empty and why, the
    way out; .empty-nudge is the slot for the search behaviour's suggestion. */
@@ -475,9 +488,7 @@
 .settings-view { display: none; flex-direction: column; height: 100%; color: var(--text); background: var(--surface); }
 .settings-view.show { display: flex; }
 .settings-hdr { display: flex; align-items: center; flex-shrink: 0; height: var(--bar-h); padding: 0 var(--edge-ctl); gap: var(--sp-3);
-                 box-shadow: inset 0 -1px 0 transparent; transition: box-shadow var(--dur) var(--ease); }
-/* The divider shows only while the body is scrolled (attachScrollFade marks it). */
-.settings-view:has(> .settings-body.is-scrolled) > .settings-hdr { box-shadow: inset 0 -1px 0 var(--line); }
+                 border-bottom: 1px solid var(--line); }
 .settings-hdr h2 { font-size: var(--fs-ui); font-weight: var(--fw-strong); flex: 1; margin: 0; color: var(--text); }
 .settings-body { flex: 1; min-height: 0; overflow-y: auto; padding: var(--sp-6) var(--gutter); }
 /* Settings (Core.renderSettingsBody, Core.renderSettingsItem): ONE row grid and
@@ -676,15 +687,24 @@ input.bc-bar-title::placeholder { color: var(--text-dim); font-weight: var(--fw-
                   transition: background-color var(--dur) var(--ease), color var(--dur) var(--ease); }
 .bc-drag-handle:hover { color: var(--text); background: var(--hover); }
 .bc-drag-handle:active { cursor: grabbing; }
-/* Title-bar tag strip (editor + viewer + demo editor): the clip's groups as
-   inert chips (hover reveals the gtag-x remove glyph, same as the filter bar)
-   plus the + that opens the shared group picker. Sits right after the title;
-   overflow scrolls horizontally, scrollbar hidden. */
-.bc-tag-strip { -webkit-app-region: no-drag; display: flex; align-items: center; gap: var(--sp-2); min-width: 0; max-width: 50%; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
+/* A clip window's star and keys (Core.updateTagStrip): the row's own star and
+   meta keys (renderClipKeys: the numpad badge, the group names, the ghosts #
+   and + on the reveal), so pin, key and groups read and work as in the list.
+   The star's glyph lands on the gutter when it leads the bar. The strip is
+   ONE line that scrolls sideways under the mask fade (attachScrollFade x);
+   the ghosts slide in while the bar is pointed at or holds the focus. */
+.bc-bar > .star { -webkit-app-region: no-drag; flex-shrink: 0; }
+.bc-bar > .star:first-child { margin-left: calc(var(--edge-ctl) - var(--gutter)); }
+.bc-bar > .star[hidden] { display: none; }
+.bc-tag-strip { -webkit-app-region: no-drag; --meta-h: calc(var(--fs-meta) * var(--lh-text)); display: flex; align-items: center; gap: var(--sp-3); min-width: 0; max-width: 50%;
+                padding-inline: var(--sp-1); overflow-x: auto; overflow-y: hidden; scrollbar-width: none;
+                font-size: var(--fs-meta); line-height: 1; color: var(--text-dim); white-space: nowrap; }
 .bc-tag-strip::-webkit-scrollbar { display: none; }
 .bc-tag-strip[hidden] { display: none; }
-.bc-tag-strip .filter-tag { flex: 0 0 auto; cursor: default; }
-.bc-tag-strip .tag-add-btn { flex: 0 0 auto; }
+.bc-tag-strip .meta-tags { flex-wrap: nowrap; flex: 0 0 auto; height: auto; overflow: visible; }
+.bc-tag-strip .meta-tag { flex: 0 0 auto; }
+.bc-bar:hover .bc-tag-strip .bc-reveal.meta-reveal, .bc-bar:focus-within .bc-tag-strip .bc-reveal.meta-reveal { grid-template-columns: 1fr; }
+.bc-bar:hover .bc-tag-strip .meta-reveal > .bc-reveal-inner, .bc-bar:focus-within .bc-tag-strip .meta-reveal > .bc-reveal-inner { visibility: visible; content-visibility: visible; }
 /* Find: flat like the popup's search field: ONE hairline under the field AND
    its buttons (the regex toggle, count, arrows, close), accent while anything
    in it has the focus; the close's glyph ends on the gutter. */
@@ -901,7 +921,7 @@ input.bc-bar-title::placeholder { color: var(--text-dim); font-weight: var(--fw-
 .chip-row { display: grid; min-height: max(var(--ctl-md), calc(var(--ctl-sm) + 2 * var(--sp-1))); }
 .chip-row > .group-filters, .chip-row > .selection-bar { grid-area: 1 / 1; }
 .chip-row:has(> .selection-bar:not(.hidden)) > .group-filters { visibility: hidden; }
-.selection-bar { display: flex; align-items: center; gap: var(--sp-3); min-height: var(--ctl-md); padding: 0 var(--edge-ctl) 0 var(--gutter); z-index: 31; }
+.selection-bar { display: flex; align-items: center; align-self: start; gap: var(--sp-3); min-height: var(--ctl-md); padding: 0 var(--edge-ctl) 0 var(--gutter); z-index: 31; }
 .selection-bar.hidden { display: none; }
 .selection-count { flex: 1; font-size: var(--fs-ui); font-weight: var(--fw-strong); color: var(--text); }
 .selection-actions { display: flex; align-items: center; gap: var(--sp-1); }
@@ -912,10 +932,8 @@ input.bc-bar-title::placeholder { color: var(--text-dim); font-weight: var(--fw-
 .list .item { user-select: none; -webkit-user-select: none; }
 
 /* Submenu auto-flip (set by installSubmenuAutoflip when a submenu would leave
-   the window): side-opening submenus open leftward; the filter bar's drop-down
-   right-aligns to its node. */
+   the window): side-opening submenus open leftward. */
 .tag-menu-node > .tag-submenu.flip-x { left: auto; right: calc(100% - 1px); }
-.group-filters > .tag-menu-node > .tag-submenu.flip-x { left: auto; right: 0; }
 
 /* --- Shared popover menu: the per-clip "..." menu, the bulk menu, a row's
    keypad / group popovers, the editor + viewer menus. ONE row primitive

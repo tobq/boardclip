@@ -312,31 +312,32 @@ const siteCss = read('site/styles.css');
   assert.ok(/<div class="tag-submenu bc-keypad" role="menu"><div class="numpad-picker"/.test(keypadSub), "the clip menu's Numpad submenu is the same renderKeypadMenu block");
 }
 
-// 13) Title-bar tag strip: ONE shared renderer (renderClipTagChips) + ONE
-//     group-picker builder (clipGroupTreeHtml) behind BOTH the clip menu's
-//     "Add to group" submenu and the strip's + popover; the strip container
-//     ships inside the shared createEditor/createImageViewer chrome and every
-//     host (app editor, app viewer, demo editor) drives it via setTags.
+// 13) A clip window's bar shows the clip the way its list row does: the row's
+//     star before the title and the row's meta keys (ONE renderClipKeys: numpad
+//     badge, group names, ghosts # and + on the reveal) after it. ONE
+//     group-picker builder (clipGroupTreeHtml) behind the clip menu's "Add to
+//     group" submenu and the + popover; the strip ships inside the shared
+//     createEditor/createImageViewer chrome and every host (app editor, app
+//     viewer, demo editor) drives it via setTags.
 {
   const viewerHtml = read('viewer.html');
   const editorHtml = read('editor.html');
   const coreSrc = read('site/shared/clipboard-ui-core.js');
-  assert.ok(typeof ui.renderClipTagChips === 'function', 'core must export renderClipTagChips');
+  assert.ok(typeof ui.renderClipKeys === 'function' && !('renderClipTagChips' in ui), 'core exports renderClipKeys (the chip strip with an x is gone)');
   assert.ok(typeof ui.clipGroupTreeHtml === 'function', 'core must export clipGroupTreeHtml');
   // One picker builder: the clip menu's submenu AND the picker popover both call it.
   const treeCalls = (coreSrc.match(/clipGroupTreeHtml\(/g) || []).length;
   assert.ok(treeCalls >= 3, `clipGroupTreeHtml should back both the menu submenu and the + popover (found ${treeCalls} references)`);
-  // Chips: exact filter-tag/group-tag visual, hover ×(untag) carrying the group,
-  // inert body (data-strip-group, NOT the filter chips' data-group), and the +.
-  const item = { id: 'txt:x', type: 'text', text: 'hi', pin: { groups: ['work', 'todo/forge'] } };
-  const chips = ui.renderClipTagChips(item);
-  assert.ok(chips.includes('filter-tag group-tag'), 'tag chips must reuse the filter-tag group-tag visual');
-  assert.ok(chips.includes('data-strip-group="work"') && !/data-group="work"[^>]*>(?!<span class="tag-label")/.test(chips.split('gtag-x')[0]),
-    'chip body must be inert (data-strip-group), never a filter-intent data-group target');
-  assert.ok(chips.includes('data-action="untag"') && chips.includes('data-group="todo/forge"'), 'chip × must dispatch untag with its group');
-  assert.ok(/<button class="gtag-x mi" type="button"[^>]*data-action="untag"/.test(chips), 'chip × must be a keyboard-focusable button');
-  assert.ok(chips.includes('data-action="tag-add"'), 'strip must include the + (tag-add) button');
-  assert.ok(ui.renderClipTagChips(null).includes('data-action="tag-add"'), 'a new note (null item) still renders the +');
+  const item = { id: 'txt:x', type: 'text', text: 'hi', pin: { number: 3, groups: ['work', 'todo/forge'] } };
+  const keys = ui.renderClipKeys(item, { inWindow: true });
+  const meta = ui.renderClipMeta(item);
+  assert.ok(meta.endsWith(ui.renderClipKeys(item)), 'the row meta line ends in renderClipKeys (one renderer)');
+  assert.ok(keys.includes('class="meta-np" type="button" data-action="numpad-open"') && keys.includes('>#3<'), 'the bar shows the numpad badge as the row does');
+  assert.ok(/class="meta-tag" type="button" data-action="tag-add"[^>]*>work</.test(keys) && !/data-group=/.test(keys), 'in a window a group name opens the picker (no list to filter), never a filter target');
+  assert.ok(keys.includes('class="bc-reveal meta-reveal"') && keys.includes('data-action="tag-add"'), "the bar has the row's ghost + on the reveal");
+  assert.ok(ui.renderClipKeys(null, { inWindow: true }).includes('data-action="tag-add"') && ui.renderClipKeys(null, { inWindow: true }).includes('data-action="numpad-open"'), 'a new note (null item) still offers # and +');
+  assert.ok(/<button class="star" type="button" data-x="pin" data-action="pin"[^>]*hidden><span class="mi">star<\/span><\/button><span class="bc-bar-title">/.test(ui.renderWindowBar({ title: '<span class="bc-bar-title"></span>', tags: true })), "a clip window bar leads with the row's star");
+  assert.ok(!/data-action="untag"/.test(coreSrc), 'no untag path left (the picker removes a group)');
   // The strip container is part of the SHARED chrome (the one window bar both
   // factories render), not host markup.
   const barStrips = (coreSrc.match(/class="bc-tag-strip" data-x="tags"/g) || []).length;
@@ -350,7 +351,6 @@ const siteCss = read('site/styles.css');
   // controller (not the hosts) owns the untag/tag-add dispatch.
   assert.ok(editorHtml.includes('ensureClipId'), 'editor.html must supply ensureClipId (commit-on-add)');
   assert.ok(siteHtml.includes('ensureClipId'), 'site/index.html must supply ensureClipId (commit-on-add)');
-  assert.ok(coreSrc.includes(`closest('[data-action="untag"]')`) || /data-action="untag"/.test(coreSrc), 'controller must own the untag dispatch');
   // Commit-on-add refreshes the strip (and replaces the + DOM node), so the
   // picker anchor must be measured before the async commit.
   const tagAddDispatch = coreSrc.indexOf("const tagAdd = t.closest('[data-action=\"tag-add\"]');");
@@ -381,7 +381,7 @@ const siteCss = read('site/styles.css');
   assert.ok(!/bc-editor-bar|bc-editor-title|bc-title-opts|bc-title-use|bc-actions-stacked|bc-pending-chip/.test(coreSrc + popupCss), 'the old bar / title row / stacked footer / pending pill are gone');
   assert.strictEqual((coreSrc.match(/<div class="bc-bar">/g) || []).length, 1, 'one .bc-bar markup (renderWindowBar)');
   const bar = ui.renderWindowBar({ title: '<span class="bc-bar-title"></span>', tags: true, actions: '<button data-x="menu"></button>' });
-  assert.ok(/^<div class="bc-bar"><span class="bc-bar-title"><\/span><div class="bc-tag-strip"[^>]*><\/div><span class="bc-bar-spacer"><\/span><div class="bc-bar-actions"><button data-x="menu"><\/button><\/div><\/div>$/.test(bar), 'bar anatomy: title, tags, spacer (drag region), actions');
+  assert.ok(/^<div class="bc-bar"><button class="star"[^>]*><span class="mi">star<\/span><\/button><span class="bc-bar-title"><\/span><div class="bc-tag-strip"[^>]*><\/div><span class="bc-bar-spacer"><\/span><div class="bc-bar-actions"><button data-x="menu"><\/button><\/div><\/div>$/.test(bar), 'bar anatomy: star, title, keys, spacer (drag region), actions');
   assert.ok(!bar.includes('data-x="close"') && ui.renderWindowBar({ close: true }).includes('<span class="mi">close</span>'), 'a close only on request (the demo overlay), as the shared mi glyph');
   // No custom close in the app's windows: every factory call there asks for native controls.
   assert.strictEqual((editorHtml.match(/nativeControls: true/g) || []).length, 2, 'editor.html: the editor AND the merge view use the native window controls');
@@ -581,8 +581,11 @@ const siteCss = read('site/styles.css');
   assert.ok(/id="searchOptsBtn"[^>]*aria-controls="searchOpts"/.test(shell) && shell.includes('<span class="mi">tune</span>'), 'the options toggle is the tune icon controlling the panel');
   assert.ok(/class="search-opts" id="searchOpts" aria-hidden="true" inert/.test(shell), 'the options panel renders closed (aria-hidden + inert)');
   assert.ok(/id="searchClear"[^>]*tabindex="-1"/.test(shell), 'the clear button stays out of the Tab order');
-  // The syntax reference is SYNTAX_HELP, rendered in the panel; the hover popover is gone.
-  for (const h of ui.search.SYNTAX_HELP) assert.ok(shell.includes(`<code>${ui.escapeHtml(h.token)}</code>`), `the options panel must list ${h.token}`);
+  // Forge's panel: the toggles teach the grammar (each writes its token), the
+  // keys no toggle writes are one chip each (painted as the field paints a key),
+  // and the rest is ONE line. No syntax table, no per-key description rows.
+  for (const key of ui.search.OPTION_FIELDS) assert.ok(shell.includes(`data-insert="${key}:"`) && shell.includes(`<span class="qh-prefix">${key}:</span>`), `the options panel must offer the ${key}: key`);
+  assert.ok(shell.includes('class="opts-notes"') && !/opts-syntax|opts-example|SYNTAX_HELP/.test(shell + coreSrc + popupCss), 'one notes line, no syntax table');
   for (const opt of ui.search.OPTION_FACETS.flatMap((row) => row.options)) assert.ok(shell.includes(`>${ui.escapeHtml(opt.label)}</button>`), `the options panel must offer ${opt.label}`);
   for (const [name, text] of [['clipboard-ui-core.js', coreSrc], ['clipboard-popup.css', popupCss], ['index.html', appHtml], ['site/index.html', siteHtml], ['renderPopupShell', shell]]) {
     assert.ok(!/attachSearchHelp|renderSearchHelp|search-help|help-btn|searchHelpBtn/.test(text), `${name} still carries the removed "?" search help popover`);
@@ -656,7 +659,7 @@ const siteCss = read('site/styles.css');
   assert.ok(/<span class="bc-reveal meta-reveal"><span class="bc-reveal-inner"><button class="meta-ghost"[^>]*data-action="tag-add"/.test(meta), 'meta: a set key has no ghost # (the badge opens the keypad); the + rides the reveal');
   assert.ok(/class="meta-ghost"[^>]*data-action="numpad-open"/.test(single), 'meta: an unset key shows the ghost # on the reveal');
   assert.ok(/\.meta \{[^}]*white-space:\s*nowrap/.test(stripComments(popupCss)) && /\.meta \{[^}]*height:\s*var\(--meta-h\)/.test(stripComments(popupCss)), 'the meta line is one fixed-height line (the ghosts never wrap it)');
-  assert.ok(/\[data-action="numpad-open"\][\s\S]{0,300}openNumpadPickerAt\(/.test(coreSrc), 'the badge / ghost # opens the keypad popover');
+  assert.ok(/\[data-action="numpad-open"\][\s\S]{0,700}openNumpadPickerAt\(/.test(coreSrc), 'the badge / ghost # opens the keypad popover');
   // Row buttons: text rows on the reveal, image rows floating over the picture.
   assert.ok(/<span class="bc-reveal row-actions"><span class="bc-reveal-inner">[^]*data-action="clip-menu"/.test(titled), "a text row's buttons ride the shared reveal");
   const image = row({ id: 'i', type: 'image', image: 'a.png', width: 400, height: 100 });
@@ -961,7 +964,7 @@ const siteCss = read('site/styles.css');
   const ruleOf = (sel) => rules(popupCss).find((r) => r.sel === sel);
   // The popup is ONE sheet: the window paints --surface, the header nothing.
   assert.ok(/body \{[^}]*background: var\(--surface\);/.test(stripComments(windowCss)), 'every window body paints --surface (--bg is a well)');
-  assert.ok(/background: transparent/.test(ruleOf('.sticky').body), 'the popup header paints no second band (no seam, one frost under glass)');
+  assert.ok(/background: transparent/.test(ruleOf('.sticky').body), 'the popup header paints no second band (one frost under glass)');
   // The demo's editor overlay is the app editor WINDOW: solid --surface unless Glass on: All windows.
   for (const theme of ['dark', 'light']) {
     const block = (tokensCss.match(new RegExp(`:root\\[data-theme="${theme}"\\], \\.bc-popup\\[data-theme="${theme}"\\] \\{([^}]*)\\}`)) || [])[1] || '';
@@ -984,8 +987,8 @@ const siteCss = read('site/styles.css');
   // A menu row ending in "..." opens a dialog; settings help lines carry no period.
   assert.ok(!/'Looking for similar clips\.\.\.'/.test(coreSrc), 'a progress row never ends in "..."');
   for (const m of coreSrc.matchAll(/help: \[\['\w+', '([^']*)'\]\]/g)) assert.ok(!/\.$/.test(m[1]), `settings help "${m[1]}" ends with a period`);
-  // The settings divider shows only once the body is scrolled.
-  assert.ok(!/border-bottom/.test(ruleOf('.settings-hdr').body) && /el\.classList\.toggle\('is-scrolled', now\)/.test(coreSrc) && ruleOf('.settings-view:has(> .settings-body.is-scrolled) > .settings-hdr'), 'settings header hairline only while scrolled');
+  // Every header draws the SAME divider under it: the popup header, the settings header, the window bar.
+  for (const sel of ['.sticky', '.settings-hdr', '.bc-bar']) assert.ok(/border-bottom: 1px solid var\(--line\)/.test(ruleOf(sel).body), `${sel} draws the header/body hairline`);
 }
 
 console.log('ui-parity.test.js: all parity guards passed');

@@ -475,6 +475,40 @@ const STEPS = [
     if (sub !== 'ok') throw new Error(`the Work chip's submenu is not visible: ${sub}`);
     await c.shot(c.popup, 'popup-filter-chip-sub');
   } },
+  // Many groups: the chip row stays ONE line that scrolls sideways under the
+  // mask fade (right edge only at the start, both mid-way), and shows every
+  // chip, wrapped, while the options panel is open. The extra groups are
+  // removed again so later steps see the usual set.
+  { name: 'popup-chips-many', popup: true, run: async (c) => {
+    const extra = ['Recipes', 'Travel', 'Invoices', 'Reading list', 'Side project', 'Gifts', 'Design system', 'Support macros', 'Interview prep'];
+    await c.popup.eval(`(async () => { for (const g of ${J(extra)}) await window.api.groupCreate(g); await refreshGroupsAndList(); return true; })()`);
+    await qa.sleep(400);
+    const strip = () => c.popup.eval(`(() => {
+      const el = document.querySelector('.group-filters');
+      const tops = new Set([...el.children].map((x) => Math.round(x.getBoundingClientRect().top)));
+      return { lines: tops.size, overflow: el.scrollWidth > el.clientWidth + 1, left: el.style.getPropertyValue('--fade-left'), right: el.style.getPropertyValue('--fade-right'), expanded: el.classList.contains('expanded'), h: Math.round(el.getBoundingClientRect().height) };
+    })()`);
+    const one = await strip();
+    if (one.lines !== 1 || !one.overflow || one.right !== '24px' || one.left !== '0px') throw new Error(`collapsed chip row is not one masked line: ${J(one)}`);
+    await c.shot(c.popup, 'popup-chips-many');
+    await c.popup.eval(`(() => { const el = document.querySelector('.group-filters'); el.scrollLeft = 120; el.dispatchEvent(new Event('scroll')); return true; })()`);
+    await qa.sleep(350);
+    const mid = await strip();
+    if (mid.left !== '24px' || mid.right !== '24px') throw new Error(`scrolled chip row should fade both edges: ${J(mid)}`);
+    await c.shot(c.popup, 'popup-chips-many-scrolled');
+    await c.popup.eval(`(document.getElementById('search').focus(), true)`);
+    await c.popup.click('#searchOptsBtn');
+    await qa.sleep(700);
+    const all = await strip();
+    if (!all.expanded || all.lines < 2 || all.overflow || all.right !== '0px') throw new Error(`panel open should show every chip, wrapped: ${J(all)}`);
+    await c.shot(c.popup, 'popup-chips-many-expanded');
+    await escape(c.popup);
+    await qa.sleep(700);
+    const back = await strip();
+    if (back.expanded || back.lines !== 1 || back.h !== one.h) throw new Error(`closing the panel should fold the chips back to one line: ${J(back)}`);
+    await c.popup.eval(`(async () => { for (const g of ${J(extra)}) await window.api.groupDelete(g); await refreshGroupsAndList(); return true; })()`);
+    await qa.sleep(300);
+  } },
   { name: 'popup-search-facet', popup: true, run: async (c) => { await setQuery(c, 'group:Work plan'); await c.shot(c.popup, 'popup-search-facet'); } },
   { name: 'popup-search-suggest', popup: true, run: async (c) => { await setQuery(c, 'is:'); await c.shot(c.popup, 'popup-search-suggest'); } },
   { name: 'popup-search-regex-invalid', popup: true, run: async (c) => {

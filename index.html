@@ -102,9 +102,22 @@ if (window.api.onColorSchemeChanged) window.api.onColorSchemeChanged(applyColorS
 // start, then 'appearance-changed'), so the popup can never render with other
 // values than the editor / viewer / approval windows. Main already resolved it:
 // the surface against OS support, borders gated on BOARDCLIP_DEBUG_VARIANTS
-// (the tags-look-different-per-machine bug of 2026-09-02). All ride data-* on <html>.
+// (the tags-look-different-per-machine bug of 2026-09-02). All ride data-* on <html>
+// through the shared Core.applyAppearance (the System / Custom accent included).
+// A partial update (the surface alone) merges into the last full payload.
+let currentLook = {};
+let settingsUi = null; // Core.mountSettings, bound below
 function applyAppearance(look) {
-  if (look) Core.applyVariants(document.documentElement, look);
+  if (!look) return;
+  currentLook = { ...currentLook, ...look };
+  if (look.themeMode) setThemeMode(look.themeMode);
+  Core.applyAppearance(document.documentElement, currentLook);
+  if (settingsUi) settingsUi.update(appearanceControlsState(currentLook));
+}
+// The Settings > Appearance controls' state from a payload (the surface
+// SETTING and glass support come from get-settings, see openSettings).
+function appearanceControlsState(look) {
+  return { accentMode: look.accentMode, accentCustom: look.accentCustom, systemAccent: look.systemAccent, glassScope: look.glassScope, uiDensity: look.uiDensity, uiCorners: look.uiCorners };
 }
 if (window.api.getSettings) window.api.getSettings().then(s => {
   if (!s) return;
@@ -118,7 +131,7 @@ if (window.api.getSettings) window.api.getSettings().then(s => {
   regexBtn.classList.toggle('active', regexOn);
   searchBox.refresh();
 }).catch(() => {});
-if (window.api.onSurfaceChanged) window.api.onSurfaceChanged((style) => document.documentElement.setAttribute('data-surface', style === 'solid' ? 'solid' : 'glass'));
+if (window.api.onSurfaceChanged) window.api.onSurfaceChanged((style) => applyAppearance({ surfaceStyle: style === 'solid' ? 'solid' : 'glass' }));
 if (window.api.onAppearanceChanged) window.api.onAppearanceChanged(applyAppearance);
 
 // --- Helpers ---
@@ -475,6 +488,13 @@ window.assignNumpad = function(slot) {
   if (id) controller.tryAssignNumpad(id, slot);
 };
 
+// Settings: the Appearance controls + the body's scroll fade, shared with the
+// demo. Writes go through save-settings (validated in main, then broadcast
+// back to every window as appearance-changed); a dragged hue previews here.
+settingsUi = Core.mountSettings(document.getElementById('settingsView'), {
+  save: (body) => window.api.saveSettings(body),
+  preview: (look) => Core.applyAppearance(document.documentElement, { ...currentLook, ...look }),
+});
 // Clear all (Settings)
 document.getElementById('clearAll').addEventListener('click', () => controller.clearAll());
 document.getElementById('copyDiagnostics').addEventListener('click', async () => {
@@ -574,21 +594,17 @@ function manualSyncResultText(result) {
   return `Synced: ${changed} (${elapsed})`;
 }
 
+// The switch shows on / off; the help line says only what it adds (the peers
+// are listed as rows under it).
 function p2pStatusText(status) {
-  if (!status || !status.enabled) return 'Off';
-  if (!status.running) return 'Starting local network sync...';
+  if (!status || !status.enabled) return '';
+  if (!status.running) return 'Starting...';
   const peers = Array.isArray(status.peers) ? status.peers : [];
-  if (!peers.length) return 'On; looking for nearby BoardClip devices';
-  const names = peers.slice(0, 3).map(peer => `${peer.deviceName || 'Device'} (${peer.transport === 'tailnet' ? 'Tailscale' : 'LAN'})`).join(', ');
-  const extra = peers.length > 3 ? ` +${peers.length - 3}` : '';
-  return `On; ${peers.length} peer${peers.length === 1 ? '' : 's'} nearby: ${names}${extra}`;
+  return peers.length ? `${peers.length} device${peers.length === 1 ? '' : 's'} nearby` : 'Looking for nearby BoardClip devices';
 }
 
 function renderP2PStatus(status) {
-  const statusEl = document.getElementById('p2pStatus');
-  if (!statusEl) return;
-  statusEl.textContent = p2pStatusText(status);
-  statusEl.className = 'sync-status' + (status && status.enabled && status.running ? ' active' : '');
+  Core.setSettingHelp(document.getElementById('p2pStatus'), p2pStatusText(status), status && status.enabled && status.running ? 'active' : '');
   renderP2PPeers(status);
 }
 
@@ -605,26 +621,13 @@ function agoText(at) {
 function renderP2PPeers(status) {
   const list = document.getElementById('p2pPeers');
   if (!list) return;
-  list.innerHTML = '';
   const peers = status && Array.isArray(status.peers) ? status.peers : [];
-  for (const peer of peers) {
-    const row = document.createElement('div');
-    row.className = 'sync-account';
-    const main = document.createElement('span');
-    main.className = 'sync-account-main';
-    const title = document.createElement('span');
-    title.className = 'sync-provider';
-    const transport = peer.transport === 'tailnet' ? 'Tailscale' : 'LAN';
-    title.textContent = `${peer.deviceName || 'Device'} \u00b7 ${transport}${(peer.protocol || 1) >= 2 ? '' : ' \u00b7 older build (full-state sync)'}`;
-    title.title = title.textContent;
-    const detail = document.createElement('span');
-    detail.className = 'sync-account-path';
-    detail.textContent = `${peer.host}:${peer.port} \u00b7 seen ${agoText(peer.lastSeen)}${peer.build ? ' \u00b7 ' + peer.build : ''}`;
-    detail.title = detail.textContent;
-    main.append(title, detail);
-    row.append(main);
-    list.appendChild(row);
-  }
+  list.innerHTML = peers.map((peer) => Core.renderSettingsItem({
+    title: peer.deviceName || 'Device',
+    meta: `${peer.transport === 'tailnet' ? 'Tailscale' : 'LAN'}${(peer.protocol || 1) >= 2 ? '' : ', older build (full-state sync)'}`,
+    sub: `${peer.host}:${peer.port} \u00b7 seen ${agoText(peer.lastSeen)}${peer.build ? ' \u00b7 ' + peer.build : ''}`,
+    subMono: true,
+  })).join('');
   const tail = document.getElementById('p2pTailnet');
   if (tail) {
     const tailnet = status && status.tailnet;
@@ -678,24 +681,21 @@ async function runManualSync({ showSettingsStatus = false } = {}) {
   setManualSyncButtons(true);
   const syncStatus = document.getElementById('syncStatus');
   if (showSettingsStatus && syncStatus) {
-    syncStatus.textContent = 'Syncing...';
-    syncStatus.className = 'sync-status active';
+    Core.setSettingHelp(syncStatus, 'Syncing...', 'active');
   }
   try {
     const result = await window.api.syncNow();
     await refresh();
     const statusText = manualSyncResultText(result);
     if (showSettingsStatus && syncStatus) {
-      syncStatus.textContent = statusText;
-      syncStatus.className = 'sync-status active';
+      Core.setSettingHelp(syncStatus, statusText, 'active');
       setTimeout(() => openSettings(), 500);
     } else {
       showToast(statusText);
     }
   } catch (error) {
     if (showSettingsStatus && syncStatus) {
-      syncStatus.textContent = 'Sync failed';
-      syncStatus.className = 'sync-status error';
+      Core.setSettingHelp(syncStatus, 'Sync failed', 'error');
     } else {
       showToast('Sync failed');
     }
@@ -728,9 +728,7 @@ function shortcutResetEl(kind) {
 }
 
 function setShortcutStatus(kind, message, isError = false) {
-  const status = shortcutStatusEl(kind);
-  status.textContent = message || '';
-  status.className = 'shortcut-status' + (isError ? ' error' : '');
+  Core.setSettingHelp(shortcutStatusEl(kind), message, isError ? 'error' : '');
 }
 
 function stopShortcutRecording({ resume = true } = {}) {
@@ -760,9 +758,10 @@ function renderShortcutSettings(settings, { clearStatus = true } = {}) {
     quickRecord.textContent = `${shortcutLabel(quickShortcut).replace(/\s\+\s[1-9]$/, '')} + 1-9`;
     quickRecord.title = `${quickShortcut.replace(/[1-9]$/, '1')} ... ${quickShortcut.replace(/[1-9]$/, '9')}`;
   } else {
-    quickRecord.textContent = 'Off';
+    quickRecord.textContent = 'Not set';
     quickRecord.title = 'Record quick paste shortcut';
   }
+  quickRecord.classList.toggle('unset', !quickShortcut);
   quickRecord.classList.remove('recording');
   quickReset.style.visibility = info.quickPasteCustom ? 'visible' : 'hidden';
   if (clearStatus) {
@@ -900,8 +899,7 @@ document.getElementById('syncHeaderBtn').addEventListener('click', () => runManu
 document.getElementById('syncNow').addEventListener('click', () => runManualSync({ showSettingsStatus: true }));
 document.getElementById('addSyncFolder').addEventListener('click', async () => {
   const syncStatus = document.getElementById('syncStatus');
-  syncStatus.textContent = 'Choose a folder...';
-  syncStatus.className = 'sync-status active';
+  Core.setSettingHelp(syncStatus, 'Choose a folder...');
   const result = await window.api.chooseSyncFolder();
   if (!result || result.canceled) {
     syncStatus.textContent = '';
@@ -953,9 +951,7 @@ function updateStatusText(result) {
 }
 
 function setUpdateStatus(message, state = '') {
-  const updateStatus = document.getElementById('updateStatus');
-  updateStatus.textContent = message || '';
-  updateStatus.className = `settings-status${state ? ` ${state}` : ''}`;
+  Core.setSettingHelp(document.getElementById('updateStatus'), message, state);
 }
 
 function renderUpdateSettings(settings) {
@@ -967,28 +963,29 @@ function renderUpdateSettings(settings) {
   const label = settings.build_info && settings.build_info.label ? settings.build_info.label : 'unknown';
   updateBuild.textContent = `Build ${label}`;
   updateDetail.textContent = supported
-    ? 'Source auto-update enabled; requires Git; checks startup + every 4h'
+    ? 'Updates itself from Git at startup and every 4 h'
     : updateUnavailableText(support.reason);
   updateNow.disabled = !supported;
-  const updatesSection = updateBuild.closest('.settings-section');
-  let modeHost = updatesSection && updatesSection.querySelector('#developerUpdateMode');
+  // Developer checkouts: the update mode, one more settings row under the build.
+  const updatesRow = updateBuild.closest('.setting-row');
+  let modeHost = document.getElementById('developerUpdateMode');
   const rt = settings.runtime_info || {};
   const visible = !!rt.update_mode_visible;
-  if (visible && !modeHost && updatesSection) {
+  if (visible && !modeHost && updatesRow) {
     modeHost = document.createElement('div');
     modeHost.id = 'developerUpdateMode';
-    modeHost.className = 'developer-update-mode';
-    updatesSection.appendChild(modeHost);
+    modeHost.className = 'setting-row';
+    updatesRow.after(modeHost);
   }
   if (modeHost) {
     modeHost.classList.toggle('hidden', !visible);
     modeHost.innerHTML = visible ? `
-      <div class="developer-update-label">Developer mode</div>
-      <div class="seg" role="group" aria-label="Update mode">
+      <span class="setting-text"><span class="setting-label">Update mode</span>
+        <span class="setting-help">${rt.update_mode === 'development' ? 'Dirty source checkouts update with autostash' : 'Local tracked edits block updates'}</span></span>
+      <span class="setting-control"><span class="seg" role="group" aria-label="Update mode">
         <button type="button" class="seg-btn${rt.update_mode === 'production' ? ' active' : ''}" data-update-mode="production">Production</button>
         <button type="button" class="seg-btn${rt.update_mode === 'development' ? ' active' : ''}" data-update-mode="development">Development</button>
-      </div>
-      <div class="settings-status">${rt.update_mode === 'development' ? 'Dirty source checkouts update with autostash.' : 'Clean checkout mode; local tracked edits block updates.'}</div>` : '';
+      </span></span>` : '';
     modeHost.querySelectorAll('[data-update-mode]').forEach(button => {
       button.onclick = async () => {
         await window.api.setUpdateMode(button.dataset.updateMode);
@@ -1014,41 +1011,27 @@ document.getElementById('updateNow').addEventListener('click', async () => {
   }
 });
 
-// The switcher writes the real settings (accent_mode, ui_density, ui_corners
-// sync; surface_style + ui_borders stay on this machine); main answers with
-// 'appearance-changed', which repaints this window and every other one.
-const VARIANT_SETTING_KEYS = { surfaceStyle: 'surface_style', accentVariant: 'accent_mode', uiDensity: 'ui_density', uiCorners: 'ui_corners', uiBorders: 'ui_borders' };
+// The audit-only Borders axis (BOARDCLIP_DEBUG_VARIANTS=1 only): the shared
+// switcher, saving ui_borders (per machine); main answers with
+// 'appearance-changed'. Accent, surface, density and corners are real settings
+// (Core.mountSettings binds them, for the app and the demo alike).
 function renderAppearanceVariants(s) {
   const host = document.getElementById('appearanceVariants');
   if (!host) return;
   host.innerHTML = '';
   const rt = s.runtime_info || {};
-  // Surface ships as a real setting; the other rows show only under the debug
-  // flag until Settings > Appearance gets its own controls.
-  const fields = rt.debug_variants
-    ? ['surfaceStyle', 'accentVariant', 'uiDensity', 'uiCorners', 'uiBorders']
-    : ['surfaceStyle'];
-  const look = rt.appearance || {};
+  if (!rt.debug_variants) return;
   const switcher = Core.createVariantSwitcher({
-    fields,
-    // The accent row picks the accent MODE (System = the OS accent, per device).
-    options: { accentVariant: [['system', 'System'], ['blue', 'Blue'], ['teal', 'Teal'], ['mono', 'Mono']] },
-    initial: {
-      surfaceStyle: s.surface_style || 'auto',
-      accentVariant: look.accentMode || 'system',
-      uiDensity: look.uiDensity || 'normal',
-      uiCorners: look.uiCorners || 'soft',
-      uiBorders: look.uiBorders || 'bordered',
-    },
-    onChange: (next, key) => {
-      window.api.saveSettings({ [VARIANT_SETTING_KEYS[key]]: next[key] });
-    },
+    fields: ['uiBorders'],
+    initial: { uiBorders: (rt.appearance || {}).uiBorders || 'bordered' },
+    onChange: (next) => window.api.saveSettings({ ui_borders: next.uiBorders }),
   });
   host.appendChild(switcher.el);
 }
 
 async function openSettings() {
   const s = await window.api.getSettings();
+  const rt = s.runtime_info || {};
   const autoLaunchEl = document.getElementById('autoLaunch');
   autoLaunchEl.checked = await window.api.getAutoLaunch();
   autoLaunchEl.onchange = (e) => window.api.setAutoLaunch(e.target.checked);
@@ -1059,6 +1042,8 @@ async function openSettings() {
     setThemeMode(btn.dataset.themeMode);
     window.api.saveSettings({ theme_mode: btn.dataset.themeMode });
   };
+  if (rt.appearance) currentLook = { ...currentLook, ...rt.appearance };
+  settingsUi.update({ ...appearanceControlsState(currentLook), surfaceStyle: s.surface_style || 'auto', glassSupported: rt.surface_supported !== false });
   renderAppearanceVariants(s);
   renderShortcutSettings(s);
   const maxAgeEl = document.getElementById('maxAge');
@@ -1068,13 +1053,15 @@ async function openSettings() {
   maxSizeEl.value = s.max_size_gb;
   maxAgeEl.onchange = () => window.api.saveSettings({ max_age_days: parseInt(maxAgeEl.value) || 7 });
   maxSizeEl.onchange = () => window.api.saveSettings({ max_size_gb: parseFloat(maxSizeEl.value) || 10 });
+  const restoreEl = document.getElementById('quickPasteRestore');
+  restoreEl.checked = s.quick_paste_restore !== false;
+  restoreEl.onchange = () => window.api.saveSettings({ quick_paste_restore: restoreEl.checked });
   const diagnosticsEl = document.getElementById('diagnosticsEnabled');
   const diagnosticsStatus = document.getElementById('diagnosticsStatus');
-  const diagnosticsFile = s.runtime_info && s.runtime_info.diagnostics_file || '';
+  const diagnosticsFile = rt.diagnostics_file || '';
   const updateDiagnosticsStatus = () => {
-    diagnosticsStatus.textContent = diagnosticsEnabled ? 'Writing performance log' : 'Off';
+    Core.setSettingHelp(diagnosticsStatus, diagnosticsEnabled ? 'Writing performance log' : '', diagnosticsEnabled ? 'active' : '');
     diagnosticsStatus.title = diagnosticsEnabled ? diagnosticsFile : '';
-    diagnosticsStatus.className = `settings-status${diagnosticsEnabled ? ' active' : ''}`;
   };
   diagnosticsEnabled = !!s.diagnostics_enabled;
   diagnosticsEl.checked = diagnosticsEnabled;
@@ -1087,44 +1074,22 @@ async function openSettings() {
   regexOn = s.regex_search || false;
   regexBtn.classList.toggle('active', regexOn);
   searchBox.refresh();
-  const bytes = s.storage_bytes || 0;
-  const mb = (bytes / 1048576).toFixed(1);
-  document.getElementById('usage').textContent = `Current: ${s.item_count} items, ${mb} MB`;
+  const mb = ((s.storage_bytes || 0) / 1048576).toFixed(1);
+  Core.setSettingHelp(document.getElementById('usage'), `${s.item_count} clip${s.item_count === 1 ? '' : 's'}, ${mb} MB used`);
 
-  // Native cloud providers are default-on; toggles are local opt-outs.
+  // Native cloud providers are default-on; the switches are local opt-outs.
   const syncList = document.getElementById('syncAccounts');
   const accounts = await window.api.getCloudAccounts();
-  syncList.innerHTML = '';
-  for (const acc of accounts) {
-    const row = document.createElement('label');
-    row.className = 'sync-account';
-    const checkbox = document.createElement('input');
-    checkbox.type = 'checkbox';
-    checkbox.dataset.syncPath = acc.path;
-    checkbox.checked = !!acc.enabled;
-    const main = document.createElement('span');
-    main.className = 'sync-account-main';
-    const label = document.createElement('span');
-    label.className = 'sync-provider';
-    label.title = syncAccountLabel(acc);
-    label.textContent = syncAccountLabel(acc);
-    const pathLabel = document.createElement('span');
-    pathLabel.className = 'sync-account-path';
-    pathLabel.title = acc.path;
-    pathLabel.textContent = acc.path;
-    main.append(label, pathLabel);
-    row.append(checkbox, main);
-    syncList.appendChild(row);
-  }
-  if (!accounts.length) {
-    syncList.innerHTML = '<div class="sync-status">No native cloud folders detected</div>';
-  }
+  syncList.innerHTML = accounts.map((acc) => Core.renderSettingsItem({
+    title: syncAccountLabel(acc), sub: acc.path, subMono: true,
+    toggle: { checked: !!acc.enabled, label: `Sync with ${syncAccountLabel(acc)}`, attrs: { 'data-sync-path': acc.path } },
+  })).join('');
   const enabledAccounts = accounts.filter(acc => acc.enabled);
-  const syncStatus = document.getElementById('syncStatus');
-  syncStatus.textContent = accounts.length ? `${enabledAccounts.length}/${accounts.length} providers enabled; syncs on change + every 30s` : '';
-  syncStatus.className = 'sync-status' + (enabledAccounts.length ? ' active' : '');
+  Core.setSettingHelp(document.getElementById('syncStatus'), accounts.length
+    ? `${enabledAccounts.length} of ${accounts.length} on, syncs on every change and every 30 s`
+    : 'No cloud folders found', enabledAccounts.length ? 'active' : '');
   const p2pEnabledEl = document.getElementById('p2pEnabled');
-  const p2pRuntime = s.runtime_info && s.runtime_info.p2p || { enabled: !!s.p2p_enabled };
+  const p2pRuntime = rt.p2p || { enabled: !!s.p2p_enabled };
   p2pEnabledEl.checked = !!p2pRuntime.enabled;
   renderP2PStatus(p2pRuntime);
   p2pEnabledEl.onchange = async (event) => {
@@ -1145,52 +1110,22 @@ async function openSettings() {
   startP2PStatusRefresh();
   renderUpdateSettings(s);
   const buildInfoEl = document.getElementById('buildInfo');
-  buildInfoEl.innerHTML = '';
-  if (s.runtime_info && s.runtime_info.app_dir) {
-    const line = document.createElement('span');
-    line.className = 'build-info-line';
-    line.title = s.runtime_info.app_dir;
-    line.textContent = `App ${s.runtime_info.app_dir}`;
-    buildInfoEl.appendChild(line);
-  }
+  buildInfoEl.textContent = rt.app_dir || '';
+  buildInfoEl.title = rt.app_dir || '';
 
-  // Numpad slots
-  const slotsEl = document.getElementById('numpadSlots');
+  // Numpad slots: the assigned ones (.np-remove unassigns, a row click copies:
+  // the shared controller's settings dispatch).
   const nmap = numpadMap();
-  slotsEl.innerHTML = '';
-  for (let n = 1; n <= 9; n++) {
-    const has = n in nmap;
-    const it = has ? itemById(nmap[n]) : null;
-    const text = it ? (it.type === 'image' ? '[image]' : (it.text||'').replace(/\n/g,' ').slice(0,60)) : '';
-    slotsEl.innerHTML += `<div class="np-slot${has?' has-content':''}" data-slot-id="${has ? esc(nmap[n]) : ''}">
-      <span class="np-num">${n}</span>
-      <span class="np-text${has?'':' empty'}">${has ? esc(text) : 'empty'}</span>
-      ${has ? `<button class="icon-btn np-remove" data-slot="${n}" title="Unassign"><span class="mi">close</span></button>` : ''}
-    </div>`;
-  }
-  // np-remove (unassign) + np-slot.has-content (copy) are handled by the shared
-  // controller's settings dispatch.
+  document.getElementById('numpadSlots').innerHTML = Core.renderNumpadSlotRows(nmap, itemById);
+  document.getElementById('numpadHelp').classList.toggle('hidden', Object.keys(nmap).length >= 9);
 
   // AI Access (renders before groups so the shared-group set is ready)
   await renderAiAccess();
   await renderConflicts();
 
-  // Group slots
-  const groupsEl = document.getElementById('groupSlots');
-  groupsEl.innerHTML = '';
-  groups.forEach(g => {
-    const count = groupCounts.get(g) || 0;
-    const shared = aiSharedGroups.has(g);
-    const isAiGroup = g === aiGroupName;
-    groupsEl.innerHTML += `<div class="group-slot">
-      <span class="gp-name">${esc(g)}</span>
-      <span class="gp-count">${count} item${count!==1?'s':''}</span>
-      <button class="icon-btn gp-share${shared?' on':''}" data-group="${esc(g)}" title="${shared?'Shared with AI - click to stop sharing':'Share this group with AI'}"><span class="mi">smart_toy</span></button>
-      <button class="icon-btn gp-del${isAiGroup?' locked':''}" data-group="${esc(g)}" title="Delete group"><span class="mi">close</span></button>
-    </div>`;
-  });
-  // gp-share (toggle AI sharing) + gp-del (delete group, with the shared confirm)
-  // are handled by the shared controller's settings dispatch.
+  // Groups (.gp-share toggles AI sharing, .gp-del deletes with the shared
+  // confirm: the shared controller's settings dispatch).
+  document.getElementById('groupSlots').innerHTML = Core.renderGroupRows(groups, { counts: groupCounts, shared: aiSharedGroups, aiGroup: aiGroupName });
 
   document.getElementById('mainView').classList.add('hidden');
   document.getElementById('settingsView').classList.add('show');
@@ -1202,19 +1137,15 @@ async function renderConflicts() {
   if (!section || !wrap || !window.api.getConflicts) return;
   const conflicts = await window.api.getConflicts().catch(() => []);
   section.classList.toggle('hidden', !conflicts.length);
-  wrap.innerHTML = '';
-  for (const conflict of conflicts) {
-    const leftTitle = Core.titleOf(conflict.left) || (conflict.left && conflict.left.text || '').replace(/\s+/g, ' ').slice(0, 44);
-    const rightTitle = Core.titleOf(conflict.right) || (conflict.right && conflict.right.text || '').replace(/\s+/g, ' ').slice(0, 44);
-    const row = document.createElement('div');
-    row.className = 'settings-action-card';
-    row.innerHTML = `<span class="settings-action-main">
-      <span class="settings-action-title">${esc(conflict.kind || 'merge')} conflict</span>
-      <span class="settings-action-detail">${esc(leftTitle || 'Current')} <-> ${esc(rightTitle || 'Incoming')}</span>
-    </span>
-    <button class="icon-btn settings-icon-btn" type="button" data-conflict-id="${esc(conflict.id)}" title="Resolve"><span class="mi sm mid">compare_arrows</span></button>`;
-    wrap.appendChild(row);
-  }
+  const short = (side) => Core.titleOf(side) || (side && side.text || '').replace(/\s+/g, ' ').trim().slice(0, 44);
+  wrap.innerHTML = conflicts.map((conflict) => {
+    const kind = String(conflict.kind || 'merge');
+    return Core.renderSettingsItem({
+      title: `${kind.charAt(0).toUpperCase()}${kind.slice(1)} conflict`,
+      sub: `${short(conflict.left) || 'Current'} ↔ ${short(conflict.right) || 'Incoming'}`,
+      controlHtml: `<button class="btn" type="button" data-conflict-id="${esc(conflict.id)}">Resolve</button>`,
+    });
+  }).join('');
   wrap.onclick = (event) => {
     const btn = event.target.closest('[data-conflict-id]');
     if (!btn) return;
@@ -1237,7 +1168,7 @@ async function renderAiAccess() {
   if (!st) return;
   applyAiAccess(st);
   document.getElementById('aiAccessEnabled').onchange = async (e) => {
-    document.getElementById('aiAccessStatus').textContent = e.target.checked ? 'Starting…' : 'Turning off…';
+    Core.setSettingHelp(document.getElementById('aiAccessStatus'), e.target.checked ? 'Starting...' : 'Turning off...');
     const next = await window.api.setAiAccessEnabled(e.target.checked).catch(() => null);
     if (next) { await refreshGroupsAndList(); openSettings(); }
   };
@@ -1247,77 +1178,74 @@ async function renderAiAccess() {
   };
   document.getElementById('aiMoreClients').onclick = () => {
     document.getElementById('aiClientsMore').classList.toggle('hidden');
+    renderAiMoreLabel();
+  };
+  // Install / remove BoardClip in one client: one delegated listener per list.
+  for (const id of ['aiClients', 'aiClientsMore']) {
+    document.getElementById(id).onchange = async (e) => {
+      const input = e.target.closest('[data-ai-client]');
+      if (!input) return;
+      const next = await window.api.setMcpClientEnabled(input.dataset.aiClient, input.checked).catch(() => null);
+      if (next) applyAiAccess(next);
+    };
+  }
+  document.getElementById('aiAlwaysAllow').onclick = async (e) => {
+    const btn = e.target.closest('[data-revoke]');
+    if (!btn) return;
+    const next = await window.api.revokeAiAlwaysAllow(btn.dataset.revoke).catch(() => null);
+    if (next) applyAiAccess(next);
   };
 }
 
+// The switch shows on / off; the help says what it does while off and how it
+// is doing while on.
 function applyAiAccess(st) {
   aiSharedGroups = new Set(st.sharedGroups || []);
   aiGroupName = st.aiGroup || 'AI';
   document.getElementById('aiAccessEnabled').checked = !!st.enabled;
   document.getElementById('aiAccessBody').classList.toggle('hidden', !st.enabled);
-  const statusEl = document.getElementById('aiAccessStatus');
-  statusEl.textContent = st.enabled ? (st.running ? 'Active - assistants can connect' : 'Enabled') : 'Off';
-  statusEl.className = 'settings-status' + (st.enabled ? ' active' : '');
+  Core.setSettingHelp(document.getElementById('aiAccessStatus'),
+    !st.enabled ? 'Reads clips in shared groups; deletes and edits ask you first' : st.running ? 'Running, assistants can connect' : 'Starting...',
+    st.enabled && st.running ? 'active' : '');
   document.getElementById('aiTimeout').value = st.timeoutSec;
   renderAiClients(st);
   renderAiAlwaysAllow(st);
 }
 
-function aiClientRow(c) {
-  const row = document.createElement('label');
-  row.className = 'ai-client-row' + (c.detected ? '' : ' undetected');
-  const cb = document.createElement('input');
-  cb.type = 'checkbox';
-  cb.checked = !!c.enabled;
-  cb.onchange = async () => {
-    const next = await window.api.setMcpClientEnabled(c.id, cb.checked).catch(() => null);
-    if (next) applyAiAccess(next);
-  };
-  const dot = document.createElement('span');
-  dot.className = 'ai-dot' + (c.enabled ? ' on' : '');
-  const name = document.createElement('span');
-  name.className = 'ai-client-name';
-  name.textContent = c.label + (c.detected ? '' : ' (not detected)');
-  row.append(cb, dot, name);
-  return row;
+function aiClientRowHtml(c) {
+  return Core.renderSettingsItem({
+    title: c.label, dim: !c.detected, sub: c.detected ? '' : 'Not detected on this machine',
+    toggle: { checked: !!c.enabled, label: `${c.enabled ? 'Remove BoardClip from' : 'Install BoardClip in'} ${c.label}`, attrs: { 'data-ai-client': c.id } },
+  });
+}
+
+function renderAiMoreLabel() {
+  const more = document.getElementById('aiClientsMore');
+  const btn = document.getElementById('aiMoreClients');
+  btn.textContent = more.classList.contains('hidden') ? `Show all clients (${more.children.length} more)` : 'Show fewer clients';
 }
 
 function renderAiClients(st) {
   const clients = st.clients || [];
   const detected = clients.filter(c => c.detected);
   const undetected = clients.filter(c => !c.detected);
-  const wrap = document.getElementById('aiClients');
-  wrap.innerHTML = '';
-  if (!detected.length) wrap.innerHTML = '<div class="settings-status">No AI clients detected on this machine.</div>';
-  detected.forEach(c => wrap.appendChild(aiClientRow(c)));
+  document.getElementById('aiClients').innerHTML = detected.length
+    ? detected.map(aiClientRowHtml).join('')
+    : Core.renderSettingsItem({ title: 'No AI clients found on this machine', dim: true });
   const moreWrap = document.getElementById('aiClientsMore');
-  moreWrap.innerHTML = '';
-  undetected.forEach(c => moreWrap.appendChild(aiClientRow(c)));
-  const moreBtn = document.getElementById('aiMoreClients');
-  if (undetected.length) { moreBtn.classList.remove('hidden'); moreBtn.textContent = `More clients (${undetected.length})`; }
-  else { moreBtn.classList.add('hidden'); moreWrap.classList.add('hidden'); }
+  moreWrap.innerHTML = undetected.map(aiClientRowHtml).join('');
+  if (!undetected.length) moreWrap.classList.add('hidden');
+  document.getElementById('aiMoreClients').classList.toggle('hidden', !undetected.length);
+  renderAiMoreLabel();
 }
 
 function renderAiAlwaysAllow(st) {
-  const head = document.getElementById('aiAlwaysHead');
-  const wrap = document.getElementById('aiAlwaysAllow');
-  wrap.innerHTML = '';
   const grants = st.alwaysAllow || [];
-  head.classList.toggle('hidden', !grants.length);
-  grants.forEach(tool => {
-    const row = document.createElement('div');
-    row.className = 'ai-grant-row';
-    const name = document.createElement('span');
-    name.className = 'ai-grant-name';
-    name.textContent = tool;
-    const btn = document.createElement('button');
-    btn.className = 'icon-btn danger';
-    btn.title = 'Revoke';
-    btn.innerHTML = '<span class="mi">close</span>';
-    btn.onclick = async () => { const next = await window.api.revokeAiAlwaysAllow(tool).catch(() => null); if (next) applyAiAccess(next); };
-    row.append(name, btn);
-    wrap.appendChild(row);
-  });
+  document.getElementById('aiAlwaysHead').classList.toggle('hidden', !grants.length);
+  document.getElementById('aiAlwaysAllow').innerHTML = grants.map((tool) => Core.renderSettingsItem({
+    title: tool, titleMono: true,
+    actionHtml: `<button class="icon-btn" type="button" data-revoke="${esc(tool)}" title="Revoke: ask again next time" aria-label="Revoke ${esc(tool)}"><span class="mi">close</span></button>`,
+  })).join('');
 }
 
 if (window.api && window.api.onAiAccessChanged) {

@@ -27,6 +27,14 @@ contextBridge.exposeInMainWorld('viewerApi', {
   // Drag this image out as a file (native drag of a temporary copy).
   startDrag: () => ipcRenderer.send('start-drag', [clipId]),
   close: () => ipcRenderer.send('viewer-close'),
+  // The bar's height + resolved colours, for the native window controls.
+  windowChrome: (chrome) => ipcRenderer.send('window-chrome', chrome),
+  // Ctrl/Cmd+= / - / 0, claimed in main before the app menu: zoom the image.
+  onZoomKey: (callback) => {
+    const listener = (_, act) => callback(act);
+    ipcRenderer.on('image-zoom-key', listener);
+    return () => ipcRenderer.removeListener('image-zoom-key', listener);
+  },
   getColorScheme: () => ipcRenderer.invoke('get-color-scheme'),
   onColorSchemeChanged: (callback) => {
     const listener = (_, scheme) => callback(scheme);

@@ -37,11 +37,12 @@ if (window.editorApi.onColorSchemeChanged) window.editorApi.onColorSchemeChanged
 // accent, the glass scope) arrive as the same payload as init.
 if (window.editorApi.onAppearanceChanged) window.editorApi.onAppearanceChanged((look) => {
   if (look.themeMode) { themeMode = (look.themeMode === 'light' || look.themeMode === 'dark') ? look.themeMode : 'system'; refreshTheme(); }
-  Core.applyVariants(document.documentElement, look);
+  Core.applyAppearance(document.documentElement, look);
 });
 
 let editor = null;
 let reconcileView = null;
+let windowControls = null; // Core.attachWindowControls, set up on init
 let toastTimer = null;
 function showToast(message) {
   const toast = document.getElementById('toast');
@@ -119,10 +120,12 @@ async function openClipMenu(x, y) {
 window.editorApi.onInit((init) => {
   themeMode = (init.themeMode === 'light' || init.themeMode === 'dark') ? init.themeMode : 'system';
   refreshTheme();
-  // Frosted glass + the other appearance axes, matching the popup.
-  Core.applyVariants(document.documentElement, {
-    surfaceStyle: init.surfaceStyle, accentVariant: init.accentVariant, uiDensity: init.uiDensity, uiCorners: init.uiCorners, uiBorders: init.uiBorders,
-  });
+  // The appearance payload (this window's surface, the accent colour, density,
+  // corners), through the one applier every window uses.
+  Core.applyAppearance(document.documentElement, init);
+  // The OS's own window controls: the bar reserves their room and reports its
+  // colours, so the caption buttons match it (main's setTitleBarOverlay).
+  if (!windowControls) windowControls = Core.attachWindowControls(init.windowControls, window.editorApi.windowChrome);
   host.innerHTML = '';
   reconcileView = null;
   editor = Core.createEditor({
@@ -131,7 +134,7 @@ window.editorApi.onInit((init) => {
     initialFind: init.find || '',
     initialFindRegex: !!init.findRegex,
     initialFocusTitle: !!init.focusTitle,
-    title: init.title || (init.isNew ? 'New clip' : 'Edit clip'),
+    nativeControls: true,
     onInput: (payload) => window.editorApi.draft(payload),     // live crash-safe draft, every keystroke
     // idle / Ctrl+S / close -> write the clip. The commit changes the content-
     // addressed id, so refresh the title-bar tag strip once the write lands
@@ -149,6 +152,7 @@ window.editorApi.onInit((init) => {
     ...(init.isNew ? {} : { onMenu: (x, y) => openClipMenu(x, y) }),
   });
   host.appendChild(editor.el);
+  windowControls.refresh();
   editor.focus();
   refreshTags();
 });
@@ -160,7 +164,7 @@ window.addEventListener('focus', () => { if (editor && window.editorApi.focused)
 // Right-click in the editor chrome (bar/foot — not the text area, where the
 // native text menu belongs) opens the same clip menu.
 document.addEventListener('contextmenu', (e) => {
-  if (e.target.closest('.bc-editor-area, .bc-note-title, .bc-find-input, input, textarea')) return;
+  if (e.target.closest('.bc-editor-area, .bc-bar-title, .bc-find-input, input, textarea')) return;
   if (!editor || reconcileView) return;
   e.preventDefault();
   openClipMenu(e.clientX, e.clientY);
@@ -194,8 +198,10 @@ if (window.editorApi.onConflict) {
         window.editorApi.close();
       },
       onClose: () => window.editorApi.close(),
+      nativeControls: true,
     });
     host.appendChild(reconcileView.el);
+    if (windowControls) windowControls.refresh();
   }
   window.editorApi.onConflict((record) => {
     if (!record || !record.id) return;

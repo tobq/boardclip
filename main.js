@@ -1198,6 +1198,7 @@ function remoteSettingsPayload() {
   delete remoteSave.p2p_device_id;
   delete remoteSave.popup_size;
   delete remoteSave.editor_bounds;
+  delete remoteSave.merge_bounds;
   delete remoteSave.viewer_bounds;
   // Appearance, per machine: the surface (glass support is hardware-dependent),
   // which windows get it, and the audit-only borders axis. The accent choice,
@@ -4235,6 +4236,30 @@ function broadcastAppearance(reason) {
   return true;
 }
 
+// Ctrl/Cmd+= / - / 0 never zoom a PAGE. Claimed HERE, before the app menu: on
+// macOS the default menu's zoom roles are key equivalents that can fire before
+// the page sees the key, so a renderer preventDefault alone does not stop them
+// there (and the default menu's View > Zoom is the only page-zoom path left:
+// Electron turns Ctrl+wheel into a 'zoom-changed' event, not a zoom). Same
+// path on every platform (the chord test is the shared Core.imageZoomKey).
+// The popup and the viewer zoom their IMAGES instead (claimImageZoomKeys: the
+// page gets 'image-zoom-key' with 'in' | 'out' | 'reset'); the text clip
+// windows (editor, unify, conflict) only swallow the chord, because main
+// sizes and places the native window controls in DIPs against the page's bar
+// (applyWindowChrome) and a zoomed page would slide its bar out from under them.
+function claimZoomKeys(w, onZoom) {
+  w.webContents.on('before-input-event', (event, input) => {
+    if (input.type !== 'keyDown') return;
+    const act = BoardClipCore.imageZoomKey({ ctrlKey: input.control, metaKey: input.meta, altKey: input.alt, key: input.key, code: input.code });
+    if (!act) return;
+    event.preventDefault();
+    if (onZoom) onZoom(act);
+  });
+}
+function claimImageZoomKeys(w) {
+  claimZoomKeys(w, (act) => { try { w.webContents.send('image-zoom-key', act); } catch {} });
+}
+
 function configureMacPopupWindow(window) {
   if (process.platform !== 'darwin' || !window) return;
   window.setVisibleOnAllWorkspaces(true, {
@@ -4280,18 +4305,8 @@ function createPopup() {
   // Windows: park the popup shown-but-cloaked as soon as its page has painted,
   // so the first open is already an uncloak (see parkPopup).
   win.webContents.once('did-finish-load', () => { if (!popupOpen) parkPopup('startup'); });
-  // Ctrl/Cmd+= / - / 0 size the image previews, never the popup page. Claimed
-  // HERE, before the app menu: on macOS the default menu's zoom roles are key
-  // equivalents that can fire before the page sees the key, so a renderer
-  // preventDefault alone does not stop them there. Same path on every platform
-  // (the chord test is the shared Core.imageZoomKey).
-  win.webContents.on('before-input-event', (event, input) => {
-    if (input.type !== 'keyDown') return;
-    const act = BoardClipCore.imageZoomKey({ ctrlKey: input.control, metaKey: input.meta, altKey: input.alt, key: input.key, code: input.code });
-    if (!act) return;
-    event.preventDefault();
-    try { win.webContents.send('image-zoom-key', act); } catch {}
-  });
+  // Ctrl/Cmd+= / - / 0 size the image previews, never the popup page.
+  claimImageZoomKeys(win);
   win.on('resize', schedulePopupSizeSave);
 
   // A popup show must NEVER be treated as evidence that the renderer died. A
@@ -5173,16 +5188,102 @@ function commitEditSession(session, payload) {
   return result;
 }
 
+// --- Native window controls on every clip window ------------------------------
+// The editor, viewer, unify and conflict windows get the OS's own minimise /
+// maximise-restore / close instead of a page-drawn close button. Windows (and
+// Linux): titleBarStyle 'hidden' + titleBarOverlay, so the system draws the
+// caption buttons (Snap Layouts on hover) over the right end of the page's
+// .bc-bar; the bar reserves their width through the Window Controls Overlay
+// env(titlebar-area-*) variables. macOS: titleBarStyle 'hidden' keeps the
+// traffic lights, centred in the bar, and the bar reserves the left inset.
+// The bar stays -webkit-app-region: drag, so a double-click maximises
+// (Windows) / zooms or minimises per the system setting (macOS). ONE helper,
+// spread into every clip window's options (test/ui-parity.test.js).
+const WINDOW_BAR_H = 32;          // = --bar-h (clipboard-tokens.css): the bar the controls sit in
+const TRAFFIC_LIGHT_H = 14;       // a traffic-light button's frame height
+const TRAFFIC_LIGHTS_INSET = 76;  // x + three buttons + their spacing + a gap before the bar's first item
+function trafficLightPosition(barHeight) {
+  return { x: 12, y: Math.max(0, Math.round((barHeight - TRAFFIC_LIGHT_H) / 2)) };
+}
+// The theme the clip windows render with (theme_mode wins over the OS).
+function clipWindowsDark() {
+  if (settings.theme_mode === 'dark') return true;
+  if (settings.theme_mode === 'light') return false;
+  return nativeTheme.shouldUseDarkColors;
+}
+// First-paint colours for the caption buttons: the bar shows the window
+// surface (--surface = solidWindowColor), or the glass (transparent buttons).
+// The page reports the exact resolved colours once it renders (window-chrome).
+function titleBarOverlayGuess() {
+  const dark = clipWindowsDark();
+  const surface = dark ? '#14171b' : '#ffffff';
+  return {
+    height: WINDOW_BAR_H - 1, // above the bar's bottom hairline (the page reports clientHeight)
+    color: secondaryGlassOn() ? `#00${surface.slice(1)}` : surface, // #AARRGGBB = Electron's alpha form
+    symbolColor: dark ? '#e6e8eb' : '#0f1216',                     // = --text
+  };
+}
+function windowControlOptions() {
+  if (process.platform === 'darwin') return { titleBarStyle: 'hidden', trafficLightPosition: trafficLightPosition(WINDOW_BAR_H) };
+  return { titleBarStyle: 'hidden', titleBarOverlay: titleBarOverlayGuess() };
+}
+// Rides every clip window's init payload: which side the controls take.
+function windowControlsInfo() {
+  return process.platform === 'darwin' ? { side: 'left', inset: TRAFFIC_LIGHTS_INSET } : { side: 'right', inset: 0 };
+}
+// The page's report (Core.attachWindowControls): its bar's height in CSS px
+// and the resolved colours it paints, after every theme / accent / surface /
+// density change. The overlay is in DIPs, so page zoom scales the height.
+function applyWindowChrome(w, chrome) {
+  if (!w || w.isDestroyed() || w === win) return;
+  const c = chrome && typeof chrome === 'object' ? chrome : {};
+  const cssHeight = Number(c.height);
+  if (!Number.isFinite(cssHeight) || cssHeight < 16 || cssHeight > 96) return;
+  let zoom = 1;
+  try { zoom = w.webContents.getZoomFactor() || 1; } catch {}
+  const height = Math.round(cssHeight * zoom);
+  try {
+    if (process.platform === 'darwin') {
+      if (typeof w.setWindowButtonPosition === 'function') w.setWindowButtonPosition(trafficLightPosition(height));
+      return;
+    }
+    if (typeof w.setTitleBarOverlay !== 'function') return;
+    const overlay = { height };
+    if (/^#([0-9a-f]{6}|[0-9a-f]{8})$/i.test(String(c.color || ''))) overlay.color = c.color;
+    if (/^#[0-9a-f]{6}$/i.test(String(c.symbolColor || ''))) overlay.symbolColor = c.symbolColor;
+    w.setTitleBarOverlay(overlay);
+  } catch (error) {
+    diagnostics.record('window.chrome_failed', { error: error && error.message });
+  }
+}
+
 // Editor/viewer window bounds persistence (full bounds, unlike the cursor-
 // positioned popup which only stores size). Debounced like schedulePopupSizeSave.
-// One shared helper pair, keyed by settings field (editor_bounds / viewer_bounds).
+// One shared helper pair, keyed by settings field (editor_bounds / merge_bounds / viewer_bounds).
+// A maximised (or full-screen) window saves its NORMAL bounds plus a
+// `maximized` flag, so restoring it later never yields a window the size of
+// the screen that cannot be un-maximised; saved bounds that are on no display
+// any more (a monitor was unplugged) drop their position and the OS places it.
+function boundsOnSomeDisplay(b) {
+  try {
+    return screen.getAllDisplays().some((d) => {
+      const a = d.workArea;
+      const w = Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x);
+      const h = Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y);
+      return w >= 64 && h >= 32;
+    });
+  } catch { return true; }
+}
 function windowBoundsFromSettings(key, defaults) {
   const d = defaults || { width: 560, height: 520 };
   const b = settings[key] && typeof settings[key] === 'object' ? settings[key] : {};
   const width = Math.max(360, Math.round(Number(b.width) || d.width));
   const height = Math.max(240, Math.round(Number(b.height) || d.height));
   const out = { width, height };
-  if (Number.isFinite(Number(b.x)) && Number.isFinite(Number(b.y))) { out.x = Math.round(Number(b.x)); out.y = Math.round(Number(b.y)); }
+  if (Number.isFinite(Number(b.x)) && Number.isFinite(Number(b.y))) {
+    const placed = { x: Math.round(Number(b.x)), y: Math.round(Number(b.y)), width, height };
+    if (boundsOnSomeDisplay(placed)) { out.x = placed.x; out.y = placed.y; }
+  }
   return out;
 }
 const saveBoundsTimers = new Map();
@@ -5193,26 +5294,45 @@ function scheduleWindowBoundsSave(childWin, key) {
   const timer = setTimeout(() => {
     saveBoundsTimers.delete(key);
     if (!childWin || childWin.isDestroyed()) return;
-    const { x, y, width, height } = childWin.getBounds();
-    settings[key] = { x, y, width: Math.max(360, width), height: Math.max(240, height) };
+    const maximized = childWin.isMaximized() || childWin.isFullScreen();
+    const { x, y, width, height } = maximized ? childWin.getNormalBounds() : childWin.getBounds();
+    settings[key] = { x, y, width: Math.max(360, width), height: Math.max(240, height), maximized };
     saveSettingsFile({ localOnly: true });
   }, 300);
   if (timer.unref) timer.unref();
   saveBoundsTimers.set(key, timer);
 }
+// Every clip window saves its bounds (and maximised state) under `key`.
+function trackWindowBounds(childWin, key) {
+  for (const event of ['resize', 'move', 'maximize', 'unmaximize', 'enter-full-screen', 'leave-full-screen']) {
+    childWin.on(event, () => scheduleWindowBoundsSave(childWin, key));
+  }
+}
+// A window last closed maximised opens maximised again, but only on a
+// deliberate hand-off: maximize() shows AND activates the window, so a
+// mouse-opened window that must not take the focus (keepPopup) opens at its
+// normal bounds instead.
+function restoreWindowMaximized(childWin, key, options) {
+  const saved = settings[key];
+  if (!saved || saved.maximized !== true || (options && options.keepPopup)) return;
+  try { childWin.maximize(); } catch {}
+}
 function editorBoundsFromSettings() { return windowBoundsFromSettings('editor_bounds', { width: 560, height: 520 }); }
-function scheduleEditorBoundsSave(editorWin) { scheduleWindowBoundsSave(editorWin, 'editor_bounds'); }
+// The merge windows (unify, conflict) keep their own size: two or three panes
+// with a head each need width a plain editor does not (and a widened unify
+// must not leave the next editor wide).
+function mergeBoundsFromSettings() { return windowBoundsFromSettings('merge_bounds', { width: 780, height: 560 }); }
 
 function createEditorWindow(session, presentOptions = {}) {
   const editorWin = new BrowserWindow({
     ...editorBoundsFromSettings(),
     minWidth: 360,
     minHeight: 240,
-    frame: false,
     resizable: true,
     show: false,
     skipTaskbar: false,
     title: 'BoardClip - editor',
+    ...windowControlOptions(),
     ...secondaryWindowSurfaceOptions(),
     icon: APP_ICON_PATH,
     webPreferences: {
@@ -5229,7 +5349,9 @@ function createEditorWindow(session, presentOptions = {}) {
   // keepPopup (mouse-driven opens): show WITHOUT activating and leave the popup
   // alone, so several results can be opened in a row; the popup's normal
   // blur-to-hide still fires when the user clicks into an editor.
-  editorWin.once('ready-to-show', () => { try { presentSecondaryWindow(editorWin, presentOptions); } catch {} });
+  editorWin.once('ready-to-show', () => {
+    try { restoreWindowMaximized(editorWin, 'editor_bounds', presentOptions); presentSecondaryWindow(editorWin, presentOptions); } catch {}
+  });
   editorWin.webContents.on('did-finish-load', () => {
     try {
       // Re-check now (the clipboard may have changed while the window loaded);
@@ -5245,13 +5367,14 @@ function createEditorWindow(session, presentOptions = {}) {
         focusTitle: !!session.initialFocusTitle,
         title: session.isNew ? 'New clip' : 'Edit clip',
         isNew: session.isNew,
+        windowControls: windowControlsInfo(),
         themeMode: settings.theme_mode || 'system',
         ...windowAppearance(editorWin),
       });
     } catch {}
   });
-  editorWin.on('resize', () => scheduleEditorBoundsSave(editorWin));
-  editorWin.on('move', () => scheduleEditorBoundsSave(editorWin));
+  claimZoomKeys(editorWin); // no page zoom under the native window controls
+  trackWindowBounds(editorWin, 'editor_bounds');
   editorWin.on('closed', () => {
     editSessions.delete(session.id);
     if (session.originalId != null && editWindowsByClip.get(session.originalId) === session.id) {
@@ -5430,11 +5553,11 @@ function openImageViewer(id, options = {}) {
     ...windowBoundsFromSettings('viewer_bounds', { width: 720, height: 560 }),
     minWidth: 360,
     minHeight: 240,
-    frame: false,
     resizable: true,
     show: false,
     skipTaskbar: false,
     title: 'BoardClip - image',
+    ...windowControlOptions(),
     ...secondaryWindowSurfaceOptions(),
     icon: APP_ICON_PATH,
     webPreferences: {
@@ -5446,20 +5569,25 @@ function openImageViewer(id, options = {}) {
   noteSecondarySurface(viewerWin);
   viewerWindows.set(key, viewerWin);
   viewerWin.loadFile(path.join(SCRIPT_DIR, 'viewer.html'));
-  viewerWin.once('ready-to-show', () => { try { presentSecondaryWindow(viewerWin, options); } catch {} });
+  viewerWin.once('ready-to-show', () => {
+    try { restoreWindowMaximized(viewerWin, 'viewer_bounds', options); presentSecondaryWindow(viewerWin, options); } catch {}
+  });
   viewerWin.webContents.on('did-finish-load', () => {
     try {
       viewerWin.webContents.send('viewer-init', {
         id: key,
         src: `clip-img:///${item.image}`,
         title: titleOf(item) || 'Image',
+        windowControls: windowControlsInfo(),
         themeMode: settings.theme_mode || 'system',
         ...windowAppearance(viewerWin),
       });
     } catch {}
   });
-  viewerWin.on('resize', () => scheduleWindowBoundsSave(viewerWin, 'viewer_bounds'));
-  viewerWin.on('move', () => scheduleWindowBoundsSave(viewerWin, 'viewer_bounds'));
+  // Ctrl/Cmd+= / - / 0 zoom the IMAGE, never the viewer page (claimed before
+  // the app menu, as in the popup).
+  claimImageZoomKeys(viewerWin);
+  trackWindowBounds(viewerWin, 'viewer_bounds');
   viewerWin.on('closed', () => {
     if (viewerWindows.get(key) === viewerWin) viewerWindows.delete(key);
   });
@@ -5533,14 +5661,14 @@ function openConflictWindow(conflictId) {
     return { ok: true };
   }
   const conflictWin = new BrowserWindow({
-    ...editorBoundsFromSettings(),
+    ...mergeBoundsFromSettings(),
     minWidth: 520,
     minHeight: 340,
-    frame: false,
     resizable: true,
     show: false,
     skipTaskbar: false,
     title: 'BoardClip - resolve conflict',
+    ...windowControlOptions(),
     ...secondaryWindowSurfaceOptions(),
     icon: APP_ICON_PATH,
     webPreferences: {
@@ -5553,7 +5681,9 @@ function openConflictWindow(conflictId) {
   conflictWindows.set(id, conflictWin);
   const sessionId = `conflict:${id}`;
   conflictWin.loadFile(path.join(SCRIPT_DIR, 'editor.html'));
-  conflictWin.once('ready-to-show', () => { try { conflictWin.show(); conflictWin.focus(); } catch {} });
+  conflictWin.once('ready-to-show', () => {
+    try { restoreWindowMaximized(conflictWin, 'merge_bounds'); conflictWin.show(); conflictWin.focus(); } catch {}
+  });
   conflictWin.webContents.on('did-finish-load', () => {
     try {
       conflictWin.webContents.send('editor-init', {
@@ -5561,14 +5691,15 @@ function openConflictWindow(conflictId) {
         text: '',
         noteTitle: '',
         title: 'Resolve conflict',
+        windowControls: windowControlsInfo(),
         themeMode: settings.theme_mode || 'system',
         ...windowAppearance(conflictWin),
       });
       conflictWin.webContents.send('editor-conflict', record);
     } catch {}
   });
-  conflictWin.on('resize', () => scheduleEditorBoundsSave(conflictWin));
-  conflictWin.on('move', () => scheduleEditorBoundsSave(conflictWin));
+  claimZoomKeys(conflictWin);
+  trackWindowBounds(conflictWin, 'merge_bounds');
   conflictWin.on('closed', () => {
     if (conflictWindows.get(id) === conflictWin) conflictWindows.delete(id);
   });
@@ -5589,7 +5720,8 @@ function unifyRecord(session) {
   return {
     id: `${session.id}:${session.step}`,
     unify: true,
-    title: `Unify - step ${session.step + 1} of ${session.total}`,
+    title: 'Unify clips',
+    step: { at: session.step + 1, of: session.total }, // shown in the footer (multi-step only)
     // Same length on every step: the bar must not reflow under a hovering cursor
     // when the label changes (a shorter last-step label once slid "Accept current"
     // under a click meant for "Accept incoming" and dropped the final clip).
@@ -5646,14 +5778,14 @@ function skipIdenticalUnifySteps(session) {
 
 function openUnifyWindow(session) {
   const unifyWin = new BrowserWindow({
-    ...editorBoundsFromSettings(),
+    ...mergeBoundsFromSettings(),
     minWidth: 520,
     minHeight: 340,
-    frame: false,
     resizable: true,
     show: false,
     skipTaskbar: false,
     title: 'BoardClip - unify clips',
+    ...windowControlOptions(),
     ...secondaryWindowSurfaceOptions(),
     icon: APP_ICON_PATH,
     webPreferences: {
@@ -5665,7 +5797,9 @@ function openUnifyWindow(session) {
   noteSecondarySurface(unifyWin);
   session.win = unifyWin;
   unifyWin.loadFile(path.join(SCRIPT_DIR, 'editor.html'));
-  unifyWin.once('ready-to-show', () => { try { unifyWin.show(); unifyWin.focus(); } catch {} });
+  unifyWin.once('ready-to-show', () => {
+    try { restoreWindowMaximized(unifyWin, 'merge_bounds'); unifyWin.show(); unifyWin.focus(); } catch {}
+  });
   unifyWin.webContents.on('did-finish-load', () => {
     try {
       unifyWin.webContents.send('editor-init', {
@@ -5673,14 +5807,15 @@ function openUnifyWindow(session) {
         text: '',
         noteTitle: '',
         title: 'Unify clips',
+        windowControls: windowControlsInfo(),
         themeMode: settings.theme_mode || 'system',
         ...windowAppearance(unifyWin),
       });
       unifyWin.webContents.send('editor-conflict', unifyRecord(session));
     } catch {}
   });
-  unifyWin.on('resize', () => scheduleEditorBoundsSave(unifyWin));
-  unifyWin.on('move', () => scheduleEditorBoundsSave(unifyWin));
+  claimZoomKeys(unifyWin);
+  trackWindowBounds(unifyWin, 'merge_bounds');
   unifyWin.on('closed', () => { unifySessions.delete(session.id); });
 }
 
@@ -6768,6 +6903,11 @@ function setupIPC() {
     const res = session.follow.adopt(next.text);
     diagnostics.record('editor.clipboard_follow', { event: res.event, session: session.id }, { forceFile: diagnostics.isEnabled() });
     return { following: !!res.following, event: res.event };
+  });
+  // A clip window's bar reports its height + resolved colours (Core.
+  // attachWindowControls) so the native caption buttons match it.
+  ipcMain.on('window-chrome', (event, chrome) => {
+    applyWindowChrome(BrowserWindow.fromWebContents(event.sender), chrome);
   });
   ipcMain.on('editor-close', (event, sessionId) => {
     if (String(sessionId || '').startsWith('conflict:')) {

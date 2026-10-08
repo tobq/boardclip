@@ -31,6 +31,8 @@ contextBridge.exposeInMainWorld('editorApi', {
   resolveConflict: (payload) => ipcRenderer.invoke('resolve-conflict', payload),
   unifyStep: (payload) => ipcRenderer.invoke('unify-step', sessionId, payload),
   close: () => ipcRenderer.send('editor-close', sessionId),
+  // The bar's height + resolved colours, for the native window controls.
+  windowChrome: (chrome) => ipcRenderer.send('window-chrome', chrome),
   // Clipboard follow: while the clipboard holds this note, saves update it.
   focused: () => ipcRenderer.send('editor-focus', sessionId),
   copyToClipboard: (payload) => ipcRenderer.invoke('editor-copy', sessionId, payload),

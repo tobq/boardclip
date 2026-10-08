@@ -62,11 +62,10 @@ const siteCss = read('site/styles.css');
 // 3) Anti-re-inline guard: settings markup must come ONLY from the shared
 //    renderer at runtime, never be hand-written back into a consumer's source.
 {
-  const sentinels = ['id="aiAccessEnabled"', 'id="diagnosticsEnabled"', 'id="updateBuild"', 'class="settings-footer"'];
-  const coreSrc = read('site/shared/clipboard-ui-core.js');
+  const sentinels = ['id="aiAccessEnabled"', 'id="diagnosticsEnabled"', 'id="updateBuild"', 'id="clearAll"', 'data-appearance="ui_density"'];
+  const body = ui.renderSettingsBody();
   for (const sentinel of sentinels) {
-    assert.ok(coreSrc.includes(sentinel.replace(/"/g, "'")) || coreSrc.includes(sentinel),
-      `clipboard-ui-core.js should own the settings markup (${sentinel})`);
+    assert.ok(body.includes(sentinel), `clipboard-ui-core.js should own the settings markup (${sentinel})`);
     assert.ok(!appHtml.includes(sentinel), `index.html re-inlined settings markup (${sentinel}); use Core.renderSettingsBody()`);
     assert.ok(!siteHtml.includes(sentinel), `site/index.html re-inlined settings markup (${sentinel}); use Core.renderSettingsBody()`);
   }
@@ -77,8 +76,8 @@ const siteCss = read('site/styles.css');
 //    the palettes drifted before).
 {
   const popupSelectors = [
-    'filter-tag', 'numpad-picker', 'np-btn', 'ai-client-row', 'sync-account',
-    'settings-footer', 'shortcut-btn', 'np-slot', 'group-slot',
+    'filter-tag', 'numpad-picker', 'np-btn', 'setting-row', 'settings-item', 'settings-list',
+    'input-affix', 'accent-swatch', 'shortcut-btn', 'switch',
     // the shared canon primitives (one button family, one dialog, one overline)
     'btn', 'dialog', 'overline',
   ];
@@ -220,8 +219,10 @@ const siteCss = read('site/styles.css');
     assert.ok(fs.existsSync(path.join(root, 'site/shared/vendor/cm5', vendored)), `vendored cm5/${vendored} missing`);
   }
   assert.ok(ui.renderSettingsBody().includes('id="conflictSlots"'), 'settings should expose unresolved conflict entries');
-  assert.ok(coreSrc.includes('<div class="bc-title-row" hidden>'), 'clip title input row should be hidden unless edit-title opens it');
-  assert.ok(coreSrc.includes('focusTitle: () => { showTitleInput();'), 'edit-title focus path should reveal the hidden title input row');
+  // The note's title is edited in place in the bar (no separate title row).
+  assert.ok(!coreSrc.includes('bc-title-row') && !coreSrc.includes('bc-note-title'), 'the title row is gone: the title is the bar\'s own field');
+  assert.ok(/title: barTitleField\('titleinput'/.test(coreSrc), 'the editor\'s title is the bar\'s editable field');
+  assert.ok(/const focusTitle = \(\) => \{ titleInput\.focus\(\); titleInput\.select\(\); \};/.test(coreSrc), 'edit-title focuses the bar\'s title field');
   // Editor styles live in the shared stylesheet, not re-declared per consumer.
   const declares = (css, sel) => new RegExp(`(^|[\\s,])\\.${sel}\\s*[,{]`, 'm').test(css);
   assert.ok(declares(popupCss, 'bc-editor'), 'clipboard-popup.css should define .bc-editor');
@@ -336,9 +337,11 @@ const siteCss = read('site/styles.css');
   assert.ok(/<button class="gtag-x mi" type="button"[^>]*data-action="untag"/.test(chips), 'chip × must be a keyboard-focusable button');
   assert.ok(chips.includes('data-action="tag-add"'), 'strip must include the + (tag-add) button');
   assert.ok(ui.renderClipTagChips(null).includes('data-action="tag-add"'), 'a new note (null item) still renders the +');
-  // The strip container is part of the SHARED chrome (both factories), not host markup.
+  // The strip container is part of the SHARED chrome (the one window bar both
+  // factories render), not host markup.
   const barStrips = (coreSrc.match(/class="bc-tag-strip" data-x="tags"/g) || []).length;
-  assert.strictEqual(barStrips, 2, `bc-tag-strip must appear exactly twice in core (createEditor + createImageViewer), found ${barStrips}`);
+  assert.strictEqual(barStrips, 1, `bc-tag-strip must appear exactly once in core (renderWindowBar), found ${barStrips}`);
+  assert.ok(ui.renderWindowBar({ tags: true }).includes('class="bc-tag-strip" data-x="tags"'), 'renderWindowBar carries the tag strip');
   for (const [name, html] of [['editor.html', editorHtml], ['viewer.html', viewerHtml], ['site/index.html', siteHtml]]) {
     assert.ok(html.includes('.setTags('), `${name} must drive the shared title-bar tag strip via setTags`);
     assert.ok(!html.includes('bc-tag-strip'), `${name} re-inlined the tag strip markup; it belongs to the shared chrome`);
@@ -357,6 +360,128 @@ const siteCss = read('site/styles.css');
     'tag-add must capture its anchor before awaiting commit-on-add');
   const declares = (css, sel) => new RegExp(`(^|[\\s,])\\.${sel}\\s*[,{]`, 'm').test(css);
   assert.ok(declares(popupCss, 'bc-tag-strip'), 'clipboard-popup.css should define .bc-tag-strip');
+}
+
+// 13b) Clip windows (UI overhaul G): ONE window bar (.bc-bar, Core.renderWindowBar)
+//      for the editor, the viewer and the merge view (unify + conflict); the
+//      app's windows carry the OS's own window controls (one main.js helper at
+//      every creation site, no page-drawn close); ONE surface per window;
+//      word-level merge marks from the vendored merge.js patch.
+{
+  const coreSrc = read('site/shared/clipboard-ui-core.js');
+  const mainSrc = read('main.js');
+  const editorHtml = read('editor.html');
+  const viewerHtml = read('viewer.html');
+  const fnSrc = (name) => coreSrc.slice(coreSrc.indexOf(`  function ${name}(`), coreSrc.indexOf('\n  }\n', coreSrc.indexOf(`  function ${name}(`)));
+  // One bar: every clip-window factory renders it, nothing else draws a bar.
+  for (const name of ['createEditor', 'createImageViewer', 'createReconciliationView']) {
+    assert.ok(fnSrc(name).includes('renderWindowBar({'), `${name} renders the shared .bc-bar`);
+    assert.ok(/close: !o\.nativeControls/.test(fnSrc(name)), `${name}: the close button only without native window controls`);
+  }
+  assert.ok(!/bc-editor-bar|bc-editor-title|bc-title-opts|bc-title-use|bc-actions-stacked|bc-pending-chip/.test(coreSrc + popupCss), 'the old bar / title row / stacked footer / pending pill are gone');
+  assert.strictEqual((coreSrc.match(/<div class="bc-bar">/g) || []).length, 1, 'one .bc-bar markup (renderWindowBar)');
+  const bar = ui.renderWindowBar({ title: '<span class="bc-bar-title"></span>', tags: true, actions: '<button data-x="menu"></button>' });
+  assert.ok(/^<div class="bc-bar"><span class="bc-bar-title"><\/span><div class="bc-tag-strip"[^>]*><\/div><span class="bc-bar-spacer"><\/span><div class="bc-bar-actions"><button data-x="menu"><\/button><\/div><\/div>$/.test(bar), 'bar anatomy: title, tags, spacer (drag region), actions');
+  assert.ok(!bar.includes('data-x="close"') && ui.renderWindowBar({ close: true }).includes('<span class="mi">close</span>'), 'a close only on request (the demo overlay), as the shared mi glyph');
+  // No custom close in the app's windows: every factory call there asks for native controls.
+  assert.strictEqual((editorHtml.match(/nativeControls: true/g) || []).length, 2, 'editor.html: the editor AND the merge view use the native window controls');
+  assert.ok(viewerHtml.includes('nativeControls: true'), 'viewer.html uses the native window controls');
+  for (const [name, html, api] of [['editor.html', editorHtml, 'editorApi'], ['viewer.html', viewerHtml, 'viewerApi']]) {
+    assert.ok(html.includes(`Core.attachWindowControls(init.windowControls, window.${api}.windowChrome)`), `${name} reserves the controls' room and reports the bar's colours`);
+  }
+  assert.ok(!/data-x="revert"/.test(fnSrc('createEditor')), 'Revert left the bar (it is the editor clip menu\'s row)');
+  assert.ok(fnSrc('createEditor').includes('editorSaveState(') && coreSrc.includes("saving: 'Saving...', saved: 'Saved'") && !coreSrc.includes('Saved automatically'), 'the editor footer shows the live save state, derived by the one pure editorSaveState');
+  assert.ok(!/setSaveState\('saving'\)/.test(fnSrc('createEditor')), 'no latched "Saving..." (an edit undone before the idle save must read Saved again)');
+  // Save-state rules (pure): type then undo before the idle save -> Saved;
+  // an emptied note is never written -> says so; a refused write sticks until the next edit.
+  assert.strictEqual(ui.editorSaveState({ dirty: true, hasSaved: true }), 'saving', 'an unsaved edit reads Saving...');
+  assert.strictEqual(ui.editorSaveState({ dirty: false, hasSaved: true }), 'saved', 'typed then undone before the idle save: Saved again');
+  assert.strictEqual(ui.editorSaveState({ dirty: true, blank: true, hasSaved: true }), 'blank', 'emptied note: not saved, not "Saved"');
+  assert.strictEqual(ui.editorSaveState({ dirty: true, failed: true, hasSaved: true }), 'failed', 'a refused write reads Not saved');
+  assert.strictEqual(ui.editorSaveState({ dirty: false, inFlight: true, hasSaved: true }), 'saving', 'a write in flight reads Saving...');
+  assert.strictEqual(ui.editorSaveState({ dirty: false, hasSaved: false }), '', 'a new, untouched note shows nothing');
+  for (const x of ['zoomout', 'zoomin', 'fit', 'actual']) assert.ok(fnSrc('createImageViewer').includes(`data-x="${x}"`), `viewer footer zoom control ${x}`);
+  assert.ok(!/drag_indicator/.test(coreSrc), 'the drag-out handle is the image proxy glyph, not a second menu-like grip');
+  // main.js: ONE window-options helper at every clip-window creation site.
+  for (const title of ['BoardClip - editor', 'BoardClip - image', 'BoardClip - resolve conflict', 'BoardClip - unify clips']) {
+    const at = mainSrc.indexOf(`title: '${title}'`);
+    const site = mainSrc.slice(mainSrc.lastIndexOf('new BrowserWindow({', at), mainSrc.indexOf('webPreferences', at));
+    assert.ok(site.includes('...windowControlOptions(),'), `${title}: created with windowControlOptions()`);
+    assert.ok(!/frame:\s*false|titleBarStyle|titleBarOverlay|trafficLightPosition/.test(site), `${title}: no hand-rolled frame / title-bar option`);
+  }
+  assert.strictEqual(mainSrc.split('...windowControlOptions(),').length - 1, 4, 'exactly the four clip windows get native controls (not the popup or the approval modal)');
+  assert.ok(/function windowControlOptions\(\) \{\s*if \(process\.platform === 'darwin'\) return \{ titleBarStyle: 'hidden', trafficLightPosition:/.test(mainSrc)
+    && /return \{ titleBarStyle: 'hidden', titleBarOverlay: titleBarOverlayGuess\(\) \};/.test(mainSrc), 'Windows: caption-button overlay; macOS: traffic lights');
+  assert.strictEqual(mainSrc.split('windowControls: windowControlsInfo(),').length - 1, 4, 'every clip window\'s init payload says where the controls are');
+  const barH = (/--bar-h:\s*(\d+)px;/.exec(read('site/shared/clipboard-tokens.css')) || [])[1];
+  assert.ok(barH && mainSrc.includes(`const WINDOW_BAR_H = ${barH};`), `main's first-paint caption height follows --bar-h (${barH}px)`);
+  assert.ok(/ipcMain\.on\('window-chrome', \(event, chrome\) => \{\s*applyWindowChrome\(BrowserWindow\.fromWebContents\(event\.sender\), chrome\);/.test(mainSrc), 'the page\'s colours reach setTitleBarOverlay');
+  assert.ok(/w\.setTitleBarOverlay\(overlay\)/.test(mainSrc) && /w\.setWindowButtonPosition\(trafficLightPosition\(height\)\)/.test(mainSrc), 'overlay refreshed on Windows, traffic lights re-centred on macOS');
+  // No page zoom under the native controls: the text clip windows swallow the
+  // zoom chords in main (the popup and the viewer zoom their images instead),
+  // and the bar re-reports when the scale changes anyway.
+  for (const w of ['editorWin', 'conflictWin', 'unifyWin']) assert.ok(mainSrc.includes(`claimZoomKeys(${w})`), `${w}: Ctrl/Cmd+= / - / 0 claimed in main (a zoomed page slides its bar out from under the native controls)`);
+  for (const w of ['win', 'viewerWin']) assert.ok(mainSrc.includes(`claimImageZoomKeys(${w})`), `${w}: the zoom chords zoom its images`);
+  assert.ok(/JSON\.stringify\(\[msg, [^\n]*devicePixelRatio/.test(fnSrc('attachWindowControls')), 'attachWindowControls re-reports when the page scale changes');
+  for (const [key, n] of [['editor_bounds', 1], ['merge_bounds', 2], ['viewer_bounds', 1]]) {
+    assert.strictEqual(mainSrc.split(`trackWindowBounds(`).filter((s) => s.includes(`'${key}');`)).length >= n, true, `${key}: bounds tracked`);
+  }
+  assert.ok(/const maximized = childWin\.isMaximized\(\) \|\| childWin\.isFullScreen\(\);\s*const \{ x, y, width, height \} = maximized \? childWin\.getNormalBounds\(\) : childWin\.getBounds\(\);/.test(mainSrc), 'a maximised window saves its NORMAL bounds + the flag');
+  assert.ok(/saved\.maximized !== true \|\| \(options && options\.keepPopup\)/.test(mainSrc), 'maximised state comes back only on a hand-off open (maximize() activates)');
+  // ONE surface per clip window: the roots paint it, every band is transparent.
+  const rule = (sel) => (popupCss.match(new RegExp(`(^|\\n)${sel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} \\{([^}]*)\\}`)) || [])[2] || '';
+  for (const sel of ['.bc-editor', '.bc-viewer', '.bc-reconcile']) assert.ok(/background: var\(--surface\)/.test(rule(sel)), `${sel} paints the window's one surface`);
+  for (const sel of ['.bc-bar', '.bc-find', '.bc-editor-foot', '.bc-merge-heads', '.bc-reconcile-actions', '.bc-editor-area-wrap']) {
+    assert.ok(/background: transparent/.test(rule(sel)), `${sel} is transparent (one layer, also under glass)`);
+  }
+  assert.ok(/\.bc-merge-host \.CodeMirror-merge-gap \{ background: transparent; border: 0; \}/.test(popupCss), 'the merge gap has no fill and no box');
+  assert.ok(!/CodeMirror-merge-pane[^{]*\{[^}]*opacity/.test(popupCss), 'no read-only pane dimming');
+  assert.ok(/-connect \{ fill: var\(--green-bg\); stroke: none; \}/.test(popupCss), 'connectors: one green layer, no stroke');
+  assert.ok(/\.bc-conflict-line \.CodeMirror-merge-l-inserted/.test(popupCss), 'word marks turn red inside conflicts');
+  assert.ok(/\.bc-merge-host \.CodeMirror-merge-scrolllock-wrap \{ display: none; \}/.test(popupCss), 'no unicode scroll-lock glyph');
+  // Merge heads: each title once (the bar's field), accepts in the pane heads, ONE footer row.
+  const mergeSrc = fnSrc('createReconciliationView');
+  assert.ok(mergeSrc.includes("title: barTitleField('title'") && mergeSrc.includes('data-title-pick') && mergeSrc.includes('bc-head-accept'), 'result title in the bar, title picks + accepts in the pane heads');
+  assert.ok(!/fitActions|ResizeObserver/.test(mergeSrc), 'no footer-fitting measurement (one footer layout)');
+  // Vendored merge.js: the BOARDCLIP word-diff + glyph patches.
+  const vendored = read('site/shared/vendor/cm5/merge.js');
+  for (const patch of ['function bcWordDiff(', 'function bcMarkDiff(', '"arrow_forward" : "arrow_back"', '"CodeMirror-merge-copy mi bc-decline"', 'unchanged lines', '!part[2]']) {
+    assert.ok(vendored.includes(patch), `vendored merge.js missing the ${patch} patch`);
+  }
+  // (The editable-originals "push" button keeps its arrow: that mode is never on.)
+  assert.ok(!/\\u21dd|\\u21dc|"\\u00d7"/.test(vendored.slice(vendored.indexOf('function drawConnectorsForChunk'), vendored.indexOf('if (editOriginals) {'))), 'no unicode gutter arrows');
+  const README = read('site/shared/vendor/cm5/README.md');
+  assert.ok(/bcWordDiff/.test(README) && /Material Symbols/.test(README), 'the vendored patches are documented');
+  assert.ok(vendored.includes('diff.bcRaw = raw;') && /var raw = dv\.diff\.bcRaw;/.test(vendored) && /bcRaw/.test(README), 'the word marks reuse getDiff\'s raw diff (one diff_main per update)');
+  // Heads at any width: a title pick says its full title, a narrow head drops
+  // the accept's label (container query) before the pick, the first head and
+  // the first pane's text start on the gutter with the bar title.
+  assert.ok(mergeSrc.includes('`Use this title: ${title || \'Untitled\'}`') && mergeSrc.includes('<span class="bc-accept-label">'), 'title pick tooltip = its full title; the accept label can collapse');
+  assert.ok(/\.bc-merge-head \{[^}]*container: bc-head \/ inline-size;/.test(popupCss) && /@container bc-head \(max-width: \d+px\) \{\s*\.bc-merge-head:has\(\.bc-head-title\) \.bc-accept-label \{ display: none; \}/.test(popupCss), 'a narrow head keeps the pick readable');
+  assert.ok(/\.bc-merge-head:first-child \{ padding-left: var\(--gutter\); \}/.test(popupCss) && /\.CodeMirror-merge-pane:first-child \.CodeMirror pre\.CodeMirror-line,[^{]*\{ padding-left: var\(--gutter\); \}/.test(popupCss), 'one left edge: bar title, first head, first pane text');
+  // A multi-step Unify's step lives in the footer (the bar's context gives way first).
+  assert.ok(mergeSrc.includes('class="bc-step" data-x="step">Step ${Number(step.at)} of ${Number(step.of)}') && /step: \{ at: session\.step \+ 1, of: session\.total \}/.test(mainSrc) && /step: \{ at: step \+ 1, of: total \}/.test(siteHtml), 'unify step in the footer, app and demo');
+  assert.ok(!/\bbc-chip\b/.test(popupCss + coreSrc), 'the retired .bc-chip is gone');
+  // The counter's total is fixed at build (+ taken before a whitespace rebuild),
+  // and a dismissal is keyed by WHAT the change is, so taking a neighbour (the
+  // diff re-aligns) never re-opens it (qa-app-pentest measures both end to end).
+  assert.ok(/if \(changeTotal == null\) changeTotal = info\.changes \+ takenBeforeRebuild;/.test(mergeSrc) && /\$\{total - open\} of \$\{total\} resolved/.test(mergeSrc), 'merge counter: a fixed total, resolved = total - open');
+  assert.ok(/declinedKeys\.add\(declineKeyOf\(/.test(mergeSrc) && !/declinedKeys\.(has|add)\(keyOf\(/.test(mergeSrc), 'dismissals keyed by content, never by chunk coordinates');
+  // bcWordDiff itself: word-level marks, line structure untouched, round-trips.
+  require('../site/shared/vendor/cm5/diff-match-patch.js');
+  const bcWordDiff = new Function('DIFF_EQUAL', 'DIFF_DELETE', 'DIFF_INSERT',
+    `${vendored.slice(vendored.indexOf('  var BC_WORD_END'), vendored.indexOf('  function bcMarkDiff'))}\nreturn bcWordDiff;`)(0, -1, 1);
+  const dmp = new globalThis.diff_match_patch();
+  const side = (d, keep) => d.filter(([t]) => t === 0 || t === keep).map(([, s]) => s).join('');
+  for (const [a, b] of [['on Thursday\nnext', 'on Tuesday\nnext'], ['a\nOLD line\nb', 'a\nNEW one\nb'], ['a\nb\n', 'a\nX\nb\n'], ['colour', 'color']]) {
+    const w = bcWordDiff(dmp.diff_main(a, b));
+    assert.ok(side(w, -1) === a && side(w, 1) === b, `bcWordDiff round-trips ${JSON.stringify([a, b])}`);
+  }
+  const words = bcWordDiff(dmp.diff_main('on Thursday\nnext', 'on Tuesday\nnext'));
+  assert.deepStrictEqual(words.filter(([t]) => t !== 0).map(([t, s]) => [t, s]), [[-1, 'Thursday'], [1, 'Tuesday']], 'a changed word is marked whole, not as letter fragments');
+  assert.ok(bcWordDiff(dmp.diff_main('a\nOLD line\nb', 'a\nNEW one\nb')).filter(([t]) => t !== 0).every((p) => p[2] === true), 'a rewritten line is flagged whole-line (wash only)');
+  assert.ok(bcWordDiff(dmp.diff_main('a b', 'a  b'), true).filter(([t]) => t !== 0).every((p) => p[3] === true), 'under ignoreWhitespace a whitespace-only edit is quiet');
+  assert.ok(/dmp\.diff_main\(dv\.orig\.getValue\(\), dv\.edit\.getValue\(\)\)/.test(vendored) && vendored.includes('!part[3]'), 'marks come from the raw (lossless) diff; quiet edits mark nothing');
 }
 
 // 14) Keep-your-place list + image zoom are single-sourced: both consumers
@@ -555,7 +680,7 @@ const siteCss = read('site/styles.css');
   assert.ok(!/delete-group|gtag-x/.test(bar) && !/data-action="delete-group"/.test(coreSrc), 'no hover x that deletes a group on a filter chip');
   assert.ok(/class="filter-tag group-tag active"/.test(bar), 'an active group chip');
   assert.ok((coreSrc.match(/renderChip\(\{/g) || []).length >= 3, 'the chip bar (icon facets + group chips) and the options panel chips share renderChip');
-  assert.ok(rules(popupCss).some((r) => r.sel.split(/,\s*/).includes('.filter-tag.active') && /var\(--accent-bg\)/.test(r.body) && /color:\s*var\(--accent\)/.test(r.body)), 'active chip = the accent tint');
+  assert.ok(rules(popupCss).some((r) => r.sel.split(/,\s*/).includes('.filter-tag.active') && /var\(--accent-bg\)/.test(r.body) && /color:\s*var\(--accent-text\)/.test(r.body)), 'active chip = the accent tint, its label in the accent text shade');
   assert.ok(!rules(popupCss).some((r) => /\.filter-tag\.group-tag$/.test(r.sel) && /--accent/.test(r.body)), 'idle group chips are text colours, never accent');
   assert.ok(!/borders="borderless"\][^{]*\.filter-tag/.test(popupCss), 'no filled-chip variant');
   // Selection bar in the chip bar's place, at its height.
@@ -646,7 +771,7 @@ const siteCss = read('site/styles.css');
   assert.ok(/class="np-btn current"[^>]*aria-checked="true"[^>]*data-n="4"/.test(surfaces.keypad) && /data-action="numpad-unassign" data-slot="4"/.test(surfaces.keypad), 'keypad: the current key is checked, and it can be removed');
   const npRules = rules(popupCss).filter((r) => /\.np-btn/.test(r.sel));
   assert.ok(npRules.some((r) => r.sel === '.np-btn' && /background: var\(--ctl-fill\)/.test(r.body) && /color: var\(--text\)/.test(r.body)), 'keys are neutral (--text on --ctl-fill)');
-  assert.ok(npRules.some((r) => r.sel === '.np-btn.current' && /var\(--accent-bg\)/.test(r.body) && /color: var\(--accent\)/.test(r.body)), 'the current key is the accent');
+  assert.ok(npRules.some((r) => r.sel === '.np-btn.current' && /var\(--accent-bg\)/.test(r.body) && /color: var\(--accent-text\)/.test(r.body)), 'the current key is the accent (its digit in the accent text shade)');
   assert.ok(!npRules.some((r) => /--green|--line-strong/.test(r.body)) && !/\.np-btn\.free\s*\{/.test(popupCss), 'no green / link-coloured / line-dependent key states');
   // Distinct glyphs for the image menu's open / open externally / save.
   const imgMenu = ui.renderClipMenu({ id: 'img:a.png', type: 'image', image: 'a.png' }, { items: [], groups: [] });
@@ -752,6 +877,76 @@ const siteCss = read('site/styles.css');
   // Paste auto-quote + the raw-paste chord live in the shared box.
   assert.ok(/inputEl\.addEventListener\('paste', onPaste\)/.test(coreSrc) && /Search\.quotePastedText\(/.test(coreSrc) && /e\.shiftKey && \(e\.key === 'v' \|\| e\.key === 'V'\)/.test(coreSrc),
     'a multi-word paste is quoted (Ctrl/Cmd+Shift+V pastes raw)');
+}
+
+// 31) Settings + Appearance (UI overhaul F / H), ONE source for the app and the
+//     demo: the section order, ONE row grid and ONE list style (the shared
+//     renderers, never a consumer-side template), the Appearance controls bound
+//     by the shared Core.mountSettings, and ONE appearance applier in every
+//     window, which never reads the retired accent_variant.
+{
+  const coreSrc = read('site/shared/clipboard-ui-core.js');
+  const strip = (css) => css.replace(/\/\*[\s\S]*?\*\//g, '');
+  const rules = (css) => [...strip(css).matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((m) => ({ sel: m[1].trim(), body: m[2] }));
+  const body = ui.renderSettingsBody();
+  // Section order (the conflicts section sits on top, shown only when present).
+  const heads = [...body.matchAll(/<h3>([^<]+)<\/h3>/g)].map((m) => m[1]);
+  assert.deepStrictEqual(heads, ['Sync conflicts', 'General', 'Appearance', 'Quick paste and numpad', 'Groups', 'Sync', 'AI access', 'History', 'Diagnostics'], 'settings sections in the planned order');
+  assert.ok(/<section class="settings-section hidden" id="conflictsSection">/.test(body.slice(0, 120)), 'unresolved sync conflicts surface at the top');
+  for (const head of heads) assert.ok(head.split(' ').slice(1).every((w) => w === w.toLowerCase() || w === w.toUpperCase()), `section "${head}" is sentence case`);
+  // ONE row grid: every row is a .setting-row whose cells are the label text,
+  // the control and the reserved reset column; lists are .settings-item rows on
+  // the same columns.
+  const grid = rules(popupCss).filter((r) => /grid-template-columns/.test(r.body) && /\.setting-row|\.settings-item/.test(r.sel));
+  assert.ok(grid.length === 1 && /\.setting-row/.test(grid[0].sel) && /\.settings-item/.test(grid[0].sel) && /minmax\(0, 1fr\) auto var\(--ctl-md\)/.test(grid[0].body),
+    'ONE grid (label | control | reset column) shared by .setting-row and .settings-item');
+  assert.ok(!/<div class="setting-row">\s*<label>/.test(body) && !/class="setting-row shortcut-row"/.test(body), 'no free-form row markup (label | control | reset only)');
+  for (const retired of ['np-text', 'group-slot', 'gp-name', 'sync-account', 'settings-action', 'ai-client-row', 'ai-grant-row', 'settings-footer', 'shortcut-status', 'settings-status', 'sync-status', 'ai-subhead', 'build-info-line', 'developer-update-label', 'settings-usage']) {
+    for (const [name, src] of [['clipboard-popup.css', popupCss], ['clipboard-ui-core.js', coreSrc], ['index.html', appHtml], ['site/index.html', siteHtml]]) {
+      assert.ok(!new RegExp(`\\b${retired}\\b`).test(src), `${name} still uses the retired settings class .${retired}`);
+    }
+  }
+  // Lists come from the shared renderers only.
+  for (const [name, src] of [['index.html', appHtml], ['site/index.html', siteHtml]]) {
+    assert.ok(!/class="(np-slot|settings-item|switch-wrap)/.test(src), `${name} hand-writes a settings list row (use Core.renderSettingsItem / renderNumpadSlotRows / renderGroupRows)`);
+    assert.ok(src.includes('Core.renderNumpadSlotRows(') && src.includes('Core.renderGroupRows(') && src.includes('Core.renderSettingsItem('), `${name} renders its settings lists through the shared renderers`);
+    assert.ok(src.includes('Core.mountSettings('), `${name} binds the settings view through Core.mountSettings`);
+    assert.ok(!/\.className = '(sync|settings|shortcut)-status/.test(src), `${name} sets a status line's class by hand (use Core.setSettingHelp)`);
+  }
+  const slots = ui.renderNumpadSlotRows({ 3: 'txt:a' }, () => ({ id: 'txt:a', type: 'text', text: 'hello\nworld' }));
+  assert.ok(/class="settings-item np-slot has-content clickable" data-slot-id="txt:a"/.test(slots) && /class="si-key">#3</.test(slots) && /class="icon-btn np-remove" type="button" data-slot="3"/.test(slots) && !/#1/.test(slots),
+    'numpad: only assigned slots, one list row each (copy on click, x unassigns)');
+  const grp = ui.renderGroupRows(['Work', 'AI'], { counts: new Map([['Work', 2]]), shared: new Set(['Work']), aiGroup: 'AI' });
+  assert.ok(/<input type="checkbox" class="gp-share" aria-label="Share Work with AI" checked data-group="Work">/.test(grp) && /class="icon-btn gp-del" type="button" data-group="Work"/.test(grp), 'groups: an AI-sharing switch + delete per row');
+  assert.ok(/class="gp-share" aria-label="The AI group is always shared with AI" checked disabled data-group="AI"/.test(grp) && !/data-group="AI" title="Delete group"/.test(grp), 'the AI group is always shared and never deleted');
+  assert.ok(/^<div class="settings-list-title settings-list-cols"[^>]*><span class="si-text"><\/span><span class="si-control">Shared with AI<\/span>/.test(grp) && ui.renderGroupRows([], {}) === '',
+    'the switch column is labelled above the switches (not explained only under the list)');
+  assert.ok(rules(popupCss).some((r) => r.sel.split(/,\s*/).includes('.settings-list-cols') && /grid-template-columns/.test(r.body) && r.sel.includes('.settings-item')), 'the column head rides the rows\' one grid');
+  assert.ok(!rules(popupCss).some((r) => /\.gp-name|\.np-num/.test(r.sel)), 'group names / slot numbers are not accent-coloured link look-alikes');
+  // No redundant "Off" status lines; full-width free text; units in the control.
+  assert.ok(!/'Off'/.test(appHtml), 'index.html writes an "Off" status line under a switch');
+  assert.ok(/class="setting-row stack"[^>]*>[\s\S]{0,400}id="p2pPinned" type="text"/.test(body), 'pinned peers is a full-width free-text row');
+  for (const id of ['maxAge', 'maxSize', 'aiTimeout', 'imagePreviewHeight']) {
+    assert.ok(new RegExp(`<span class="input-affix"><input id="${id}" type="number"[^>]*><span class="affix">`).test(body), `${id} carries its unit inside the control`);
+  }
+  assert.ok(!/\((px|days|GB|seconds)\)/.test(body), 'no units in labels');
+  assert.ok(/>Clear all<\/button>/.test(body) && /New group<\/button>/.test(body) && !/Clear All|New Group|Copy Diagnostics|AI Access/.test(body), 'sentence case on every label and button');
+  assert.ok(/attachScrollFade\(body, 'panel'\)/.test(coreSrc.slice(coreSrc.indexOf('function mountSettings('))), 'the settings body gets the shared scroll fade');
+  // Appearance controls: Theme, Accent (System default + presets + Custom),
+  // Surface, Glass on, Density, Corners, Image preview height.
+  for (const key of ['surface_style', 'glass_scope', 'ui_density', 'ui_corners']) assert.ok(body.includes(`data-appearance="${key}"`), `Appearance control ${key}`);
+  for (const mode of ['system', 'blue', 'teal', 'mono', 'custom']) assert.ok(body.includes(`data-accent-mode="${mode}"`), `accent swatch ${mode}`);
+  assert.ok(/\.accent-swatch\[data-accent-mode="system"\]:not\(\[aria-checked="true"\]\) \.accent-dot \{[^}]*box-shadow: inset 0 0 0 \d+px var\(--dot\)/.test(popupCss), 'System (not chosen) is a ring of its colour, never a twin of the Blue dot');
+  assert.ok(/btn\.style\.setProperty\('--dot-dark', s\.dark\.accent\)/.test(coreSrc) && /btn\.style\.setProperty\('--dot-light', s\.light\.accent\)/.test(coreSrc), 'System / Custom swatches preview their per-theme shade');
+  assert.ok(body.includes('id="themeMode"') && body.includes('id="accentCustom"') && body.includes('id="accentHue"') && body.includes('id="glassScopeRow"'), 'theme, custom colour and glass scope controls');
+  assert.ok(!/type="color"/.test(body), 'no native colour dialog (it takes focus from the popup, which hides on blur)');
+  // ONE applier in every window + the demo; nobody reads accent_variant.
+  for (const [name, src] of [['index.html', appHtml], ['site/index.html', siteHtml], ['editor.html', read('editor.html')], ['viewer.html', read('viewer.html')], ['mcp-approval.html', read('mcp-approval.html')]]) {
+    assert.ok(src.includes('Core.applyAppearance('), `${name} renders the appearance through Core.applyAppearance`);
+    assert.ok(!src.includes('Core.applyVariants('), `${name} calls applyVariants directly (the accent colour would be lost)`);
+    assert.ok(!/accent_variant/.test(src), `${name} reads the retired accent_variant`);
+  }
+  assert.ok(!/accentVariant:\s*'accent_mode'|uiDensity: 'ui_density'/.test(appHtml), 'the app no longer saves accent / density through the debug switcher');
 }
 
 console.log('ui-parity.test.js: all parity guards passed');

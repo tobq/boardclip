@@ -472,34 +472,21 @@
       if (!demoSettingsInit) initDemoSettings();
       const nmap = Core.numpadMap(clips);
       const bytes = clips.reduce((sum, clip) => sum + (clip.text || "").length, 0);
-      demoUsage.textContent = `Current: ${clips.length} items, ${(bytes / 1048576).toFixed(1)} MB`;
+      Core.setSettingHelp(demoUsage, `${clips.length} clips, ${(bytes / 1048576).toFixed(1)} MB used`);
       document.getElementById("conflictsSection").classList.add("hidden");
-      demoNumpadSlots.innerHTML = Array.from({ length: 9 }, (_, i) => {
-        const n = i + 1;
-        const id = nmap[n];
-        const clip = clips.find((item) => Core.itemId(item) === id);
-        const has = Boolean(clip);
-        const text = has ? (clip.type === "image" ? "[image]" : (clip.text || "").replace(/\n/g, " ").slice(0, 60)) : "";
-        return `<div class="np-slot${has ? " has-content" : ""}" data-slot-id="${has ? escapeHtml(id) : ""}">
-          <span class="np-num">${n}</span>
-          <span class="np-text${has ? "" : " empty"}">${has ? escapeHtml(text) : "empty"}</span>
-          ${has ? `<button class="icon-btn np-remove" data-slot="${n}" title="Unassign"><span class="mi">close</span></button>` : ""}
-        </div>`;
-      }).join("");
-      demoGroupSlots.innerHTML = labels.map((group) => {
-        const count = clips.filter((clip) => Core.isInGroup(clip, group)).length;
-        const shared = demoSharedGroups.has(group);
-        return `<div class="group-slot">
-          <span class="gp-name">${escapeHtml(group)}</span>
-          <span class="gp-count">${count} item${count !== 1 ? "s" : ""}</span>
-          <button class="icon-btn gp-share${shared ? " on" : ""}" data-group="${escapeHtml(group)}" title="${shared ? "Shared with AI - click to stop sharing" : "Share this group with AI"}"><span class="mi">smart_toy</span></button>
-          <button class="icon-btn gp-del" data-group="${escapeHtml(group)}" title="Delete group"><span class="mi">close</span></button>
-        </div>`;
-      }).join("");
+      // The same shared rows as the app (slot click copies, x unassigns, the
+      // switch shares a group with AI: the shared controller's dispatch).
+      demoNumpadSlots.innerHTML = Core.renderNumpadSlotRows(nmap, (id) => clips.find((item) => Core.itemId(item) === id));
+      document.getElementById("numpadHelp").classList.toggle("hidden", Object.keys(nmap).length >= 9);
+      const counts = new Map(labels.map((group) => [group, clips.filter((clip) => Core.isInGroup(clip, group)).length]));
+      demoGroupSlots.innerHTML = Core.renderGroupRows(labels, { counts, shared: demoSharedGroups });
     }
 
     function aiClientRowHtml(client) {
-      return `<label class="ai-client-row${client.detected ? "" : " undetected"}"><input type="checkbox"${client.enabled ? " checked" : ""}><span class="ai-dot${client.enabled ? " on" : ""}"></span><span class="ai-client-name">${escapeHtml(client.label)}${client.detected ? "" : " (not detected)"}</span></label>`;
+      return Core.renderSettingsItem({
+        title: client.label, dim: !client.detected, sub: client.detected ? "" : "Not detected on this machine",
+        toggle: { checked: client.enabled, label: `Install BoardClip in ${client.label}` },
+      });
     }
 
     // One-time sample data for the OS-only settings sections (sync providers, AI
@@ -510,6 +497,7 @@
       const isMac = detectOS() === "mac";
       const mod = isMac ? "⌘" : "Ctrl";
       document.getElementById("autoLaunch").checked = true;
+      document.getElementById("quickPasteRestore").checked = true;
       document.getElementById("maxAge").value = 30;
       document.getElementById("maxSize").value = 1.0;
       demoZoom.bindInput(document.getElementById("imagePreviewHeight"), document.getElementById("imagePreviewHeightReset"));
@@ -520,13 +508,11 @@
         { name: "OneDrive", path: isMac ? "~/Library/CloudStorage/OneDrive/BoardClip" : "C:\\Users\\you\\OneDrive\\BoardClip" },
         { name: "iCloud Drive", path: isMac ? "~/Library/Mobile Documents/com~apple~CloudDocs/BoardClip" : "C:\\Users\\you\\iCloudDrive\\BoardClip" },
       ];
-      document.getElementById("syncAccounts").innerHTML = providers.map((p) =>
-        `<label class="sync-account"><input type="checkbox" checked><span class="sync-account-main"><span class="sync-provider">${escapeHtml(p.name)}</span><span class="sync-account-path">${escapeHtml(p.path)}</span></span></label>`
-      ).join("");
-      const syncStatus = document.getElementById("syncStatus");
-      syncStatus.textContent = "3/3 providers enabled; syncs on change + every 30s";
-      syncStatus.className = "sync-status active";
-      document.getElementById("updateBuild").textContent = "BoardClip v2.1.0";
+      document.getElementById("syncAccounts").innerHTML = providers.map((p) => Core.renderSettingsItem({
+        title: p.name, sub: p.path, subMono: true, toggle: { checked: true, label: `Sync with ${p.name}` },
+      })).join("");
+      Core.setSettingHelp(document.getElementById("syncStatus"), "3 of 3 on, syncs on every change and every 30 s", "active");
+      document.getElementById("updateBuild").textContent = "Build v2.1.0";
       document.getElementById("updateDetail").textContent = "Up to date";
       document.getElementById("aiAccessEnabled").checked = true;
       document.getElementById("aiAccessBody").classList.remove("hidden");
@@ -535,9 +521,10 @@
       const undetected = aiSampleClients.filter((c) => !c.detected);
       document.getElementById("aiClientsMore").innerHTML = undetected.map(aiClientRowHtml).join("");
       const moreBtn = document.getElementById("aiMoreClients");
-      moreBtn.style.display = "";
-      moreBtn.textContent = `More clients (${undetected.length})`;
-      document.getElementById("buildInfo").innerHTML = `<span class="build-info-line">App ${isMac ? "~/.boardclip" : "C:\\Users\\you\\AppData\\Local\\BoardClip"}</span><span class="build-info-line">Build v2.1.0 (open source)</span>`;
+      moreBtn.classList.remove("hidden");
+      moreBtn.textContent = `Show all clients (${undetected.length} more)`;
+      Core.setSettingHelp(document.getElementById("aiAccessStatus"), "Running, assistants can connect", "active");
+      document.getElementById("buildInfo").textContent = isMac ? "~/Applications/BoardClip" : "C:\\Users\\you\\AppData\\Local\\BoardClip";
       wireDemoSettingsHandlers();
     }
 
@@ -548,11 +535,15 @@
       document.getElementById("addSyncFolder").addEventListener("click", () => showToast("Pick a folder in the app"));
       document.getElementById("updateNow").addEventListener("click", () => showToast("You're up to date"));
       document.getElementById("copyDiagnostics").addEventListener("click", () => showToast("Diagnostics copied"));
-      document.getElementById("aiMoreClients").addEventListener("click", () => {
-        document.getElementById("aiClientsMore").classList.toggle("hidden");
+      document.getElementById("aiMoreClients").addEventListener("click", (event) => {
+        const more = document.getElementById("aiClientsMore");
+        more.classList.toggle("hidden");
+        event.currentTarget.textContent = more.classList.contains("hidden") ? `Show all clients (${more.children.length} more)` : "Show fewer clients";
       });
       document.getElementById("aiAccessEnabled").addEventListener("change", (event) => {
-        document.getElementById("aiAccessBody").classList.toggle("hidden", !event.target.checked);
+        const on = event.target.checked;
+        document.getElementById("aiAccessBody").classList.toggle("hidden", !on);
+        Core.setSettingHelp(document.getElementById("aiAccessStatus"), on ? "Running, assistants can connect" : "Reads clips in shared groups; deletes and edits ask you first", on ? "active" : "");
       });
       document.getElementById("clearAll").addEventListener("click", () => controller.clearAll());
       document.getElementById("addGroupBtn").addEventListener("click", () => controller.addGroup(null));
@@ -1123,8 +1114,9 @@
           record: {
             id: `demo-unify-${step}`,
             unify: true,
-            title: `Unify - step ${step + 1} of ${total}`,
-            saveLabel: step + 1 >= total ? "Merge all" : "Merge & continue",
+            title: "Unify clips",
+            step: { at: step + 1, of: total },
+            saveLabel: step + 1 >= total ? "Merge & finish" : "Merge & continue",
             left: acc,
             right,
             result: { title: acc.title || right.title, text: acc.text },
@@ -1165,28 +1157,60 @@
       demoThemeMode = btn.dataset.themeMode;
       applyDemoTheme();
     });
-    // Appearance: the demo offers exactly what the app's Settings offers without
-    // the dev flag (Surface; the other axes are audit knobs there), on the app's
-    // default (auto = glass). A stored choice is filtered to that one key.
+    // Appearance: the app's Settings > Appearance controls, bound by the same
+    // Core.mountSettings and painted by the same Core.applyAppearance, kept per
+    // visitor in localStorage. "System" is the browser's accent where it shares
+    // one (CSS AccentColor), else Blue, like an OS that has none.
     const DEMO_VARIANT_KEY = "boardclip-demo-variants";
-    let demoSurface = "auto";
+    const DEMO_LOOK_KEYS = {
+      surface_style: ["surfaceStyle", ["auto", "glass", "solid"]],
+      glass_scope: ["glassScope", ["popup", "all"]],
+      ui_density: ["uiDensity", ["normal", "compact"]],
+      ui_corners: ["uiCorners", ["soft", "sharp"]],
+      accent_mode: ["accentMode", ["system", "blue", "teal", "mono", "custom"]],
+    };
+    const demoLook = { surfaceStyle: "auto", glassScope: "popup", uiDensity: "normal", uiCorners: "soft", accentMode: "system", accentCustom: "" };
     try {
-      const stored = (JSON.parse(localStorage.getItem(DEMO_VARIANT_KEY) || "{}") || {}).surfaceStyle;
-      if (["auto", "glass", "solid"].includes(stored)) demoSurface = stored;
+      const stored = JSON.parse(localStorage.getItem(DEMO_VARIANT_KEY) || "{}") || {};
+      for (const [field, allowed] of Object.values(DEMO_LOOK_KEYS)) if (allowed.includes(stored[field])) demoLook[field] = stored[field];
+      demoLook.accentCustom = Core.normalizeHexColor(stored.accentCustom) || "";
     } catch {}
-    Core.applyVariants(demoWindowEl, { surfaceStyle: demoSurface });
-    const variantHost = document.getElementById("appearanceVariants");
-    if (variantHost) {
-      const switcher = Core.createVariantSwitcher({
-        fields: ["surfaceStyle"],
-        root: demoWindowEl,
-        initial: { surfaceStyle: demoSurface },
-        onChange: (next) => {
-          try { localStorage.setItem(DEMO_VARIANT_KEY, JSON.stringify({ surfaceStyle: next.surfaceStyle })); } catch {}
-        },
-      });
-      variantHost.appendChild(switcher.el);
+    function browserAccent() {
+      try {
+        if (!window.CSS || !CSS.supports("color", "AccentColor")) return null;
+        const probe = document.createElement("span");
+        probe.style.color = "AccentColor";
+        document.body.appendChild(probe);
+        const rgb = (getComputedStyle(probe).color.match(/\d+/g) || []).slice(0, 3);
+        probe.remove();
+        return rgb.length === 3 ? Core.normalizeHexColor(rgb.map((n) => Number(n).toString(16).padStart(2, "0")).join("")) : null;
+      } catch { return null; }
     }
+    const demoSystemAccent = browserAccent();
+    function demoAppearance() {
+      const mode = demoLook.accentMode;
+      return {
+        surfaceStyle: demoLook.surfaceStyle,
+        accentVariant: ["blue", "teal", "mono"].includes(mode) ? mode : "blue",
+        accentColor: mode === "custom" ? demoLook.accentCustom || null : mode === "system" ? demoSystemAccent : null,
+        uiDensity: demoLook.uiDensity,
+        uiCorners: demoLook.uiCorners,
+      };
+    }
+    const demoSettingsUi = Core.mountSettings(settingsPanel, {
+      save(body) {
+        for (const [key, value] of Object.entries(body)) {
+          if (key === "accent_custom") demoLook.accentCustom = Core.normalizeHexColor(value) || "";
+          else if (DEMO_LOOK_KEYS[key] && DEMO_LOOK_KEYS[key][1].includes(value)) demoLook[DEMO_LOOK_KEYS[key][0]] = value;
+        }
+        try { localStorage.setItem(DEMO_VARIANT_KEY, JSON.stringify(demoLook)); } catch {}
+        Core.applyAppearance(demoWindowEl, demoAppearance());
+        demoSettingsUi.update(demoLook);
+      },
+      preview: (look) => Core.applyAppearance(demoWindowEl, { ...demoAppearance(), ...look }),
+    });
+    demoSettingsUi.update({ ...demoLook, systemAccent: demoSystemAccent, glassSupported: true });
+    Core.applyAppearance(demoWindowEl, demoAppearance());
     function syncTheme() {
       document.documentElement.dataset.systemTheme = themeQuery.matches ? "dark" : "light";
       applyDemoTheme();

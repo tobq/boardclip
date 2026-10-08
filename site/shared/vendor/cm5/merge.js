@@ -98,8 +98,11 @@
       }
       ensureDiff(dv);
       if (dv.showDifferences) {
-        updateMarks(dv.edit, dv.diff, edit, DIFF_INSERT, dv.classes);
-        updateMarks(dv.orig, dv.diff, orig, DIFF_DELETE, dv.classes);
+        // BOARDCLIP PATCH: the marks come from the word-level diff (bcMarkDiff);
+        // chunks keep diff_main's own (see bcWordDiff).
+        var markDiff = bcMarkDiff(dv);
+        updateMarks(dv.edit, markDiff, edit, DIFF_INSERT, dv.classes);
+        updateMarks(dv.orig, markDiff, orig, DIFF_DELETE, dv.classes);
       }
 
       if (dv.mv.options.connect == "align")
@@ -298,11 +301,13 @@
           chunkStart = cleanTo;
         }
       } else {
-        pending = true
+        // BOARDCLIP PATCH: part[3] = a whitespace-only edit under
+        // ignoreWhitespace (bcWordDiff): it moves the position, nothing more.
+        if (!part[3]) pending = true
         if (tp == type) {
           var end = moveOver(pos, str, true);
           var a = posMax(top, pos), b = posMin(bot, end);
-          if (!posEq(a, b))
+          if (!posEq(a, b) && !part[2] && !part[3]) // BOARDCLIP PATCH: whole-line edits get the chunk wash only
             marks.push(editor.markText(a, b, {className: cls}));
           pos = end;
         }
@@ -506,11 +511,13 @@
       var curveBot = " C " + w/2 + " " + botLpx + " " + w/2 + " " + botRpx + " -1 " + botRpx;
       attrs(dv.svg.appendChild(document.createElementNS(svgNS, "path")),
             "d", "M -1 " + topRpx + curveTop + " L " + (w + 2) + " " + botLpx + curveBot + " z",
-            "class", dv.classes.connect + (bcState === "declined" ? " bc-declined" : "")); // BOARDCLIP PATCH
+            "class", dv.classes.connect + (bcState === "declined" ? " bc-declined" : bcState === "conflict" ? " bc-conflict-connect" : "")); // BOARDCLIP PATCH
     }
     if (dv.copyButtons && bcState !== "declined") { // BOARDCLIP PATCH: no buttons on declined chunks
-      var copy = dv.copyButtons.appendChild(elt("div", dv.type == "left" ? "\u21dd" : "\u21dc",
-                                                "CodeMirror-merge-copy"));
+      // BOARDCLIP PATCH: Material Symbols glyphs (the app's one icon set, `mi`
+      // ligatures) instead of the unicode arrows; the arrow points into the Result.
+      var copy = dv.copyButtons.appendChild(elt("div", dv.type == "left" ? "arrow_forward" : "arrow_back",
+                                                "CodeMirror-merge-copy mi"));
       var editOriginals = dv.mv.options.allowEditingOriginals;
       copy.title = dv.edit.phrase(editOriginals ? "Push to left" : "Revert chunk");
       copy.chunk = chunk;
@@ -521,7 +528,7 @@
       // BOARDCLIP PATCH: a decline (dismiss) button beside the apply arrow, like
       // IntelliJ's per-chunk x. Routed via options.declineChunk in buildGap.
       if (dv.mv.options.declineChunk) {
-        var dec = dv.copyButtons.appendChild(elt("div", "\u00d7", "CodeMirror-merge-copy bc-decline"));
+        var dec = dv.copyButtons.appendChild(elt("div", "close", "CodeMirror-merge-copy mi bc-decline"));
         dec.title = dv.edit.phrase("Dismiss this change");
         dec.chunk = chunk;
         dec.bcDecline = true;
@@ -701,7 +708,12 @@
   function getDiff(a, b, ignoreWhitespace) {
     if (!dmp) dmp = new diff_match_patch();
 
-    var diff = dmp.diff_main(a, b);
+    // BOARDCLIP PATCH: keep the raw (lossless) diff_main result beside the
+    // cleaned one (diff.bcRaw) for the word-level marks (bcMarkDiff), so each
+    // update diffs the texts once. The loop below rewrites parts in place,
+    // hence the copy.
+    var raw = dmp.diff_main(a, b);
+    var diff = raw.map(function(p) { return [p[0], p[1]]; });
     // The library sometimes leaves in empty parts, which confuse the algorithm
     for (var i = 0; i < diff.length; ++i) {
       var part = diff[i];
@@ -712,7 +724,98 @@
         diff[i][1] += part[1];
       }
     }
+    diff.bcRaw = raw;
     return diff;
+  }
+
+  // BOARDCLIP PATCH: a word-level diff for the inline marks. diff_main's
+  // character diff marks coincidental letters inside rewritten words
+  // ("Wedne|sday" vs "Thur|sday"), a confetti of tiles. This copy of the diff
+  // (1) folds every equality that sits INSIDE a line (no line break) into the
+  // edits around it when it is no longer than the edits on both sides (the
+  // diff_cleanupSemantic rule, kept off line breaks), (2) widens each edit out
+  // to whole words, and (3) flags an edit that covers whole lines on every
+  // side (part[2] = true): markChanges paints those with the chunk wash only,
+  // no second layer; under ignoreWhitespace a whitespace-only edit is flagged
+  // quiet (part[3] = true): no mark, no wash. Equalities holding a line break
+  // are never folded, so the lines a change touches stay the same; the chunks
+  // (gutter buttons, connectors, the wrapper's merge logic) keep using getDiff.
+  var BC_WORD_END = /[0-9A-Za-z_\u00C0-\uFFFF]+$/;
+  var BC_WORD_START = /^[0-9A-Za-z_\u00C0-\uFFFF]+/;
+  var BC_WORD_CHAR = /[0-9A-Za-z_\u00C0-\uFFFF]/;
+  function bcWordDiff(diff, ignoreWhitespace) {
+    var parts = [], i, j;
+    for (i = 0; i < diff.length; i++) {
+      var tp = diff[i][0], str = diff[i][1];
+      if (tp == DIFF_EQUAL) { parts.push({eq: str}); continue; }
+      var last = parts[parts.length - 1];
+      if (!last || last.eq != null) { last = {del: "", ins: ""}; parts.push(last); }
+      if (tp == DIFF_DELETE) last.del += str; else last.ins += str;
+    }
+    var size = function(g) { return Math.max(g.del.length, g.ins.length); };
+    // (1) Fold short in-line equalities, smallest neighbourhoods first, until none is left.
+    for (var folded = true; folded;) {
+      folded = false;
+      for (j = 1; j < parts.length - 1; j++) {
+        var p = parts[j], a = parts[j - 1], b = parts[j + 1];
+        if (p.eq == null || a.eq != null || b.eq != null || p.eq.indexOf("\n") >= 0) continue;
+        if (p.eq.length > size(a) || p.eq.length > size(b)) continue;
+        parts.splice(j - 1, 3, {del: a.del + p.eq + b.del, ins: a.ins + p.eq + b.ins});
+        folded = true;
+        break;
+      }
+    }
+    // (2) Widen each edit to whole words: a word cut by an edit boundary moves
+    // into both sides of the edit (never past a space or a line break).
+    for (j = 0; j < parts.length; j++) {
+      var g = parts[j];
+      if (g.eq != null) continue;
+      var prev = parts[j - 1], next = parts[j + 1];
+      if (prev && prev.eq && (BC_WORD_CHAR.test(g.del.charAt(0)) || BC_WORD_CHAR.test(g.ins.charAt(0)))) {
+        var head = BC_WORD_END.exec(prev.eq);
+        if (head) { prev.eq = prev.eq.slice(0, head.index); g.del = head[0] + g.del; g.ins = head[0] + g.ins; }
+      }
+      if (next && next.eq && (BC_WORD_CHAR.test(g.del.charAt(g.del.length - 1)) || BC_WORD_CHAR.test(g.ins.charAt(g.ins.length - 1)))) {
+        var lead = BC_WORD_START.exec(next.eq);
+        if (lead) { next.eq = next.eq.slice(lead[0].length); g.del += lead[0]; g.ins += lead[0]; }
+      }
+    }
+    // Emptied equalities go; the edits either side of one become one edit.
+    var merged = [];
+    for (j = 0; j < parts.length; j++) {
+      var q = parts[j], top = merged[merged.length - 1];
+      if (q.eq != null) { if (q.eq) merged.push(q); continue; }
+      if (top && top.eq == null) { top.del += q.del; top.ins += q.ins; } else merged.push({del: q.del, ins: q.ins});
+    }
+    // (3) Back to diff form, whole-line edits flagged.
+    var out = [];
+    for (j = 0; j < merged.length; j++) {
+      var m = merged[j];
+      if (m.eq != null) { out.push([DIFF_EQUAL, m.eq]); continue; }
+      var before = merged[j - 1], after = merged[j + 1];
+      var text = m.del || m.ins;
+      var whole = (!before || /\n$/.test(before.eq) || (!m.del || m.del.charAt(0) == "\n") && (!m.ins || m.ins.charAt(0) == "\n"))
+        && (!after || after.eq.charAt(0) == "\n" || (!m.del || /\n$/.test(m.del)) && (!m.ins || /\n$/.test(m.ins)));
+      if (!text) continue;
+      var quiet = !!ignoreWhitespace && !/[^ \t]/.test(m.del) && !/[^ \t]/.test(m.ins);
+      if (m.del) out.push([DIFF_DELETE, m.del, whole, quiet]);
+      if (m.ins) out.push([DIFF_INSERT, m.ins, whole, quiet]);
+    }
+    return out;
+  }
+  // From diff_main's raw (lossless) diff, not dv.diff: getDiff's
+  // ignoreWhitespace drops whitespace-only parts, equalities included, so its
+  // positions drift (a mark ending a character early). getDiff keeps that raw
+  // diff on dv.diff.bcRaw (the texts are diffed once per update). Recomputed
+  // with dv.diff.
+  function bcMarkDiff(dv) {
+    if (dv.bcMarkSource !== dv.diff) {
+      var raw = dv.diff.bcRaw;
+      if (!raw) { if (!dmp) dmp = new diff_match_patch(); raw = dmp.diff_main(dv.orig.getValue(), dv.edit.getValue()); }
+      dv.bcMarkSource = dv.diff;
+      dv.bcMarkDiffCache = bcWordDiff(raw, dv.mv.options.ignoreWhitespace);
+    }
+    return dv.bcMarkDiffCache;
   }
 
   function getChunks(diff) {
@@ -782,6 +885,9 @@
     var widget = document.createElement("span");
     widget.className = "CodeMirror-merge-collapsed-widget";
     widget.title = cm.phrase("Identical text collapsed. Click to expand.");
+    // BOARDCLIP PATCH: say how much is folded ("12 unchanged lines").
+    var bcFolded = to - from;
+    widget.textContent = bcFolded + (bcFolded === 1 ? " unchanged line" : " unchanged lines");
     var mark = cm.markText(Pos(from, 0), Pos(to - 1), {
       inclusiveLeft: true,
       inclusiveRight: true,

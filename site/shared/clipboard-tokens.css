@@ -47,10 +47,13 @@
   --white: #ffffff;
 
   /* Brand accent (cool blue) + audition accents */
+  --blue-700: #1d4ed8;
   --blue-600: #2563eb;
   --blue-500: #3b82f6;
   --blue-400: #60a5fa;
   --blue-300: #93c5fd;
+  --teal-800: #115e59;
+  --teal-600: #0d9488;
   --teal-500: #14b8a6;
   --teal-400: #2dd4bf;
 
@@ -139,6 +142,7 @@
   --hover: color-mix(in srgb, var(--g-100) 6%, transparent);
   --accent: var(--blue-500);
   --accent-hover: var(--blue-400);
+  --accent-text: var(--blue-400);         /* accent AS TEXT: 4.5:1 on the surface and on --accent-bg */
   --accent-bg: color-mix(in srgb, var(--accent) 16%, transparent);
   --accent-bg-strong: color-mix(in srgb, var(--accent) 26%, transparent);
   --active-fg: var(--g-950);              /* dark ink on blue = 5.7:1, beats white */
@@ -172,6 +176,7 @@
   --hover: color-mix(in srgb, var(--g-900) 5%, transparent);
   --accent: var(--blue-600);
   --accent-hover: var(--blue-500);
+  --accent-text: var(--blue-700);         /* blue-600 is 4.0:1 on its own tint */
   --accent-bg: color-mix(in srgb, var(--accent) 12%, transparent);
   --accent-bg-strong: color-mix(in srgb, var(--accent) 20%, transparent);
   --active-fg: var(--white);              /* white on blue-600 = 5.1:1, beats black */
@@ -206,7 +211,9 @@
 :root[data-theme="light"][data-surface="glass"], .bc-popup[data-theme="light"][data-surface="glass"] {
   --surface: color-mix(in srgb, var(--white) 54%, transparent);   /* whiter + more translucent so the blur shows */
   --surface2: color-mix(in srgb, var(--white) 72%, transparent);  /* WHITE, not grey - brighter frost for hover/selected */
-  --input: color-mix(in srgb, var(--white) 86%, transparent);
+  /* A field is a dark WASH, as on solid light (a white one vanished on any
+     light frost and on the opaque white menu: dialogs, the demo page). */
+  --input: color-mix(in srgb, var(--g-900) 6%, transparent);
 }
 
 /* Accent: blue is the default (no block). accent-bg / mark-bg / focus ring
@@ -214,13 +221,53 @@
 :root[data-accent="teal"], .bc-popup[data-accent="teal"] {
   --accent: var(--teal-500);
   --accent-hover: var(--teal-400);
+  --accent-text: var(--teal-400);
   --mark-fg: var(--teal-400);
 }
 :root[data-accent="mono"], .bc-popup[data-accent="mono"] {
   --accent: var(--g-300);
   --accent-hover: var(--g-200);
+  --accent-text: var(--g-200);
   --active-fg: var(--g-950);
   --mark-fg: var(--g-100);
+}
+/* The light theme needs a darker step of both presets: teal-500 and g-300
+   read under 3:1 on white (check glyphs, focus ring, switch), and white ink
+   on teal-500 is 2.5:1. Each pair passes the same rule as a System / Custom
+   colour (ui-tokens.test.js checks it); teal as TEXT needs teal-800 (teal-600
+   is 3.4:1 on --g-050). */
+:root[data-theme="light"][data-accent="teal"], .bc-popup[data-theme="light"][data-accent="teal"] {
+  --accent: var(--teal-600);
+  --accent-hover: var(--teal-500);
+  --accent-text: var(--teal-800);
+  --active-fg: var(--g-950);
+  --mark-fg: var(--teal-600);
+}
+:root[data-theme="light"][data-accent="mono"], .bc-popup[data-theme="light"][data-accent="mono"] {
+  --accent: var(--g-700);
+  --accent-hover: var(--g-600);
+  --accent-text: var(--g-700);
+  --active-fg: var(--white);
+  --mark-fg: var(--g-900);
+}
+/* A System or Custom colour (Core.applyAppearance): data-accent="custom" plus
+   six inline vars, the colour's shade for each theme, the ink on it and its
+   text shade, already contrast-checked (Core.accentShades). The theme picks
+   its set, so a theme flip needs no script; hover and find-match text derive
+   here. */
+:root[data-theme="dark"][data-accent="custom"], .bc-popup[data-theme="dark"][data-accent="custom"] {
+  --accent: var(--accent-custom-dark);
+  --active-fg: var(--accent-ink-dark);
+  --accent-text: var(--accent-text-dark);
+}
+:root[data-theme="light"][data-accent="custom"], .bc-popup[data-theme="light"][data-accent="custom"] {
+  --accent: var(--accent-custom-light);
+  --active-fg: var(--accent-ink-light);
+  --accent-text: var(--accent-text-light);
+}
+:root[data-accent="custom"], .bc-popup[data-accent="custom"] {
+  --accent-hover: color-mix(in srgb, var(--accent) 82%, var(--text));
+  --mark-fg: color-mix(in srgb, var(--accent) 70%, var(--text));
 }
 
 /* Density: compact tightens spacing, the gutter and control heights. The type

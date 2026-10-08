@@ -354,7 +354,7 @@ build could re-trigger the race.
 
 ## UI Patterns
 
-- **`icon-btn` base class** — all small clickable icons share 24x24 rounded style. Variants: `.accent` (purple hover), `.danger` (red hover), `.close-btn` (bold ×)
+- **`icon-btn` base class** — all small clickable icons share 24x24 rounded style. Variants: `.accent` (accent hover), `.danger` (red hover); every close is `<span class="mi">close</span>` (`.close-btn` is a hook only; the clip windows have no page close, the OS controls replace it)
 - **Null-guard `it.text`** — always use `(it.text||'')` in templates
 - **Filter tags**: shared app/site UI. Left click includes a filter, right click excludes it, and the global clear X resets search plus include/exclude filters.
 - **Confirm dialog** shared between numpad reassign, group delete, and clear all
@@ -602,13 +602,38 @@ clear-all). All popup CSS + theme variables live in `site/shared/clipboard-popup
   `Core.installRendererErrorReporting` + `record-diagnostics` (forceFile for errors) - a thrown popup
   handler is never silent again.
 - **In-app image viewer** = `Core.createImageViewer` (the image twin of `createEditor`;
-  SAME `bc-editor-bar` chrome + foot so the two windows read as one family). Fit-to-window
+  SAME `.bc-bar` + foot so the two windows read as one family). Fit-to-window
   default, click toggles fit⇄100% at the point, wheel zooms around the cursor, drag pans
-  when zoomed (`ResizeObserver` re-fits). `viewer.html` + `viewer-preload.js` mount it;
+  when zoomed (`ResizeObserver` re-fits); the footer has zoom out / % / zoom in / Fit /
+  100%, and Ctrl/Cmd+= / - / 0 are claimed in main (`claimImageZoomKeys`, shared with the
+  popup) and zoom the image. The bar's leading image glyph is the drag-out handle (a
+  title-bar proxy icon). `viewer.html` + `viewer-preload.js` mount it;
   main's `openImageViewer` (one window per clip, `viewer_bounds` persisted via the shared
   `windowBoundsFromSettings`/`scheduleWindowBoundsSave`). `viewer_bounds` is explicitly
   defaulted and excluded from `remoteSettingsPayload` like every other machine-local window
   geometry. `open-image` IPC opens it; `open-image-external` keeps the OS-default-app path.
+- **Clip windows (editor, viewer, unify, conflict) = ONE `.bc-bar` (`Core.renderWindowBar`)
+  + the OS's own window controls (2026-10-08)**: main spreads `windowControlOptions()` into
+  all four (`titleBarStyle:'hidden'` + `titleBarOverlay` on Windows/Linux, traffic lights
+  at `trafficLightPosition` on macOS). NEVER `frame:false` there: it hides the traffic
+  lights and the Window Controls Overlay. The page (`Core.attachWindowControls`) reserves
+  the room (`env(titlebar-area-*)` on Windows, `--wc-left` 76px on macOS) and reports
+  `{height: bar.clientHeight, color, symbolColor}` (resolved by painting, `#00rrggbb` =
+  clear under glass) on every theme/accent/surface change via `window-chrome` ->
+  `setTitleBarOverlay` / `setWindowButtonPosition`. clientHeight, not the full 32px: the
+  bar's bottom hairline must run on under the caption buttons. No close button in the
+  app's bars (`nativeControls: true`); the demo overlay keeps one. ONE surface per window
+  (root `--surface`, every band transparent: one frost under glass). Bounds save the
+  NORMAL bounds + `maximized` (`trackWindowBounds`); a maximised window comes back
+  maximised only on a hand-off open, because `maximize()` shows AND activates (the QA
+  sandbox turns it into a work-area `setBounds`). Unify/conflict keep their own
+  `merge_bounds` (780 px default: two or three panes with heads). No PAGE zoom in the text
+  clip windows: main's `claimZoomKeys` swallows Ctrl/Cmd+= / - / 0 before the default
+  menu's zoom roles (a zoomed page slid its bar out from under the DIP-sized caption
+  buttons; Electron turns Ctrl+wheel into a `zoom-changed` event, not a zoom); the popup
+  and viewer zoom their IMAGES via `claimImageZoomKeys`. CDP screenshots never show the native
+  caption buttons: capture the whole window with `PrintWindow(hwnd, dc, 2)` via koffi in a
+  sandbox main eval (works on a cloaked window). macOS paths are reviewed, not run here.
 - **Title-bar tag strip** (editor, viewer, and demo) is single-sourced in
   `clipboard-ui-core.js`: `renderClipTagChips` renders inert `.filter-tag.group-tag` chips,
   keyboard-accessible hover/focus × controls, and the `+`; `updateTagStrip` keeps the current
@@ -732,16 +757,29 @@ clear-all). All popup CSS + theme variables live in `site/shared/clipboard-popup
   the base-driven rule. Identical unify steps (CRLF-only, same title) fold silently in
   main (`skipIdenticalUnifySteps`, all-identical = no window); a whitespace-only step
   shows the `.bc-merge-note` ("only differences are whitespace") and saves the newer
-  text verbatim. Footer = ONE row (Accept current hard left | Keep both + primary
-  centred, 48px gutters | Accept incoming hard right); when it does not fit, JS adds
-  `.bc-actions-stacked` and each accept moves under its own pane (heads' column widths).
-  The last step's label is `Merge & finish` (same shape as `Merge & continue`) and the
-  primary button has a fixed `min-width`: a shorter last-step label once slid "Accept
-  current" under a cursor aimed at "Accept incoming" and dropped the newest clip's tail
-  (recovered from `clipboard-edit-archive/`, which keeps the final draft of every session). **CRLF is normalized to LF at the view
+  text verbatim. Layout (UI overhaul G, 2026-10-08): the result's title is the
+  `.bc-bar`'s field (shown once); each read-only pane head = name + a title pick (only
+  when the titles differ) + its whole-side accept ("Accept current" / "Accept incoming");
+  the footer is ONE centred row in every mode (Keep both, Remove conflict on conflicts,
+  the primary; a multi-step Unify's "Step 2 of 3" sits on its left gutter, out of the flow);
+  ONE counter ("2 of 5 resolved" + a red chip while conflicts remain) whose total is the
+  change count the view was BUILT with (a taken chunk stops being a chunk, so a live count
+  made "resolved" fall as the user resolved things). A narrow head (container query) drops
+  the accept's label to its glyph before squeezing the title pick (tooltip = full title).
+  The primary still has a fixed `min-width` and the accepts live in the heads: a shorter
+  last-step label once slid "Accept current" under a cursor aimed at "Accept incoming"
+  and dropped the newest clip's tail (recovered from `clipboard-edit-archive/`). **CRLF is normalized to LF at the view
   boundary** (`toLF`) — stray `\r` defeats BOTH the addon's chunking and
   `collapseIdentical` (its ignoreWhitespace covers spaces/tabs only) and caused
   the original "all-green wall, zero matched lines" bug.
+- **Word-level merge marks (vendored `bcWordDiff`, 2026-10-08)**: chunks still come from
+  the addon's `getDiff`, the inline marks from a word-level copy of a RAW `diff_main`
+  (in-line equalities fold into the edits around them, edits widen to whole words, a
+  whole-line edit gets the wash only). Never mark from `getDiff`'s output: its
+  ignoreWhitespace DROPS whitespace-only parts, equalities included, so every later
+  position drifts (marks ended a character early). Conflict chunks: red wash on every
+  pane, red word marks (`bc-conflict-line` wrap class), red connector (`chunkState`
+  'conflict'). Patch list: `site/shared/vendor/cm5/README.md`.
 - **Collapse of identical sections (ignore-whitespace)**: the wrapper's `wsNormText`
   normalizes blank-line RUNS + trailing whitespace for the merge view when the WS
   toggle is on, so regions that differ only in blank spacing become truly identical
@@ -806,31 +844,50 @@ clear-all). All popup CSS + theme variables live in `site/shared/clipboard-popup
   `data-theme`, swapping a small disjoint token set (see the tier-(c) blocks):
   `data-surface` (glass/solid), `data-accent` (blue/teal/mono), `data-density`
   (normal/compact), `data-corners` (soft/sharp), `data-borders`
-  (bordered/borderless). Applied by shared `Core.applyVariants(root, opts)`;
-  audited live via `Core.createVariantSwitcher` (reuses `.seg`/`.seg-btn`). The
-  app renders AND APPLIES **Surface as a real user setting** + the other axes ONLY when
-  `runtime_info.debug_variants` (= `BOARDCLIP_DEBUG_VARIANTS=1`, env-only since 2026-09-02: the old
-  `!app.isPackaged ||` leaked the audit axes into every git install, and a stale
-  `ui_borders:'borderless'` made tags FILLED chips on one machine while another showed the
-  default no-bg style - off the flag every window renders the code's default look);
-  the demo renders all axes always-on, persisted to `localStorage`. Ship default
-  is graphite+blue+glass-where-supported+normal+soft. New settings keys
-  (`surface_style` + `accent_variant/ui_density/ui_corners/ui_borders`) are
-  per-machine — whitelisted in `save-settings`, deleted in `remoteSettingsPayload`.
-- **Native glass = popup pane ONLY** (editor/conflict/approval stay solid — better
-  for a text editor + a security prompt). Centralized in main.js
-  `glassSupport()` (macOS→vibrancy; Win build ≥22000→acrylic; else none),
-  `resolvedSurfaceStyle()`, `popupSurfaceOptions()` (spread into `createPopup`),
-  and `applySurfaceToPopup()` (live toggle, no window recreate: mac keeps
-  `transparent:true` always + `setVibrancy`, Win uses `setBackgroundMaterial`).
-  `notifyColorSchemeChanged` must NOT stamp an opaque bg while glass is on. The
-  renderer scrim (`:root[data-surface="glass"] body::before` with `--glass-tint`
-  + `backdrop-filter`) is in `index.html`; the OS provides the real blur behind a
-  transparent window (CSS `backdrop-filter` can't blur the desktop). Resolved
-  surface reaches the renderer via `runtime_info.surface_style` + the
-  `surface-changed` broadcast (`preload.onSurfaceChanged`); editor/conflict get
-  the non-surface axes via `appearanceVariantPayload()` on `editor-init`; the
-  approval modal via `approval-settings` (`mcp-approval-preload.onSettings`).
+  (bordered/borderless). EVERY window (popup, editor/unify/conflict, viewer, approval)
+  and the demo paint main's payload (`appearanceVariantPayload` + the window's surface,
+  `lib/appearance.js` validates/syncs) through ONE `Core.applyAppearance(root, look)`
+  (2026-10-08): `applyVariants` plus a System/Custom colour as `data-accent="custom"` +
+  six inline vars (`Core.accentShades`: per theme the colour, or the nearest shade
+  reaching 3:1 on the theme surfaces with an ink at 4.5:1, plus a TEXT shade; tokens pick
+  the set, so a theme flip needs no script). The light theme has darker Teal/Mono presets for
+  the same rule (`ui-tokens.test.js` #25 checks presets + a hue sweep). Accent used AS TEXT
+  (active chip, current numpad key, Accept, zoom step, clipboard status, link-like buttons)
+  is `--accent-text` (4.5:1 on the surface AND on the `--accent-bg` tint; the stock Windows
+  #0078d4 is only 3.97:1 as dark-theme text); `--accent` stays for fills, glyphs, focus
+  ring, switches. Each accent swatch previews the colour its choice paints in the current
+  theme (`--dot`; System not chosen = a ring, never a twin of Blue). Settings > Appearance
+  (Theme, Accent swatches + Custom hue/#rrggbb, Surface, Glass on, Density, Corners) is
+  bound by `Core.mountSettings` in app AND demo; NO native colour input (its dialog takes
+  focus and the popup blur-hides). Only Borders stays an audit axis behind
+  `BOARDCLIP_DEBUG_VARIANTS=1` (env-only since 2026-09-02: a stale `ui_borders` made tags
+  filled chips on one machine only). The popup merges partial updates (surface-changed)
+  into its last full payload: a bare `applyVariants` call resets every axis not passed.
+- **Settings body** = ONE `.setting-row` grid (label + one-line help | control | reserved
+  reset column) and ONE list row (`Core.renderSettingsItem`; numpad slots, groups, sync,
+  peers, AI clients, grants, conflicts all render through it), status lines via
+  `Core.setSettingHelp` (an empty help takes no space, so no "Off" lines). Order: conflicts
+  (top, only when present), General, Appearance, Quick paste and numpad, Groups, Sync, AI
+  access, History, Diagnostics (`ui-parity.test.js` #31).
+- **Native glass: the popup by default; every window with Settings > Appearance > "Glass on: All
+  windows"** (`glass_scope: 'all'`, per machine). Centralized in main.js: `glassSupport()`
+  (macOS -> vibrancy; Win build >= 22000 -> acrylic; else none), `resolvedSurfaceStyle()` /
+  `glassOn()` / `secondaryGlassOn()`, and ONE options source, `lib/appearance.js`
+  `surfaceWindowOptions`: `popupSurfaceOptions()` is spread into `createPopup` only, and every
+  other window (editor, viewer, unify, conflict, approval) spreads
+  `secondaryWindowSurfaceOptions()` and records what it got with `noteSecondarySurface` (a macOS
+  window created solid stays opaque until reopened). Live toggles without recreating a window:
+  `applySurfaceToPopup()` / `applySurfaceToWindows()` (mac keeps `transparent:true` +
+  `setVibrancy`, Win `setBackgroundMaterial`). Each window has exactly ONE frosted layer: its root
+  paints the one `--surface`, every inner band is transparent. `notifyColorSchemeChanged` must
+  NOT stamp an opaque bg over live glass. The glass scrim (`:root[data-surface="glass"]
+  body::before`, `--glass-tint` + `backdrop-filter`) lives in `clipboard-window.css`; the OS
+  provides the real blur behind a transparent window. Every window renders the SAME appearance
+  payload through `Core.applyAppearance` (variants, the window's own `surfaceStyle`, the accent
+  colour): the popup from `runtime_info` + the `appearance-changed` broadcast, the clip windows
+  from `editor-init` / `viewer-init` (`windowAppearance(w)`), the approval modal from
+  `approval-settings`. Clip windows also get `windowControls` and report their bar back
+  (`window-chrome` -> `applyWindowChrome`) so the native caption buttons match it.
 - `.mi.sm/.mi.lg/.mi.mid` utilities replaced the ~10 inline icon `style=`s; the
   `ui-tokens.test.js` guard fails if an inline `style="font-size` reappears.
 

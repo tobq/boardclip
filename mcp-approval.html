@@ -5,7 +5,7 @@
 </script>
 <link rel="stylesheet" href="site/shared/clipboard-popup.css">
 <link rel="stylesheet" href="site/shared/clipboard-window.css">
-<!-- The shared core: its applyTheme / applyVariants render the appearance
+<!-- The shared core: its applyTheme / applyAppearance render the appearance
      payload exactly as every other window does. -->
 <script src="site/shared/clip-search.js"></script>
 <script src="site/shared/clipboard-ui-core.js"></script>
@@ -110,7 +110,7 @@
     const root = document.documentElement;
     if (look.theme === 'light' || look.theme === 'dark') root.dataset.theme = look.theme;
     else if (look.themeMode) Core.applyTheme(root, look.themeMode, matchMedia('(prefers-color-scheme: dark)').matches);
-    Core.applyVariants(root, look);
+    Core.applyAppearance(root, look);
   }
   if (window.approval.onSettings) window.approval.onSettings(applyLook);
   if (window.approval.onAppearanceChanged) window.approval.onAppearanceChanged(applyLook);

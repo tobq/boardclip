@@ -130,7 +130,7 @@ const openRowMenu = (c, id) => c.popup.eval(`(() => {
   return !!document.querySelector('.bc-menu');
 })()`);
 const editorMenu = (page) => page.eval(`(() => {
-  const b = document.querySelector('.bc-editor-bar [data-action="clip-menu"], .bc-editor-bar button[title*="More"]');
+  const b = document.querySelector('.bc-bar [data-x="menu"]');
   if (!b) throw new Error('no menu button in the bar');
   b.click();
   return true;
@@ -574,6 +574,72 @@ const STEPS = [
     await clickCancel(c.popup);
     await c.popup.eval(`(document.getElementById('settingsBack').click(), true)`);
   } },
+  // Settings > Appearance driven like a user (swatches, the #rrggbb field, the
+  // segs), each look shot, then the same look in the editor, viewer and
+  // approval windows (ONE applier everywhere). Notes the --accent / ink each
+  // window computed. Restores the defaults so later steps see the usual look.
+  { name: 'appearance', popup: true, run: async (c) => {
+    const look = (page) => page.eval(`(() => { const r = document.documentElement, s = getComputedStyle(r); return { accent: s.getPropertyValue('--accent').trim(), ink: s.getPropertyValue('--active-fg').trim(), data: ['data-accent', 'data-density', 'data-corners'].map((a) => r.getAttribute(a)).join(',') }; })()`);
+    const settle = () => qa.sleep(350);
+    await c.popup.eval(`(document.getElementById('settingsBtn').click(), true)`);
+    await qa.sleep(300);
+    await c.popup.eval(`(() => { const b = document.querySelector('.settings-body'); b.scrollTop = document.getElementById('accentMode').closest('.settings-section').offsetTop - 8; return true; })()`);
+    const swatch = (mode) => c.popup.eval(`(document.querySelector('[data-accent-mode="${mode}"]').click(), true)`);
+    const seg = (key, value) => c.popup.eval(`(document.querySelector('.seg[data-appearance="${key}"] [data-value="${value}"]').click(), true)`);
+    const hex = (value) => c.popup.eval(`(() => { const f = document.getElementById('accentCustom'); f.value = ${J(value)}; f.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`);
+    for (const mode of ['teal', 'mono']) { await swatch(mode); await settle(); c.note(`popup-${mode}`, await look(c.popup)); await c.shot(c.popup, `appearance-${mode}`); }
+    await swatch('custom');
+    await settle();
+    for (const [name, value] of [['yellow', '#ffb900'], ['navy', '#1a1a6e']]) {
+      await hex(value); await settle();
+      c.note(`popup-custom-${name}`, await look(c.popup));
+      await c.shot(c.popup, `appearance-custom-${name}`);
+    }
+    await hex('not-a-colour'); await settle();
+    await c.shot(c.popup, 'appearance-custom-invalid');
+    await hex('#ffb900');
+    await seg('ui_density', 'compact');
+    await seg('ui_corners', 'sharp');
+    await seg('surface_style', 'auto'); // shows "Glass on" where glass is available
+    await settle();
+    c.note('popup-compact-sharp', await look(c.popup));
+    await c.shot(c.popup, 'appearance-compact-sharp');
+    await seg('surface_style', 'solid');
+    await c.popup.eval(`(document.getElementById('settingsBack').click(), true)`);
+    await settle();
+    await c.shot(c.popup, 'appearance-compact-list');
+    // The same look in every other window.
+    const ed = await c.sb.newPage(/editor\.html/, () => c.popup.eval(`window.api.openEditor(${J(c.ids.plan)}, {})`), { label: 'editor (appearance)' });
+    await ed.waitFor(`document.documentElement.getAttribute('data-accent') === 'custom'`, 'editor applied the custom accent', 8000);
+    await ed.fontsReady();
+    c.note('editor', await look(ed));
+    await c.shot(ed, 'appearance-editor');
+    const vw = await c.sb.newPage(/viewer\.html/, () => c.popup.eval(`window.api.openImage(${J(c.ids.wide)}, {})`), { label: 'viewer (appearance)' });
+    await vw.waitFor(`document.documentElement.getAttribute('data-accent') === 'custom'`, 'viewer applied the custom accent', 8000);
+    await vw.fontsReady();
+    await qa.sleep(400);
+    c.note('viewer', await look(vw));
+    await c.shot(vw, 'appearance-viewer');
+    const sql = c.items.find((i) => i.title === 'SQL: active users');
+    let req = null;
+    const ap = await c.sb.newPage(/mcp-approval\.html/, () => {
+      req = c.sb.mcp('delete_clip', { id: sql.id, expected_rev: sql.rev }, { client: 'Claude (appearance)' }).then(() => 'unexpected success', (e) => e.message);
+    }, { label: 'approval (appearance)' });
+    await ap.waitFor(`document.getElementById('explain').textContent.length > 0 && document.documentElement.getAttribute('data-accent') === 'custom'`, 'approval rendered with the custom accent');
+    await ap.fontsReady();
+    await ap.waitFor(`!document.getElementById('allowOnce').disabled`, 'allow buttons armed', 5000);
+    c.note('approval', await look(ap));
+    await c.shot(ap, 'appearance-approval');
+    await ap.eval(`(document.getElementById('deny').click(), true)`);
+    await req;
+    // A live change reaches open windows (appearance-changed): System again.
+    await c.popup.eval(`window.api.saveSettings({ accent_mode: 'system', ui_density: 'normal', ui_corners: 'soft' }).then(() => true)`);
+    await ed.waitFor(`document.documentElement.getAttribute('data-density') === null`, 'editor followed the live change', 8000);
+    c.note('editor-after-reset', await look(ed));
+    ed.close();
+    vw.close();
+    await c.sb.mainEval(`(__qa.electron.BrowserWindow.getAllWindows().filter((w) => /(editor|viewer)\\.html/.test(w.webContents.getURL())).forEach((w) => w.close()), true)`);
+  } },
   { name: 'editor', run: async (c) => {
     const ed = await c.sb.newPage(/editor\.html/, () => c.popup.eval(`window.api.openEditor(${J(c.ids.plan)}, {})`), { label: 'editor', focus: true });
     await ed.waitFor(`!!document.querySelector('textarea, .bc-editor')`, 'editor ready');
@@ -581,7 +647,7 @@ const STEPS = [
     await c.shot(ed, 'editor');
     // The bar's own find button, as a user opens it; a step that never shows
     // the bar must be reported as skipped, not shot as the plain editor.
-    await ed.click('.bc-editor-bar [data-x="find"]');
+    await ed.click('.bc-bar [data-x="find"]');
     await ed.waitFor(`!document.querySelector('.bc-find').hidden`, 'find bar open', 5000);
     await ed.eval(`(() => { const f = document.querySelector('.bc-find-input'); f.value = 'the'; f.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`);
     await ed.waitFor(`document.querySelectorAll('.bc-editor-hl mark').length > 0`, 'find matches highlighted', 5000);
@@ -600,12 +666,99 @@ const STEPS = [
     await c.shot(vw, 'viewer');
     await editorMenu(vw);
     await c.shot(vw, 'viewer-menu');
+    await escape(vw);
+    // The footer's zoom controls, as a user clicks them: zoom in twice, then 100%.
+    await vw.click('.bc-zoom [data-x="zoomin"]');
+    await vw.click('.bc-zoom [data-x="zoomin"]');
+    await qa.sleep(200);
+    c.note('viewer-zoom', await vw.eval(`({ pct: document.querySelector('[data-x="zoom"]').textContent, fit: document.querySelector('[data-x="fit"]').classList.contains('active') })`));
+    await c.shot(vw, 'viewer-zoomed');
+    await vw.click('.bc-zoom [data-x="actual"]');
+    await qa.sleep(200);
+    await c.shot(vw, 'viewer-actual');
+  } },
+  // The clip windows' bar with the OS's own window controls: the room it
+  // reserves (Window Controls Overlay on Windows) and the colours it reported
+  // for the caption buttons, then the editor at its display's work area (a
+  // real maximize() activates the window, so the sandbox sizes it instead).
+  { name: 'window-controls', run: async (c) => {
+    // Its own clip: an editor already open on a clip is re-shown, not reopened.
+    const ed = await c.sb.newPage(/editor\.html/, () => c.popup.eval(`window.api.openEditor(${J(c.ids.notes)}, {})`), { label: 'editor (window controls)' });
+    await ed.waitFor(`!!document.querySelector('.bc-bar')`, 'bar ready');
+    await ed.fontsReady();
+    await qa.sleep(400);
+    const bar = await ed.eval(`(() => {
+      const b = document.querySelector('.bc-bar'), s = getComputedStyle(b), o = navigator.windowControlsOverlay;
+      const r = o && o.getTitlebarAreaRect ? o.getTitlebarAreaRect() : null;
+      return { side: document.documentElement.dataset.windowControls, wco: !!(o && o.visible), area: r && [r.x, r.width, r.height], height: b.getBoundingClientRect().height,
+        padRight: s.paddingRight, padLeft: s.paddingLeft, close: !!b.querySelector('[data-x="close"]'), vw: innerWidth };
+    })()`);
+    const win = await c.sb.mainEval(`(() => { const w = __qa.electron.BrowserWindow.getAllWindows().find((x) => /editor\\.html/.test(x.webContents.getURL())); return { maximizable: w.isMaximizable(), minimizable: w.isMinimizable(), bounds: w.getBounds() }; })()`);
+    c.note('window-controls', { bar, win });
+    if (process.platform === 'win32' && !(bar.wco && parseFloat(bar.padRight) >= 100 && !bar.close)) throw new Error(`bar does not reserve the caption buttons: ${J(bar)}`);
+    await c.shot(ed, 'editor-window-controls');
+    // The caption buttons follow the theme: flip it and catch what the page
+    // reports to main's setTitleBarOverlay (Windows / Linux).
+    if (process.platform !== 'darwin') {
+      const findEd = `__qa.electron.BrowserWindow.getAllWindows().find((x) => /editor\\.html/.test(x.webContents.getURL()))`;
+      await c.sb.mainEval(`(() => { const w = ${findEd}; w.__overlays = []; const real = w.setTitleBarOverlay.bind(w); w.setTitleBarOverlay = (o) => { w.__overlays.push(o); return real(o); }; return true; })()`);
+      const other = c.theme === 'dark' ? 'light' : 'dark';
+      await c.popup.eval(`window.api.saveSettings({ theme_mode: ${J(other)} })`);
+      await qa.sleep(700);
+      const overlays = await c.sb.mainEval(`${findEd}.__overlays`);
+      await c.popup.eval(`window.api.saveSettings({ theme_mode: ${J(c.theme)} })`);
+      await qa.sleep(500);
+      c.note('overlay-on-theme-flip', overlays);
+      const last = overlays[overlays.length - 1];
+      const want = other === 'light' ? '#ffffff' : '#14171b';
+      if (!last || last.color !== want || last.height !== 31) throw new Error(`caption buttons did not follow the theme: ${J(overlays)}`);
+    }
+    await c.sb.mainEval(`(__qa.electron.BrowserWindow.getAllWindows().find((x) => /editor\\.html/.test(x.webContents.getURL())).maximize(), true)`);
+    await qa.sleep(700);
+    c.note('editor-maximized', await ed.eval(`({ w: innerWidth, h: innerHeight, padRight: getComputedStyle(document.querySelector('.bc-bar')).paddingRight })`));
+    await c.shot(ed, 'editor-maximized');
+    // Back to its size first: the bounds it closes with are what the next
+    // editor opens at (unify and conflict keep their own merge_bounds).
+    await c.sb.mainEval(`(__qa.electron.BrowserWindow.getAllWindows().find((x) => /editor\\.html/.test(x.webContents.getURL())).setBounds(${J(win.bounds)}), true)`);
+    await qa.sleep(500);
+    await c.sb.mainEval(`(__qa.electron.BrowserWindow.getAllWindows().filter((w) => /editor\\.html/.test(w.webContents.getURL())).forEach((w) => w.close()), true)`);
+  } },
+  // "Glass on: All windows": the editor and the unify window get the glass,
+  // and each has ONE frosted layer (every band transparent over the scrim).
+  { name: 'glass-all', run: async (c) => {
+    await c.popup.eval(`window.api.saveSettings({ surface_style: 'glass', glass_scope: 'all' })`);
+    await qa.sleep(400);
+    const bands = (page) => page.eval(`(() => {
+      const paint = (sel) => [...document.querySelectorAll(sel)].map((el) => getComputedStyle(el).backgroundColor).filter((bg) => bg !== 'rgba(0, 0, 0, 0)' && bg !== 'transparent');
+      return { surface: document.documentElement.dataset.surface, painted: ['.bc-editor', '.bc-reconcile', '.bc-bar', '.bc-find', '.bc-editor-foot', '.bc-merge-heads', '.bc-reconcile-actions', '.CodeMirror', '.CodeMirror-merge-gap', 'body'].flatMap((sel) => paint(sel).map((bg) => sel + ' ' + bg)) };
+    })()`);
+    try {
+      const ed = await c.sb.newPage(/editor\.html/, () => c.popup.eval(`window.api.openEditor(${J(c.ids.plan)}, {})`), { label: 'editor (glass)' });
+      await ed.waitFor(`document.documentElement.dataset.surface === 'glass'`, 'editor is glass', 8000);
+      await ed.fontsReady();
+      const e = await bands(ed);
+      c.note('glass-editor', e);
+      await c.shot(ed, 'glass-editor');
+      const un = await c.sb.newPage(/editor\.html/, () => c.popup.eval(`window.api.startUnify([${J(c.ids.plan)}, ${J(c.ids.notes)}])`), { label: 'unify (glass)' });
+      await un.waitFor(`!!document.querySelector('.CodeMirror-merge') && document.documentElement.dataset.surface === 'glass'`, 'glass merge mounted', 8000);
+      await qa.sleep(700);
+      const u = await bands(un);
+      c.note('glass-unify', u);
+      await c.shot(un, 'glass-unify');
+      if (e.painted.length || u.painted.length) throw new Error(`a band paints its own layer under glass: ${J([e.painted, u.painted])}`);
+    } finally {
+      await c.sb.mainEval(`(__qa.electron.BrowserWindow.getAllWindows().filter((w) => /editor\\.html/.test(w.webContents.getURL())).forEach((w) => w.close()), true)`);
+      await c.popup.eval(`window.api.saveSettings({ surface_style: 'solid', glass_scope: 'popup' })`); // the seed's look
+    }
   } },
   { name: 'unify', run: async (c) => {
     const un = await c.sb.newPage(/editor\.html/, () => c.popup.eval(`window.api.startUnify([${J(c.ids.plan)}, ${J(c.ids.notes)}])`), { label: 'unify', focus: true });
     await un.waitFor(`!!document.querySelector('.CodeMirror-merge')`, 'merge mounted');
     await un.fontsReady();
     await qa.sleep(900);
+    // The bar at the window's size: the title must not be cut while the context can give way.
+    c.note('unify-bar', await un.eval(`(() => { const w = (s) => { const e = document.querySelector(s); return e ? [Math.round(e.getBoundingClientRect().width), e.scrollWidth] : null; };
+      return { title: w('.bc-bar-title'), context: w('.bc-bar-context'), spacer: w('.bc-bar-spacer'), actions: w('.bc-bar-actions'), bar: w('.bc-bar') }; })()`));
     await c.shot(un, 'unify');
   } },
   { name: 'conflict', run: async (c) => {
@@ -613,7 +766,23 @@ const STEPS = [
     await cf.waitFor(`!!document.querySelector('.CodeMirror-merge, .bc-merge-host')`, 'conflict mounted');
     await cf.fontsReady();
     await qa.sleep(900);
+    // The word-level marks each pane shows (whole words, never letter fragments).
+    c.note('conflict-marks', await cf.eval(`[...document.querySelectorAll('.CodeMirror-merge-pane')].map((p) => [...p.querySelectorAll('[class*="-inserted"], [class*="-deleted"]')].map((m) => m.textContent))`));
     await c.shot(cf, 'conflict');
+    // The heads at the window's size and at its 520 px minimum: a differing
+    // title stays readable (the accept drops to its glyph first).
+    const heads = () => cf.eval(`(() => [...document.querySelectorAll('.bc-merge-head')].map((h) => { const t = h.querySelector('.bc-head-title'); const l = h.querySelector('.bc-accept-label'); return { w: Math.round(h.getBoundingClientRect().width), pick: t ? [Math.round(t.getBoundingClientRect().width), t.scrollWidth, t.textContent] : null, acceptLabel: l ? getComputedStyle(l).display !== 'none' : null }; }))()`);
+    const fits = (hs) => hs.every((h) => !h.pick || h.pick[0] >= Math.min(h.pick[1], 48));
+    const atSize = await heads();
+    c.note('conflict-heads', atSize);
+    if (!fits(atSize)) throw new Error(`conflict head title pick squeezed: ${J(atSize)}`);
+    await cf.send('Emulation.setDeviceMetricsOverride', { width: 520, height: 560, deviceScaleFactor: 1, mobile: false });
+    await qa.sleep(500);
+    const narrow = await heads();
+    c.note('conflict-heads-520', narrow);
+    if (narrow.some((h) => h.pick && h.pick[0] < 40)) throw new Error(`conflict head title pick unreadable at 520 px: ${J(narrow)}`);
+    await c.shot(cf, 'conflict-520');
+    await cf.send('Emulation.clearDeviceMetricsOverride');
   } },
   { name: 'approval-modal', run: async (c) => {
     const sql = c.items.find((i) => i.title === 'SQL: active users');
@@ -631,6 +800,20 @@ const STEPS = [
     const result = await req;
     if (!/denied/.test(result)) throw new Error(`approval request ended with ${result}`);
   } },
+  // The demo's editor overlay: the same shared .bc-bar as the app's window,
+  // with its own close (a web page has no OS window controls).
+  { name: 'site-editor', run: async (c) => {
+    const page = await c.sb.openWindow(c.site.url, { theme: c.theme });
+    await page.waitFor(`document.readyState === 'complete' && !!document.getElementById('demo-new-note')`, 'site loaded');
+    await page.fontsReady();
+    const bar = await page.eval(`(() => { document.getElementById('demo-new-note').click(); const o = document.getElementById('demo-editor-overlay'); o.scrollIntoView({ block: 'center' });
+      const b = o.querySelector('.bc-bar'); return { bar: !!b, close: !!(b && b.querySelector('[data-x="close"] .mi')), title: !!(b && b.querySelector('input.bc-bar-title')) }; })()`);
+    c.note('site-editor', bar);
+    if (!bar.bar || !bar.close || !bar.title) throw new Error(`demo editor bar: ${J(bar)}`);
+    await qa.sleep(300);
+    const r = await page.eval(`(() => { const e = document.querySelector('.bc-popup').getBoundingClientRect(); return { x: e.x, y: e.y, width: e.width, height: e.height }; })()`);
+    await c.shot(page, 'site-editor', { clip: { ...r, scale: 1 } });
+  } },
   { name: 'site', run: async (c) => {
     const page = await c.sb.openWindow(c.site.url, { theme: c.theme });
     await page.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false });
@@ -639,6 +822,15 @@ const STEPS = [
     await page.fontsReady();
     await qa.sleep(1500);
     await c.fullPage(page, 'site', 1280);
+    // The demo's Settings: the app's body, bound by the same Core.mountSettings
+    // and painted by the same Core.applyAppearance (Teal, then back to System).
+    await page.eval(`(() => { document.getElementById('demo-settings-button').click(); const p = document.querySelector('.bc-popup'); p.scrollIntoView({ block: 'center' }); return true; })()`);
+    await qa.sleep(300);
+    await page.eval(`(() => { const p = document.querySelector('.bc-popup'); const b = p.querySelector('.settings-body'); b.scrollTop = p.querySelector('#accentMode').closest('.settings-section').offsetTop - 8; p.querySelector('[data-accent-mode="teal"]').click(); return true; })()`);
+    await qa.sleep(300);
+    c.note('site-demo-teal', await page.eval(`(() => { const p = document.querySelector('.bc-popup'); return { accent: getComputedStyle(p).getPropertyValue('--accent').trim(), data: p.getAttribute('data-accent') }; })()`));
+    await c.shot(page, 'site-settings');
+    await page.eval(`(() => { const p = document.querySelector('.bc-popup'); p.querySelector('[data-accent-mode="system"]').click(); document.getElementById('demo-settings-back').click(); return true; })()`);
     await page.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
     await qa.sleep(800);
     await c.fullPage(page, 'site-mobile', 390);

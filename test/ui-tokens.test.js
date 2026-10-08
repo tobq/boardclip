@@ -76,21 +76,31 @@ const approvalHtml = read('mcp-approval.html');
     // Accent, density and corners are real settings now (lib/appearance.js,
     // test/appearance.test.js); the borders axis is still audit-only.
     assert.ok(mainSrc.includes("uiBorders: debugVariantsEnabled() && settings.ui_borders === 'borderless' ? 'borderless' : 'bordered',"), 'every window gets the default borders when debug variants are off');
-    assert.ok(/function applyAppearance\(look\) \{\s*if \(look\) Core\.applyVariants\(document\.documentElement, look\);\s*\}/.test(appSrc)
+    // ONE applier (Core.applyAppearance: the variants + a System / Custom
+    // accent colour) in every window; a partial update (the surface alone)
+    // merges into the popup's last full payload instead of resetting the rest.
+    assert.ok(/function applyAppearance\(look\) \{[\s\S]{0,200}currentLook = \{ \.\.\.currentLook, \.\.\.look \};[\s\S]{0,200}Core\.applyAppearance\(document\.documentElement, currentLook\);/.test(appSrc)
       && appSrc.includes("applyAppearance({ ...(rt.appearance || {}), surfaceStyle: rt.surface_style || 'solid' });")
-      && appSrc.includes('window.api.onAppearanceChanged(applyAppearance)'), 'the popup renders from runtime_info.appearance, then every appearance-changed');
-    assert.ok(!/\bs\.(accent_variant|ui_density|ui_corners|ui_borders)\b/.test(appSrc), 'the popup never reads the raw appearance settings (past the gate, or a retired key)');
+      && appSrc.includes('window.api.onAppearanceChanged(applyAppearance)')
+      && /onSurfaceChanged\(\(style\) => applyAppearance\(\{ surfaceStyle:/.test(appSrc), 'the popup renders from runtime_info.appearance, then every appearance-changed');
+    assert.ok(!/\bs\.(accent_variant|accent_mode|accent_custom|ui_density|ui_corners|ui_borders)\b/.test(appSrc), 'the popup never reads the raw appearance settings (it renders the resolved payload)');
     for (const file of ['editor.html', 'viewer.html']) {
       const src = fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
-      assert.ok(/accentVariant: init\.accentVariant, uiDensity: init\.uiDensity, uiCorners: init\.uiCorners, uiBorders: init\.uiBorders/.test(src)
-        && /onAppearanceChanged\(\(look\) => \{[\s\S]{0,240}Core\.applyVariants\(document\.documentElement, look\);/.test(src), `${file} renders from the init payload, then every appearance-changed`);
+      assert.ok(/Core\.applyAppearance\(document\.documentElement, init\);/.test(src)
+        && /onAppearanceChanged\(\(look\) => \{[\s\S]{0,240}Core\.applyAppearance\(document\.documentElement, look\);/.test(src), `${file} renders from the init payload, then every appearance-changed`);
     }
     const approvalSrc = fs.readFileSync(path.join(__dirname, '..', 'mcp-approval.html'), 'utf8');
-    assert.ok(/function applyLook\(look\) \{[\s\S]{0,400}Core\.applyVariants\(root, look\);/.test(approvalSrc)
+    assert.ok(/function applyLook\(look\) \{[\s\S]{0,400}Core\.applyAppearance\(root, look\);/.test(approvalSrc)
       && approvalSrc.includes('window.approval.onSettings(applyLook)') && approvalSrc.includes('window.approval.onAppearanceChanged(applyLook)')
-      && !/setAttribute\('data-(accent|density|corners|borders)'/.test(approvalSrc), 'the approval modal renders the same payload through the shared Core.applyVariants');
-    // The app's switcher writes the real accent setting (no retired key).
-    assert.ok(/accentVariant: 'accent_mode'/.test(appSrc) && !/accent_variant/.test(appSrc), "the app's switcher saves accent_mode");
+      && !/setAttribute\('data-(accent|density|corners|borders)'/.test(approvalSrc), 'the approval modal renders the same payload through the shared Core.applyAppearance');
+    // Accent, density, corners and the surface are real Settings > Appearance
+    // controls (Core.mountSettings, saving accent_mode / accent_custom /
+    // ui_density / ui_corners / surface_style / glass_scope); the debug
+    // switcher keeps only the audit-only Borders axis.
+    assert.ok(/fields: \['uiBorders'\]/.test(appSrc) && !/accent_variant/.test(appSrc), "the app's debug switcher holds only Borders, no retired key");
+    const mount = coreSrc.slice(coreSrc.indexOf('const APPEARANCE_SEGS'), coreSrc.indexOf('function mountSettings('));
+    for (const key of ['surface_style', 'glass_scope', 'ui_density', 'ui_corners']) assert.ok(mount.includes(`${key}: [`), `mountSettings saves ${key}`);
+    assert.ok(/save\(\{ accent_mode: 'custom', accent_custom: c \}\)/.test(coreSrc), 'a custom colour saves accent_mode + accent_custom');
   }
   assert.ok(typeof ui.createVariantSwitcher === 'function', 'core must export createVariantSwitcher');
   for (const attr of ['data-surface', 'data-accent', 'data-density', 'data-corners', 'data-borders']) {
@@ -127,7 +137,7 @@ const approvalHtml = read('mcp-approval.html');
   const model = read('lib/clipboard-model.js');
   for (const key of [
     'surface_style', 'glass_scope', 'ui_borders',
-    'popup_size', 'editor_bounds', 'viewer_bounds',
+    'popup_size', 'editor_bounds', 'merge_bounds', 'viewer_bounds',
   ]) {
     assert.ok(model.includes(`${key}:`), `DEFAULT_SETTINGS should include ${key}`);
     assert.ok(mainJs.includes(`delete remoteSave.${key}`), `${key} must be excluded from synced settings`);
@@ -319,9 +329,9 @@ const rules = (css) => [...stripComments(css).matchAll(/([^{}]+)\{([^{}]*)\}/g)]
   assert.ok(/\.dialog-preview \{[^}]*font-family: var\(--font-mono\)/.test(popupCss), '.dialog-preview carries clip text in mono');
   assert.ok(/classList\.toggle\('danger', !!o\.danger\)/.test(coreSrc), 'createDialogs.confirm must honour {danger}');
   assert.ok(/title: `Delete group[^\n]*danger: true/.test(coreSrc), 'group delete must confirm with {danger:true}');
-  assert.ok(/title: 'Clear all unpinned items\?'[^\n]*danger: true/.test(coreSrc), 'clear all must confirm with {danger:true}');
+  assert.ok(/title: 'Clear all unpinned clips\?', message: 'Pinned clips are kept\.', okLabel: 'Clear all', danger: true/.test(coreSrc), 'clear all must confirm with {danger:true}, worded like its Settings row');
   assert.ok(!/already assigned[^\n]*danger/.test(coreSrc), 'numpad replace is not destructive (no danger confirm)');
-  assert.ok(/class="btn danger settings-clear"/.test(coreSrc), 'Settings "Clear All" is the shared .btn.danger');
+  assert.ok(/class="btn danger" id="clearAll"/.test(coreSrc), 'Settings "Clear all" is the shared .btn.danger');
   // Text on red uses --danger-fg (per theme), never the accent's ink: an accent
   // variant (Mono, Custom) redefines --active-fg for ITS fill, not for red.
   assert.ok(/\.btn\.danger \{[^}]*color: var\(--danger-fg\)/.test(popupCss), '.btn.danger text is var(--danger-fg)');
@@ -356,7 +366,7 @@ const rules = (css) => [...stripComments(css).matchAll(/([^{}]+)\{([^{}]*)\}/g)]
 //     --line-faint dividers (+ the --menu-edge ring of floating surfaces).
 {
   const controls = ['.btn', '.icon-btn', '.filter-tag', '.seg', '.seg-btn', '.search-row', '.setting-row input', '.prompt-input', '.shortcut-btn',
-    '.bc-note-title', '.bc-find-input', '.sync-account', '.settings-action-card', '.setting-row code', '.bc-chip', '.list-newest', '.switch',
+    '.bc-bar-title', 'input.bc-bar-title', '.bc-find-input', '.bc-head-title', '.bc-chg-progress', '.bc-drag-handle', '.input-affix', '.accent-swatch', '.list-newest', '.switch',
     '.toast', '.dialog', '.toast-action', '.np-btn', '.bc-menu-item'];
   for (const r of rules(popupCss)) {
     const hit = r.sel.split(/,\s*/).some((sel) => controls.some((c) => sel === c || sel.startsWith(c + '.') || sel.startsWith(c + ':')));
@@ -461,6 +471,97 @@ const rules = (css) => [...stripComments(css).matchAll(/([^{}]+)\{([^{}]*)\}/g)]
     assert.ok(sp.length >= 8 && ascending(sp), `${density}: the --sp-* scale must strictly ascend (${show(sp)})`);
     const ctl = ['--ctl-sm', '--ctl-md', '--ctl-lg'];
     assert.ok(ascending(ctl), `${density}: control heights must ascend (${show(ctl)})`);
+  }
+}
+
+// 25) Accent contrast. The helper is WCAG 2 (known pairs), and every accent a
+//     window can paint passes ONE rule in both themes: the accent reaches 3:1
+//     against the theme's surfaces and its ink reaches 4.5:1 on it. System /
+//     Custom colours are shaded until they pass (Core.accentShades, any colour,
+//     light and dark OS accents included); the presets are checked against the
+//     same rule straight from the token sheet.
+{
+  const near = (a, b) => Math.abs(a - b) < 0.01;
+  assert.ok(near(ui.contrastRatio('#000000', '#ffffff'), 21) && near(ui.contrastRatio('#777777', '#ffffff'), 4.48) && near(ui.contrastRatio('#3b82f6', '#3b82f6'), 1), 'contrastRatio is the WCAG 2 ratio');
+  assert.strictEqual(ui.normalizeHexColor('#FFB900'), '#ffb900');
+  assert.strictEqual(ui.normalizeHexColor('0078d4ff'), '#0078d4');
+  assert.strictEqual(ui.normalizeHexColor('#abc'), '#aabbcc');
+  assert.strictEqual(ui.normalizeHexColor('orange'), null);
+  assert.strictEqual(ui.accentShades('not a colour'), null);
+  // The constants the shading measures against are the token values.
+  const prim = Object.fromEntries([...tokensCss.matchAll(/(--[a-z0-9-]+):\s*(#[0-9a-f]{6})\s*;/gi)].map((m) => [m[1], m[2].toLowerCase()]));
+  const SURFACE = { dark: prim['--g-800'], light: prim['--g-050'] };
+  const INKS = [prim['--g-950'], prim['--white']];
+  assert.ok(coreSrc.includes(`dark: { surface: '${SURFACE.dark}'`) && coreSrc.includes(`light: { surface: '${SURFACE.light}'`) && coreSrc.includes(`const ACCENT_INKS = ['${INKS[0]}', '${INKS[1]}']`),
+    'the accent shading measures against --g-800 / --g-050 with the --g-950 / --white inks');
+  const passes = (accent, ink, theme) => ui.contrastRatio(accent, SURFACE[theme]) >= 3 && ui.contrastRatio(accent, ink) >= 4.5 && INKS.includes(ink);
+  // Accent AS TEXT (--accent-text): 4.5:1 on the surface and on the --accent-bg
+  // tint over it. The tint shares are the token sheet's --accent-bg mixes.
+  const TINT = {};
+  for (const theme of ['dark', 'light']) {
+    const m = /--accent-bg: color-mix\(in srgb, var\(--accent\) (\d+)%, transparent\)/.exec((rules(tokensCss).find((r) => r.sel.split(/,\s*/).includes(`:root[data-theme="${theme}"]`)) || { body: '' }).body);
+    TINT[theme] = m ? Number(m[1]) / 100 : NaN;
+  }
+  assert.ok(coreSrc.includes(`surface: '${SURFACE.dark}', away: '#ffffff', tint: ${TINT.dark} }`) && coreSrc.includes(`surface: '${SURFACE.light}', away: '#000000', tint: ${TINT.light} }`),
+    'the text shading measures against the same --accent-bg tint the token sheet paints');
+  const mixHex = (a, b, t) => {
+    const rgb = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
+    const x = rgb(a); const y = rgb(b);
+    return '#' + x.map((c, i) => Math.round(c + (y[i] - c) * t).toString(16).padStart(2, '0')).join('');
+  };
+  const textPasses = (text, accent, theme) => ui.contrastRatio(text, SURFACE[theme]) >= 4.5 && ui.contrastRatio(text, mixHex(SURFACE[theme], accent, TINT[theme])) >= 4.5;
+  // System accents from both OSes (light yellow, dark navy, the defaults) and a hue sweep.
+  const sweep = [];
+  for (let h = 0; h < 360; h += 15) for (const l of [0.2, 0.5, 0.8]) {
+    const c = (1 - Math.abs(2 * l - 1)) * 0.8; const x = c * (1 - Math.abs(((h / 60) % 2) - 1)); const m = l - c / 2;
+    const [r, g, b] = h < 60 ? [c, x, 0] : h < 120 ? [x, c, 0] : h < 180 ? [0, c, x] : h < 240 ? [0, x, c] : h < 300 ? [x, 0, c] : [c, 0, x];
+    sweep.push('#' + [r, g, b].map((v) => Math.round((v + m) * 255).toString(16).padStart(2, '0')).join(''));
+  }
+  for (const color of ['#ffb900', '#fff100', '#0078d4', '#1a1a6e', '#000000', '#ffffff', '#777777', '#e81123', '#00cc6a', '#8764b8', '#007aff', '#ff9500', ...sweep]) {
+    const s = ui.accentShades(color);
+    for (const theme of ['dark', 'light']) {
+      assert.ok(passes(s[theme].accent, s[theme].ink, theme), `${color} in ${theme}: ${s[theme].accent} / ink ${s[theme].ink} must pass`);
+      assert.ok(textPasses(s[theme].text, s[theme].accent, theme), `${color} in ${theme}: text ${s[theme].text} must reach 4.5:1 on the surface and the tint`);
+    }
+  }
+  // The stock Windows accent (the System default on most installs) as text in dark.
+  assert.notStrictEqual(ui.accentShades('#0078d4').dark.text, '#0078d4', '#0078d4 is under 4.5:1 as dark-theme text, so its text shade lightens');
+  // A colour that already passes is kept as is (the OS blue, both themes).
+  assert.strictEqual(ui.accentShades('#0078d4').light.accent, '#0078d4');
+  assert.strictEqual(ui.accentShades('#ffb900').dark.accent, '#ffb900');
+  assert.notStrictEqual(ui.accentShades('#ffb900').light.accent, '#ffb900', 'a light yellow darkens in the light theme');
+  assert.notStrictEqual(ui.accentShades('#1a1a6e').dark.accent, '#1a1a6e', 'a dark navy lightens in the dark theme');
+  // Presets, resolved from the token sheet (theme block, then the variant blocks).
+  const block = (sel) => (rules(tokensCss).find((r) => r.sel.split(/,\s*/).includes(sel)) || { body: '' }).body;
+  const decl = (body, name) => { const m = new RegExp(`${name}:\\s*var\\((--[a-z0-9-]+)\\)`).exec(body); return m ? prim[m[1]] : undefined; };
+  for (const theme of ['dark', 'light']) {
+    const base = block(`:root[data-theme="${theme}"]`);
+    for (const preset of ['blue', 'teal', 'mono']) {
+      const layers = [base, block(`:root[data-accent="${preset}"]`), block(`:root[data-theme="${theme}"][data-accent="${preset}"]`)];
+      let accent; let ink; let text;
+      for (const body of layers) { accent = decl(body, '--accent') || accent; ink = decl(body, '--active-fg') || ink; text = decl(body, '--accent-text') || text; }
+      assert.ok(accent && ink && passes(accent, ink, theme), `preset ${preset} in ${theme}: ${accent} / ink ${ink} must pass`);
+      assert.ok(text && textPasses(text, accent, theme), `preset ${preset} in ${theme}: text ${text} must reach 4.5:1 on the surface and the tint`);
+      // Its Settings swatch previews exactly that accent in that theme.
+      const swatchSel = `${theme === 'light' ? ':where(:root, .bc-popup)[data-theme="light"] ' : ''}.accent-swatch${preset === 'blue' ? '' : `[data-accent-mode="${preset}"]`}`;
+      const swatch = (rules(popupCss).find((r) => r.sel === swatchSel) || { body: '' }).body;
+      const dotVar = /--dot: var\((?:--dot-(?:dark|light), var\()?(--[a-z0-9-]+)\)/.exec(swatch);
+      assert.ok(dotVar && prim[dotVar[1]] === accent, `the ${preset} swatch in ${theme} must preview ${accent} (got ${dotVar && prim[dotVar[1]]})`);
+    }
+  }
+  // The custom accent's tokens: per-theme pair from the applier, derived hover / mark.
+  assert.ok(/--accent: var\(--accent-custom-dark\);\s*--active-fg: var\(--accent-ink-dark\);\s*--accent-text: var\(--accent-text-dark\);/.test(block(':root[data-theme="dark"][data-accent="custom"]'))
+    && /--accent: var\(--accent-custom-light\);\s*--active-fg: var\(--accent-ink-light\);\s*--accent-text: var\(--accent-text-light\);/.test(block(':root[data-theme="light"][data-accent="custom"]')), 'data-accent="custom" picks the theme set');
+  assert.ok(/--accent-hover: color-mix\(in srgb, var\(--accent\)/.test(block(':root[data-accent="custom"]')) && /--mark-fg: color-mix\(in srgb, var\(--accent\)/.test(block(':root[data-accent="custom"]')), 'custom hover / mark derive from the accent');
+  assert.ok(/'--accent-custom-dark', '--accent-ink-dark', '--accent-text-dark', '--accent-custom-light', '--accent-ink-light', '--accent-text-light'/.test(coreSrc), 'applyAppearance sets (and clears) the six custom vars');
+  assert.ok(/--input: color-mix\(in srgb, var\(--g-900\) \d+%, transparent\)/.test(block(':root[data-theme="light"][data-surface="glass"]')),
+    'light glass fields are a dark wash (a white field vanished on light frost, on the demo page and on the opaque white menu)');
+  // Accent AS TEXT reads --accent-text everywhere (an active chip, the current
+  // numpad key, Accept, a zoom step, the clipboard status, link-like buttons);
+  // --accent stays for fills, glyphs, the focus ring and switches.
+  for (const sel of ['.qh-prefix', '.search-hint-fix', '.filter-tag.active', '.list-newest:hover', '.np-btn.current', '.shortcut-btn.recording', '.bc-editor-clip.on', '.bc-zoom .btn.quiet.active', '.bc-merge-head .bc-head-accept', '.bc-merge-note button', '.toast-action']) {
+    const own = rules(popupCss).filter((x) => x.sel.split(/,\s*/).includes(sel) && /(^|[;{\s])color:/.test(x.body));
+    assert.ok(own.length && own.every((r) => /(^|[;{\s])color: var\(--accent-text\)/.test(r.body)), `${sel} is accent TEXT: it must use --accent-text (4.5:1), not --accent`);
   }
 }
 

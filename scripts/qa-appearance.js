@@ -277,6 +277,26 @@ const SETUP = `(() => {
     const popAttrs = await popupPage.eval(attrs);
     const edAttrs = await ed1.eval(attrs);
     check('popup and editor render the same accent / density / corners / borders', JSON.stringify(popAttrs) === JSON.stringify(edAttrs) && popAttrs[1] === 'compact' && popAttrs[2] === 'sharp', JSON.stringify({ popAttrs, edAttrs }));
+    // The colour itself (Core.applyAppearance): a Custom accent paints the
+    // contrast-checked shade for the window's theme, with its ink, in the popup
+    // and the editor alike; back on a preset the inline colour is cleared.
+    const painted = `(() => { const r = document.documentElement, s = getComputedStyle(r); return { theme: r.getAttribute('data-theme'), accent: s.getPropertyValue('--accent').trim(), ink: s.getPropertyValue('--active-fg').trim(), data: r.getAttribute('data-accent'), inline: r.style.getPropertyValue('--accent-custom-dark') }; })()`;
+    for (const color of ['#ffb900', '#1a1a6e']) {
+      await save({ accent_mode: 'custom', accent_custom: color });
+      await qa.sleep(250);
+      const pop = await popupPage.eval(painted);
+      const ed = await ed1.eval(painted);
+      const want = await popupPage.eval(`window.BoardClipCore.accentShades(${JSON.stringify(color)})`);
+      const exp = want[pop.theme === 'light' ? 'light' : 'dark'];
+      check(`custom ${color}: popup + editor paint the ${pop.theme} shade and its ink`, pop.data === 'custom' && pop.accent === exp.accent && pop.ink === exp.ink
+        && ed.accent === pop.accent && ed.ink === pop.ink, JSON.stringify({ pop, ed: ed.accent, exp }));
+    }
+    await save({ accent_mode: 'teal' });
+    await qa.sleep(250);
+    const teal = await ed1.eval(painted);
+    check('a preset clears the inline accent colour', teal.data === 'teal' && teal.inline === '', JSON.stringify(teal));
+    await save({ accent_mode: 'system' });
+    await qa.sleep(250);
     // OS accent change, simulated on the real event path (Windows reads the
     // accent through windows-dwm, so that read is what changes).
     const DWM = `__qa.require(__qa.require('path').join(__qa.root, 'lib', 'windows-dwm.js'))`;

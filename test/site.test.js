@@ -75,13 +75,13 @@ assert.ok(marketing.length > 1000, 'the demo scripts load from relative shared/ 
     `the demo frame must be the app popup's default ${winW}x${winH}`);
   assert.ok(!/afterListHtml/.test(siteHtml), 'the demo passes afterListHtml (the app popup has no footer strip)');
   assert.ok(!/demo-foot|random-query|demo-guide|runGuide|guideTimer/.test(siteHtml + siteCss), 'the demo footer strip or the ghost cursor is back');
-  const appFields = (appHtml.match(/\n\s*: \[('surfaceStyle'[^\]]*)\];/) || [])[1];
-  assert.ok(appFields, "index.html's non-debug appearance field list was not found");
-  const siteFields = (siteHtml.match(/fields: \[([^\]]*)\],/) || [])[1];
-  assert.ok(siteFields, 'the demo must pass an explicit appearance field list to createVariantSwitcher');
-  assert.deepStrictEqual(siteFields.replace(/["']/g, '').split(/,\s*/), appFields.replace(/["']/g, '').split(/,\s*/),
-    'the demo shows the same Appearance rows as the app (no audit axes)');
-  assert.ok(!/uiBorders|uiCorners|accentVariant|uiDensity/.test(siteHtml), 'the demo applies or stores an audit axis');
+  // The Appearance rows come from the shared settings body and are bound by the
+  // shared Core.mountSettings on both sides; the demo paints them through the
+  // same Core.applyAppearance. Only the audit-only Borders axis stays out.
+  for (const [name, src] of [['index.html', appHtml], ['site/index.html', siteHtml]]) {
+    assert.ok(src.includes('Core.mountSettings(') && src.includes('Core.applyAppearance('), `${name} binds and paints Appearance through the shared core`);
+  }
+  assert.ok(!/uiBorders|ui_borders|createVariantSwitcher/.test(siteHtml), 'the demo applies or stores the audit-only Borders axis');
 }
 
 // 6) Copy: no em dashes, no slop vocabulary in the marketing text.

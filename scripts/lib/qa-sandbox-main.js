@@ -86,6 +86,13 @@ proto.show = function show() { conceal(this); return nativeShowInactive.call(thi
 proto.showInactive = function showInactive() { conceal(this); return nativeShowInactive.call(this); };
 proto.focus = function focus() { record('window_focus_blocked'); };
 proto.moveTop = function moveTop() {};
+// maximize() shows AND activates a window (SW_MAXIMIZE), cloak or not: in the
+// sandbox it is recorded and the window takes its display's work area instead
+// (setBounds never shows or activates), so a maximised layout can be shot.
+proto.maximize = function maximize() {
+  record('maximize_blocked');
+  try { this.setBounds(electron.screen.getDisplayMatching(this.getBounds()).workArea); } catch {}
+};
 proto.setOpacity = function setOpacity(value) { return nativeSetOpacity.call(this, transparent.has(this) ? 0 : value); };
 proto.setIgnoreMouseEvents = function setIgnoreMouseEvents(ignore, opts) {
   return nativeSetIgnoreMouseEvents.call(this, transparent.has(this) ? true : ignore, opts);

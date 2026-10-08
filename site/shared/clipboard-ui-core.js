@@ -1086,7 +1086,7 @@
       const label = escapeHtml(group);
       html += `<span class="filter-tag group-tag" data-strip-group="${label}" title="${label}"><span class="tag-label">${label}</span><button class="gtag-x mi" type="button" data-action="untag" data-group="${label}" title="Remove from ${label}" aria-label="Remove ${label}">close</button></span>`;
     }
-    html += '<button class="icon-btn tag-add-btn" type="button" data-action="tag-add" title="Add to group" aria-label="Add to group"><span class="mi sm">add</span></button>';
+    html += '<button class="icon-btn tag-add-btn" type="button" data-action="tag-add" title="Add to group" aria-label="Add to group"><span class="mi">add</span></button>';
     return html;
   }
   // ONE menu-content builder for the multi-select bulk menu (shared by the
@@ -2258,134 +2258,346 @@
       if (o.barEl._bcHtml !== html) { o.barEl.innerHTML = html; o.barEl._bcHtml = html; }
     }
   }
-  // The full settings panel body, shared verbatim by the app and the demo. The
-  // app fills the dynamic containers (numpadSlots/groupSlots/syncAccounts/
-  // aiClients/buildInfo/usage) from window.api; the demo fills them with sample
-  // data. One source means the two settings panels are structurally identical.
+  // ---- Settings ---------------------------------------------------------------
+  // The full settings panel body, shared verbatim by the app and the demo; each
+  // fills the dynamic parts (numpad slots, groups, sync providers, peers, AI
+  // clients, grants, conflicts, status lines) through the shared renderers
+  // below. ONE row grid (.setting-row: label + optional one-line help | control
+  // | reset column) and ONE list style (renderSettingsItem) share the three
+  // columns, so every control and every row action ends on the same right edge.
+  function settingAttrs(attrs) {
+    let out = '';
+    for (const [key, value] of Object.entries(attrs || {})) {
+      if (value == null || value === false) continue;
+      out += value === true ? ` ${key}` : ` ${key}="${escapeHtml(value)}"`;
+    }
+    return out;
+  }
+  // help: [[id, text, cls], ...] = one-line help / status lines under the label.
+  // An empty one takes no space, so a status line costs nothing until it says
+  // something.
+  function settingTextHtml(o) {
+    const idAttr = o.labelId ? ` id="${o.labelId}"` : '';
+    const label = o.label == null ? ''
+      : o.forId ? `<label class="setting-label" for="${o.forId}"${idAttr}>${o.label}</label>`
+        : `<span class="setting-label"${idAttr}>${o.label}</span>`;
+    const help = (o.help || []).map(([id, text, cls]) => `<span class="setting-help${cls ? ` ${cls}` : ''}"${id ? ` id="${id}"` : ''}>${text || ''}</span>`).join('');
+    return `<span class="setting-text">${label}${help}</span>`;
+  }
+  function settingRowHtml(o) {
+    return `<div class="setting-row${o.cls ? ` ${o.cls}` : ''}"${o.id ? ` id="${o.id}"` : ''}>${settingTextHtml(o)}`
+      + (o.control ? `<span class="setting-control">${o.control}</span>` : '')
+      + (o.reset ? `<span class="setting-reset">${o.reset}</span>` : '')
+      + '</div>';
+  }
+  function switchRowHtml(o) {
+    return `<label class="setting-row switch-row" for="${o.id}">${settingTextHtml({ ...o, forId: null })}`
+      + `<input id="${o.id}" type="checkbox"><span class="switch" aria-hidden="true"></span></label>`;
+  }
+  function settingSegHtml(key, label, options) {
+    return `<div class="seg" role="group" aria-label="${label}" data-appearance="${key}">`
+      + options.map(([value, text]) => `<button type="button" class="seg-btn" data-value="${value}">${text}</button>`).join('')
+      + '</div>';
+  }
+  function settingResetHtml(id, title) {
+    return `<button class="icon-btn shortcut-reset" id="${id}" type="button" title="${title}" aria-label="${title}"><span class="mi">restart_alt</span></button>`;
+  }
+  // A number field carries its unit inside the control, so no label needs one.
+  function settingNumberHtml(id, unit, attrs) {
+    return `<span class="input-affix"><input id="${id}" type="number"${attrs || ''}><span class="affix">${unit}</span></span>`;
+  }
+  function settingSectionHtml(title, inner) {
+    return `<section class="settings-section"><h3>${title}</h3>${inner}</section>`;
+  }
+  const ACCENT_CHOICES = [['system', 'System'], ['blue', 'Blue'], ['teal', 'Teal'], ['mono', 'Mono'], ['custom', 'Custom']];
+  function modKeyLabel() {
+    return typeof navigator !== 'undefined' && /Mac/i.test(navigator.platform || '') ? 'Cmd' : 'Ctrl';
+  }
   function renderSettingsBody() {
-    return `
-    <label class="setting-row switch-row" for="autoLaunch">
-      <span>Launch on startup</span>
-      <input id="autoLaunch" type="checkbox">
-      <span class="switch" aria-hidden="true"></span>
-    </label>
-    <div class="setting-row">
-      <label>Theme</label>
-      <div class="seg" id="themeMode" role="group" aria-label="Theme">
-        <button type="button" class="seg-btn" data-theme-mode="system" title="Follow your desktop">System</button>
-        <button type="button" class="seg-btn" data-theme-mode="light" title="Always light">Light</button>
-        <button type="button" class="seg-btn" data-theme-mode="dark" title="Always dark">Dark</button>
-      </div>
-    </div>
-    <div class="setting-row">
-      <label for="imagePreviewHeight">Image preview height (px)</label>
-      <div class="shortcut-control">
-        <input id="imagePreviewHeight" type="number" min="${IMAGE_ZOOM.min}" max="${IMAGE_ZOOM.max}" step="10" title="Also Ctrl+wheel over the list, or Ctrl+= / Ctrl+- / Ctrl+0">
-        <button class="icon-btn shortcut-reset" id="imagePreviewHeightReset" title="Reset to ${IMAGE_ZOOM.def}px" type="button"><span class="mi">restart_alt</span></button>
-      </div>
-    </div>
-    <div id="appearanceVariants"></div>
-    <div class="setting-row shortcut-row">
-      <label>Popup shortcut</label>
-      <div class="shortcut-control">
-        <button class="shortcut-btn" id="shortcutRecord" type="button"></button>
-        <button class="icon-btn shortcut-reset" id="shortcutReset" title="Reset shortcut" type="button"><span class="mi">restart_alt</span></button>
-      </div>
-    </div>
-    <div class="shortcut-status" id="shortcutStatus"></div>
-    <div class="setting-row shortcut-row">
-      <label>Quick paste</label>
-      <div class="shortcut-control">
-        <button class="shortcut-btn" id="quickPasteRecord" type="button"></button>
-        <button class="icon-btn shortcut-reset" id="quickPasteReset" title="Reset quick paste shortcut" type="button"><span class="mi">restart_alt</span></button>
-      </div>
-    </div>
-    <div class="shortcut-status" id="quickPasteStatus"></div>
-    <div class="setting-row"><label>Max age (days)</label><input id="maxAge" type="number" min="1"></div>
-    <div class="setting-row"><label>Max size (GB)</label><input id="maxSize" type="number" min="0.1" step="0.1"></div>
-    <div class="settings-usage" id="usage"></div>
-    <div class="settings-section">
-      <h3>Numpad Shortcuts</h3>
-      <div id="numpadSlots"></div>
-    </div>
-    <div class="settings-section">
-      <h3>Sync</h3>
-      <div class="sync-row">
-        <div class="sync-list" id="syncAccounts"></div>
-        <button class="icon-btn sync-btn" id="syncNow" type="button" title="Sync now"><span class="mi sm mid">sync</span></button>
-      </div>
-      <button class="btn settings-secondary sync-add-folder" id="addSyncFolder" type="button"><span class="mi sm mid">create_new_folder</span> Add sync folder</button>
-      <div class="sync-status" id="syncStatus"></div>
-      <label class="setting-row switch-row" for="p2pEnabled">
-        <span>Local network fast sync</span>
-        <input id="p2pEnabled" type="checkbox">
-        <span class="switch" aria-hidden="true"></span>
-      </label>
-      <div class="sync-status" id="p2pStatus"></div>
-      <div class="sync-list" id="p2pPeers"></div>
-      <div class="sync-status" id="p2pTailnet"></div>
-      <div class="setting-row"><label for="p2pPinned">Pinned peers</label><input id="p2pPinned" type="text" placeholder="host or host:port, comma-separated"></div>
-    </div>
-    <div class="settings-section">
-      <h3>Updates</h3>
-      <div class="settings-action-row">
-        <div class="settings-action-list">
-          <div class="settings-action-card">
-            <span class="settings-action-main">
-              <span class="settings-action-title" id="updateBuild"></span>
-              <span class="settings-action-detail" id="updateDetail"></span>
-            </span>
-          </div>
-        </div>
-        <button class="icon-btn settings-icon-btn" id="updateNow" type="button" title="Check for updates"><span class="mi sm mid">system_update_alt</span></button>
-      </div>
-      <div class="settings-status" id="updateStatus"></div>
-    </div>
-    <div class="settings-section">
-      <h3>Diagnostics</h3>
-      <label class="setting-row switch-row" for="diagnosticsEnabled">
-        <span>Performance logging</span>
-        <input id="diagnosticsEnabled" type="checkbox">
-        <span class="switch" aria-hidden="true"></span>
-      </label>
-      <div class="settings-status" id="diagnosticsStatus"></div>
-    </div>
-    <div class="settings-section">
-      <h3>AI Access</h3>
-      <label class="setting-row switch-row" for="aiAccessEnabled">
-        <span>Let local AI assistants use BoardClip</span>
-        <input id="aiAccessEnabled" type="checkbox">
-        <span class="switch" aria-hidden="true"></span>
-      </label>
-      <div class="settings-status" id="aiAccessStatus"></div>
-      <div id="aiAccessBody" class="hidden">
-        <div class="ai-hint">AI assistants can read clips in groups you share, and act with your approval. Drop clips into the <b>AI</b> group (or share any group below) to expose them.</div>
-        <div class="ai-subhead">Installed in</div>
-        <div id="aiClients"></div>
-        <button class="btn settings-secondary hidden" id="aiMoreClients" type="button"></button>
-        <div id="aiClientsMore" class="hidden"></div>
-        <div class="ai-subhead hidden" id="aiAlwaysHead">Always allowed actions</div>
-        <div id="aiAlwaysAllow"></div>
-        <div class="setting-row"><label>Approval timeout (seconds)</label><input id="aiTimeout" type="number" min="5" max="600" step="5"></div>
-      </div>
-    </div>
-    <div class="settings-section hidden" id="conflictsSection">
-      <h3>Conflicts</h3>
-      <div id="conflictSlots"></div>
-    </div>
-    <div class="settings-section">
-      <h3>Groups</h3>
-      <div id="groupSlots"></div>
-      <button class="btn add-group-btn" id="addGroupBtn" type="button"><span class="mi sm mid">add</span> New Group</button>
-    </div>
-    <div class="settings-footer">
-      <div class="settings-footer-actions">
-        <button class="btn danger settings-clear" id="clearAll" type="button">Clear All</button>
-        <button class="btn settings-secondary" id="copyDiagnostics" type="button">Copy Diagnostics</button>
-      </div>
-      <div class="build-info" id="buildInfo"></div>
-    </div>
-  `;
+    const mod = modKeyLabel();
+    const swatches = '<div class="accent-swatches" id="accentMode" role="radiogroup" aria-label="Accent">'
+      + ACCENT_CHOICES.map(([value, text]) => `<button type="button" class="accent-swatch" role="radio" aria-checked="false" data-accent-mode="${value}" title="${text}" aria-label="${text}"><span class="accent-dot"><span class="mi">check</span></span></button>`).join('')
+      + '</div>';
+    const theme = '<div class="seg" id="themeMode" role="group" aria-label="Theme">'
+      + '<button type="button" class="seg-btn" data-theme-mode="system" title="Follow your desktop">System</button>'
+      + '<button type="button" class="seg-btn" data-theme-mode="light" title="Always light">Light</button>'
+      + '<button type="button" class="seg-btn" data-theme-mode="dark" title="Always dark">Dark</button></div>';
+    // Sync conflicts need the user, so they sit on top (shown only when present).
+    const conflicts = '<section class="settings-section hidden" id="conflictsSection"><h3>Sync conflicts</h3><div class="settings-list" id="conflictSlots"></div></section>';
+    const general = settingSectionHtml('General',
+      switchRowHtml({ id: 'autoLaunch', label: 'Launch on startup' })
+      + settingRowHtml({ label: 'Popup shortcut', help: [['shortcutStatus']], control: '<button class="shortcut-btn" id="shortcutRecord" type="button"></button>', reset: settingResetHtml('shortcutReset', 'Reset to the default shortcut') })
+      + settingRowHtml({ label: 'Quick paste shortcut', help: [['quickPasteStatus']], control: '<button class="shortcut-btn" id="quickPasteRecord" type="button"></button>', reset: settingResetHtml('quickPasteReset', 'Reset to the default shortcut') }));
+    const appearance = settingSectionHtml('Appearance',
+      settingRowHtml({ label: 'Theme', control: theme })
+      + settingRowHtml({ label: 'Accent', help: [['accentHelp']], control: swatches })
+      + settingRowHtml({ id: 'accentCustomRow', cls: 'hidden', label: 'Custom colour', forId: 'accentCustom', help: [['accentCustomHelp']],
+        control: '<input id="accentHue" class="accent-hue" type="range" min="0" max="359" step="1" aria-label="Hue">'
+          + '<input id="accentCustom" class="accent-hex" type="text" maxlength="9" spellcheck="false" autocomplete="off" placeholder="#rrggbb">' })
+      + settingRowHtml({ label: 'Surface', help: [['surfaceHelp']], control: settingSegHtml('surface_style', 'Surface', [['auto', 'Auto'], ['glass', 'Glass'], ['solid', 'Solid']]) })
+      + settingRowHtml({ id: 'glassScopeRow', cls: 'hidden', label: 'Glass on', control: settingSegHtml('glass_scope', 'Glass on', [['popup', 'Popup only'], ['all', 'All windows']]) })
+      + settingRowHtml({ label: 'Density', control: settingSegHtml('ui_density', 'Density', [['normal', 'Normal'], ['compact', 'Compact']]) })
+      + settingRowHtml({ label: 'Corners', control: settingSegHtml('ui_corners', 'Corners', [['soft', 'Soft'], ['sharp', 'Sharp']]) })
+      + settingRowHtml({ label: 'Image preview height', forId: 'imagePreviewHeight', help: [[null, `Also ${mod}+wheel over the list`]],
+        control: settingNumberHtml('imagePreviewHeight', 'px', ` min="${IMAGE_ZOOM.min}" max="${IMAGE_ZOOM.max}" step="10"`),
+        reset: settingResetHtml('imagePreviewHeightReset', `Reset to ${IMAGE_ZOOM.def} px`) })
+      + '<div id="appearanceVariants"></div>');
+    const numpad = settingSectionHtml('Quick paste and numpad',
+      switchRowHtml({ id: 'quickPasteRestore', label: 'Restore the clipboard afterwards', help: [[null, 'Puts back what you had copied before the paste']] })
+      + '<div class="settings-list" id="numpadSlots"></div>'
+      + settingRowHtml({ cls: 'note', help: [['numpadHelp', 'Give a clip a key from its # button or its menu.']] }));
+    const groups = settingSectionHtml('Groups',
+      '<div class="settings-list" id="groupSlots"></div>'
+      + settingRowHtml({ cls: 'note', control: '<button class="btn" id="addGroupBtn" type="button"><span class="mi sm">add</span>New group</button>' }));
+    const sync = settingSectionHtml('Sync',
+      settingRowHtml({ label: 'Cloud folders', help: [['syncStatus']],
+        control: '<button class="icon-btn sync-btn" id="syncNow" type="button" title="Sync now" aria-label="Sync now"><span class="mi">sync</span></button>'
+          + '<button class="icon-btn" id="addSyncFolder" type="button" title="Add a sync folder" aria-label="Add a sync folder"><span class="mi">create_new_folder</span></button>' })
+      + '<div class="settings-list" id="syncAccounts"></div>'
+      + switchRowHtml({ id: 'p2pEnabled', label: 'Local network sync', help: [['p2pStatus'], ['p2pTailnet']] })
+      + '<div class="settings-list" id="p2pPeers"></div>'
+      + settingRowHtml({ cls: 'stack', label: 'Pinned peers', forId: 'p2pPinned', help: [[null, 'Hosts discovery cannot see: host or host:port, comma-separated']],
+        control: '<input id="p2pPinned" type="text" spellcheck="false" autocomplete="off" placeholder="mac.local, 100.64.0.2:45455">' }));
+    const ai = settingSectionHtml('AI access',
+      switchRowHtml({ id: 'aiAccessEnabled', label: 'Local AI assistants', help: [['aiAccessStatus']] })
+      + '<div id="aiAccessBody" class="hidden">'
+      + '<div class="settings-list-title">Installed in</div><div class="settings-list" id="aiClients"></div>'
+      + '<div class="settings-list hidden" id="aiClientsMore"></div>'
+      + '<button class="btn quiet sm settings-more hidden" id="aiMoreClients" type="button"></button>'
+      + '<div class="settings-list-title hidden" id="aiAlwaysHead">Always allowed</div><div class="settings-list" id="aiAlwaysAllow"></div>'
+      + settingRowHtml({ label: 'Approval timeout', forId: 'aiTimeout', help: [[null, 'An unanswered prompt is denied']], control: settingNumberHtml('aiTimeout', 's', ' min="5" max="600" step="5"') })
+      + '</div>');
+    const history = settingSectionHtml('History',
+      settingRowHtml({ label: 'Keep clips for', forId: 'maxAge', control: settingNumberHtml('maxAge', 'days', ' min="1"') })
+      + settingRowHtml({ label: 'Storage limit', forId: 'maxSize', help: [['usage']], control: settingNumberHtml('maxSize', 'GB', ' min="0.1" step="0.1"') })
+      + settingRowHtml({ label: 'Clear unpinned clips', help: [[null, 'Pinned clips are kept']], control: '<button class="btn danger" id="clearAll" type="button">Clear all</button>' }));
+    const diagnostics = settingSectionHtml('Diagnostics',
+      switchRowHtml({ id: 'diagnosticsEnabled', label: 'Performance logging', help: [['diagnosticsStatus']] })
+      + settingRowHtml({ label: 'Diagnostics report', help: [[null, 'Sync state, peers and recent events, for a bug report']], control: '<button class="btn" id="copyDiagnostics" type="button">Copy</button>' })
+      + settingRowHtml({ label: 'Build', labelId: 'updateBuild', help: [['updateDetail'], ['updateStatus']], control: '<button class="btn" id="updateNow" type="button">Check now</button>' })
+      + settingRowHtml({ label: 'App folder', help: [['buildInfo', '', 'mono']] }));
+    return conflicts + general + appearance + numpad + groups + sync + ai + history + diagnostics;
+  }
+  // One settings list row (every settings list). o = { title, key (a lead
+  // token, e.g. '#3'), meta (dim, after the title), sub (second line), subMono,
+  // titleMono, dim, cls, attrs, toggle: { checked, disabled, label, cls, attrs }
+  // (a switch in the control column), controlHtml, actionHtml (the reset /
+  // remove column) }. Text is escaped here; *Html parts are trusted markup.
+  function settingSwitchHtml(t) {
+    const label = escapeHtml(t.label || '');
+    return `<label class="switch-wrap${t.disabled ? ' is-disabled' : ''}" title="${label}"><input type="checkbox"${t.cls ? ` class="${escapeHtml(t.cls)}"` : ''} aria-label="${label}"`
+      + `${t.checked ? ' checked' : ''}${t.disabled ? ' disabled' : ''}${settingAttrs(t.attrs)}><span class="switch" aria-hidden="true"></span></label>`;
+  }
+  function renderSettingsItem(o) {
+    const opt = o || {};
+    const title = '<span class="si-title">'
+      + (opt.key ? `<span class="si-key">${escapeHtml(opt.key)}</span>` : '')
+      + `<span class="si-name${opt.titleMono ? ' mono' : ''}" title="${escapeHtml(opt.title)}">${escapeHtml(opt.title)}</span>`
+      + (opt.meta ? `<span class="si-meta">${escapeHtml(opt.meta)}</span>` : '')
+      + '</span>';
+    const sub = opt.sub ? `<span class="si-sub${opt.subMono ? ' mono' : ''}" title="${escapeHtml(opt.sub)}">${escapeHtml(opt.sub)}</span>` : '';
+    const control = opt.toggle ? settingSwitchHtml(opt.toggle) : (opt.controlHtml || '');
+    return `<div class="settings-item${opt.dim ? ' dim' : ''}${opt.cls ? ` ${opt.cls}` : ''}"${settingAttrs(opt.attrs)}>`
+      + `<span class="si-text">${title}${sub}</span>`
+      + (control ? `<span class="si-control">${control}</span>` : '')
+      + (opt.actionHtml ? `<span class="si-action">${opt.actionHtml}</span>` : '')
+      + '</div>';
+  }
+  // The ASSIGNED numpad slots (nmap: { n: clipId }, itemOf: id -> clip): a
+  // click copies the clip, the x removes the key (the controller's settings
+  // dispatch: .np-slot.has-content / .np-remove).
+  function renderNumpadSlotRows(nmap, itemOf) {
+    let html = '';
+    for (let n = 1; n <= 9; n++) {
+      const id = nmap && nmap[n];
+      if (id == null) continue;
+      const it = typeof itemOf === 'function' ? itemOf(id) : null;
+      // The clip's primary line, as its row shows it (title, else first text).
+      const named = it ? titleOf(it) : '';
+      const text = !it ? 'Missing clip' : it.type === 'image' ? (named || 'Image') : (named || String(it.text || '').replace(/\s+/g, ' ').trim().slice(0, 120));
+      html += renderSettingsItem({
+        key: `#${n}`, title: text,
+        cls: 'np-slot has-content clickable', attrs: { 'data-slot-id': id, title: 'Click to copy' },
+        actionHtml: `<button class="icon-btn np-remove" type="button" data-slot="${n}" title="Remove key ${n}" aria-label="Remove key ${n}"><span class="mi">close</span></button>`,
+      });
+    }
+    return html;
+  }
+  // Groups: name, clip count, the AI-sharing switch (.gp-share) and delete
+  // (.gp-del), both handled by the controller's settings dispatch. o = { counts
+  // (Map | object), shared (Set of shared names), aiGroup (always shared, never
+  // deleted) }.
+  function renderGroupRows(groups, o) {
+    const opt = o || {};
+    const countOf = (g) => Number(opt.counts instanceof Map ? opt.counts.get(g) : (opt.counts || {})[g]) || 0;
+    const shared = opt.shared instanceof Set ? opt.shared : new Set(opt.shared || []);
+    // The switch column says what it is, right above the switches (the rows'
+    // own grid, so the label ends on the switches' edge).
+    const head = (groups || []).length
+      ? '<div class="settings-list-title settings-list-cols" aria-hidden="true" title="AI assistants can read the clips in a shared group"><span class="si-text"></span><span class="si-control">Shared with AI</span><span class="si-action"></span></div>'
+      : '';
+    return head + (groups || []).map((g) => {
+      const count = countOf(g);
+      const isAi = g === opt.aiGroup;
+      return renderSettingsItem({
+        title: g, meta: `${count} clip${count === 1 ? '' : 's'}`, cls: 'group-row',
+        toggle: { checked: isAi || shared.has(g), disabled: isAi, cls: 'gp-share', label: isAi ? 'The AI group is always shared with AI' : `Share ${g} with AI`, attrs: { 'data-group': g } },
+        actionHtml: isAi ? '' : `<button class="icon-btn gp-del" type="button" data-group="${escapeHtml(g)}" title="Delete group" aria-label="Delete group ${escapeHtml(g)}"><span class="mi">close</span></button>`,
+      });
+    }).join('');
+  }
+  // A row's help / status line. state: '' | 'active' (a green status dot) | 'error'.
+  function setSettingHelp(el, text, state) {
+    if (!el) return;
+    el.textContent = text || '';
+    el.classList.toggle('active', state === 'active');
+    el.classList.toggle('error', state === 'error');
+  }
+  // Binds the settings view once per consumer: the Appearance controls and the
+  // body's scroll fade. adapter.save(body) writes settings (the app:
+  // save-settings, which validates and answers with appearance-changed; the
+  // demo: its local store); adapter.preview(look) paints a hue being dragged in
+  // this window only, until the release saves it. update(state) repaints from
+  // { accentMode, accentCustom, systemAccent, surfaceStyle (the SETTING:
+  // auto | glass | solid), glassSupported, glassScope, uiDensity, uiCorners }.
+  // A native colour dialog is no option: it takes focus from the popup, which
+  // hides on blur, so Custom is a hue slider plus a #rrggbb field.
+  const APPEARANCE_SEGS = { surface_style: ['surfaceStyle', 'auto'], glass_scope: ['glassScope', 'popup'], ui_density: ['uiDensity', 'normal'], ui_corners: ['uiCorners', 'soft'] };
+  const ACCENT_FALLBACK = '#3b82f6'; // --blue-500: what System paints where no OS accent is known
+  const HUE_SL = [0.72, 0.52];
+  // Why the painted accent can differ from the colour picked (accentShades).
+  function shadeNote(color) {
+    const s = accentShades(color);
+    if (!s) return '';
+    const hex = normalizeHexColor(color);
+    const lighter = s.dark.accent !== hex;
+    const darker = s.light.accent !== hex;
+    return lighter && darker ? ', adjusted in both themes so it reads'
+      : lighter ? ', lighter in the dark theme so it reads'
+        : darker ? ', darker in the light theme so it reads' : '';
+  }
+  function mountSettings(viewEl, adapter) {
+    const a = adapter || {};
+    if (!viewEl || !viewEl.querySelector) return { update() {} };
+    const body = viewEl.querySelector('.settings-body');
+    if (body) attachScrollFade(body, 'panel');
+    const $ = (sel) => viewEl.querySelector(sel);
+    const hue = $('#accentHue');
+    const hex = $('#accentCustom');
+    const state = {};
+    const save = (b) => { if (typeof a.save === 'function') a.save(b); };
+    const focused = (el) => typeof document !== 'undefined' && document.activeElement === el;
+    if (hue) hue.style.background = `linear-gradient(to right, ${Array.from({ length: 13 }, (_, i) => hslHex((i * 30) % 360, HUE_SL[0], HUE_SL[1])).join(', ')})`;
+    // A System / Custom swatch previews its colour as each theme paints it
+    // (the CSS picks --dot-dark or --dot-light); no colour = the CSS default.
+    function setDot(mode, color) {
+      const btn = viewEl.querySelector(`.accent-swatch[data-accent-mode="${mode}"]`);
+      if (!btn) return;
+      const s = accentShades(color);
+      if (s) {
+        btn.style.setProperty('--dot-dark', s.dark.accent);
+        btn.style.setProperty('--dot-light', s.light.accent);
+        btn.dataset.own = '';
+      } else {
+        btn.style.removeProperty('--dot-dark');
+        btn.style.removeProperty('--dot-light');
+        delete btn.dataset.own;
+      }
+    }
+    function paint() {
+      const mode = ACCENT_CHOICES.some(([v]) => v === state.accentMode) ? state.accentMode : 'system';
+      const custom = normalizeHexColor(state.accentCustom);
+      const system = normalizeHexColor(state.systemAccent);
+      viewEl.querySelectorAll('[data-accent-mode]').forEach((btn) => btn.setAttribute('aria-checked', btn.dataset.accentMode === mode ? 'true' : 'false'));
+      // Every dot shows the colour its choice paints (the chosen one = the live accent).
+      setDot('system', system);
+      setDot('custom', custom);
+      const help = $('#accentHelp');
+      if (help) help.textContent = mode === 'system' ? (system ? `Your system colour, ${system}${shadeNote(system)}` : 'No system colour here, so Blue') : '';
+      const customHelp = $('#accentCustomHelp');
+      if (customHelp && !customHelp.classList.contains('error')) customHelp.textContent = custom ? shadeNote(custom).replace(/^, /, '').replace(/^./, (ch) => ch.toUpperCase()) : '';
+      const customRow = $('#accentCustomRow');
+      if (customRow) customRow.classList.toggle('hidden', mode !== 'custom');
+      if (hex && !focused(hex)) hex.value = custom || '';
+      if (hue && !focused(hue)) hue.value = String(Math.round(hexHsl(custom || system || ACCENT_FALLBACK)[0]));
+      for (const [key, [field, def]] of Object.entries(APPEARANCE_SEGS)) {
+        const seg = viewEl.querySelector(`.seg[data-appearance="${key}"]`);
+        if (seg) setActiveVariantSeg(seg, state[field] || def);
+      }
+      const supported = state.glassSupported !== false;
+      const scopeRow = $('#glassScopeRow');
+      if (scopeRow) scopeRow.classList.toggle('hidden', !supported || (state.surfaceStyle || 'auto') === 'solid');
+      const surfaceHelp = $('#surfaceHelp');
+      if (surfaceHelp) surfaceHelp.textContent = supported ? '' : 'Glass needs Windows 11 or macOS, so Solid here';
+    }
+    viewEl.addEventListener('click', (e) => {
+      const t = e.target;
+      if (!t || !t.closest) return;
+      const swatch = t.closest('[data-accent-mode]');
+      if (swatch) {
+        const mode = swatch.dataset.accentMode;
+        const b = { accent_mode: mode };
+        // Custom without a colour yet starts from the colour on screen.
+        if (mode === 'custom' && !normalizeHexColor(state.accentCustom)) {
+          b.accent_custom = normalizeHexColor(state.systemAccent) || ACCENT_FALLBACK;
+          state.accentCustom = b.accent_custom;
+        }
+        state.accentMode = mode;
+        setSettingHelp($('#accentCustomHelp'), '');
+        paint();
+        save(b);
+        return;
+      }
+      const btn = t.closest('.seg[data-appearance] [data-value]');
+      const spec = btn && APPEARANCE_SEGS[btn.closest('.seg').dataset.appearance];
+      if (!spec) return;
+      state[spec[0]] = btn.dataset.value;
+      paint();
+      save({ [btn.closest('.seg').dataset.appearance]: btn.dataset.value });
+    });
+    // The hue slider keeps the colour's own saturation + lightness (a vivid
+    // default for a near-grey one), previews while dragging, saves on release.
+    let dragSL = null;
+    if (hue) {
+      hue.addEventListener('input', () => {
+        if (!dragSL) {
+          const [, s, l] = hexHsl(normalizeHexColor(state.accentCustom) || ACCENT_FALLBACK);
+          dragSL = s >= 0.25 ? [s, l] : HUE_SL;
+        }
+        state.accentCustom = hslHex(Number(hue.value) || 0, dragSL[0], dragSL[1]);
+        paint();
+        if (typeof a.preview === 'function') a.preview({ accentColor: state.accentCustom });
+      });
+      hue.addEventListener('change', () => {
+        dragSL = null;
+        const c = normalizeHexColor(state.accentCustom);
+        if (c) save({ accent_mode: 'custom', accent_custom: c });
+      });
+    }
+    const commitHex = () => {
+      const c = normalizeHexColor(hex.value);
+      const err = $('#accentCustomHelp');
+      if (!c) { setSettingHelp(err, 'Use a colour like #e8590c', 'error'); return; }
+      setSettingHelp(err, '');
+      hex.value = c;
+      state.accentCustom = c;
+      state.accentMode = 'custom';
+      paint();
+      save({ accent_mode: 'custom', accent_custom: c });
+    };
+    if (hex) {
+      hex.addEventListener('change', commitHex);
+      hex.addEventListener('keydown', (e) => {
+        if (e.key !== 'Enter') return;
+        e.preventDefault();
+        e.stopPropagation();
+        commitHex();
+      });
+    }
+    return {
+      update(next) { Object.assign(state, next || {}); paint(); },
+      get: () => ({ ...state }),
+    };
   }
   // Theme: shared by the app (sets data-theme on <html>) and the demo (sets it
   // on the .bc-popup window). mode is 'system' | 'light' | 'dark'.
@@ -2430,6 +2642,137 @@
     setOrClear('data-density', o.uiDensity, 'normal');
     setOrClear('data-corners', o.uiCorners, 'soft');
     setOrClear('data-borders', o.uiBorders, 'bordered');
+  }
+  // ---- Accent colour: System / Custom -------------------------------------
+  // A System or Custom accent can be any colour, so the applier derives what
+  // the presets get by hand in clipboard-tokens.css: per theme, the colour
+  // itself where it reads, else the nearest shade that does. WCAG: the accent
+  // reaches 3:1 against the theme's surfaces (check glyphs, the focus ring, a
+  // switch: non-text contrast), and the ink on an accent fill (a selected seg,
+  // a primary button) reaches 4.5:1, the ink being whichever of the two theme
+  // inks contrasts more. A colour that misses either is mixed toward white
+  // (dark theme) or black (light theme) until both hold; pure white / black
+  // pass both, so it always ends. A light yellow (#ffb900) keeps its colour in
+  // dark and darkens in light; a dark navy keeps it in light, lightens in dark.
+  // Accent used AS TEXT (an active chip, the current numpad key, Accept, a
+  // zoom step, the clipboard status, link-like buttons) is --accent-text: the
+  // same walk continued until it reaches 4.5:1 against the surface AND against
+  // the --accent-bg tint (tint = the share of the accent in that wash).
+  const ACCENT_THEMES = {
+    dark: { surface: '#1b1f24', away: '#ffffff', tint: 0.16 },  // --g-800: the lightest dark surface an accent sits on
+    light: { surface: '#f4f5f7', away: '#000000', tint: 0.12 }, // --g-050: the darkest light one
+  };
+  const ACCENT_INKS = ['#0b0d10', '#ffffff']; // --g-950, --white
+  // '#rgb' | '#rrggbb' | '#rrggbbaa', '#' optional -> '#rrggbb' (alpha dropped), else null.
+  function normalizeHexColor(value) {
+    const m = /^#?([0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i.exec(String(value == null ? '' : value).trim());
+    if (!m) return null;
+    let hex = m[1].toLowerCase();
+    if (hex.length === 3) hex = hex.split('').map((c) => c + c).join('');
+    return `#${hex.slice(0, 6)}`;
+  }
+  function hexRgb(hex) {
+    const n = parseInt(hex.slice(1), 16);
+    return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+  }
+  function rgbHex(rgb) {
+    return `#${rgb.map((c) => Math.round(Math.min(255, Math.max(0, c))).toString(16).padStart(2, '0')).join('')}`;
+  }
+  function relativeLuminance(color) {
+    const hex = normalizeHexColor(color);
+    if (!hex) return 0;
+    const [r, g, b] = hexRgb(hex).map((c) => {
+      const s = c / 255;
+      return s <= 0.04045 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
+    });
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  }
+  // WCAG 2 contrast ratio of two colours (1 .. 21).
+  function contrastRatio(a, b) {
+    const la = relativeLuminance(a);
+    const lb = relativeLuminance(b);
+    return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05);
+  }
+  function mixHex(a, b, t) {
+    const x = hexRgb(a);
+    const y = hexRgb(b);
+    return rgbHex(x.map((c, i) => c + (y[i] - c) * t));
+  }
+  function accentInk(hex) {
+    return contrastRatio(hex, ACCENT_INKS[0]) >= contrastRatio(hex, ACCENT_INKS[1]) ? ACCENT_INKS[0] : ACCENT_INKS[1];
+  }
+  // The accent as text: the fill's colour walked further toward `away` until it
+  // reads at 4.5:1 on the surface and on the fill's own tint over it.
+  function accentTextShade(accent, theme) {
+    const t = ACCENT_THEMES[theme];
+    const tint = mixHex(t.surface, accent, t.tint);
+    for (let step = 0; step <= 50; step++) {
+      const text = step ? mixHex(accent, t.away, step / 50) : accent;
+      if (contrastRatio(text, t.surface) >= 4.5 && contrastRatio(text, tint) >= 4.5) return text;
+    }
+    return t.away;
+  }
+  function accentShade(hex, theme) {
+    const t = ACCENT_THEMES[theme];
+    let shade = { accent: t.away, ink: accentInk(t.away) };
+    for (let step = 0; step <= 50; step++) {
+      const accent = step ? mixHex(hex, t.away, step / 50) : hex;
+      const ink = accentInk(accent);
+      if (contrastRatio(accent, t.surface) >= 3 && contrastRatio(accent, ink) >= 4.5) { shade = { accent, ink }; break; }
+    }
+    return { ...shade, text: accentTextShade(shade.accent, theme) };
+  }
+  // -> { dark: { accent, ink, text }, light: { accent, ink, text } }, or null for no colour.
+  function accentShades(color) {
+    const hex = normalizeHexColor(color);
+    return hex ? { dark: accentShade(hex, 'dark'), light: accentShade(hex, 'light') } : null;
+  }
+  // Hue <-> colour for the Custom accent's hue slider.
+  function hexHsl(color) {
+    const [r, g, b] = hexRgb(normalizeHexColor(color) || '#000000').map((c) => c / 255);
+    const max = Math.max(r, g, b);
+    const min = Math.min(r, g, b);
+    const l = (max + min) / 2;
+    const d = max - min;
+    if (!d) return [0, 0, l];
+    const s = d / (1 - Math.abs(2 * l - 1));
+    const h = max === r ? ((g - b) / d) % 6 : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
+    return [(h * 60 + 360) % 360, s, l];
+  }
+  function hslHex(h, s, l) {
+    const c = (1 - Math.abs(2 * l - 1)) * s;
+    const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+    const m = l - c / 2;
+    const [r, g, b] = h < 60 ? [c, x, 0] : h < 120 ? [x, c, 0] : h < 180 ? [0, c, x] : h < 240 ? [0, x, c] : h < 300 ? [x, 0, c] : [c, 0, x];
+    return rgbHex([r, g, b].map((v) => (v + m) * 255));
+  }
+  const ACCENT_VARS = ['--accent-custom-dark', '--accent-ink-dark', '--accent-text-dark', '--accent-custom-light', '--accent-ink-light', '--accent-text-light'];
+  // THE appearance applier of every window (popup, editor, viewer, unify /
+  // conflict, approval) and the demo: main's payload (appearanceVariantPayload
+  // plus the window's surfaceStyle) -> the data-* variant attributes, and a
+  // System / Custom accent colour as data-accent="custom" + one shade and ink
+  // per theme (clipboard-tokens.css picks the theme's pair, so a theme flip
+  // needs no script). Pass the whole payload: an axis left out is reset.
+  function applyAppearance(rootEl, look) {
+    if (!rootEl || !rootEl.setAttribute) return null;
+    const o = look || {};
+    applyVariants(rootEl, o);
+    const shades = accentShades(o.accentColor);
+    const style = rootEl.style;
+    if (shades) {
+      rootEl.setAttribute('data-accent', 'custom');
+      if (style) {
+        style.setProperty('--accent-custom-dark', shades.dark.accent);
+        style.setProperty('--accent-ink-dark', shades.dark.ink);
+        style.setProperty('--accent-text-dark', shades.dark.text);
+        style.setProperty('--accent-custom-light', shades.light.accent);
+        style.setProperty('--accent-ink-light', shades.light.ink);
+        style.setProperty('--accent-text-light', shades.light.text);
+      }
+    } else if (style) {
+      for (const name of ACCENT_VARS) style.removeProperty(name);
+    }
+    return shades;
   }
   function setActiveVariantSeg(seg, value) {
     if (!seg || !seg.querySelectorAll) return;
@@ -3003,6 +3346,10 @@
     let exact = clampImageHeight(o.initial == null ? IMAGE_ZOOM.def : o.initial);
     let saveTimer = null;
     let inputEl = null;
+    let resetEl = null;
+    // The Settings reset shows only while the height is not the default (its
+    // column stays reserved, so the control never moves).
+    const syncReset = () => { if (resetEl) resetEl.style.visibility = value() === IMAGE_ZOOM.def ? 'hidden' : 'visible'; };
     const value = () => Math.round(exact);
     function applyCss() {
       if (root) root.style.setProperty('--clip-img-h', `${+exact.toFixed(2)}px`);
@@ -3035,6 +3382,7 @@
       };
       if (list) list.withAnchoringOff(apply); else apply();
       if (inputEl && (typeof document === 'undefined' || document.activeElement !== inputEl)) inputEl.value = String(value());
+      syncReset();
       if (!so.silent && o.toast) o.toast(`Image previews: ${value()}px`);
       if (so.save !== false && o.save) {
         clearTimeout(saveTimer);
@@ -3083,7 +3431,9 @@
         };
         input.onchange = () => { set(input.value, { silent: true }); input.value = String(value()); };
       }
+      resetEl = resetBtn || null;
       if (resetBtn) resetBtn.onclick = () => { set(IMAGE_ZOOM.def, { silent: true }); if (input) input.value = String(value()); };
+      syncReset();
     }
     applyCss();
     applyCap();
@@ -3343,7 +3693,7 @@
       refresh();
     }
     async function clearAll() {
-      const ok = await dialogs.confirm({ title: 'Clear all unpinned items?', message: 'Pinned items will be kept.', okLabel: 'Clear', danger: true });
+      const ok = await dialogs.confirm({ title: 'Clear all unpinned clips?', message: 'Pinned clips are kept.', okLabel: 'Clear all', danger: true });
       if (!ok) return;
       await a.clearUnpinned();
       refresh();
@@ -4168,6 +4518,18 @@
     const t = String(text || '').trim();
     return t ? (t.match(/\S+/g) || []).length : 0;
   }
+  // The editor footer's save state, recomputed from scratch on every change
+  // (pure, so an undone edit can never leave a stale "Saving..."):
+  // dirty = the buffer differs from its last write, inFlight = a write has not
+  // landed yet, failed = the last write was refused, blank = the buffer is
+  // empty (never written), hasSaved = something has been written.
+  const EDITOR_SAVE_LABELS = { saving: 'Saving...', saved: 'Saved', failed: 'Not saved', blank: 'Empty, not saved' };
+  function editorSaveState({ dirty, inFlight, failed, blank, hasSaved } = {}) {
+    if (inFlight) return 'saving';
+    if (dirty && failed) return 'failed';
+    if (dirty) return blank ? 'blank' : 'saving';
+    return hasSaved ? 'saved' : '';
+  }
   function lineNumberAtIndex(text, index) {
     const raw = String(text || '');
     const end = Math.max(0, Math.min(Number(index) || 0, raw.length));
@@ -4199,14 +4561,112 @@
     strip.innerHTML = renderClipTagChips(item);
     strip.hidden = false;
   }
+  // ── ONE window bar (.bc-bar) for every clip window: the editor, the image
+  // viewer and the merge view (unify + conflict), in the app's own windows and
+  // in the demo's overlay. Left to right: an optional leading control (the
+  // viewer's drag-out handle), the clip's own title (an editable flat field or
+  // plain text, sentence case), an optional dim context label, the tag strip,
+  // a spacer (the window's drag region), the quiet actions. The app's windows
+  // draw no close button: the OS controls replace it (attachWindowControls
+  // reserves their room). The demo overlay has none, so it keeps one.
+  //   o: { lead, title, context, tags, actions, close }
+  function renderWindowBar(o) {
+    const opts = o || {};
+    const close = opts.close
+      ? '<button class="icon-btn" type="button" data-x="close" title="Close (Esc)" aria-label="Close"><span class="mi">close</span></button>'
+      : '';
+    return `<div class="bc-bar">${opts.lead || ''}${opts.title || ''}`
+      + (opts.context ? `<span class="bc-bar-context" data-x="context">${escapeHtml(opts.context)}</span>` : '')
+      + (opts.tags ? '<div class="bc-tag-strip" data-x="tags" hidden></div>' : '')
+      + `<span class="bc-bar-spacer"></span><div class="bc-bar-actions">${opts.actions || ''}${close}</div></div>`;
+  }
+  // The bar's editable title: a flat field sized to its text, so the rest of
+  // the bar stays a drag region. An untitled clip shows its first line (or
+  // "Untitled") dim, as the placeholder.
+  function barTitleField(dataX, label) {
+    return `<input class="bc-bar-title" data-x="${dataX}" type="text" maxlength="240" placeholder="Untitled" autocomplete="off" spellcheck="false" aria-label="${escapeHtml(label || 'Title')}" title="${escapeHtml(label || 'Title')}">`;
+  }
+  function untitledHint(text) {
+    const t = String(text || '');
+    const line = rowFirstLine(t);
+    return line ? t.slice(line.start, Math.min(line.end, line.start + 160)).trim() : 'Untitled';
+  }
+  // Native window controls (the app's clip windows): main draws the OS's own
+  // minimise / maximise-restore / close (Windows: caption buttons over the
+  // bar's right end; macOS: the traffic lights at its left). The page reserves
+  // their room (data-window-controls on <html>: Windows reads the Window
+  // Controls Overlay env(titlebar-area-*), macOS takes the inset main sends)
+  // and reports what the buttons sit on: the bar's height in CSS px, the first
+  // OPAQUE surface under it (none under glass: the buttons stay clear) and its
+  // text colour, resolved by painting them, again after every theme / accent /
+  // surface / density change.
+  //   wc: { side: 'left' | 'right', inset } (main's windowControlsInfo)
+  //   report({ height, color: '#rrggbb' | '#00rrggbb' (Electron's alpha form), symbolColor })
+  // Returns { refresh() }: call it after mounting a new bar.
+  function attachWindowControls(wc, report) {
+    const none = { refresh() {} };
+    if (typeof document === 'undefined' || !wc) return none;
+    const root = document.documentElement;
+    root.dataset.windowControls = wc.side === 'left' ? 'left' : 'right';
+    if (wc.side === 'left' && Number(wc.inset) > 0) root.style.setProperty('--wc-left', `${Math.round(Number(wc.inset))}px`);
+    if (typeof report !== 'function') return none;
+    const canvas = document.createElement('canvas');
+    canvas.width = 1;
+    canvas.height = 1;
+    const ctx = canvas.getContext ? canvas.getContext('2d', { willReadFrequently: true }) : null;
+    const rgba = (css) => {
+      if (!ctx) return null;
+      ctx.clearRect(0, 0, 1, 1);
+      ctx.fillStyle = 'transparent';
+      ctx.fillStyle = css;
+      ctx.fillRect(0, 0, 1, 1);
+      return Array.from(ctx.getImageData(0, 0, 1, 1).data);
+    };
+    const hex = (c) => c.slice(0, 3).map((v) => v.toString(16).padStart(2, '0')).join('');
+    let last = '';
+    let timer = null;
+    function send() {
+      timer = null;
+      const bar = document.querySelector('.bc-bar');
+      if (!bar) return;
+      let surface = null;
+      for (let el = bar; el; el = el.parentElement) {
+        const c = rgba(getComputedStyle(el).backgroundColor);
+        if (c && c[3] === 255) { surface = c; break; }
+        if (c && c[3] > 0) break; // a translucent band (glass): clear buttons
+      }
+      const text = rgba(getComputedStyle(bar).color) || [0, 0, 0, 255];
+      const darkText = text[0] * 0.299 + text[1] * 0.587 + text[2] * 0.114 < 128;
+      const msg = {
+        height: bar.clientHeight, // above its bottom hairline, which runs on under the buttons
+        color: surface ? `#${hex(surface)}` : `#00${darkText ? 'ffffff' : '000000'}`,
+        symbolColor: `#${hex(text)}`,
+      };
+      // Page zoom (main claims its chords in clip windows) or a move to a
+      // display with another scale changes the DIP size main derives, not the
+      // CSS height, so the scale is part of what counts as a change.
+      const signature = JSON.stringify([msg, typeof window !== 'undefined' ? window.devicePixelRatio : 1]);
+      if (signature === last || !msg.height) return;
+      last = signature;
+      report(msg);
+    }
+    const schedule = () => { if (!timer) timer = setTimeout(send, 0); };
+    if (typeof MutationObserver !== 'undefined') new MutationObserver(schedule).observe(root, { attributes: true });
+    window.addEventListener('resize', schedule);
+    schedule();
+    return { refresh: schedule };
+  }
   // Shared plain-text editor — ONE implementation mounted by BOTH the desktop
-  // app (in its own frameless window) and the website demo (in an in-page
-  // overlay). Edits are captured live: every keystroke fires onInput (the host
-  // persists a crash-safe draft), and after a short idle / on close / on Ctrl+S
-  // onCommit fires (the host writes the clip). Find (Ctrl+F), word/char count,
-  // revert-to-original, Tab-inserts-tab. The host owns persistence; this owns UI.
-  //   opts: { initialText, initialTitle, initialFocusTitle, title, idleMs,
-  //           onInput(payload), onCommit(payload), onClose() }
+  // app (in its own window) and the website demo (in an in-page overlay).
+  // Edits are captured live: every keystroke fires onInput (the host persists
+  // a crash-safe draft), and after a short idle / on blur / on close / on
+  // Ctrl+S onCommit fires (the host writes the clip; the footer shows Saving...
+  // until the write lands, then Saved). Find (Ctrl+F), word/char count,
+  // revert-to-original (the clip menu), Tab-inserts-tab. The title is edited
+  // in place in the shared .bc-bar. The host owns persistence; this owns UI.
+  //   opts: { initialText, initialTitle, initialFocusTitle, idleMs, nativeControls,
+  //           onInput(payload), onCommit(payload), onClose(), onMenu(x, y), clipboard }
+  // nativeControls: the window has the OS's own close (no close in the bar).
   function createEditor(opts) {
     if (typeof document === 'undefined') return null;
     const o = opts || {};
@@ -4216,19 +4676,13 @@
     const root = document.createElement('div');
     root.className = 'bc-editor';
     root.innerHTML = `
-      <div class="bc-editor-bar">
-        <span class="bc-editor-title"></span>
-        <div class="bc-tag-strip" data-x="tags" hidden></div>
-        <div class="bc-editor-bar-actions">
-          <button class="icon-btn" type="button" data-x="find" title="Find (Ctrl+F)"><span class="mi">search</span></button>
-          <button class="icon-btn" type="button" data-x="revert" title="Revert to original"><span class="mi">${CLIP_ACTION_ICONS.revert}</span></button>
-          ${o.onMenu ? '<button class="icon-btn" type="button" data-x="menu" title="More actions" aria-label="More actions"><span class="mi">more_horiz</span></button>' : ''}
-          <button class="icon-btn close-btn" type="button" data-x="close" title="Close (Esc)" aria-label="Close"><span class="mi">close</span></button>
-        </div>
-      </div>
-      <div class="bc-title-row" hidden>
-        <input class="bc-note-title" type="text" maxlength="240" placeholder="Title" autocomplete="off" spellcheck="false" data-x="titleinput">
-      </div>
+      ${renderWindowBar({
+        title: barTitleField('titleinput', 'Title (click to rename)'),
+        tags: true,
+        close: !o.nativeControls,
+        actions: `<button class="icon-btn" type="button" data-x="find" title="Find (${modKeyLabel()}+F)" aria-label="Find"><span class="mi">search</span></button>${
+          o.onMenu ? '<button class="icon-btn" type="button" data-x="menu" title="More actions" aria-label="More actions"><span class="mi">more_horiz</span></button>' : ''}`,
+      })}
       <div class="bc-find" data-x="findbar" hidden>
         <input class="bc-find-input" type="text" placeholder="Find" spellcheck="false" autocomplete="off" data-x="findinput">
         <button class="icon-btn rx-btn" type="button" data-x="findregex" title="Regex find" aria-label="Regex find">.*</button>
@@ -4245,15 +4699,14 @@
         <span data-x="stats"></span>
         <span class="bc-editor-foot-end">
           ${o.clipboard ? '<span class="bc-editor-clip" data-x="clip"></span>' : ''}
-          <span class="bc-editor-hint">Saved automatically</span>
+          <span class="bc-save-state" data-x="savestate" aria-live="polite"></span>
         </span>
       </div>`;
     const q = (name) => root.querySelector(`[data-x="${name}"]`);
     const area = root.querySelector('.bc-editor-area');
-    const titleRow = root.querySelector('.bc-title-row');
     const titleInput = q('titleinput');
-    const titleEl = root.querySelector('.bc-editor-title');
     const statsEl = q('stats');
+    const saveStateEl = q('savestate');
     const findBar = q('findbar');
     const findInput = q('findinput');
     const findRegexBtn = q('findregex');
@@ -4261,7 +4714,6 @@
     const findHl = q('findhl');
     area.value = originalText;
     titleInput.value = originalTitle;
-    titleEl.textContent = o.chromeTitle || o.title || 'Edit clip';
 
     let idleTimer = null;
     let lastCommittedText = originalText;
@@ -4273,23 +4725,65 @@
     function payload() { return { text: area.value, title: cleanTitle(titleInput.value) }; }
     function emitInput() { if (o.onInput) o.onInput(payload()); }
     function updateRegexButton() { findRegexBtn.classList.toggle('active', findRegex); }
-    function showTitleInput() { titleRow.hidden = false; }
+    // The bar's title field: an untitled note shows its first line, dim.
+    function updateTitleHint() { titleInput.placeholder = untitledHint(area.value); }
 
     function updateStats() {
       const t = area.value;
       statsEl.textContent = `${countWords(t)} word${countWords(t) === 1 ? '' : 's'} · ${t.length.toLocaleString()} char${t.length === 1 ? '' : 's'}`;
     }
+    // Live save state in the footer, derived from the buffer vs its last write
+    // on every change (editorSaveState): an edit undone before the idle save
+    // reads Saved again, an emptied note says it is not saved.
+    let inFlight = 0;
+    let lastFailed = false;
+    const unsaved = () => area.value !== lastCommittedText || cleanTitle(titleInput.value) !== lastCommittedTitle;
+    function refreshSaveState() {
+      const state = editorSaveState({
+        dirty: unsaved(),
+        inFlight: inFlight > 0,
+        failed: lastFailed,
+        blank: !area.value.trim(),
+        hasSaved: !!(lastCommittedText || lastCommittedTitle),
+      });
+      saveStateEl.className = `bc-save-state${state === 'failed' ? ' failed' : ''}`;
+      saveStateEl.textContent = EDITOR_SAVE_LABELS[state] || '';
+      if (state === 'failed') saveStateEl.title = 'The last save did not go through. Your next edit (or Ctrl+S) tries again.';
+      else if (state === 'blank') saveStateEl.title = 'An empty note is not saved. The clip keeps its last text.';
+      else saveStateEl.removeAttribute('title');
+    }
     function commit() {
       if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
       const next = payload();
-      if (next.text === lastCommittedText && next.title === lastCommittedTitle) return undefined;
+      // Nothing new, or a blank buffer: the host never writes an empty note
+      // (the clip keeps its last text; a new note starts at its first
+      // non-blank save), so nothing is sent and lastCommitted stays put.
+      if ((next.text === lastCommittedText && next.title === lastCommittedTitle) || !next.text.trim()) { refreshSaveState(); return undefined; }
+      const prior = { text: lastCommittedText, title: lastCommittedTitle };
       lastCommittedText = next.text;
       lastCommittedTitle = next.title;
+      lastFailed = false;
       // Return the host's result (a promise in the app) so commit-on-add flows
       // (the tag strip's ensureClipId) can await the write before re-querying.
-      return o.onCommit ? o.onCommit(next) : undefined;
+      const result = o.onCommit ? o.onCommit(next) : undefined;
+      if (result && typeof result.then === 'function') {
+        inFlight += 1;
+        refreshSaveState();
+        result.then(() => { inFlight -= 1; refreshSaveState(); }, () => {
+          inFlight -= 1;
+          // Not written: the next commit (an edit, Ctrl+S, blur, close) retries it.
+          if (lastCommittedText === next.text && lastCommittedTitle === next.title) { lastCommittedText = prior.text; lastCommittedTitle = prior.title; }
+          lastFailed = true;
+          refreshSaveState();
+        });
+      } else {
+        refreshSaveState();
+      }
+      return result;
     }
     function scheduleCommit() {
+      lastFailed = false;
+      refreshSaveState();
       if (idleTimer) clearTimeout(idleTimer);
       idleTimer = setTimeout(commit, idleMs);
     }
@@ -4440,6 +4934,7 @@
 
     area.addEventListener('input', () => {
       updateStats();
+      updateTitleHint();
       emitInput();
       scheduleCommit();
       if (!findBar.hidden) { recomputeMatches(); }
@@ -4454,6 +4949,7 @@
     titleInput.addEventListener('keydown', (e) => {
       if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 's') { e.preventDefault(); commit(); }
       else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') { e.preventDefault(); openFind(); }
+      else if (e.key === 'Enter') { e.preventDefault(); commit(); area.focus(); } // done naming: back to the text
     });
     findInput.addEventListener('input', () => { findIdx = -1; recomputeMatches(); selectMatch({ preserveFocus: true }); });
     findInput.addEventListener('keydown', (e) => {
@@ -4471,11 +4967,11 @@
     // the demo's in-page editor overlay has no clip context so no button).
     const menuBtn = q('menu');
     if (menuBtn) menuBtn.onclick = (e) => { e.stopPropagation(); const r = menuBtn.getBoundingClientRect(); o.onMenu(r.right, r.bottom + 2); };
-    // Back to the text and title the editor opened with (the bar button and the
-    // clip menu's "Revert to original").
-    const revert = () => { area.value = originalText; titleInput.value = originalTitle; updateStats(); emitInput(); commit(); area.focus(); };
-    q('revert').onclick = revert;
-    q('close').onclick = () => { commit(); if (o.onClose) o.onClose(); };
+    // Back to the text and title the editor opened with (the clip menu's
+    // "Revert to original").
+    const revert = () => { area.value = originalText; titleInput.value = originalTitle; updateStats(); updateTitleHint(); emitInput(); commit(); area.focus(); };
+    const closeBtn = q('close');
+    if (closeBtn) closeBtn.onclick = () => { commit(); if (o.onClose) o.onClose(); };
     root.addEventListener('keydown', (e) => {
       if (e.key !== 'Escape') return;
       if (!findBar.hidden) { e.preventDefault(); e.stopPropagation(); closeFind(); }
@@ -4483,9 +4979,12 @@
     });
 
     updateStats();
+    updateTitleHint();
     updateRegexButton();
+    refreshSaveState();
+    const focusTitle = () => { titleInput.focus(); titleInput.select(); };
     setTimeout(() => {
-      if (o.initialFocusTitle) { showTitleInput(); titleInput.focus(); titleInput.select(); }
+      if (o.initialFocusTitle) focusTitle();
       else if (o.initialFind) openFind(o.initialFind, !!o.initialFindRegex);
       else area.focus();
     }, 0);
@@ -4494,10 +4993,9 @@
       getText: () => area.value,
       getTitle: () => cleanTitle(titleInput.value),
       getValue: payload,
-      setText: (t) => { area.value = String(t || ''); updateStats(); },
-      // Reveal the (hidden-by-default) title row when a title is set externally
-      // (e.g. the clip menu's rename) so the result is visible immediately.
-      setTitle: (t) => { titleInput.value = cleanTitle(t); if (titleInput.value) showTitleInput(); },
+      setText: (t) => { area.value = String(t || ''); updateStats(); updateTitleHint(); },
+      // A title set from outside (the clip menu's Rename) shows in the bar at once.
+      setTitle: (t) => { titleInput.value = cleanTitle(t); },
       // Title-bar tag strip (shared with the viewer): the clip's groups as
       // removable chips + a "+" opening the group picker. Host calls this after
       // init and after every mutation/commit (the clip id is content-addressed).
@@ -4505,41 +5003,53 @@
       setClipboardState,
       commit,
       focus: () => area.focus(),
-      focusTitle: () => { showTitleInput(); titleInput.focus(); titleInput.select(); },
+      focusTitle,
       openFind,
       revert,
     };
   }
   // Shared in-app IMAGE VIEWER — the image twin of createEditor, mounted by the
-  // app's viewer window (viewer.html). Same chrome (bc-editor-bar header + foot)
+  // app's viewer window (viewer.html). Same chrome (the shared .bc-bar + foot)
   // so the two windows read as one family. Interactions: fit-to-window (default),
-  // click toggles fit⇄100%, wheel zooms around the cursor, drag pans when zoomed.
-  //   opts: { src, title, onMenu(x,y), onClose() }
-  // Returns { el, setSrc, setTitle, focus }.
+  // click toggles fit⇄100%, wheel zooms around the cursor, drag pans when
+  // zoomed; the footer's zoom out / percentage / zoom in / Fit / 100% do the
+  // same from buttons (and zoomKey from Ctrl/Cmd+= / - / 0). With onDragOut,
+  // the image glyph at the bar's leading edge is the file itself, like a
+  // macOS title-bar proxy icon: drag it into another app or a folder.
+  //   opts: { src, title, nativeControls, onMenu(x,y), onClose(), onDragOut() }
+  // Returns { el, setSrc, setTitle, setTags, zoomKey, focus }.
   function createImageViewer(opts) {
     if (typeof document === 'undefined') return null;
     const o = opts || {};
     const root = document.createElement('div');
     root.className = 'bc-viewer';
     root.tabIndex = -1;
+    const mod = modKeyLabel();
     root.innerHTML = `
-      <div class="bc-editor-bar">
-        <span class="bc-editor-title"></span>
-        <div class="bc-tag-strip" data-x="tags" hidden></div>
-        <div class="bc-editor-bar-actions">
-          ${o.onDragOut ? '<span class="icon-btn bc-drag-handle" data-x="drag" draggable="true" role="button" title="Drag the image into another app or a folder" aria-label="Drag the image out"><span class="mi">drag_indicator</span></span>' : ''}
-          <button class="icon-btn" type="button" data-x="menu" title="More actions" aria-label="More actions"><span class="mi">more_horiz</span></button>
-          <button class="icon-btn close-btn" type="button" data-x="close" title="Close (Esc)" aria-label="Close"><span class="mi">close</span></button>
-        </div>
-      </div>
+      ${renderWindowBar({
+        lead: o.onDragOut ? '<span class="bc-drag-handle" data-x="drag" draggable="true" role="button" title="Drag the image into another app or a folder" aria-label="Drag the image out"><span class="mi">image</span></span>' : '',
+        title: '<span class="bc-bar-title" data-x="title"></span>',
+        tags: true,
+        close: !o.nativeControls,
+        actions: '<button class="icon-btn" type="button" data-x="menu" title="More actions" aria-label="More actions"><span class="mi">more_horiz</span></button>',
+      })}
       <div class="bc-viewer-stage" data-x="stage"><img class="bc-viewer-img" data-x="img" alt="clip image" draggable="false"></div>
-      <div class="bc-editor-foot"><span data-x="dims"></span><span class="bc-editor-hint" data-x="zoom"></span></div>`;
+      <div class="bc-editor-foot">
+        <span data-x="dims"></span>
+        <span class="bc-editor-foot-end bc-zoom">
+          <button class="icon-btn" type="button" data-x="zoomout" title="Zoom out (${mod}+-)" aria-label="Zoom out"><span class="mi">zoom_out</span></button>
+          <span class="bc-zoom-pct" data-x="zoom"></span>
+          <button class="icon-btn" type="button" data-x="zoomin" title="Zoom in (${mod}+=)" aria-label="Zoom in"><span class="mi">zoom_in</span></button>
+          <button class="btn quiet sm" type="button" data-x="fit" title="Fit to the window (${mod}+0)">Fit</button>
+          <button class="btn quiet sm" type="button" data-x="actual" title="Actual size">100%</button>
+        </span>
+      </div>`;
     const q = (name) => root.querySelector(`[data-x="${name}"]`);
     const stage = q('stage');
     const img = q('img');
     const dimsEl = q('dims');
     const zoomEl = q('zoom');
-    const titleEl = root.querySelector('.bc-editor-title');
+    const titleEl = q('title');
     titleEl.textContent = o.title || 'Image';
 
     // Transform state: scale + translate applied to the image (origin 0 0).
@@ -4565,20 +5075,35 @@
       const pannable = isPannable();
       stage.style.cursor = pannable ? 'grab' : (fitMode && fitScale() < 1 ? 'zoom-in' : 'default');
       zoomEl.textContent = nw ? `${Math.round(scale * 100)}%` : '';
+      // The footer controls say which view this is (Fit / 100%) and stop at the limits.
+      q('fit').classList.toggle('active', !!nw && fitMode);
+      q('actual').classList.toggle('active', !!nw && !fitMode && Math.abs(scale - 1) < 0.001);
+      q('zoomin').disabled = !nw || scale >= ZOOM_MAX - 0.001;
+      q('zoomout').disabled = !nw || scale <= zoomMin() + 0.001;
     }
     function applyFit() {
       fitMode = true;
       scale = fitScale();
       paint();
     }
+    const ZOOM_MAX = 8;
+    const zoomMin = () => Math.min(fitScale(), 1) * 0.5;
     function zoomAt(cx, cy, nextScale) {
-      const s = Math.max(Math.min(nextScale, 8), Math.min(fitScale(), 1) * 0.5);
+      const s = Math.max(Math.min(nextScale, ZOOM_MAX), zoomMin());
       // keep the stage point (cx,cy) anchored on the same image pixel
       tx = cx - ((cx - tx) / scale) * s;
       ty = cy - ((cy - ty) / scale) * s;
       scale = s;
       fitMode = false;
       paint();
+    }
+    // Buttons / keys zoom around the stage centre, one wheel notch at a time.
+    const zoomCentre = (factor) => { if (nw) zoomAt(stage.clientWidth / 2, stage.clientHeight / 2, scale * factor); };
+    const actualSize = () => { if (nw) zoomAt(stage.clientWidth / 2, stage.clientHeight / 2, 1); };
+    function zoomKey(act) {
+      if (act === 'in') zoomCentre(1.2);
+      else if (act === 'out') zoomCentre(1 / 1.2);
+      else if (act === 'reset' && nw) applyFit();
     }
     img.addEventListener('load', () => {
       nw = img.naturalWidth; nh = img.naturalHeight;
@@ -4643,17 +5168,25 @@
       const r = q('menu').getBoundingClientRect();
       if (o.onMenu) o.onMenu(r.right, r.bottom + 2);
     };
-    q('close').onclick = () => { if (o.onClose) o.onClose(); };
+    q('zoomin').onclick = () => zoomKey('in');
+    q('zoomout').onclick = () => zoomKey('out');
+    q('fit').onclick = () => { if (nw) applyFit(); };
+    q('actual').onclick = actualSize;
+    const closeBtn = q('close');
+    if (closeBtn) closeBtn.onclick = () => { if (o.onClose) o.onClose(); };
     root.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); if (o.onClose) o.onClose(); }
     });
     if (o.src) img.src = o.src;
+    paint();
     return {
       el: root,
       setSrc: (src) => { if (img.src !== src) img.src = src; },
       setTitle: (t) => { titleEl.textContent = t || 'Image'; },
       // Same title-bar tag strip as createEditor (updateTagStrip is shared).
       setTags: (item, tagOpts) => updateTagStrip(q('tags'), item, tagOpts),
+      // 'in' | 'out' | 'reset' (Ctrl/Cmd+= / - / 0, claimed by the app's main).
+      zoomKey,
       focus: () => root.focus(),
     };
   }
@@ -4807,7 +5340,8 @@
   // blank-line-only chunks are QUIETED at chunk level via the vendored
   // chunkState hook: not drawn, not counted, excluded from nav/merge-all/save.
   // Declined chunks keep a dimmed dashed connector and are excluded the same
-  // way (tracked by orig-side coordinates, which never change).
+  // way (tracked by what the change is, declineKeyOf: the diff re-aligns its
+  // chunks when a neighbour is taken, so coordinates do not hold).
   function createReconciliationView(opts) {
     if (typeof document === 'undefined') return null;
     const o = opts || {};
@@ -4830,40 +5364,50 @@
 
     const root = document.createElement('div');
     root.className = 'bc-reconcile';
-    const barTitle = escapeHtml(record.title || o.title || 'Resolve conflict');
     const lTitle = titleOf(left);
     const rTitle = titleOf(right);
-    const headCell = (label, title) => `<span>${label}${title ? ` · ${escapeHtml(title)}` : ''}</span>`;
+    // The result's title is the bar's title field (shown once). When the two
+    // sides' titles differ, each read-only pane head offers its title as a
+    // one-click pick; the whole-side accepts sit at the end of the head of the
+    // pane they take. In 2-pane mode the left pane is Current, edited in place
+    // into the result.
+    const titlesDiffer = (lTitle || rTitle) && lTitle !== rTitle;
+    // In a narrow head the accept keeps only its glyph (a container query on
+    // the head, clipboard-popup.css) so a title pick stays readable; the
+    // tooltip always carries the full action, and the pick's its full title.
+    const headCell = (label, side, title, accept, tip) => `<div class="bc-merge-head"${side ? ` data-side="${side}"` : ''}>`
+      + `<span class="bc-head-label"${tip ? ` title="${escapeHtml(tip)}"` : ''}>${label}</span>`
+      + (titlesDiffer && side ? `<button type="button" class="bc-head-title" data-title-pick="${escapeHtml(title)}" title="${escapeHtml(`Use this title: ${title || 'Untitled'}`)}">${escapeHtml(title || 'Untitled')}</button>` : '')
+      + (accept ? `<button type="button" class="btn quiet sm bc-head-accept" data-x="${side}" title="${escapeHtml(`${accept.label}: ${accept.tip}`)}" aria-label="${escapeHtml(accept.label)}"><span class="mi sm">done_all</span><span class="bc-accept-label">${accept.label}</span></button>` : '')
+      + '</div>';
+    const gap = '<span class="bc-merge-heads-gap"></span>';
+    const takeCurrent = { label: 'Accept current', tip: 'finish with the current text as it is, without the incoming changes' };
+    const takeIncoming = { label: 'Accept incoming', tip: 'finish with the incoming text as it is' };
+    // A multi-step Unify says where it is in the footer (never truncated
+    // there; the bar's context label gives way first in a narrow window).
+    const step = record.step && Number(record.step.of) > 1 ? record.step : null;
     const headsHtml = threeWay
-      ? `${headCell('Current', lTitle)}<span class="bc-merge-heads-gap"></span>${headCell('Result', '')}<span class="bc-merge-heads-gap"></span>${headCell('Incoming', rTitle)}`
-      : `${headCell('Result', lTitle)}<span class="bc-merge-heads-gap"></span>${headCell('Incoming', rTitle)}`;
+      ? headCell('Current', 'left', lTitle, takeCurrent) + gap + headCell('Result', '', '', null) + gap + headCell('Incoming', 'right', rTitle, takeIncoming)
+      : headCell('Current', 'left', lTitle, takeCurrent, 'Edit this pane: it is the result') + gap + headCell('Incoming', 'right', rTitle, takeIncoming);
     root.innerHTML = `
-      <div class="bc-editor-bar">
-        <span class="bc-editor-title">${barTitle}</span>
-        <div class="bc-editor-bar-actions">
-          <span class="bc-chg-count" data-x="chgcount"></span>
-          <button class="icon-btn" type="button" data-x="prevchg" title="Previous change (Alt+Up)"><span class="mi">keyboard_arrow_up</span></button>
-          <button class="icon-btn" type="button" data-x="nextchg" title="Next change (Alt+Down)"><span class="mi">keyboard_arrow_down</span></button>
-          <button class="icon-btn" type="button" data-x="mergeall" title="Merge all non-conflicting"><span class="mi">call_merge</span></button>
-          <button class="icon-btn" type="button" data-x="ws" title="Ignore whitespace differences"><span class="mi">space_bar</span></button>
-          <button class="icon-btn close-btn" type="button" data-x="close" title="Close (Esc)" aria-label="Close"><span class="mi">close</span></button>
-        </div>
-      </div>
-      <div class="bc-merge-title">
-        <input class="bc-note-title" data-x="title" maxlength="240" placeholder="Title" autocomplete="off" spellcheck="false">
-        <span class="bc-title-opts" data-x="titleopts"></span>
-      </div>
+      ${renderWindowBar({
+        title: barTitleField('title', 'Title of the merged clip'),
+        context: record.title || o.title || 'Sync conflict',
+        close: !o.nativeControls,
+        actions: `<span class="bc-chg-count" data-x="chgcount"></span>
+          <button class="icon-btn" type="button" data-x="prevchg" title="Previous change (Alt+Up)" aria-label="Previous change"><span class="mi">keyboard_arrow_up</span></button>
+          <button class="icon-btn" type="button" data-x="nextchg" title="Next change (Alt+Down)" aria-label="Next change"><span class="mi">keyboard_arrow_down</span></button>
+          <button class="icon-btn" type="button" data-x="mergeall" title="Merge all non-conflicting" aria-label="Merge all non-conflicting"><span class="mi">call_merge</span></button>
+          <button class="icon-btn" type="button" data-x="ws" title="Ignore whitespace differences" aria-label="Ignore whitespace differences"><span class="mi">space_bar</span></button>`,
+      })}
       <div class="bc-merge-heads ${threeWay ? 'bc-heads-3' : 'bc-heads-2'}">${headsHtml}</div>
       <div class="bc-merge-note" data-x="note" hidden></div>
       <div class="bc-merge-host" data-x="host"></div>
-      <div class="bc-reconcile-actions ${threeWay ? 'bc-heads-3' : 'bc-heads-2'}" data-x="actions">
-        <span class="bc-act-left"><button type="button" class="btn" data-x="left">Accept current</button></span>
-        <span class="bc-act-mid">
-          <button type="button" class="btn" data-x="both">Keep both</button>
-          ${record.unify ? '' : '<button type="button" class="btn" data-x="remove">Remove conflict</button>'}
-          <button type="button" class="btn primary" data-x="save">${escapeHtml(record.saveLabel || 'Save merged')}</button>
-        </span>
-        <span class="bc-act-right"><button type="button" class="btn" data-x="right">Accept incoming</button></span>
+      <div class="bc-reconcile-actions" data-x="actions">
+        ${step ? `<span class="bc-step" data-x="step">Step ${Number(step.at)} of ${Number(step.of)}</span>` : ''}
+        <button type="button" class="btn" data-x="both" title="Keep both sides of every change">Keep both</button>
+        ${record.unify ? '' : '<button type="button" class="btn" data-x="remove" title="Dismiss this conflict and leave the clip as it is">Remove conflict</button>'}
+        <button type="button" class="btn primary" data-x="save">${escapeHtml(record.saveLabel || 'Save merged')}</button>
       </div>`;
     const q = (name) => root.querySelector(`[data-x="${name}"]`);
     const dialogs = createDialogs(root);
@@ -4871,16 +5415,12 @@
     const host = q('host');
     const initial = record.result || {};
     titleInput.value = cleanTitle(initial.title != null ? initial.title : (rTitle || lTitle));
-    // Title conflict chips: when the two titles differ, offer both as one-click
-    // picks (the input stays free-text either way).
-    if ((lTitle || rTitle) && lTitle !== rTitle) {
-      const chip = (label, val) => `<button type="button" class="bc-chip" data-title-pick="${escapeHtml(val)}">${escapeHtml(label)}: ${escapeHtml(val || '—')}</button>`;
-      q('titleopts').innerHTML = `<span class="bc-title-use">use</span>${chip('Current', lTitle)}${chip('Incoming', rTitle)}`;
-      q('titleopts').addEventListener('click', (event) => {
-        const pick = event.target.closest('[data-title-pick]');
-        if (pick) titleInput.value = pick.dataset.titlePick;
-      });
-    }
+    titleInput.placeholder = untitledHint(seed);
+    titleInput.addEventListener('keydown', (event) => { if (event.key === 'Enter') { event.preventDefault(); if (mv) mv.editor().focus(); } });
+    root.querySelector('.bc-merge-heads').addEventListener('click', (event) => {
+      const pick = event.target.closest('[data-title-pick]');
+      if (pick) titleInput.value = pick.dataset.titlePick;
+    });
 
     // ---- CodeMirror MergeView (plain-textarea fallback if vendor missing) ----
     let mv = null;
@@ -4888,9 +5428,30 @@
     let navIdx = -1;
     let statusTimer = null;
     let lineClassHandles = [];
-    const declinedKeys = new Set(); // `${side}:${origFrom}-${origTo}` — orig coords are immutable
+    let changeTotal = null;        // real changes the view was built with (the counter's total)
+    let takenBeforeRebuild = 0;    // changes already taken when the whitespace toggle rebuilt the view
+    let lastChangeCount = 0;
+    const declinedKeys = new Set(); // declineKeyOf: WHAT a dismissed change is, not where
     const currentText = () => mv ? mv.editor().getValue() : (fallbackArea ? fallbackArea.value : seed);
     const keyOf = (side, chunk) => `${side}:${chunk.origFrom}-${chunk.origTo}`;
+    // A dismissed change is remembered by its content: the lines only the
+    // Result has and the lines only the other pane has (multisets, sorted).
+    // The addon's character diff re-aligns its chunks whenever a neighbouring
+    // change is taken, so a chunk's coordinates, even its exact line span, can
+    // move under a dismissal that must stay (taking a conflict next to a kept
+    // line used to re-open that line).
+    function declineKeyOf(dv, chunk) {
+      const r = chunkRanges(dv, chunk);
+      const editLines = dv.edit.getRange(r.editStart, r.editEnd).split('\n').filter(Boolean);
+      const origLines = dv.orig.getRange(r.origStart, r.origEnd).split('\n').filter(Boolean);
+      const onlyOrig = [];
+      for (const line of origLines) {
+        const at = editLines.indexOf(line);
+        if (at >= 0) editLines.splice(at, 1); else onlyOrig.push(line);
+      }
+      return `${dv.type}:${editLines.sort().join('\n')}\u0000${onlyOrig.sort().join('\n')}`;
+    }
+    const isDeclined = (dv, chunk) => declinedKeys.has(declineKeyOf(dv, chunk));
     function chunkRanges(dv, chunk) {
       const Pos = CM.Pos;
       return {
@@ -4913,14 +5474,16 @@
     // Vendored chunkState hook: how a chunk is drawn (see cm5/README patches).
     function chunkState(dv, chunk) {
       if (ignoreWs && wsEqualChunk(dv, chunk)) return 'quiet';
-      if (declinedKeys.has(keyOf(dv.type, chunk))) return 'declined';
+      if (isDeclined(dv, chunk)) return 'declined';
+      if (conflictKeys.has(keyOf(dv.type, chunk))) return 'conflict'; // red connector, like its lines
       return null;
     }
+    let conflictKeys = new Set(); // chunks inside a conflict, from the last survey (updateStatus)
     // One classified pass over both sides' chunks: quiet skipped, declined
     // separated, 3-pane conflicts = active left/right chunks touching the same
     // Result lines (merged into regions).
     function survey() {
-      const out = { changes: 0, pending: [], declined: 0, quiet: [], conflicts: [], activeBySide: { left: [], right: [] } };
+      const out = { changes: 0, pending: [], declined: 0, quiet: [], conflicts: [], conflictKeys: new Set(), activeBySide: { left: [], right: [] } };
       if (!mv) return out;
       for (const dv of [mv.left, mv.right]) {
         if (!dv) continue;
@@ -4929,14 +5492,18 @@
           if (ignoreWs && wsEqualChunk(dv, chunk)) { out.quiet.push({ dv, chunk }); continue; }
           out.changes += 1;
           out.activeBySide[dv.type].push(chunk);
-          if (declinedKeys.has(keyOf(dv.type, chunk))) { out.declined += 1; continue; }
+          if (isDeclined(dv, chunk)) { out.declined += 1; continue; }
           const p = { side: dv.type, dv, chunk };
           if (!threeWay) {
             const r = chunkRanges(dv, chunk);
             const smart = smartMergeChunk(dv.edit.getRange(r.editStart, r.editEnd), dv.orig.getRange(r.origStart, r.origEnd));
             p.verdict = smart.verdict;
             p.mergedText = smart.text;
-            if (p.verdict === 'conflict') out.conflicts.push({ from: chunk.editFrom, to: Math.max(chunk.editTo, chunk.editFrom + 1) });
+            // origs: the same hunk on the read-only pane(s), painted red too.
+            if (p.verdict === 'conflict') {
+              out.conflicts.push({ from: chunk.editFrom, to: Math.max(chunk.editTo, chunk.editFrom + 1), origs: [{ cm: dv.orig, from: chunk.origFrom, to: chunk.origTo }] });
+              out.conflictKeys.add(keyOf(dv.type, chunk));
+            }
           }
           out.pending.push(p);
         }
@@ -4945,13 +5512,21 @@
         const touches = (a, b) => a.editFrom <= b.editTo && b.editFrom <= a.editTo;
         const regions = [];
         for (const lc of out.activeBySide.left) for (const rc of out.activeBySide.right) {
-          if (touches(lc, rc)) regions.push({ from: Math.min(lc.editFrom, rc.editFrom), to: Math.max(lc.editTo, rc.editTo, Math.min(lc.editFrom, rc.editFrom) + 1) });
+          if (touches(lc, rc)) {
+            if (!isDeclined(mv.left, lc)) out.conflictKeys.add(keyOf('left', lc));
+            if (!isDeclined(mv.right, rc)) out.conflictKeys.add(keyOf('right', rc));
+            regions.push({
+              from: Math.min(lc.editFrom, rc.editFrom),
+              to: Math.max(lc.editTo, rc.editTo, Math.min(lc.editFrom, rc.editFrom) + 1),
+              origs: [{ cm: mv.left.orig, from: lc.origFrom, to: lc.origTo }, { cm: mv.right.orig, from: rc.origFrom, to: rc.origTo }],
+            });
+          }
         }
         regions.sort((a, b) => a.from - b.from);
         for (const reg of regions) {
           const last = out.conflicts[out.conflicts.length - 1];
-          if (last && reg.from <= last.to) last.to = Math.max(last.to, reg.to);
-          else out.conflicts.push({ ...reg });
+          if (last && reg.from <= last.to) { last.to = Math.max(last.to, reg.to); last.origs.push(...reg.origs); }
+          else out.conflicts.push({ ...reg, origs: [...reg.origs] });
         }
       }
       return out;
@@ -4968,14 +5543,29 @@
     function updateStatus() {
       if (!mv) return;
       const info = survey();
-      // Counter: total real changes, a pending chip (click -> first pending),
-      // and a red conflict chip in 3-pane mode.
-      let html = info.changes ? `${info.changes} change${info.changes === 1 ? '' : 's'}` : 'no differences';
-      if (info.pending.length) html += ` <button type="button" class="bc-pending-chip" data-x="pendjump">${info.pending.length} pending</button>`;
-      if (info.conflicts.length) html += ` <button type="button" class="bc-conflict-chip" data-x="confjump">${info.conflicts.length} conflict${info.conflicts.length === 1 ? '' : 's'}</button>`;
+      // Conflict chunks draw a red connector (chunkState 'conflict'): redraw
+      // the gaps when the set changes.
+      if ([...info.conflictKeys].sort().join('|') !== [...conflictKeys].sort().join('|')) {
+        conflictKeys = info.conflictKeys;
+        for (const dv of [mv.left, mv.right]) if (dv && dv.bcRedraw) dv.bcRedraw();
+      }
+      // ONE counter: how many of the real changes are settled (merged in or
+      // dismissed; click jumps to the next open one), plus a red conflict chip
+      // only while conflicts remain. A change taken into the Result stops being
+      // a chunk, so the total is the count the view was built with (plus any
+      // taken before a whitespace rebuild), never the live chunk count: the
+      // resolved number only rises as changes are taken or dismissed.
+      if (changeTotal == null) changeTotal = info.changes + takenBeforeRebuild;
+      const total = Math.max(changeTotal, info.changes);
+      lastChangeCount = info.changes;
+      const open = info.pending.length;
+      let html = !total ? 'No differences'
+        : open ? `<button type="button" class="bc-chg-progress" data-x="pendjump" title="Next open change (Alt+Down)">${total - open} of ${total} resolved</button>`
+          : `All ${total} resolved`;
+      if (info.conflicts.length) html += ` <button type="button" class="bc-conflict-chip" data-x="confjump" title="Jump to the first conflict">${info.conflicts.length} conflict${info.conflicts.length === 1 ? '' : 's'}</button>`;
       q('chgcount').innerHTML = html;
       const pj = q('pendjump');
-      if (pj) pj.onclick = () => { const p = survey().pending[0]; if (p) scrollToLine(p.chunk.editFrom); };
+      if (pj) pj.onclick = () => jumpChange(1);
       const cj = q('confjump');
       if (cj) cj.onclick = () => { const c = survey().conflicts[0]; if (c) scrollToLine(c.from); };
       // A Unify step only saves what the Smart merge can settle on its own.
@@ -4983,7 +5573,7 @@
         const n = info.conflicts.length;
         q('save').disabled = n > 0;
         q('save').title = n
-          ? `${n} conflict${n === 1 ? '' : 's'} left: use the arrow in the gap to take incoming, the x to keep yours, Alt+B to keep both, or edit Result`
+          ? `${n} conflict${n === 1 ? '' : 's'} left: use the arrow in the gap to take incoming, the x to keep yours, Alt+B to keep both, or edit the result`
           : 'Takes the incoming additions and rewordings, keeps lines that incoming lacks, then saves';
       }
       // Two panes with no markers read as "nothing happened". When the only
@@ -4997,7 +5587,9 @@
         q('showws').onclick = () => q('ws').click();
       }
       // Line paint: quiet chunks lose the green chunk background on both panes;
-      // declined chunks dim their text; conflict regions tint red.
+      // declined chunks dim their text; conflict regions tint red on every pane
+      // that holds them (the wash on the line background, and the line's
+      // wrapper marked so its word-level marks turn red too).
       clearLineClasses();
       for (const { dv, chunk } of info.quiet) {
         addLineClasses(dv.edit, chunk.editFrom, chunk.editTo, 'background', 'bc-quiet');
@@ -5011,7 +5603,12 @@
           addLineClasses(dv.orig, chunk.origFrom, chunk.origTo, 'wrap', 'bc-dim-line');
         }
       }
-      for (const reg of info.conflicts) addLineClasses(mv.editor(), reg.from, reg.to, 'background', 'bc-conflict');
+      for (const reg of info.conflicts) {
+        for (const span of [{ cm: mv.editor(), from: reg.from, to: reg.to }, ...(reg.origs || [])]) {
+          addLineClasses(span.cm, span.from, span.to, 'background', 'bc-conflict');
+          addLineClasses(span.cm, span.from, span.to, 'wrap', 'bc-conflict-line');
+        }
+      }
     }
     function scheduleStatus() { clearTimeout(statusTimer); statusTimer = setTimeout(updateStatus, 120); }
     // Force the addon to recompute the diff NOW (it otherwise debounces ~250ms),
@@ -5067,7 +5664,7 @@
       return bestDist <= 6 ? best : null; // only act when reasonably close
     }
     function declineChunk(dv, chunk) {
-      declinedKeys.add(keyOf(dv.type, chunk));
+      declinedKeys.add(declineKeyOf(dv, chunk));
       if (dv.bcRedraw) dv.bcRedraw();
       updateStatus();
     }
@@ -5085,7 +5682,7 @@
         const info = survey();
         const inConflict = (c) => info.conflicts.some((reg) => c.editFrom <= reg.to && reg.from <= c.editTo);
         const open = info.pending.filter((p) => !inConflict(p.chunk));
-        for (const p of open) if (p.verdict === 'keep') declinedKeys.add(keyOf(p.dv.type, p.chunk));
+        for (const p of open) if (p.verdict === 'keep') declinedKeys.add(declineKeyOf(p.dv, p.chunk));
         const take = open.filter((p) => threeWay || p.verdict === 'apply')
           .sort((a, b) => b.chunk.editFrom - a.chunk.editFrom); // bottom-up keeps earlier coords valid
         for (const p of take) {
@@ -5128,7 +5725,7 @@
         theme: 'bc',
         chunkState,      // vendored BOARDCLIP hooks (see cm5/README)
         declineChunk,
-        phrases: { 'Revert chunk': 'Merge this change into Result' },
+        phrases: { 'Revert chunk': 'Take this change into the result' },
       };
       if (threeWay) cmOpts.origLeft = wsNormText(leftText);
       mv = new CM.MergeView(host, cmOpts);
@@ -5208,30 +5805,17 @@
       if (!mv) return;
       ignoreWs = !ignoreWs;
       q('ws').classList.toggle('active', ignoreWs);
+      // The taken changes are in the Result now and vanish from the new diff:
+      // carry them so the counter's progress survives the rebuild.
+      if (changeTotal != null) takenBeforeRebuild = Math.max(0, Math.max(changeTotal, lastChangeCount) - lastChangeCount);
+      changeTotal = null;
       buildMergeView(currentText()); // rebuild with the same Result text
     };
-    q('close').onclick = () => { if (o.onClose) o.onClose(); };
+    const closeBtn = q('close');
+    if (closeBtn) closeBtn.onclick = () => { if (o.onClose) o.onClose(); };
     root.addEventListener('keydown', (event) => {
       if (event.key === 'Escape' && !dialogs.isOpen()) { event.preventDefault(); if (o.onClose) o.onClose(); }
     });
-    // One row (Accept current | Keep both + primary | Accept incoming) while it
-    // fits; narrower, each accept button moves under its own pane and the
-    // primary group gets its own centred row. Measured once in the row layout:
-    // the side columns are equal (1fr), so the wider side sets both.
-    const actions = q('actions');
-    let rowNeed = 0;
-    const fitActions = () => {
-      if (!rowNeed && !actions.classList.contains('bc-actions-stacked')) {
-        const w = (sel) => actions.querySelector(sel).getBoundingClientRect().width;
-        const cs = getComputedStyle(actions);
-        if (w('.bc-act-mid') > 0) {
-          rowNeed = 2 * Math.max(w('.bc-act-left'), w('.bc-act-right')) + w('.bc-act-mid')
-            + 2 * (parseFloat(cs.columnGap) || 0) + (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0);
-        }
-      }
-      if (rowNeed) actions.classList.toggle('bc-actions-stacked', actions.clientWidth < rowNeed);
-    };
-    if (typeof ResizeObserver !== 'undefined') new ResizeObserver(fitActions).observe(actions);
     return { el: root, getValue: value };
   }
   function sortItems(items) {
@@ -5390,6 +5974,11 @@
     applySelectionUI,
     renderPopupShell,
     renderSettingsBody,
+    renderSettingsItem,
+    renderNumpadSlotRows,
+    renderGroupRows,
+    setSettingHelp,
+    mountSettings,
     queryMatchIndex,
     collapsedPreviewText,
     applyHistoryDelta,
@@ -5398,6 +5987,10 @@
     applyTheme,
     setActiveThemeSeg,
     applyVariants,
+    applyAppearance,
+    normalizeHexColor,
+    contrastRatio,
+    accentShades,
     createVariantSwitcher,
     setActiveVariantSeg,
     createDialogs,
@@ -5410,8 +6003,11 @@
     createClipController,
     findAllMatches,
     countWords,
+    editorSaveState,
     lineNumberAtIndex,
     editorScrollTopForIndex,
+    renderWindowBar,
+    attachWindowControls,
     createEditor,
     createImageViewer,
     lcsSegments,

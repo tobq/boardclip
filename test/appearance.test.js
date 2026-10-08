@@ -20,6 +20,7 @@ const fnBody = (src, name) => {
 
 // 1) OS accent -> '#rrggbb'. Electron gives 'rrggbbaa' (no '#') on Windows and macOS.
 {
+  assert.strictEqual(A.normalizeAccentHex, require('../site/shared/clipboard-ui-core').normalizeHexColor, 'ONE hex rule: main\'s validator is the core\'s (the renderer\'s Custom field)');
   assert.strictEqual(A.normalizeAccentHex('0078d4ff'), '#0078d4', 'Electron getAccentColor form: alpha dropped');
   assert.strictEqual(A.normalizeAccentHex('#0078D4'), '#0078d4');
   assert.strictEqual(A.normalizeAccentHex(' 3A6FD8 '), '#3a6fd8');

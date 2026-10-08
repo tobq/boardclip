@@ -23,3 +23,26 @@ Re-apply these when re-vendoring a newer codemirror.
    ignoring-whitespace regions collapse straight through them.
 5. `MergeView.prototype.bcRecollapse()` + `_bcCollapseMarks` tracking: re-fold
    identical stretches after the diff changes (merge/decline/WS toggle).
+6. `bcWordDiff` + `bcMarkDiff` (after `getDiff`), used by `registerUpdate`'s
+   `update()`: the inline marks come from a WORD-level copy of the diff. In-line
+   equalities (no line break) no longer than the edits on both sides fold into
+   them (the diff_cleanupSemantic rule, kept off line breaks), edits widen to
+   whole words, and an edit covering whole lines on every side is flagged
+   (`part[2]`); under ignoreWhitespace a whitespace-only edit is flagged quiet
+   (`part[3]`). It is built from the raw diff_main of the two texts, because
+   getDiff's ignoreWhitespace drops whitespace-only parts (equalities too) and
+   its positions drift. `getDiff` keeps that raw result on the cleaned diff
+   (`diff.bcRaw`, a copy: its clean-up loop rewrites parts in place), so the
+   texts are diffed ONCE per update (a second diff_main doubled the cost, up to
+   the 1 s Diff_Timeout each on large rewritten texts). Chunks keep getDiff's diff, so the gutter buttons, the
+   connectors and the wrapper's merge logic are unchanged.
+7. `markChanges`: a flagged whole-line edit gets no inline mark (the chunk wash
+   says it), so a rewritten line is one layer, not a wash plus a tile; a quiet
+   (whitespace-only) edit moves the position and marks nothing.
+8. `drawConnectorsForChunk`: the apply / decline buttons are Material Symbols
+   ligatures (`mi` class: `arrow_forward` / `arrow_back`, `close`) instead of
+   the unicode arrows and x.
+9. `collapseSingle`: the folded-stretch widget says how much it hides
+   ("12 unchanged lines").
+10. `drawConnectorsForChunk`: `chunkState` may also return `'conflict'`, which
+    adds `bc-conflict-connect` to the connector (drawn red like its lines).

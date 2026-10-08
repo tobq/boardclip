@@ -32,7 +32,7 @@ if (window.viewerApi.onColorSchemeChanged) window.viewerApi.onColorSchemeChanged
 // accent, the glass scope) arrive as the same payload as init.
 if (window.viewerApi.onAppearanceChanged) window.viewerApi.onAppearanceChanged((look) => {
   if (look.themeMode) { themeMode = (look.themeMode === 'light' || look.themeMode === 'dark') ? look.themeMode : 'system'; refreshTheme(); }
-  Core.applyVariants(document.documentElement, look);
+  Core.applyAppearance(document.documentElement, look);
 });
 
 let viewer = null;
@@ -92,14 +92,13 @@ async function openMenu(x, y) {
 window.viewerApi.onInit(async (init) => {
   themeMode = (init.themeMode === 'light' || init.themeMode === 'dark') ? init.themeMode : 'system';
   refreshTheme();
-  Core.applyVariants(document.documentElement, {
-    surfaceStyle: init.surfaceStyle, accentVariant: init.accentVariant, uiDensity: init.uiDensity, uiCorners: init.uiCorners, uiBorders: init.uiBorders,
-  });
+  Core.applyAppearance(document.documentElement, init);
   clipId = init.id;
   host.innerHTML = '';
   viewer = Core.createImageViewer({
     src: init.src,
     title: init.title || 'Image',
+    nativeControls: true,
     onMenu: (x, y) => openMenu(x, y),
     onClose: () => window.viewerApi.close(),
     // Drag the image out (title-bar handle; the image itself at fit size or
@@ -107,9 +106,14 @@ window.viewerApi.onInit(async (init) => {
     onDragOut: window.viewerApi.startDrag ? () => window.viewerApi.startDrag() : null,
   });
   host.appendChild(viewer.el);
+  // The OS's own window controls: the bar reserves their room and reports its
+  // colours, so the caption buttons match it (main's setTitleBarOverlay).
+  Core.attachWindowControls(init.windowControls, window.viewerApi.windowChrome);
   viewer.focus();
   refreshState();
 });
+// Ctrl/Cmd+= / - / 0 zoom the image (main claims them before the app menu).
+if (window.viewerApi.onZoomKey) window.viewerApi.onZoomKey((act) => { if (viewer) viewer.zoomKey(act); });
 
 // Right-click anywhere → the same clip menu (parity with popup rows).
 document.addEventListener('contextmenu', (e) => {

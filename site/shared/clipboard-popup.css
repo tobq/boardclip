@@ -43,7 +43,7 @@
 
 /* ONE keyboard focus ring for every BoardClip control: a box-shadow, so no
    outline and no layout shift. Text fields show focus on their own edge. */
-:is(:root[data-theme], .bc-popup) :where(button, [role="button"], a[href], .filter-tag, .seg-btn, .np-btn, .bc-menu-item, .bc-chip):focus-visible {
+:is(:root[data-theme], .bc-popup) :where(button, [role="button"], a[href], .filter-tag, .seg-btn, .np-btn, .bc-menu-item):focus-visible {
   outline: none; box-shadow: var(--focus-ring);
 }
 
@@ -72,7 +72,7 @@
 
 /* ONE overline: the small uppercase label over a settings section, a list or
    a pane. Window titles are NOT overlines. */
-.overline, .settings-note, .settings-section h3, .developer-update-label, .ai-subhead, .bc-title-use, .bc-merge-heads > span {
+.overline, .settings-note, .settings-section h3 {
   font-size: var(--fs-meta); font-weight: var(--fw-strong); line-height: var(--lh-ui); letter-spacing: .06em; text-transform: uppercase; color: var(--text-dim);
 }
 
@@ -92,8 +92,9 @@
 
 /* Filled text fields: a fill, never a border; focus (and a recording shortcut
    field) draws an inset accent edge, which never shifts layout. The popup's
-   search field is the flat exception (no fill, a hairline underline, below). */
-.setting-row input:focus, .prompt-input:focus, .bc-note-title:focus, .bc-find-input:focus,
+   search field and the clip windows' title / find fields are the flat
+   exception (no fill, a hairline underline). */
+.setting-row input:focus, .prompt-input:focus,
 .shortcut-btn:hover, .shortcut-btn.recording { box-shadow: inset 0 0 0 1px var(--accent); }
 
 /* ---------- Components ---------- */
@@ -174,7 +175,7 @@
              white-space: pre; overflow: hidden; pointer-events: none; z-index: 0; border: none;
              display: flex; align-items: center; }
 .search-live { position: relative; z-index: 1; background: transparent; -webkit-text-fill-color: transparent; caret-color: var(--text); }
-.qh-prefix { color: var(--accent); font-weight: var(--fw-strong); }
+.qh-prefix { color: var(--accent-text); font-weight: var(--fw-strong); }
 .qh-neg { color: var(--red); font-weight: var(--fw-strong); }
 .qh-value { color: var(--text); }
 .qh-regex { color: var(--green); }
@@ -193,7 +194,7 @@
 .search-hint-clip { min-height: 0; overflow: hidden; }
 .search-hint-row { display: flex; align-items: baseline; gap: var(--sp-2); padding: 0 0 var(--sp-2); font-size: var(--fs-meta); line-height: var(--lh-ui); color: var(--text-dim); }
 .search-hint-row > .mi { font-size: var(--icon-sm); color: var(--red); align-self: center; }
-.search-hint-fix { margin-left: var(--sp-1); padding: 0 var(--sp-2); height: var(--ctl-sm); border: 0; border-radius: var(--r-1); background: transparent; color: var(--accent);
+.search-hint-fix { margin-left: var(--sp-1); padding: 0 var(--sp-2); height: var(--ctl-sm); border: 0; border-radius: var(--r-1); background: transparent; color: var(--accent-text);
                    font: inherit; cursor: pointer; transition: background-color var(--dur) var(--ease); }
 .search-hint-fix code { font-family: var(--font-mono); }
 .search-hint-fix:hover { background: var(--hover); }
@@ -257,7 +258,7 @@
               display: inline-flex; align-items: center; gap: var(--sp-1); vertical-align: top; font-family: inherit; }
 .filter-tag.icon-filter { min-width: var(--ctl-sm); height: var(--ctl-sm); justify-content: center; padding: 0 var(--sp-2); }
 .filter-tag:hover { background: var(--hover); color: var(--text); }
-.filter-tag.active, .filter-tag.active:hover { background: var(--accent-bg); color: var(--accent); --icon-fill: 1; }
+.filter-tag.active, .filter-tag.active:hover { background: var(--accent-bg); color: var(--accent-text); --icon-fill: 1; }
 .filter-tag.excluded { color: var(--text-dim); text-decoration: line-through; text-decoration-thickness: 1px; opacity: .6; }
 /* A greyed chip (the availability census, Forge's disabledTier): it would show
    nothing under the other filters (.4), or can never match with them
@@ -283,7 +284,7 @@
                font: inherit; font-size: var(--fs-meta); cursor: pointer;
                opacity: 0; pointer-events: none; transform: translate(-50%, -6px); transition: opacity var(--dur) var(--ease), transform var(--dur) var(--ease); }
 .list-newest.show { opacity: 1; pointer-events: auto; transform: translate(-50%, 0); }
-.list-newest:hover { color: var(--accent); }
+.list-newest:hover { color: var(--accent-text); }
 .list-newest .mi.sm { font-size: var(--icon-sm); }
 .list-newest-dot { display: none; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
 .list-newest.has-new .list-newest-dot { display: inline-block; }
@@ -321,7 +322,7 @@
 .np-btn:hover { background: var(--ctl-fill-hover); }
 .np-btn.taken::after { content: ""; position: absolute; left: 0; right: 0; bottom: var(--sp-1); width: var(--sp-1); height: var(--sp-1); margin: 0 auto;
                        border-radius: var(--r-chip); background: var(--text-dim); }
-.np-btn.current { background: var(--accent-bg); color: var(--accent); font-weight: var(--fw-strong); }
+.np-btn.current { background: var(--accent-bg); color: var(--accent-text); font-weight: var(--fw-strong); }
 .np-btn.current:hover { background: var(--accent-bg-strong); }
 .bc-menu.bc-keypad, .bc-menu .tag-submenu.bc-keypad { min-width: 0; }
 .filter-tag.virtual { opacity: .82; font-style: italic; }
@@ -432,40 +433,108 @@
 .settings-hdr { display: flex; align-items: center; padding: var(--sp-4); gap: var(--sp-3); border-bottom: 1px solid var(--line); }
 .settings-hdr h2 { font-size: var(--fs-ui); font-weight: var(--fw-strong); flex: 1; margin: 0; color: var(--text); }
 .settings-body { flex: 1; min-height: 0; overflow-y: auto; padding: var(--sp-6) var(--gutter); }
-.setting-row { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-5); padding: var(--sp-4) 0; color: var(--text); font-size: var(--fs-ui); }
-.setting-row label { font-size: var(--fs-ui); color: var(--text); }
-.setting-row input { width: 80px; height: var(--ctl-lg); background: var(--input); border: none; border-radius: var(--r-ctl); padding: 0 var(--sp-4); color: var(--text); font-family: inherit; font-size: var(--fs-ui); text-align: right; outline: none; }
-.switch-row { cursor: pointer; }
-.switch-row input { position: absolute; opacity: 0; pointer-events: none; }
+/* Settings (Core.renderSettingsBody, Core.renderSettingsItem): ONE row grid and
+   ONE list style on the same three columns, label | control | reset, so every
+   control and every row action (a reset, a remove x) ends on one right edge;
+   the third column is reserved even when empty. Rows are spaced, never boxed;
+   list rows are split by --line-faint hairlines only. */
+.setting-row, .settings-item, .settings-list-cols { display: grid; grid-template-columns: minmax(0, 1fr) auto var(--ctl-md); column-gap: var(--sp-4); align-items: center;
+                               color: var(--text); font-size: var(--fs-ui); line-height: var(--lh-ui); }
+.setting-row { min-height: 36px; padding: var(--sp-3) 0; }
+.setting-row.note { min-height: 0; }
+.setting-text, .si-text { grid-column: 1; display: flex; flex-direction: column; gap: var(--sp-1); min-width: 0; }
+.setting-control, .setting-row > .switch, .si-control { grid-column: 2; justify-self: end; display: inline-flex; align-items: center; gap: var(--sp-2); min-width: 0; }
+.setting-reset, .si-action { grid-column: 3; display: inline-flex; justify-content: center; }
+.setting-reset .mi, .si-action .mi { font-size: var(--icon-sm); }
+.setting-label { color: var(--text); }
+/* One-line help / status under a label; an empty one takes no space. */
+.setting-help { font-size: var(--fs-meta); color: var(--text-dim); overflow-wrap: anywhere; }
+.setting-help:empty { display: none; }
+.setting-help.mono { font-family: var(--font-mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; overflow-wrap: normal; }
+.setting-help.error { color: var(--red); }
+/* A status that reports something running carries the green success dot. */
+.setting-help.active::before { content: ""; display: inline-block; width: 6px; height: 6px; margin-right: var(--sp-2); border-radius: 50%; background: var(--green); vertical-align: 1px; }
+/* Free text takes the full width under its label (pinned peers), up to the
+   shared control edge. */
+.setting-row.stack > .setting-control { grid-column: 1 / 3; justify-self: stretch; margin-top: var(--sp-3); }
+.setting-row.stack input { flex: 1; }
+/* Filled fields: a fill, never a border. A number field carries its unit
+   inside (.input-affix: the fill and the focus edge sit on the wrapper). */
+.setting-row input[type="text"], .input-affix { height: var(--ctl-lg); background: var(--input); border: none; border-radius: var(--r-ctl); color: var(--text); font: inherit; font-size: var(--fs-ui); }
+.setting-row input[type="text"] { min-width: 0; padding: 0 var(--sp-4); outline: none; }
+.input-affix { display: inline-flex; align-items: center; gap: var(--sp-2); width: 104px; padding: 0 var(--sp-4); color: var(--text-dim); cursor: text; }
+.input-affix:focus-within { box-shadow: inset 0 0 0 1px var(--accent); }
+.input-affix input { flex: 1; width: 0; min-width: 0; height: 100%; padding: 0; border: none; background: transparent; color: var(--text); font: inherit; text-align: right; outline: none; }
+.input-affix input:focus { box-shadow: none; }
+/* ONE switch (a row's, or one inside a list row via .switch-wrap). */
+.switch-row, .switch-wrap { position: relative; cursor: pointer; }
+.switch-wrap { display: inline-flex; }
+.switch-row input, .switch-wrap input { position: absolute; opacity: 0; pointer-events: none; }
 .switch { width: 32px; height: 18px; position: relative; flex-shrink: 0; border-radius: var(--r-chip); background: var(--line-strong); transition: background-color var(--dur) var(--ease); }
 .switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: var(--text); transition: transform var(--dur) var(--ease), background-color var(--dur) var(--ease); }
-.switch-row input:checked + .switch { background: var(--accent); }
-.switch-row input:checked + .switch::after { transform: translateX(14px); background: var(--active-fg); }
-.switch-row input:focus-visible + .switch { box-shadow: var(--focus-ring); }
+input:checked + .switch { background: var(--accent); }
+input:checked + .switch::after { transform: translateX(14px); background: var(--active-fg); }
+input:focus-visible + .switch { box-shadow: var(--focus-ring); }
+input:disabled + .switch { opacity: .55; }
+.switch-wrap.is-disabled { cursor: default; }
+/* Lists: one row primitive for numpad slots, groups, sync providers, peers,
+   AI clients, grants and conflicts. */
+.settings-list { display: flex; flex-direction: column; }
+.settings-item { min-height: 34px; padding: var(--sp-2) 0; border-bottom: 1px solid var(--line-faint); }
+.settings-item:last-child { border-bottom: 0; }
+.si-title { display: flex; align-items: baseline; gap: var(--sp-3); min-width: 0; }
+.si-key { flex-shrink: 0; color: var(--text); font-variant-numeric: tabular-nums; }
+.si-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+.si-meta { flex-shrink: 0; font-size: var(--fs-meta); color: var(--text-dim); }
+.si-sub { font-size: var(--fs-meta); color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.si-name.mono, .si-sub.mono { font-family: var(--font-mono); }
+.settings-item.dim .si-name { color: var(--text-dim); }
+/* A row that acts on a click (a numpad slot copies its clip): the hover
+   overlay reaches a little past the text (two side shadows, so neither the
+   columns nor the hairline move). */
+.settings-item.clickable { cursor: pointer; }
+.settings-item.clickable:hover { background: var(--hover); box-shadow: calc(-1 * var(--sp-3)) 0 0 var(--hover), var(--sp-3) 0 0 var(--hover); }
+.settings-list-title { padding: var(--sp-4) 0 var(--sp-1); font-size: var(--fs-meta); color: var(--text-dim); }
+/* A quiet text button under a list ("Show all clients"): its label lines up
+   with the rows' text. */
+.settings-more { margin-top: var(--sp-2); margin-left: calc(-1 * var(--sp-3)); }
+/* Accent: one swatch per choice, each dot (--dot) previewing the accent that
+   choice paints in THIS theme: the presets' steps mirror clipboard-tokens.css
+   (a step darker in light), System and Custom get their colour's per-theme
+   shade inline (--dot-dark / --dot-light + data-own, Core.mountSettings), a
+   Custom with no colour yet shows the wheel. The chosen one carries its ink
+   check. System, while not chosen, is a RING of its colour: "follows the
+   system", never a twin of Blue when the OS gives no colour. */
+.accent-swatches { display: inline-flex; gap: var(--sp-1); }
+.accent-swatch { display: inline-flex; align-items: center; justify-content: center; width: var(--ctl-md); height: var(--ctl-md); padding: 0; border: none; border-radius: var(--r-chip);
+                 background: transparent; cursor: pointer; transition: background-color var(--dur) var(--ease); --dot: var(--dot-dark, var(--blue-500)); }
+.accent-swatch[data-accent-mode="teal"] { --dot: var(--teal-500); }
+.accent-swatch[data-accent-mode="mono"] { --dot: var(--g-300); }
+:where(:root, .bc-popup)[data-theme="light"] .accent-swatch { --dot: var(--dot-light, var(--blue-600)); }
+:where(:root, .bc-popup)[data-theme="light"] .accent-swatch[data-accent-mode="teal"] { --dot: var(--teal-600); }
+:where(:root, .bc-popup)[data-theme="light"] .accent-swatch[data-accent-mode="mono"] { --dot: var(--g-700); }
+.accent-swatch:hover { background: var(--hover); }
+.accent-dot { display: inline-flex; align-items: center; justify-content: center; width: var(--icon-md); height: var(--icon-md); border-radius: 50%; background: var(--dot); }
+.accent-swatch[data-accent-mode="custom"]:not([data-own]) .accent-dot { background: conic-gradient(var(--red-500), var(--amber-500), var(--green-500), var(--teal-500), var(--blue-500), var(--red-500)); }
+.accent-swatch[data-accent-mode="system"]:not([aria-checked="true"]) .accent-dot { background: transparent; box-shadow: inset 0 0 0 3px var(--dot); }
+.accent-dot .mi { font-size: var(--icon-sm); color: var(--active-fg); visibility: hidden; }
+.accent-swatch[aria-checked="true"] .accent-dot .mi { visibility: visible; }
+/* Custom colour: a hue slider (its rainbow track is painted inline from the
+   same hue maths) plus a #rrggbb field. */
+.accent-hue { -webkit-appearance: none; appearance: none; width: 120px; height: var(--sp-3); margin: 0; border-radius: var(--r-chip); cursor: pointer; outline: none; }
+.accent-hue::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: var(--icon-sm); height: var(--icon-sm); border-radius: 50%; background: var(--text); box-shadow: 0 0 0 2px var(--bg); }
+.accent-hue::-moz-range-thumb { width: var(--icon-sm); height: var(--icon-sm); border: none; border-radius: 50%; background: var(--text); box-shadow: 0 0 0 2px var(--bg); }
+.accent-hue:focus-visible { box-shadow: var(--focus-ring); }
+.setting-row input.accent-hex { width: 88px; font-family: var(--font-mono); }
 .seg { display: inline-flex; height: var(--ctl-lg); padding: var(--sp-1); gap: var(--sp-1); background: var(--input); border: none; border-radius: var(--r-ctl); }
 .seg-btn { height: calc(var(--ctl-lg) - 2 * var(--sp-1)); border: none; background: transparent; color: var(--text-dim); font-size: var(--fs-ui); font-family: inherit; padding: 0 var(--sp-4); border-radius: var(--r-1); cursor: pointer; transition: background-color var(--dur) var(--ease), color var(--dur) var(--ease); }
 .seg-btn:hover { color: var(--text); }
 .seg-btn.active { background: var(--accent); color: var(--active-fg); }
-.settings-section { margin-top: var(--sp-8); }
-.settings-section h3 { margin: 0 0 var(--sp-4); } /* type from the shared .overline rule */
-.settings-usage { font-size: var(--fs-meta); color: var(--text-dim); margin-top: var(--sp-6); }
-.np-slot, .group-slot { display: flex; align-items: center; gap: var(--sp-4); padding: var(--sp-3) 0; border-bottom: 1px solid var(--line-faint); }
-.np-slot .np-num { color: var(--accent); font-family: var(--font-mono); font-size: var(--fs-ui); font-weight: var(--fw-strong); min-width: 18px; }
-.np-slot .np-text { flex: 1; font-size: var(--fs-ui); color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-family: var(--font-mono); }
-.np-slot .np-text.empty { font-style: italic; }
-.np-slot.has-content { cursor: pointer; }
-.np-slot.has-content:hover { background: var(--surface2); }
-.np-slot .np-remove .mi, .group-slot .gp-del .mi { font-size: var(--icon-sm); }
-.group-slot .gp-name { flex: 1; font-size: var(--fs-ui); color: var(--accent); }
-.group-slot .gp-count { font-size: var(--fs-meta); color: var(--text-dim); }
-.sync-list, .settings-action-list { flex: 1; display: flex; flex-direction: column; gap: var(--sp-2); min-width: 0; }
-.developer-update-mode { display: flex; flex-direction: column; gap: var(--sp-2); padding-top: var(--sp-3); }
-.sync-account, .settings-action-card { display: flex; align-items: center; gap: var(--sp-4); min-width: 0; overflow: hidden; padding: var(--sp-3) var(--sp-4); background: var(--input); border: none; border-radius: var(--r-ctl); }
-.sync-account input, .settings-action-card input { width: auto; accent-color: var(--accent); flex-shrink: 0; }
-.sync-account-main, .settings-action-main { flex: 1; min-width: 0; }
-.sync-provider, .settings-action-title { display: block; max-width: 100%; font-size: var(--fs-ui); color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.sync-account-path, .settings-action-detail { display: block; max-width: 100%; font-size: var(--fs-meta); color: var(--text-dim); font-family: var(--font-mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.setting-row code { padding: var(--sp-1) var(--sp-3); color: var(--text); background: var(--input); border-radius: var(--r-1); font-size: var(--fs-meta); }
+/* Sections: the shared .overline heading, --sp-12 above each one but the first
+   shown (the conflicts section on top is hidden while there are none). */
+.settings-section { margin-top: var(--sp-12); }
+.settings-section:first-child, .settings-section.hidden + .settings-section { margin-top: 0; }
+.settings-section h3 { margin: 0 0 var(--sp-2); } /* type from the shared .overline rule */
 
 @media (max-width: 760px) {
   .item { padding-inline: var(--sp-5); }
@@ -507,76 +576,87 @@ mark { background: var(--mark-bg); color: var(--mark-fg); border-radius: var(--r
 .dialog-btns { display: flex; gap: var(--sp-4); justify-content: flex-end; }
 .prompt-input { width: 100%; height: var(--ctl-lg); background: var(--input); border: none; border-radius: var(--r-ctl); padding: 0 var(--sp-4); color: var(--text); font-size: var(--fs-text); outline: none; margin-bottom: var(--sp-6); font-family: inherit; }
 
-/* Settings: shortcuts, footer, sync, AI, build info — shared app + demo */
-.shortcut-row { align-items: flex-start; gap: var(--sp-5); }
-.shortcut-row > label { padding-top: var(--sp-3); flex-shrink: 0; }
-.shortcut-control { display: flex; align-items: center; justify-content: flex-end; gap: var(--sp-3); min-width: 0; }
+/* Settings: the shortcut fields (sans key names; "Not set" dim) and the sync
+   button's live spin. Buttons are the shared .btn / .icon-btn. */
 .shortcut-btn { min-width: 130px; max-width: 190px; height: var(--ctl-lg); background: var(--input); border: none; border-radius: var(--r-ctl); color: var(--text);
                 padding: 0 var(--sp-4); font-size: var(--fs-ui); font-family: inherit; white-space: nowrap; overflow: hidden;
-                text-overflow: ellipsis; cursor: pointer; text-align: left; }
-.shortcut-btn.recording { color: var(--accent); background: var(--accent-bg); }
-.shortcut-reset .mi { font-size: var(--icon-sm); }
-.shortcut-status { min-height: 14px; font-size: var(--fs-meta); color: var(--text-dim); margin-top: calc(-1 * var(--sp-2)); }
-.shortcut-status.error { color: var(--red); }
-.settings-footer { margin-top: var(--sp-12); padding: var(--sp-6) 0 var(--sp-4); border-top: 1px solid var(--line); }
-.settings-footer-actions { display: flex; align-items: center; gap: var(--sp-4); flex-wrap: wrap; }
-/* Settings buttons are the shared .btn (Clear All = .btn.danger); these only place them. */
-.sync-add-folder { width: 100%; margin-top: var(--sp-3); }
-.add-group-btn { width: 100%; margin-top: var(--sp-2); }
-.sync-row, .settings-action-row { display: flex; align-items: flex-start; gap: var(--sp-3); padding: var(--sp-3) 0; min-width: 0; }
-/* Sync now / Check for updates / Resolve conflict are plain .icon-btn (borderless). */
-.sync-btn, .settings-icon-btn { flex-shrink: 0; }
+                text-overflow: ellipsis; cursor: pointer; text-align: center; }
+.shortcut-btn.unset { color: var(--text-dim); }
+.shortcut-btn.recording { color: var(--accent-text); background: var(--accent-bg); }
 /* Live sync feedback: the icon itself spins while a merge is in flight. */
 @keyframes bc-sync-spin { from { transform: rotate(0deg); } to { transform: rotate(-360deg); } }
 .sync-btn.syncing .mi { display: inline-block; animation: bc-sync-spin 1.1s linear infinite; }
-.sync-status, .settings-status { font-size: var(--fs-meta); color: var(--text-dim); margin-top: var(--sp-1); }
-.sync-status.active, .settings-status.active { color: var(--green); }
-.sync-status.error, .settings-status.error { color: var(--red); }
-.build-info { display: flex; flex-direction: column; gap: var(--sp-1); min-width: 0; max-width: 100%; overflow: hidden; font-size: var(--fs-meta); color: var(--text-dim); margin-top: var(--sp-6); font-family: var(--font-mono); }
-.build-info-line { display: block; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.ai-hint { font-size: var(--fs-meta); color: var(--text-dim); line-height: var(--lh-text); margin: var(--sp-1) 0 var(--sp-4); }
-.ai-hint b { color: var(--accent); font-weight: var(--fw-strong); }
-.ai-subhead { margin: var(--sp-6) 0 var(--sp-3); } /* type from the shared .overline rule */
-.ai-client-row { display: flex; align-items: center; gap: var(--sp-4); padding: var(--sp-3) 0; font-size: var(--fs-ui); }
-.ai-client-row input { width: auto; accent-color: var(--accent); flex-shrink: 0; cursor: pointer; }
-.ai-client-row .ai-client-name { flex: 1; color: var(--text); }
-.ai-client-row.undetected .ai-client-name { color: var(--text-dim); }
-.ai-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--line-strong); flex-shrink: 0; }
-.ai-dot.on { background: var(--green); }
-.ai-grant-row { display: flex; align-items: center; gap: var(--sp-4); padding: var(--sp-3) 0; font-size: var(--fs-ui); border-top: 1px solid var(--line-faint); }
-.ai-grant-row .ai-grant-name { flex: 1; font-family: var(--font-mono); font-size: var(--fs-meta); color: var(--text); }
-.gp-share { color: var(--text-dim); }
-.gp-share.on { color: var(--accent); }
-.gp-del.locked { visibility: hidden; }
 
 /* --- Shared plain-text editor (Core.createEditor): app window + demo overlay --- */
-.bc-editor { display: flex; flex-direction: column; height: 100%; width: 100%; background: var(--bg); color: var(--text); min-height: 0; }
-.bc-editor-bar { -webkit-app-region: drag; display: flex; align-items: center; gap: var(--sp-4); padding: 0 var(--sp-3) 0 var(--sp-6); height: 30px; flex-shrink: 0; border-bottom: 1px solid var(--line); background: var(--surface); }
-.bc-editor-title { -webkit-app-region: drag; flex: 1; font-size: var(--fs-meta); color: var(--text-dim); letter-spacing: .04em; text-transform: uppercase; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.bc-editor-bar-actions { -webkit-app-region: no-drag; display: flex; align-items: center; gap: var(--sp-1); }
+/* Clip windows (editor, viewer, unify + conflict; the demo's overlay too):
+   ONE surface per window. The root paints --surface, every band in it (bar,
+   find, pane heads, merge gap, footer) is transparent and split by one
+   --line hairline, so the writing surface is never grey under white chrome.
+   Under glass the root goes transparent too and the window's single scrim
+   (clipboard-window.css) is the only frost. */
+.bc-editor { display: flex; flex-direction: column; height: 100%; width: 100%; background: var(--surface); color: var(--text); min-height: 0; }
+/* ONE window bar (.bc-bar, Core.renderWindowBar): [lead] title [context]
+   [tags] spacer actions. It is the window's drag region (a double-click
+   maximises on Windows, zooms or minimises per the macOS setting); its
+   controls are not. With the OS's own window controls (data-window-controls
+   on <html>, Core.attachWindowControls) it reserves their room: the traffic
+   lights' inset on the left (macOS, --wc-left from main), the caption
+   buttons' width on the right (Windows, the Window Controls Overlay env()). */
+.bc-bar { -webkit-app-region: drag; display: flex; align-items: center; gap: var(--sp-3); height: var(--bar-h); flex-shrink: 0;
+          padding: 0 var(--sp-3) 0 var(--gutter); border-bottom: 1px solid var(--line); background: transparent; color: var(--text); }
+:root[data-window-controls="left"] .bc-bar { padding-left: var(--wc-left, var(--gutter)); }
+:root[data-window-controls="right"] { --wc-right: calc(100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw)); }
+:root[data-window-controls="right"] .bc-bar { padding-right: max(var(--sp-3), calc(var(--wc-right) + var(--sp-2))); }
+.bc-bar-title { flex: 0 1 auto; min-width: 0; font-size: var(--fs-ui); font-weight: var(--fw-strong); line-height: var(--lh-ui); color: var(--text);
+                white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* The editable title (editor, merge): a flat field sized to its text (the
+   rest of the bar stays draggable), underline on hover / focus like the
+   search field. An untitled clip's placeholder is its first line, dim and
+   regular weight, as an untitled row reads in the list. */
+input.bc-bar-title { -webkit-app-region: no-drag; field-sizing: content; min-width: 6ch; max-width: 60%; height: var(--ctl-md); margin-left: calc(-1 * var(--sp-2)); text-overflow: clip;
+                     padding: 0 var(--sp-2); background: transparent; border: none; border-radius: 0; font-family: inherit; outline: none;
+                     box-shadow: inset 0 -1px 0 transparent; transition: box-shadow var(--dur) var(--ease); }
+input.bc-bar-title:hover { box-shadow: inset 0 -1px 0 var(--line); }
+input.bc-bar-title:focus { box-shadow: inset 0 -1px 0 var(--accent); }
+input.bc-bar-title::placeholder { color: var(--text-dim); font-weight: var(--fw-regular); }
+.bc-bar-context { flex: 0 1000 auto; min-width: 0; font-size: var(--fs-meta); /* gives way before the title in a narrow window */ color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bc-bar-spacer { flex: 1 1 0; min-width: var(--sp-4); align-self: stretch; }
+.bc-bar-actions { -webkit-app-region: no-drag; display: flex; align-items: center; gap: var(--sp-1); flex-shrink: 0; }
+.bc-bar-actions .icon-btn.active { color: var(--accent); background: var(--accent-bg); }
+/* The viewer's leading image glyph is the file itself (a title-bar proxy
+   icon): drag it out into another app or a folder. */
+.bc-drag-handle { -webkit-app-region: no-drag; flex-shrink: 0; display: flex; align-items: center; justify-content: center; width: var(--ctl-md); height: var(--ctl-md);
+                  margin-left: calc(-1 * var(--sp-2)); border-radius: var(--r-ctl); color: var(--text-dim); cursor: grab;
+                  transition: background-color var(--dur) var(--ease), color var(--dur) var(--ease); }
+.bc-drag-handle:hover { color: var(--text); background: var(--hover); }
+.bc-drag-handle:active { cursor: grabbing; }
 /* Title-bar tag strip (editor + viewer + demo editor): the clip's groups as
    inert chips (hover reveals the gtag-x remove glyph, same as the filter bar)
-   plus a compact + that opens the shared group picker. Flexes between the
-   title and the bar actions; overflow scrolls horizontally, scrollbar hidden. */
-.bc-tag-strip { -webkit-app-region: no-drag; display: flex; align-items: center; gap: var(--sp-2); min-width: 0; max-width: 60%; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
+   plus the + that opens the shared group picker. Sits right after the title;
+   overflow scrolls horizontally, scrollbar hidden. */
+.bc-tag-strip { -webkit-app-region: no-drag; display: flex; align-items: center; gap: var(--sp-2); min-width: 0; max-width: 50%; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
 .bc-tag-strip::-webkit-scrollbar { display: none; }
 .bc-tag-strip[hidden] { display: none; }
 .bc-tag-strip .filter-tag { flex: 0 0 auto; cursor: default; }
-.bc-tag-strip .tag-add-btn { flex: 0 0 auto; width: var(--ctl-sm); height: var(--ctl-sm); }
-.bc-title-row { flex-shrink: 0; padding: var(--sp-4) var(--sp-5); background: var(--surface); }
-.bc-note-title { width: 100%; height: var(--ctl-lg); background: var(--input); border: none; border-radius: var(--r-ctl); color: var(--text); font: inherit; font-size: var(--fs-text); padding: 0 var(--sp-4); outline: none; }
-.bc-find { -webkit-app-region: no-drag; display: flex; align-items: center; gap: var(--sp-3); padding: var(--sp-3) var(--sp-4); flex-shrink: 0; background: var(--surface); }
+.bc-tag-strip .tag-add-btn { flex: 0 0 auto; }
+/* Find: flat like the popup's search field (no fill, an underline that turns
+   accent on focus). */
+.bc-find { -webkit-app-region: no-drag; display: flex; align-items: center; gap: var(--sp-1); padding: var(--sp-2) var(--sp-3) var(--sp-2) var(--gutter); flex-shrink: 0; background: transparent; }
 .bc-find[hidden] { display: none; }
-.bc-find-input { flex: 1; min-width: 0; height: var(--ctl-md); background: var(--input); border: none; border-radius: var(--r-ctl); color: var(--text); font: inherit; font-size: var(--fs-text); padding: 0 var(--sp-4); outline: none; }
-.bc-find-count { font-size: var(--fs-meta); color: var(--text-dim); min-width: 34px; text-align: right; font-variant-numeric: tabular-nums; }
-.bc-editor-area { flex: 1; min-height: 0; width: 100%; resize: none; border: 0; outline: none; background: var(--bg); color: var(--text); }
+.bc-find-input { flex: 1; min-width: 0; height: var(--ctl-md); background: transparent; border: none; border-radius: 0; color: var(--text); font: inherit; font-size: var(--fs-text);
+                 padding: 0; margin-right: var(--sp-2); outline: none; box-shadow: inset 0 -1px 0 var(--line); transition: box-shadow var(--dur) var(--ease); }
+.bc-find-input:focus { box-shadow: inset 0 -1px 0 var(--accent); }
+.bc-find-input::placeholder { color: var(--text-dim); }
+.bc-find-count { font-size: var(--fs-meta); color: var(--text-dim); min-width: 34px; text-align: right; font-variant-numeric: tabular-nums; margin-right: var(--sp-2); }
+.bc-editor-area { flex: 1; min-height: 0; width: 100%; resize: none; border: 0; outline: none; background: transparent; color: var(--text); }
 .bc-editor-area, .bc-editor-hl {
   font-family: var(--font-mono); font-size: var(--fs-text); line-height: var(--lh-text); padding: var(--sp-6) var(--gutter); tab-size: 4; white-space: pre-wrap; word-break: break-word; }
 .bc-editor-area::placeholder { color: var(--text-dim); }
 /* Find-match highlight backdrop: mirrors the textarea's text (transparent) so
-   <mark> backgrounds line up under the real text. Textarea goes transparent so
-   the marks show through; the wrap supplies the editor background. */
-.bc-editor-area-wrap { position: relative; flex: 1; min-height: 0; display: flex; background: var(--bg); }
+   <mark> backgrounds line up under the real text. Textarea and wrap are
+   transparent so the marks show through; the window's one surface (.bc-editor)
+   is the writing surface. */
+.bc-editor-area-wrap { position: relative; flex: 1; min-height: 0; display: flex; background: transparent; }
 .bc-editor-area-wrap .bc-editor-area { background: transparent; position: relative; z-index: 1; overflow-y: scroll; }
 /* Width-only override of the shared scrollbar: the highlight mirror reserves
    exactly this gutter (inset 0 10px 0 0 below), so it must stay fixed. */
@@ -584,30 +664,38 @@ mark { background: var(--mark-bg); color: var(--mark-fg); border-radius: var(--r
 .bc-editor-hl { position: absolute; inset: 0 10px 0 0; overflow: hidden; pointer-events: none; color: transparent; margin: 0; box-sizing: border-box; }
 .bc-editor-hl mark { color: transparent; background: var(--mark-bg); border-radius: var(--r-1); padding: 0; }
 .bc-editor-hl mark.cur { background: var(--mark-bg-current); }
-.bc-editor-foot { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-5); padding: var(--sp-1) var(--sp-6); height: 24px; flex-shrink: 0; border-top: 1px solid var(--line); background: var(--surface); font-size: var(--fs-meta); color: var(--text-dim); }
-.bc-editor-hint { white-space: nowrap; }
-.bc-drag-handle { cursor: grab; }
-.bc-drag-handle:active { cursor: grabbing; }
-.bc-editor-foot > [data-x="stats"] { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Footer: stats left; the clipboard follow state, the live save state (or the
+   viewer's zoom controls) right. */
+.bc-editor-foot { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-5); padding: 0 var(--sp-3) 0 var(--gutter); height: var(--ctl-lg); flex-shrink: 0;
+                  border-top: 1px solid var(--line); background: transparent; font-size: var(--fs-meta); color: var(--text-dim); }
+.bc-editor-foot > [data-x="stats"], .bc-editor-foot > [data-x="dims"] { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bc-editor-foot-end { display: flex; align-items: center; gap: var(--sp-5); flex-shrink: 0; }
+.bc-save-state { white-space: nowrap; }
+.bc-save-state.failed { color: var(--red); }
 /* Clipboard follow status: "On clipboard" (accent) / a Copy button / a brief notice. */
 .bc-editor-clip { display: inline-flex; align-items: center; gap: var(--sp-2); white-space: nowrap; }
-.bc-editor-clip.on { color: var(--accent); }
+.bc-editor-clip.on { color: var(--accent-text); }
 .bc-editor-clip.notice { color: var(--text); }
 .bc-editor-clip .mi.sm { font-size: var(--icon-sm); }
 /* The footer Copy is the shared quiet .btn.sm (20px text affordance). */
-@media (max-width: 480px) { .bc-editor-clip ~ .bc-editor-hint { display: none; } }
-/* Glass: the editor canvas goes transparent so the OS acrylic + tint scrim show
-   through; the chrome bars keep their translucent --surface. */
+@media (max-width: 480px) { .bc-editor-clip.on > span:last-child { display: none; } }
+/* Viewer zoom: zoom out | percentage | zoom in | Fit | 100%, quiet 20px
+   controls; the view that is on (Fit / 100%) reads in the accent. */
+.bc-zoom { gap: var(--sp-1); }
+.bc-zoom .icon-btn { width: var(--ctl-sm); height: var(--ctl-sm); }
+.bc-zoom .icon-btn .mi { font-size: var(--icon-sm); }
+.bc-zoom-pct { min-width: 4ch; text-align: center; font-variant-numeric: tabular-nums; }
+.bc-zoom .btn.quiet.active { color: var(--accent-text); background: var(--accent-bg); }
+/* Glass: the window roots go transparent so the OS acrylic + the one tint
+   scrim show through; every band in them is already transparent. */
 :root[data-surface="glass"] .bc-editor,
-:root[data-surface="glass"] .bc-editor-area-wrap,
 :root[data-surface="glass"] .bc-reconcile,
 .bc-popup[data-surface="glass"] .bc-editor,
-.bc-popup[data-surface="glass"] .bc-editor-area-wrap,
 .bc-popup[data-surface="glass"] .bc-reconcile { background: transparent; }
-/* In-app image viewer: same window chrome as the editor (bc-editor-bar + foot);
-   the stage centers the image and hosts zoom/pan (transform-positioned <img>). */
-.bc-viewer { display: flex; flex-direction: column; height: 100%; width: 100%; background: var(--bg); color: var(--text); min-height: 0; outline: none; }
+/* In-app image viewer: same window chrome as the editor (the .bc-bar + foot on
+   the one surface); the stage is the image's matte, centres the image and
+   hosts zoom/pan (transform-positioned <img>). */
+.bc-viewer { display: flex; flex-direction: column; height: 100%; width: 100%; background: var(--surface); color: var(--text); min-height: 0; outline: none; }
 .bc-viewer-stage { position: relative; flex: 1; min-height: 0; overflow: hidden; background: var(--bg); }
 .bc-viewer-img { position: absolute; left: 0; top: 0; transform-origin: 0 0; user-select: none; image-rendering: auto; }
 :root[data-surface="glass"] .bc-viewer, :root[data-surface="glass"] .bc-viewer-stage { background: transparent; }
@@ -620,24 +708,46 @@ mark { background: var(--mark-bg); color: var(--mark-fg); border-radius: var(--r
 .bc-editor-overlay.show { display: block; }
 .bc-editor-overlay .bc-editor { box-shadow: 0 8px 30px var(--shadow); }
 /* IntelliJ-style merge (CodeMirror 5 merge addon, skinned with our tokens):
-   Current (read-only) | Result (editable) | Incoming (read-only). */
-.bc-reconcile { display: flex; flex-direction: column; height: 100%; width: 100%; background: var(--bg); color: var(--text); min-height: 0; }
-.bc-merge-title { flex-shrink: 0; display: flex; align-items: center; gap: var(--sp-4); padding: var(--sp-3) var(--sp-5); border-bottom: 1px solid var(--line); }
-.bc-merge-title .bc-note-title { flex: 0 1 320px; }
-.bc-title-opts { display: inline-flex; align-items: center; gap: var(--sp-2); min-width: 0; overflow: hidden; }
-.bc-chip { border: none; background: var(--surface2); color: var(--text-dim); font-size: var(--fs-meta); font-family: inherit; height: var(--ctl-sm); padding: 0 var(--sp-4); border-radius: var(--r-chip); cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 220px; }
-.bc-chip:hover { background: var(--menu-hover); color: var(--text); }
-/* Pane headers aligned to the addon's pane widths (2-pane 47%/6%, 3-pane 31%/3.5%). */
-.bc-merge-heads { flex-shrink: 0; display: flex; background: var(--surface); border-bottom: 1px solid var(--line); }
-.bc-merge-heads > span { padding: var(--sp-2) var(--sp-4); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; } /* type from the shared .overline rule */
-.bc-merge-heads.bc-heads-2 > span { width: 47%; }
-.bc-merge-heads.bc-heads-2 > .bc-merge-heads-gap { width: 6%; padding: 0; }
-.bc-merge-heads.bc-heads-3 > span { width: 31%; }
-.bc-merge-heads.bc-heads-3 > .bc-merge-heads-gap { width: 3.5%; padding: 0; }
-.bc-chg-count { align-self: center; display: inline-flex; align-items: center; gap: var(--sp-2); font-size: var(--fs-meta); color: var(--text-dim); margin-right: var(--sp-2); white-space: nowrap; }
+   Current (read-only) | Result (editable) | Incoming (read-only); 2-pane =
+   Current (edited in place into the result) | Incoming. One plane: the root
+   paints the window surface, heads / panes / gap / footer are transparent. */
+.bc-reconcile { display: flex; flex-direction: column; height: 100%; width: 100%; background: var(--surface); color: var(--text); min-height: 0; }
+/* Pane heads aligned to the addon's pane widths (2-pane 47%/6%, 3-pane
+   31%/3.5%): the pane's name, its title as a one-click pick when the two
+   titles differ (the result's title is the bar's field), and the whole-side
+   accept at the end of the head of the pane it takes. */
+.bc-merge-heads { flex-shrink: 0; display: flex; align-items: center; height: var(--ctl-lg); border-bottom: 1px solid var(--line); background: transparent; }
+.bc-merge-head { display: flex; align-items: center; gap: var(--sp-2); min-width: 0; height: 100%; padding: 0 var(--sp-2) 0 var(--sp-4); container: bc-head / inline-size; }
+/* The first head starts on the window's gutter, like the bar title above it
+   and the first pane's text below it (one left edge). */
+.bc-merge-head:first-child { padding-left: var(--gutter); }
+.bc-merge-heads.bc-heads-2 > .bc-merge-head { width: 47%; }
+.bc-merge-heads.bc-heads-2 > .bc-merge-heads-gap { width: 6%; }
+.bc-merge-heads.bc-heads-3 > .bc-merge-head { width: 31%; }
+.bc-merge-heads.bc-heads-3 > .bc-merge-heads-gap { width: 3.5%; }
+.bc-head-label { flex-shrink: 0; font-size: var(--fs-meta); font-weight: var(--fw-strong); color: var(--text-dim); white-space: nowrap; }
+.bc-head-title { flex: 0 1 auto; min-width: 6ch; height: var(--ctl-sm); padding: 0 var(--sp-2); border: none; border-radius: var(--r-ctl); background: transparent; color: var(--text);
+                 font-family: inherit; font-size: var(--fs-meta); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer;
+                 transition: background-color var(--dur) var(--ease); }
+.bc-head-title:hover { background: var(--hover); }
+.bc-merge-head .bc-head-accept { margin-left: auto; flex-shrink: 0; color: var(--accent-text); }
+.bc-merge-head .bc-head-accept:hover { color: var(--accent-text); background: var(--accent-bg); }
+/* A narrow head gives the title pick the room: the accept keeps its glyph
+   (the tooltip names it). Without a pick it keeps its label until the head
+   cannot hold label + accept at all. */
+@container bc-head (max-width: 299px) {
+  .bc-merge-head:has(.bc-head-title) .bc-accept-label { display: none; }
+}
+@container bc-head (max-width: 189px) {
+  .bc-accept-label { display: none; }
+}
+/* ONE counter in the bar ("2 of 5 resolved", a text button to the next open
+   change) and a red conflict chip only while conflicts remain. */
+.bc-chg-count { display: inline-flex; align-items: center; gap: var(--sp-2); font-size: var(--fs-meta); color: var(--text-dim); margin-right: var(--sp-2); white-space: nowrap; }
+.bc-chg-progress { height: var(--ctl-sm); padding: 0 var(--sp-2); border: none; border-radius: var(--r-ctl); background: transparent; color: var(--text-dim);
+                   font-family: inherit; font-size: var(--fs-meta); cursor: pointer; transition: background-color var(--dur) var(--ease), color var(--dur) var(--ease); }
+.bc-chg-progress:hover { color: var(--text); background: var(--hover); }
 .bc-conflict-chip { border: none; background: var(--red-bg); color: var(--red); font-size: var(--fs-meta); font-family: inherit; font-weight: var(--fw-strong); height: var(--ctl-sm); padding: 0 var(--sp-3); border-radius: var(--r-chip); cursor: pointer; }
-.bc-pending-chip { border: none; background: var(--accent-bg); color: var(--accent); font-size: var(--fs-meta); font-family: inherit; font-weight: var(--fw-strong); height: var(--ctl-sm); padding: 0 var(--sp-3); border-radius: var(--r-chip); cursor: pointer; }
-.bc-editor-bar-actions .icon-btn.active { color: var(--accent); background: var(--accent-bg); }
 /* --- CodeMirror skin: tokens only, no stock palette. --- */
 .bc-merge-host { flex: 1; min-height: 0; position: relative; }
 /* Full-height chain: the addon's default is a fixed 350px and its panes have
@@ -648,24 +758,40 @@ mark { background: var(--mark-bg); color: var(--mark-fg); border-radius: var(--r
 .bc-merge-host .CodeMirror-merge-pane,
 .bc-merge-host .CodeMirror-merge .CodeMirror { height: 100%; }
 .bc-merge-host .CodeMirror-merge { border: 0; }
-.bc-merge-host .CodeMirror { background: var(--bg); color: var(--text); font-family: var(--font-mono); font-size: var(--fs-text); line-height: var(--lh-text); }
-/* Only the READ-ONLY panes are slightly muted; the editable Result never is
-   (in 2-pane mode the first pane IS the Result). */
-.bc-merge-host .CodeMirror-merge-pane-rightmost,
-.bc-merge-host .CodeMirror-merge-3pane .CodeMirror-merge-pane:first-child { opacity: .92; }
+/* Every pane is the same plane (no read-only dimming: that changed the text,
+   the background and every highlight at once); the caret and the pane heads
+   say which pane takes edits. */
+.bc-merge-host .CodeMirror { background: transparent; color: var(--text); font-family: var(--font-mono); font-size: var(--fs-text); line-height: var(--lh-text); }
 .bc-merge-host .CodeMirror-cursor { border-left: 1.5px solid var(--text); }
+/* Text edges: each pane's text starts where its head's label does (--sp-4),
+   the first pane's on the window gutter with the bar title and its head.
+   The -like rule is CodeMirror's measuring copy, so wrapping and the caret
+   follow the padding. */
+.bc-merge-host .CodeMirror pre.CodeMirror-line, .bc-merge-host .CodeMirror pre.CodeMirror-line-like { padding-left: var(--sp-4); }
+.bc-merge-host .CodeMirror-merge-pane:first-child .CodeMirror pre.CodeMirror-line,
+.bc-merge-host .CodeMirror-merge-pane:first-child .CodeMirror pre.CodeMirror-line-like { padding-left: var(--gutter); }
 .bc-merge-host .CodeMirror-selected { background: var(--accent-bg); }
-.bc-merge-host .CodeMirror-merge-gap { background: var(--surface); border-color: var(--line); }
-/* Chunks: one green wash (no start/end hairlines); intra-line word changes a
-   touch stronger; conflicting Result lines red. */
+/* The gap between panes holds the connectors and the gutter buttons: no fill,
+   no box, ONE hairline on the side that faces the read-only pane. */
+.bc-merge-host .CodeMirror-merge-gap { background: transparent; border: 0; }
+.bc-merge-host .CodeMirror-merge-gap:has(+ .CodeMirror-merge-pane-rightmost) { box-shadow: inset -1px 0 0 var(--line); }
+.bc-merge-host .CodeMirror-merge-3pane .CodeMirror-merge-pane:first-child + .CodeMirror-merge-gap { box-shadow: inset 1px 0 0 var(--line); }
+.bc-merge-host .CodeMirror-merge-scrolllock-wrap { display: none; } /* scroll stays locked; the toggle was an unexplained glyph */
+/* Chunks: ONE green layer per change (the wash; no start/end hairlines, the
+   connector the same wash with no stroke). Inside it the word-level marks
+   (vendored bcWordDiff; a whole-line edit gets none) are a step stronger.
+   Conflicts go red on every pane that holds them, their marks too. */
 .bc-merge-host .CodeMirror-merge-l-chunk, .bc-merge-host .CodeMirror-merge-r-chunk { background: var(--green-bg); }
 .bc-merge-host .CodeMirror-merge-l-chunk-start, .bc-merge-host .CodeMirror-merge-r-chunk-start { border-top: 0; }
 .bc-merge-host .CodeMirror-merge-l-chunk-end, .bc-merge-host .CodeMirror-merge-r-chunk-end { border-bottom: 0; }
 .bc-merge-host .CodeMirror-merge-l-inserted, .bc-merge-host .CodeMirror-merge-r-inserted,
-.bc-merge-host .CodeMirror-merge-l-deleted, .bc-merge-host .CodeMirror-merge-r-deleted { background: color-mix(in srgb, var(--green) 30%, transparent); text-decoration: none; }
-.bc-merge-host .CodeMirror-merge-l-connect { fill: var(--green-bg); stroke: color-mix(in srgb, var(--green) 40%, transparent); stroke-width: 1px; }
-.bc-merge-host .CodeMirror-merge-r-connect { fill: var(--green-bg); stroke: color-mix(in srgb, var(--green) 40%, transparent); stroke-width: 1px; }
+.bc-merge-host .CodeMirror-merge-l-deleted, .bc-merge-host .CodeMirror-merge-r-deleted {
+  background: color-mix(in srgb, var(--green) 28%, transparent); border-radius: var(--r-1); -webkit-box-decoration-break: clone; box-decoration-break: clone; text-decoration: none; }
+.bc-merge-host .CodeMirror-merge-l-connect, .bc-merge-host .CodeMirror-merge-r-connect { fill: var(--green-bg); stroke: none; }
+.bc-merge-host .CodeMirror-merge-l-connect.bc-conflict-connect, .bc-merge-host .CodeMirror-merge-r-connect.bc-conflict-connect { fill: var(--red-bg); }
 .bc-merge-host .bc-conflict { background: var(--red-bg); }
+.bc-merge-host .bc-conflict-line .CodeMirror-merge-l-inserted, .bc-merge-host .bc-conflict-line .CodeMirror-merge-r-inserted,
+.bc-merge-host .bc-conflict-line .CodeMirror-merge-l-deleted, .bc-merge-host .bc-conflict-line .CodeMirror-merge-r-deleted { background: color-mix(in srgb, var(--red) 28%, transparent); }
 /* Chunk-state paint from the wrapper: 'quiet' (whitespace-only) chunks lose the
    green wash entirely; declined chunks dim their read-only text and get
    a dashed hollow connector. */
@@ -673,42 +799,36 @@ mark { background: var(--mark-bg); color: var(--mark-fg); border-radius: var(--r
 .bc-merge-host .bc-dim-line { opacity: .45; }
 .bc-merge-host .CodeMirror-merge-l-connect.bc-declined,
 .bc-merge-host .CodeMirror-merge-r-connect.bc-declined { fill: transparent; stroke: var(--line-strong); stroke-dasharray: 3 3; }
-/* The addon's gutter arrows (pull a chunk into the Result) + our decline (x):
-   apply hugs the Result side of the gap, decline the source side. */
-.bc-merge-host .CodeMirror-merge-copy, .bc-merge-host .CodeMirror-merge-copy-reverse { color: var(--accent); font-size: var(--fs-text); }
-.bc-merge-host .CodeMirror-merge-copy:hover { color: var(--accent-hover); }
-.bc-merge-host .bc-decline { color: var(--text-dim); font-size: var(--fs-text); }
-.bc-merge-host .bc-decline:hover { color: var(--red); }
-.bc-merge-host .CodeMirror-merge-copybuttons-right .bc-decline { right: auto; left: 2px; }
-.bc-merge-host .CodeMirror-merge-copybuttons-left .bc-decline { left: auto; right: 2px; }
-/* Collapsed identical stretch: quiet text, no box (no fill, no dashed outline). */
-.bc-merge-host .CodeMirror-merge-collapsed-widget { background: transparent; border: none; border-radius: var(--r-1); color: var(--text-dim); font-size: var(--fs-meta); padding: 0 var(--sp-3); cursor: pointer; }
+/* The gutter buttons (vendored merge.js: Material glyphs): the arrow pulls a
+   chunk into the result, the x below it dismisses it. Quiet 20px icon
+   buttons, centred in the gap (a 3-pane gap is about one button wide). */
+.bc-merge-host .CodeMirror-merge-gap .CodeMirror-merge-copy, .bc-merge-host .CodeMirror-merge-gap .CodeMirror-merge-copy-reverse {
+  display: flex; align-items: center; justify-content: center; width: var(--ctl-sm); height: var(--ctl-sm); left: 50%; right: auto;
+  margin-left: calc(var(--ctl-sm) / -2); border-radius: var(--r-ctl); color: var(--text-dim); font-size: var(--icon-sm);
+  transition: background-color var(--dur) var(--ease), color var(--dur) var(--ease); }
+.bc-merge-host .CodeMirror-merge-gap .CodeMirror-merge-copy:hover { color: var(--accent); background: var(--hover); }
+.bc-merge-host .CodeMirror-merge-gap .bc-decline { margin-top: var(--ctl-sm); }
+.bc-merge-host .CodeMirror-merge-gap .bc-decline:hover { color: var(--red); }
+/* Collapsed identical stretch ("12 unchanged lines"): quiet text, no box;
+   a hover fill only, like an icon button. */
+.bc-merge-host .CodeMirror-merge-collapsed-widget { background: transparent; border: none; border-radius: var(--r-ctl); color: var(--text-dim); font-family: var(--font-sans); font-size: var(--fs-meta); padding: 0 var(--sp-3); cursor: pointer; }
 .bc-merge-host .CodeMirror-merge-collapsed-widget:hover { color: var(--text); background: var(--hover); }
-.bc-merge-host .CodeMirror-merge-collapsed-widget:before { content: "\22EF "; }
-.bc-merge-host .CodeMirror-merge-scrolllock { color: var(--text-dim); }
-/* Glass: CM canvases go transparent like the editor's, scrim provides the tint. */
-:root[data-surface="glass"] .bc-merge-host .CodeMirror,
-.bc-popup[data-surface="glass"] .bc-merge-host .CodeMirror { background: transparent; }
+.bc-merge-host .CodeMirror-merge-collapsed-widget:before { content: "\22EF\00A0"; }
 .bc-merge-note { flex-shrink: 0; display: flex; align-items: center; gap: var(--sp-3); padding: var(--sp-2) var(--sp-5); background: var(--accent-bg); color: var(--text); font-size: var(--fs-ui); border-bottom: 1px solid var(--line); }
 .bc-merge-note[hidden] { display: none; }
-.bc-merge-note button { flex-shrink: 0; white-space: nowrap; border: none; background: transparent; color: var(--accent); font: inherit; font-weight: var(--fw-strong); cursor: pointer; padding: 0; }
-/* Footer: Accept current hard left, Accept incoming hard right, Keep both +
-   primary centred with a wide gutter on each side so the whole-side picks are
-   never mistaken for the merge. When that row does not fit (JS adds
-   .bc-actions-stacked), each accept moves under its own pane (same column
-   widths as the pane heads) and the centre group gets its own row. */
-.bc-reconcile-actions { flex-shrink: 0; display: grid; grid-template-columns: 1fr auto 1fr; grid-template-areas: "left mid right"; align-items: center; column-gap: calc(var(--sp-12) * 2); row-gap: var(--sp-4); padding: var(--sp-4); background: var(--surface); border-top: 1px solid var(--line); }
-.bc-act-left { grid-area: left; justify-self: start; }
-.bc-act-mid { grid-area: mid; display: flex; gap: var(--sp-3); }
-.bc-act-right { grid-area: right; justify-self: end; }
-.bc-reconcile-actions.bc-actions-stacked { column-gap: 0; padding-left: 0; padding-right: 0; grid-template-areas: "left . right" "mid mid mid"; }
-.bc-reconcile-actions.bc-actions-stacked.bc-heads-2 { grid-template-columns: 47% 6% 47%; }
-.bc-reconcile-actions.bc-actions-stacked.bc-heads-3 { grid-template-columns: 31% 3.5% 31% 3.5% 31%; grid-template-areas: "left . . . right" "mid mid mid mid mid"; }
-.bc-actions-stacked .bc-act-left, .bc-actions-stacked .bc-act-right, .bc-actions-stacked .bc-act-mid { justify-self: center; }
-/* Footer buttons are the shared .btn set. The primary label changes on a
-   Unify's last step; a fixed width keeps it from reflowing under a cursor
+.bc-merge-note button { flex-shrink: 0; white-space: nowrap; border: none; background: transparent; color: var(--accent-text); font: inherit; font-weight: var(--fw-strong); cursor: pointer; padding: 0; }
+/* Footer: ONE row in every mode (unify, conflict, 2- or 3-pane), centred:
+   Keep both, Remove conflict (conflicts only), the primary. The whole-side
+   accepts live in the pane heads, so nothing here jumps between modes.
+   Footer buttons are the shared .btn set; the primary label changes on a
+   Unify's last step, and a fixed width keeps it from reflowing under a cursor
    that is about to click. */
+.bc-reconcile-actions { position: relative; flex-shrink: 0; display: flex; align-items: center; justify-content: center; gap: var(--sp-3); padding: var(--sp-3) var(--gutter);
+                        border-top: 1px solid var(--line); background: transparent; }
 .bc-reconcile-actions .btn.primary { min-width: 10.5em; }
+/* A multi-step Unify's "Step 2 of 3": on the footer's left gutter, out of the
+   flow, so the buttons stay centred and never move between steps. */
+.bc-step { position: absolute; left: var(--gutter); top: 50%; transform: translateY(-50%); font-size: var(--fs-meta); color: var(--text-dim); white-space: nowrap; font-variant-numeric: tabular-nums; }
 
 /* --- Multi-select: checked-row tint + slim contextual toolbar --- */
 /* `.selected` is the keyboard cursor (--accent-bg, defined with the row); a
@@ -778,7 +898,7 @@ mark { background: var(--mark-bg); color: var(--mark-fg); border-radius: var(--r
    pointer (it floats over the last row); the action opts back in only while
    the toast is shown (hidden, it still sits over the last row). --- */
 .toast-action { display: inline-flex; align-items: center; height: var(--ctl-sm); padding: 0 var(--sp-3); margin-right: calc(-1 * var(--sp-3));
-                background: none; border: none; border-radius: var(--r-ctl); color: var(--accent); font: inherit; font-weight: var(--fw-strong);
+                background: none; border: none; border-radius: var(--r-ctl); color: var(--accent-text); font: inherit; font-weight: var(--fw-strong);
                 cursor: pointer; transition: background-color var(--dur) var(--ease); }
 .toast.show .toast-action { pointer-events: auto; }
 .toast-action:hover { background: var(--accent-bg); }

@@ -390,13 +390,24 @@ body {
 .dock-item.running::after, .dock-item.dock-win::after { opacity: 1; }
 .demo-dock[data-os="win"] .dock-win::after { width: var(--sp-3); background: var(--text-dim); }
 
-/* The page dims while the guide starts (the demo stays lit above it), then
-   eases back over 10 s; at once when the visitor takes over. */
+/* As the guide starts the rest of the page goes dark and soft, and a
+   spotlight in the accent falls on the demo (which stays sharp above it):
+   a pool of light where the demo is (--spot-x / --spot-y / --spot-r, set by
+   the page script), then two vignettes that deepen away from it. It eases
+   back over 10 s; at once when the visitor takes over. */
 .demo-dim {
+  --spot-x: 70%;
+  --spot-y: 40%;
+  --spot-r: 480px;
   position: fixed;
   inset: 0;
   z-index: 1;
-  background: var(--scrim);
+  background:
+    radial-gradient(circle at var(--spot-x) var(--spot-y), color-mix(in srgb, var(--accent) 34%, transparent), color-mix(in srgb, var(--white) 6%, transparent) calc(var(--spot-r) * .5), transparent var(--spot-r)),
+    radial-gradient(circle at var(--spot-x) var(--spot-y), transparent calc(var(--spot-r) * .5), var(--scrim) calc(var(--spot-r) * 1.2)),
+    radial-gradient(circle at var(--spot-x) var(--spot-y), transparent calc(var(--spot-r) * .8), var(--scrim) calc(var(--spot-r) * 2));
+  -webkit-backdrop-filter: blur(3px);
+  backdrop-filter: blur(3px);
   opacity: 0;
   pointer-events: none;
   transition: opacity 10s cubic-bezier(.4, 0, .2, 1);

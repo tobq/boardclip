@@ -1374,14 +1374,54 @@
       const run = tour.run;
       return new Promise((resolve) => { tour.wake = resolve; tour.timer = setTimeout(resolve, ms); }).then(() => tour.running && tour.run === run);
     };
+    // The spotlight follows the popup while it shows (a scroll or a resize moves it).
+    let spotUntil = 0;
+    let focusAnim = null;
+    function aimSpot() {
+      const r = demoWindowEl.getBoundingClientRect();
+      demoDim.style.setProperty("--spot-x", `${Math.round(r.left + r.width / 2)}px`);
+      demoDim.style.setProperty("--spot-y", `${Math.round(r.top + r.height / 2)}px`);
+      demoDim.style.setProperty("--spot-r", `${Math.round(Math.max(r.width, r.height) * 0.95)}px`);
+    }
+    const reaim = () => { if (Date.now() < spotUntil) aimSpot(); };
+    window.addEventListener("scroll", reaim, { passive: true });
+    window.addEventListener("resize", reaim);
+    // The popup comes forward with the light: it grows a little, holds, then
+    // settles back with the page over the same 10 s. A transform on the
+    // popup itself, never on an ancestor of the windows (a maximised window is
+    // position: fixed, which a transformed ancestor would capture).
+    function focusDemo() {
+      if (focusAnim) focusAnim.cancel();
+      focusAnim = demoWindowEl.animate([
+        { transform: "none", easing: "cubic-bezier(.2, .8, .2, 1)" },
+        { transform: "scale(1.06)", offset: 0.09 },
+        { transform: "scale(1.06)", offset: 0.13, easing: "cubic-bezier(.4, 0, .2, 1)" },
+        { transform: "none" },
+      ], { duration: 11400 });
+      const mine = focusAnim;
+      mine.finished.then(() => { if (focusAnim === mine) focusAnim = null; }, () => {});
+    }
+    // A handover settles it quickly but smoothly: a click already on its way
+    // must still land on the control it was aimed at.
+    function unfocusDemo() {
+      if (!focusAnim) return;
+      const from = getComputedStyle(demoWindowEl).transform;
+      focusAnim.cancel();
+      focusAnim = from && from !== "none" ? demoWindowEl.animate([{ transform: from }, { transform: "none" }], { duration: 600, easing: "cubic-bezier(.2, .8, .2, 1)" }) : null;
+    }
     function dimPage() {
+      aimSpot();
+      spotUntil = Date.now() + 12000;
       demoDim.classList.remove("quick");
       demoDim.classList.add("on");
+      focusDemo();
       setTimeout(() => demoDim.classList.remove("on"), 1400); // then its 10 s ease back
     }
     function undimPage() {
       demoDim.classList.add("quick");
       demoDim.classList.remove("on");
+      spotUntil = Date.now() + 800;
+      unfocusDemo();
     }
     // Glide the cursor to a point of el (at: offset in el, else its centre), with
     // a tip under it; returns that point in viewport coordinates.

@@ -150,8 +150,10 @@ Otherwise the key passes through so normal numpad typing works. Main thread call
   keeps only a template's alpha channel, so the full-colour `icon.png` (an opaque rounded
   square) rendered as a solid white box in the menu bar (fixed 2026-09-03). Never `resize()` the
   template; `createFromPath` picks the `@2x` itself.
-- **Logo = ONE vector source (2026-10-09)**: `assets/boardclip-logo.svg` (the clipboard in the
-  accent blue on the app's graphite, a copy behind it) + `assets/boardclip-tray.svg` (the macOS
+- **Logo = ONE vector source (2026-10-09)**: `assets/boardclip-logo.svg` (an iOS-style close-up:
+  a clipboard's top corner, its clip and first lines, tilted and cropped by the tile, a second
+  sheet behind it; the board in the accent blue on the app's graphite; owner: "bigger, overflow
+  cropped, diagonal... the top corner of the notepad") + `assets/boardclip-tray.svg` (the macOS
   template glyph). `npm run sync:icons` (`scripts/render-icons.js`, Electron, canvas in a hidden
   window) draws EVERY size from the vector: icon.png 256 / @2x 512, assets/boardclip-icon.png,
   a multi-size .ico (16-256, one PNG per size), site/favicon.png + favicon.svg, iconTemplate
@@ -537,8 +539,11 @@ clear-all). All popup CSS + theme variables live in `site/shared/clipboard-popup
   dock under the demo, whose BoardClip icon reopens it (the tray icon). Menus open in the window
   they came from (adapter `menuHostAt(x, y)` -> `createMenu` picks its host per open); the
   clip window gets `controller.onClick` + `installSubmenuAutoflip` itself; both roots wear the
-  theme / appearance (`demoRoots`). The guide tour dims the page (`.demo-dim` = `--scrim`, 10 s
-  ease back) and comes back after 12 s, 24 s, 48 s... until the visitor has made 3 presses /
+  theme / appearance (`demoRoots`). The guide tour's entrance must be unmissable: the page dims and
+  blurs under an accent spotlight on the popup (`.demo-dim`: radial light + two vignettes in
+  `--scrim` + `backdrop-filter`, aimed by `--spot-x/-y/-r`), the popup scales to 1.06 (a
+  transform on the POPUP, never on an ancestor of the windows: a maximised window is
+  position: fixed), both ease back over 10 s and comes back after 12 s, 24 s, 48 s... until the visitor has made 3 presses /
   keys in the demo (`PLAYED_ENOUGH`), never while they are busy (8 s idle). QA:
   `qa-ui-shots --only site-windows` (real CDP mouse drags: header move, corner resize, cascade,
   max / restore, dock min / restore, close, reopen).

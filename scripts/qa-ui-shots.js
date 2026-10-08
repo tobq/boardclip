@@ -1073,6 +1073,24 @@ const STEPS = [
     c.note('site-windows-reopen', reopened);
     if (!reopened.popup || !reopened.running || reopened.focus !== 'demo-search') throw new Error(`reopen from the dock: ${J(reopened)}`);
   } },
+  // The guide's entrance: a real (trusted) mouse move with the demo in view
+  // starts it; the page dims and blurs under a spotlight on the demo and the
+  // popup comes forward (scale) before it settles back.
+  { name: 'site-tour', run: async (c) => {
+    const page = await c.sb.openWindow(c.site.url, { theme: c.theme });
+    await page.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false });
+    await page.waitFor(`document.readyState === 'complete' && !!document.getElementById('demo-window')`, 'site loaded');
+    await page.fontsReady();
+    await page.eval(`(document.getElementById('demo-window').scrollIntoView({ block: 'center' }), true)`);
+    await qa.sleep(400);
+    await page.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 300, y: 400, buttons: 0, pointerType: 'mouse' });
+    await page.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 320, y: 410, buttons: 0, pointerType: 'mouse' });
+    await qa.sleep(1900); // 600 ms before it starts, then the 900 ms dim + the scale up
+    const got = await page.eval(`(() => { const d = getComputedStyle(document.getElementById('demo-dim')); const t = getComputedStyle(document.getElementById('demo-window')).transform; const m = /matrix\\(([^,]+)/.exec(t); return { dim: Number(d.opacity), blur: d.backdropFilter, scale: m ? Number(m[1]) : 1, spotX: document.getElementById('demo-dim').style.getPropertyValue('--spot-x') }; })()`);
+    c.note('site-tour', got);
+    if (!(got.dim > 0.6) || !(got.scale > 1.03) || !got.spotX) throw new Error(`the tour's entrance did not dim / spotlight / scale the demo: ${J(got)}`);
+    await c.shot(page, 'site-tour');
+  } },
   // The demo editor on a clip IS the app editor: its "..." opens the editor
   // clip menu (Revert to original, no "Open in editor"), Revert offers Undo in
   // the toast, and under "Glass on: Popup only" it paints the app editor

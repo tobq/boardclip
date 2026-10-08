@@ -119,6 +119,13 @@ function harness({ latest, diskHead, applyCode = 0, applyStderr = '', changedFil
     assert.deepStrictEqual(offenders, [], `:: comment inside a ( ) block (use rem): ${offenders.join(', ')}`);
   }
 
+  // Build info runs git with a 1 s timeout; a killed `git status` must never
+  // leave .git/index.lock behind (it blocks every later commit and the
+  // updater's pull), so every call runs lock-free.
+  const buildInfoSrc = fs.readFileSync(path.join(__dirname, '..', 'lib', 'build-info.js'), 'utf8');
+  assert.ok(buildInfoSrc.includes("execFileSync('git', ['--no-optional-locks', ...args]"),
+    'build-info git calls run with --no-optional-locks');
+
   console.log('auto-update tests passed');
 })().catch((error) => {
   console.error(error);

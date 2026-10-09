@@ -326,12 +326,13 @@
         note: "Downloads the Windows installer directly.",
         url: `${releaseBase}BoardClip-Setup-Windows.exe`
       },
-      // Greyed until the Mac app opens without a security prompt; the one-line
-      // install (Command line) needs none, so Macs start there.
+      // The .dmg is greyed until it opens without a security prompt. Homebrew
+      // (tobq/homebrew-boardclip clears the quarantine flag) and the one-line
+      // install (Command line) need none, so Macs start on Command line.
       mac: {
         title: "Download for Mac",
-        label: "Mac app coming soon",
-        note: "Use Command line for now: the one-line install needs no security prompt.",
+        label: "Download coming soon",
+        note: "Get the Mac app with Homebrew, no security prompt: brew install --cask tobq/boardclip/boardclip. Or use Command line.",
         url: `${releaseBase}BoardClip-macOS.dmg`,
         disabled: true
       },

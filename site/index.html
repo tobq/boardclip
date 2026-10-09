@@ -783,11 +783,9 @@
     const demoAdapter = {
       dialogs,
       menuHost: demoWindowEl,
-      // A menu opens in the window it was opened from (the popup or the clip window).
-      menuHostAt: (x, y) => {
-        const at = document.elementFromPoint(x, y);
-        return (at && at.closest(".bc-ww")) || demoWindowEl;
-      },
+      // A menu opens in the window it was opened from (the active one: a press
+      // or the keyboard's focus marks it), like its dialogs and toasts.
+      menuHostAt: () => activeDemoWindow(),
       deletedToast: "Deleted",
       itemById: (id) => clips.find((item) => Core.itemId(item) === id),
       numpadMap: () => Core.numpadMap(clips),
@@ -1090,6 +1088,11 @@
       onRestore: () => updateDock(),
     });
     clipWinEl.addEventListener("click", (event) => controller.onClick(event));
+    // The viewer's Ctrl/Cmd + = / - / 0 zoom the image (the app's main claims them), never the page.
+    clipWinEl.addEventListener("keydown", (event) => {
+      const act = demoViewer ? Core.imageZoomKey(event) : null;
+      if (act) { event.preventDefault(); demoViewer.zoomKey(act); }
+    });
     Core.installSubmenuAutoflip(clipWinEl);
     // The clip window's dock button lives while the window does (open or
     // minimised): it brings the window back from the dock, or to the front.
@@ -1124,7 +1127,10 @@
       if (clipPlaced) return;
       clipPlaced = true; // first open: cascaded from the popup, as an OS places a new window
       const p = popupWin.bounds();
-      clipWin.place({ left: p.left + 36, top: p.top + 36, width: Math.min(480, window.innerWidth - 32), height: 420 });
+      const width = Math.min(480, window.innerWidth - 32);
+      const stageLeft = clipWinEl.parentElement.getBoundingClientRect().left;
+      const left = Math.max(16 - stageLeft, Math.min(p.left + 36, window.innerWidth - stageLeft - width - 16));
+      clipWin.place({ left, top: p.top + 36, width, height: 420 });
     }
     function hideClipWindow() {
       const mounts = clipMounts;
@@ -1503,6 +1509,7 @@
     async function runTour(from) {
       tour.running = true;
       tour.runs += 1;
+      popupWin.focus(); // in front of a clip window, so what it shows is seen
       dimPage();
       // Appear where the visitor's mouse is (kept inside the demo column), then glide.
       const host = demoColumn.getBoundingClientRect();
@@ -1548,7 +1555,7 @@
     window.addEventListener("pointermove", (event) => {
       if (tour.running || tour.pending || tour.played >= PLAYED_ENOUGH || !event.isTrusted || event.pointerType !== "mouse") return;
       const now = Date.now();
-      if (now < tour.nextAt || now - tour.lastOwn < TOUR_IDLE_MS || !tour.inView || !tourAllowed() || !popupWin.isOpen()) return;
+      if (now < tour.nextAt || now - tour.lastOwn < TOUR_IDLE_MS || !tour.inView || !tourAllowed() || !popupWin.isOpen() || clipWin.isMaximized()) return;
       tour.pending = true;
       const from = { x: event.clientX, y: event.clientY };
       tour.timer = setTimeout(() => {

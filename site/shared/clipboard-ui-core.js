@@ -5262,6 +5262,7 @@
     webWindows.add(win);
     let saved = null; // the bounds before maximising
     let minimized = false;
+    let closing = false; // a close is under way: the window counts as closed
     let anim = null;
     let seq = 0; // the latest open / close / minimise / restore wins
     const reduced = () => typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -5328,7 +5329,9 @@
       if (instant) return;
       const last = win.getBoundingClientRect();
       if (!last.width || !last.height) return;
-      play([{ transformOrigin: '0 0', transform: flip(first, last) }, { transformOrigin: '0 0', transform: 'none' }], M.max, M.ease).then(settle);
+      const done = play([{ transformOrigin: '0 0', transform: flip(first, last) }, { transformOrigin: '0 0', transform: 'none' }], M.max, M.ease);
+      const mine = anim;
+      done.then(() => { if (anim === mine) settle(); });
     }
     let drag = null;
     function move(phase, _dx, _dy, at) {
@@ -5379,7 +5382,9 @@
           e.preventDefault();
           e.stopPropagation();
           focus();
-          rs = { id: e.pointerId, x: e.clientX, y: e.clientY, from: bounds() };
+          const desk = (win.offsetParent || win.parentElement || document.body).getBoundingClientRect();
+          // The moving edge stays on the page: not above its top, not past the viewport's sides.
+          rs = { id: e.pointerId, x: e.clientX, y: e.clientY, from: bounds(), minLeft: -desk.left, minTop: -(desk.top + window.scrollY), maxRight: window.innerWidth - desk.left };
           try { grip.setPointerCapture(e.pointerId); } catch {}
           win.classList.add('bc-ww-sizing');
         });
@@ -5389,10 +5394,10 @@
           const dx = e.clientX - rs.x;
           const dy = e.clientY - rs.y;
           const r = { ...f };
-          if (dir.includes('e')) r.width = Math.max(minW, f.width + dx);
+          if (dir.includes('e')) r.width = Math.max(minW, Math.min(f.width + dx, rs.maxRight - f.left));
           if (dir.includes('s')) r.height = Math.max(minH, f.height + dy);
-          if (dir.includes('w')) { r.width = Math.max(minW, f.width - dx); r.left = f.left + f.width - r.width; }
-          if (dir.includes('n')) { r.height = Math.max(minH, f.height - dy); r.top = f.top + f.height - r.height; }
+          if (dir.includes('w')) { r.width = Math.max(minW, Math.min(f.width - dx, f.left + f.width - rs.minLeft)); r.left = f.left + f.width - r.width; }
+          if (dir.includes('n')) { r.height = Math.max(minH, Math.min(f.height - dy, f.top + f.height - rs.minTop)); r.top = f.top + f.height - r.height; }
           place(r);
         });
         const end = (e) => {
@@ -5437,6 +5442,7 @@
     async function open() {
       const my = ++seq;
       minimized = false;
+      closing = false;
       win.hidden = false;
       focus();
       await play([{ opacity: 0, transform: `scale(${os === 'mac' ? 0.96 : 0.92})` }, { opacity: 1, transform: 'none' }], M.open, M.ease);
@@ -5445,8 +5451,10 @@
     async function close() {
       if (win.hidden) { minimized = false; return; }
       const my = ++seq;
+      closing = true;
       await play([{ opacity: 1, transform: 'none' }, { opacity: 0, transform: `scale(${os === 'mac' ? 0.96 : 0.94})` }], M.close, M.easeIn);
       if (my !== seq) return;
+      closing = false;
       win.hidden = true;
       settle();
       if (saved) setMaximized(false, true);
@@ -5468,6 +5476,7 @@
       if (!minimized) { focus(); return; }
       const my = ++seq;
       minimized = false;
+      closing = false;
       win.hidden = false;
       focus();
       const frames = dockFrames(win.getBoundingClientRect()).reverse().map((k) => ({ ...k, offset: k.offset != null ? 1 - k.offset : undefined }));
@@ -5484,7 +5493,7 @@
       minimize,
       restore,
       toggleMaximize: () => setMaximized(!saved),
-      isOpen: () => !win.hidden,
+      isOpen: () => !win.hidden && !closing,
       isMinimized: () => minimized,
       isMaximized: () => !!saved,
       focus,

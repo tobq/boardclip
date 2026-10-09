@@ -740,13 +740,13 @@ input.bc-bar-title::placeholder { color: var(--text-dim); font-weight: var(--fw-
 .bc-ww[data-max] { border-radius: 0; box-shadow: none; }
 .bc-ww-moving, .bc-ww-sizing { user-select: none; }
 .bc-ww-rs { position: absolute; z-index: 60; }
-.bc-ww-rs[data-rs="n"], .bc-ww-rs[data-rs="s"] { left: var(--sp-6); right: var(--sp-6); height: var(--sp-4); cursor: ns-resize; }
-.bc-ww-rs[data-rs="e"], .bc-ww-rs[data-rs="w"] { top: var(--sp-6); bottom: var(--sp-6); width: var(--sp-4); cursor: ew-resize; }
-.bc-ww-rs[data-rs="n"], .bc-ww-rs[data-rs="ne"], .bc-ww-rs[data-rs="nw"] { top: calc(-1 * var(--sp-2)); }
-.bc-ww-rs[data-rs="s"], .bc-ww-rs[data-rs="se"], .bc-ww-rs[data-rs="sw"] { bottom: calc(-1 * var(--sp-2)); }
-.bc-ww-rs[data-rs="e"], .bc-ww-rs[data-rs="ne"], .bc-ww-rs[data-rs="se"] { right: calc(-1 * var(--sp-2)); }
-.bc-ww-rs[data-rs="w"], .bc-ww-rs[data-rs="nw"], .bc-ww-rs[data-rs="sw"] { left: calc(-1 * var(--sp-2)); }
-.bc-ww-rs[data-rs="ne"], .bc-ww-rs[data-rs="nw"], .bc-ww-rs[data-rs="se"], .bc-ww-rs[data-rs="sw"] { width: var(--sp-7); height: var(--sp-7); }
+.bc-ww-rs[data-rs="n"], .bc-ww-rs[data-rs="s"] { left: var(--sp-6); right: var(--sp-6); height: var(--sp-3); cursor: ns-resize; }
+.bc-ww-rs[data-rs="e"], .bc-ww-rs[data-rs="w"] { top: var(--sp-6); bottom: var(--sp-6); width: var(--sp-3); cursor: ew-resize; }
+.bc-ww-rs[data-rs="n"], .bc-ww-rs[data-rs="ne"], .bc-ww-rs[data-rs="nw"] { top: 0; }
+.bc-ww-rs[data-rs="s"], .bc-ww-rs[data-rs="se"], .bc-ww-rs[data-rs="sw"] { bottom: 0; }
+.bc-ww-rs[data-rs="e"], .bc-ww-rs[data-rs="ne"], .bc-ww-rs[data-rs="se"] { right: 0; }
+.bc-ww-rs[data-rs="w"], .bc-ww-rs[data-rs="nw"], .bc-ww-rs[data-rs="sw"] { left: 0; }
+.bc-ww-rs[data-rs="ne"], .bc-ww-rs[data-rs="nw"], .bc-ww-rs[data-rs="se"], .bc-ww-rs[data-rs="sw"] { width: var(--sp-6); height: var(--sp-6); }
 .bc-ww-rs[data-rs="ne"], .bc-ww-rs[data-rs="sw"] { cursor: nesw-resize; }
 .bc-ww-rs[data-rs="nw"], .bc-ww-rs[data-rs="se"] { cursor: nwse-resize; }
 .bc-ww[data-max] .bc-ww-rs { display: none; }

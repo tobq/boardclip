@@ -539,6 +539,10 @@ body {
 .spec dd { margin: var(--sp-2) 0 0 calc(var(--ctl-lg) + var(--sp-6)); color: var(--text-dim); max-width: 64ch; }
 .tries { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin-top: var(--sp-4); }
 .update .get { max-width: 560px; margin-top: var(--sp-6); }
+.privacy-lede { max-width: 64ch; margin: var(--sp-4) 0 0; }
+.privacy-note { margin: var(--sp-6) 0 0; }
+/* A download that is not ready (the Mac app until it opens without a prompt). */
+.get-row .btn[aria-disabled] { opacity: .45; pointer-events: none; cursor: default; }
 
 /* ---------- Footer ---------- */
 .foot {

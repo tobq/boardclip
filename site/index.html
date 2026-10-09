@@ -9,6 +9,9 @@
   <link rel="icon" type="image/svg+xml" href="favicon.svg">
   <link rel="icon" type="image/png" href="favicon.png">
   <link rel="apple-touch-icon" href="favicon.png">
+  <!-- Cookieless, anonymous visit counts (Ahrefs Web Analytics). Downloads count as
+       outbound clicks to GitHub; install_copied and demo_used are custom events. -->
+  <script src="https://analytics.ahrefs.com/analytics.js" data-key="uRa9KP7kXOw0b5xS3h5Dxg" async></script>
   <script>
     // The page follows the system theme through the shared token layer
     // (:root[data-theme]); the demo popup carries its own data-theme.
@@ -37,6 +40,7 @@
     </a>
     <nav class="nav" aria-label="Site">
       <a href="#features">Features</a>
+      <a href="#privacy">Privacy</a>
       <a href="#download">Download</a>
       <a class="cli-only" href="#update" hidden>Update</a>
       <a href="https://github.com/tobq/boardclip">
@@ -185,6 +189,30 @@
       </dl>
     </section>
 
+    <section class="features privacy wrap" id="privacy" aria-labelledby="privacy-title">
+      <h2 class="overline" id="privacy-title">Private by design</h2>
+      <p class="lede privacy-lede">A clipboard holds passwords, addresses and half-written messages, so none of it goes anywhere you did not choose.</p>
+      <dl class="spec">
+        <div>
+          <dt><span class="mi spec-icon" aria-hidden="true">dns</span>No BoardClip server, no account</dt>
+          <dd>Your history is plain files on your own disk. The app never talks to a server of ours: the only request it makes is asking GitHub whether there is an update.</dd>
+        </div>
+        <div>
+          <dt><span class="mi spec-icon" aria-hidden="true">folder_shared</span>Synced through your own drives</dt>
+          <dd>Your computers reach each other directly, encrypted, over your network or your Tailscale network, or through a Google Drive, OneDrive or iCloud folder you already use. Nothing passes through us.</dd>
+        </div>
+        <div>
+          <dt><span class="mi spec-icon" aria-hidden="true">code</span>Open source</dt>
+          <dd>MIT licensed. Every line that touches your clipboard is on GitHub for anyone to read, build and check.</dd>
+        </div>
+        <div>
+          <dt><span class="mi spec-icon" aria-hidden="true">travel_explore</span>Coming soon: your clips in any browser</dt>
+          <dd>Sign in with Google on this site and read your clips straight from your own Drive. It runs in your browser, with still no server of ours in between.</dd>
+        </div>
+      </dl>
+      <p class="note privacy-note">This website counts visits anonymously, with no cookies (Ahrefs Web Analytics). The app itself has no analytics or tracking at all.</p>
+    </section>
+
     <section class="update wrap cli-only" id="update" hidden aria-labelledby="update-label">
       <h2 class="overline" id="update-label">Update</h2>
       <div class="get">
@@ -298,11 +326,14 @@
         note: "Downloads the Windows installer directly.",
         url: `${releaseBase}BoardClip-Setup-Windows.exe`
       },
+      // Greyed until the Mac app opens without a security prompt; the one-line
+      // install (Command line) needs none, so Macs start there.
       mac: {
         title: "Download for Mac",
-        label: "Download for Mac",
-        note: "One app for Apple Silicon and Intel Macs. If macOS says it cannot verify BoardClip on first open, go to System Settings > Privacy & Security and choose Open Anyway.",
-        url: `${releaseBase}BoardClip-macOS.dmg`
+        label: "Mac app coming soon",
+        note: "Use Command line for now: the one-line install needs no security prompt.",
+        url: `${releaseBase}BoardClip-macOS.dmg`,
+        disabled: true
       },
       linux: {
         title: "Download for Linux",
@@ -424,7 +455,8 @@
         document.getElementById("download-note").textContent = selected.note;
       }
       const link = document.getElementById("download-link");
-      link.href = selected.url;
+      if (selected.disabled) link.removeAttribute("href"); else link.href = selected.url;
+      link.toggleAttribute("aria-disabled", !!selected.disabled);
       link.textContent = selected.label;
       document.querySelectorAll("[data-download-os]").forEach((button) => {
         button.classList.toggle("active", button.dataset.downloadOs === os);
@@ -739,14 +771,17 @@
     document.querySelectorAll("[data-install-mode]").forEach((button) => {
       button.addEventListener("click", () => setInstallMode(button.dataset.installMode));
     });
+    const countCopy = (id) => { try { window.AhrefsAnalytics?.sendEvent(id === "update-command" ? "update_copied" : "install_copied"); } catch {} };
     document.querySelectorAll("[data-copy-command]").forEach((control) => {
       control.addEventListener("click", async () => {
+        countCopy(control.dataset.copyCommand);
         await copyCommand(control.dataset.copyCommand, control);
         addCopiedText(document.getElementById(control.dataset.copyCommand).textContent.trim());
       });
       control.addEventListener("keydown", (event) => {
         if (event.key === "Enter" || event.key === " ") {
           event.preventDefault();
+          countCopy(control.dataset.copyCommand);
           copyCommand(control.dataset.copyCommand, control).then(() => addCopiedText(document.getElementById(control.dataset.copyCommand).textContent.trim()));
         }
       });
@@ -1391,7 +1426,7 @@
     themeQuery.addEventListener("change", applyDemoTheme);
     applyDemoTheme();
     setDownload(detectedDownloadOS());
-    setInstallMode(location.hash === "#update" ? "cli" : "installer");
+    setInstallMode(location.hash === "#update" || detectedDownloadOS() === "mac" ? "cli" : "installer");
     setCommand("install", detectedOS);
     setCommand("update", detectedOS);
     if (location.hash === "#update") {
@@ -1572,7 +1607,10 @@
         const inDemo = demoColumn.contains(event.target) || !!(event.target.closest && event.target.closest("[data-try]"));
         if (inDemo) {
           tour.lastOwn = Date.now();
-          if (type === "pointerdown" || type === "keydown") tour.played += 1;
+          if (type === "pointerdown" || type === "keydown") {
+            tour.played += 1;
+            if (tour.played === 1) { try { window.AhrefsAnalytics?.sendEvent("demo_used"); } catch {} } // once per visit
+          }
           if (tour.pending) { clearTimeout(tour.timer); tour.pending = false; }
         }
         if (tour.running && (inDemo || (type !== "wheel" && type !== "focusin"))) endTour(true);

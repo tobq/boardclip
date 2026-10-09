@@ -554,10 +554,10 @@ const rules = (css) => [...stripComments(css).matchAll(/([^{}]+)\{([^{}]*)\}/g)]
   assert.ok(/'--accent-custom-dark', '--accent-ink-dark', '--accent-text-dark', '--accent-custom-light', '--accent-ink-light', '--accent-text-light'/.test(coreSrc), 'applyAppearance sets (and clears) the six custom vars');
   assert.ok(/--input: color-mix\(in srgb, var\(--g-900\) \d+%, transparent\)/.test(block(':root[data-theme="light"][data-surface="glass"]')),
     'light glass fields are a dark wash (a white field vanished on light frost, on the demo page and on the opaque white menu)');
-  // Accent AS TEXT reads --accent-text everywhere (an active chip, the current
+  // Accent AS TEXT reads --accent-text everywhere (an idle group chip, the current
   // numpad key, Accept, a zoom step, the clipboard status, link-like buttons);
   // --accent stays for fills, glyphs, the focus ring and switches.
-  for (const sel of ['.qh-prefix', '.btn.quiet.accent', '.filter-tag.active', '.list-newest:hover', '.np-btn.current', '.shortcut-btn.recording', '.bc-editor-clip.on', '.bc-zoom .btn.quiet.active']) {
+  for (const sel of ['.qh-prefix', '.btn.quiet.accent', '.filter-tag.group-tag', '.list-newest:hover', '.np-btn.current', '.shortcut-btn.recording', '.bc-editor-clip.on', '.bc-zoom .btn.quiet.active']) {
     const own = rules(popupCss).filter((x) => x.sel.split(/,\s*/).includes(sel) && /(^|[;{\s])color:/.test(x.body));
     assert.ok(own.length && own.every((r) => /(^|[;{\s])color: var\(--accent-text\)/.test(r.body)), `${sel} is accent TEXT: it must use --accent-text (4.5:1), not --accent`);
   }

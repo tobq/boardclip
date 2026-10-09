@@ -306,16 +306,19 @@
 .group-filters.expanded { flex-wrap: wrap; overflow: visible; }
 .group-filters.strip-moving { overflow: hidden; }
 /* ONE chip (Core.renderChip): the chip bar's icon facets and group chips and
-   the options panel's facet chips. Idle = dim text, no fill, no border; hover
-   = text + the hover overlay; active (include) = the accent tint with a filled
-   glyph; excluded = struck through. One shape: the pill. Group names are text
-   colours, never accent. */
+   the options panel's facet chips. Idle = dim text, no fill, no border (a
+   group chip: its name in the accent, so the groups read at a glance; owner
+   2026-10-09: "too hard to see before selected"); hover = the hover overlay;
+   active (include) = the whole chip lit, a solid accent fill with the accent's
+   ink and a filled glyph; excluded = struck through. One shape: the pill. */
 .filter-tag { min-height: var(--ctl-sm); max-width: 170px; box-sizing: border-box; font-size: var(--fs-ui); padding: 0 var(--sp-3); border-radius: var(--r-chip); border: 0;
               background: transparent; color: var(--text-dim); cursor: pointer; transition: background-color var(--dur) var(--ease), color var(--dur) var(--ease); line-height: var(--lh-ui); position: relative;
               display: inline-flex; align-items: center; gap: var(--sp-1); vertical-align: top; font-family: inherit; }
 .filter-tag.icon-filter { min-width: var(--ctl-sm); height: var(--ctl-sm); justify-content: center; padding: 0 var(--sp-2); }
 .filter-tag:hover { background: var(--hover); color: var(--text); }
-.filter-tag.active, .filter-tag.active:hover { background: var(--accent-bg); color: var(--accent-text); --icon-fill: 1; }
+.filter-tag.group-tag, .filter-tag.group-tag:hover { color: var(--accent-text); }
+.filter-tag.active, .filter-tag.active:hover { background: var(--accent); color: var(--active-fg); --icon-fill: 1; }
+.filter-tag.active:hover { background: var(--accent-hover); }
 .filter-tag.excluded { color: var(--text-dim); text-decoration: line-through; text-decoration-thickness: 1px; opacity: .6; }
 /* A greyed chip (the availability census, Forge's disabledTier): it would show
    nothing under the other filters (.4), or can never match with them

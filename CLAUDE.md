@@ -1022,7 +1022,8 @@ clear-all). All popup CSS + theme variables live in `site/shared/clipboard-popup
   / `.sm`; `.btn.quiet.sm.accent` = every accent text action: Undo, "Did you mean", Accept, the
   merge note; `.btn.discard` = red on hover), `.icon-btn` (hovers `--text` + `--hover`, `.danger`
   = red + `--red-bg`; accent is never a hover colour), `.bc-menu-item` (every menu / submenu /
-  picker / suggest row), `.filter-tag` chip, `.overline` (uppercase SECTION heading) vs `.bc-label`
+  picker / suggest row), `.filter-tag` chip (idle group chips in `--accent-text`, a picked chip a solid
+  `--accent` fill with `--active-fg`: owner 2026-10-09, dim grey chips were "too hard to see"), `.overline` (uppercase SECTION heading) vs `.bc-label`
   (sentence-case label for a control group / pane: options rows, settings list titles, merge
   heads), `.bc-bar` window bar (every clip window + the approval prompt), one scrollbar, one
   `::selection`, one floating-surface rule, and `clipboard-window.css` = the window base sheet

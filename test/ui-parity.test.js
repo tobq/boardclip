@@ -731,8 +731,9 @@ const siteCss = read('site/styles.css');
   assert.ok(!/delete-group|gtag-x/.test(bar) && !/data-action="delete-group"/.test(coreSrc), 'no hover x that deletes a group on a filter chip');
   assert.ok(/class="filter-tag group-tag active"/.test(bar), 'an active group chip');
   assert.ok((coreSrc.match(/renderChip\(\{/g) || []).length >= 3, 'the chip bar (icon facets + group chips) and the options panel chips share renderChip');
-  assert.ok(rules(popupCss).some((r) => r.sel.split(/,\s*/).includes('.filter-tag.active') && /var\(--accent-bg\)/.test(r.body) && /color:\s*var\(--accent-text\)/.test(r.body)), 'active chip = the accent tint, its label in the accent text shade');
-  assert.ok(!rules(popupCss).some((r) => /\.filter-tag\.group-tag$/.test(r.sel) && /--accent/.test(r.body)), 'idle group chips are text colours, never accent');
+  // Owner 2026-10-09: idle group chips read in the accent; a picked chip lights up whole.
+  assert.ok(rules(popupCss).some((r) => r.sel.split(/,\s*/).includes('.filter-tag.active') && /background:\s*var\(--accent\)/.test(r.body) && /color:\s*var\(--active-fg\)/.test(r.body)), 'active chip = a solid accent fill with the accent ink');
+  assert.ok(rules(popupCss).some((r) => r.sel.split(/,\s*/).includes('.filter-tag.group-tag') && /color:\s*var\(--accent-text\)/.test(r.body)), 'idle group chips read in the accent text shade');
   assert.ok(!/borders="borderless"\][^{]*\.filter-tag/.test(popupCss), 'no filled-chip variant');
   // Selection bar in the chip bar's place, at its height.
   const shell = ui.renderPopupShell({});

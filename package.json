@@ -11,7 +11,7 @@
     "sync:icons": "electron scripts/render-icons.js",
     "dist": "electron-builder --publish never",
     "dist:win": "electron-builder --win nsis portable --publish never",
-    "dist:mac": "electron-builder --mac dmg zip --publish never",
+    "dist:mac": "electron-builder --mac --publish never",
     "dist:linux": "electron-builder --linux AppImage deb --publish never"
   },
   "build": {
@@ -72,6 +72,7 @@
         }
       ],
       "category": "public.app-category.productivity",
+      "icon": "assets/boardclip-icon-mac.png",
       "x64ArchFiles": "**/koffi/**",
       "entitlements": "assets/entitlements.mac.plist",
       "entitlementsInherit": "assets/entitlements.mac.plist",

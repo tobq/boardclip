@@ -39,8 +39,10 @@ fi
 
 # Finder only shows a bundle icon from an .icns named by CFBundleIconFile; a
 # bare PNG in Resources is ignored (the launcher used to show a blank icon).
-# Build the icns from the 512px source with the stock sips + iconutil.
-ICON_SRC="$APP_DIR/icon@2x.png"
+# Build the icns from the macOS-grid source (1024, rendered by
+# scripts/render-icons.js) with the stock sips + iconutil.
+ICON_SRC="$APP_DIR/assets/boardclip-icon-mac.png"
+[ -f "$ICON_SRC" ] || ICON_SRC="$APP_DIR/icon@2x.png"
 [ -f "$ICON_SRC" ] || ICON_SRC="$APP_DIR/icon.png"
 HAS_ICNS=0
 if [ -f "$ICON_SRC" ] && command -v sips >/dev/null 2>&1 && command -v iconutil >/dev/null 2>&1; then

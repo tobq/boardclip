@@ -334,18 +334,45 @@ body {
 /* Glass: --canvas is the glass tint, so blurring the page behind stands in
    for the OS acrylic / vibrancy the real window sits on. */
 .demo-window[data-surface="glass"] { backdrop-filter: var(--glass-blur); -webkit-backdrop-filter: var(--glass-blur); }
-/* Toast, dialogs and the clip window's view stay inside their frame (the
-   shared CSS positions them fixed for the real window). */
+/* Toasts and dialogs stay inside their window (the shared CSS positions them
+   fixed for a real window); the clip window's view fills it. */
 .demo-window .toast,
-.demo-window .overlay,
-.demo-window .bc-editor-overlay { position: absolute; }
-.demo-window .bc-editor-overlay .bc-editor { box-shadow: none; }
+.demo-window .overlay { position: absolute; }
+.demo-clipwin-body { position: absolute; inset: 0; }
+/* The clip window wears glass only under "Glass on: All windows", as the app's
+   editor window does; otherwise that window's solid surfaces (one layer, the
+   window itself: no blur under a solid cover). */
+.bc-popup.demo-clipwin:not([data-glass-scope="all"]) {
+  --canvas: var(--bg);
+  --surface: var(--surface-solid);
+  --surface2: var(--surface2-solid);
+  --input: var(--input-solid);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
 
 /* The dock under the demo: BoardClip's icon (a click opens the popup, as its
-   tray icon does; marked while the popup is open) and a minimised window.
-   The mark is the visitor's OS's: a dot on macOS, a short bar on Windows. */
+   tray icon does; marked while the popup is open) and the clip window's
+   button while it is open or minimised. It slides in only when it has
+   something to offer (the popup closed, or a clip window), so the open popup
+   alone never shows a lone icon under it. The mark is the visitor's OS's: a
+   dot on macOS, a short bar on Windows. */
+.demo-dock-slot {
+  display: grid;
+  grid-template-rows: 0fr;
+  margin-top: calc(-1 * var(--sp-8)); /* collapsed, it takes no room, its grid gap included */
+  opacity: 0;
+  transition: grid-template-rows var(--dur) var(--ease), opacity var(--dur) var(--ease);
+}
+.demo-dock-slot.show { grid-template-rows: 1fr; opacity: 1; }
+.demo-dock-clip {
+  display: grid;
+  justify-items: center;
+  min-height: 0;
+  overflow: hidden;
+}
 .demo-dock {
-  justify-self: center;
+  margin: var(--sp-8) 0 var(--sp-6); /* inside the clip, so a collapsed slot takes no room; the bottom holds its shadow */
   display: flex;
   align-items: center;
   gap: var(--sp-2);
@@ -387,7 +414,8 @@ body {
   transition: opacity var(--dur) var(--ease);
 }
 .demo-dock[data-os="win"] .dock-item::after { width: var(--sp-6); height: 3px; background: var(--accent); }
-.dock-item.running::after, .dock-item.dock-win::after { opacity: 1; }
+.dock-item.running::after, .demo-dock[data-os="win"] .dock-win::after { opacity: 1; }
+.demo-dock[data-os="win"] .dock-win.running::after { width: var(--sp-6); background: var(--accent); }
 .demo-dock[data-os="win"] .dock-win::after { width: var(--sp-3); background: var(--text-dim); }
 
 /* As the guide starts the rest of the page goes dark and soft, and a
@@ -416,6 +444,40 @@ body {
 .demo-dim.quick { transition-duration: 700ms; }
 @media (prefers-reduced-motion: reduce) {
   .demo-dim { display: none; }
+}
+/* "It's live" said where the eye lands first (visitors took the demo for a
+   picture): a pill above it, its dot breathing in the accent. */
+.demo-live {
+  justify-self: center;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  margin: 0;
+  padding: var(--sp-2) var(--sp-6);
+  border-radius: var(--r-chip);
+  background: var(--accent-bg);
+  color: var(--text);
+  font-size: var(--fs-ui);
+  line-height: var(--lh-ui);
+  text-align: center;
+}
+.demo-live strong { font-weight: var(--fw-strong); color: var(--accent-text); }
+.demo-live-dot {
+  flex: none;
+  width: var(--sp-4);
+  height: var(--sp-4);
+  border-radius: var(--r-chip);
+  background: var(--accent);
+  box-shadow: 0 0 0 0 var(--accent);
+  animation: live-dot 1.8s var(--ease) infinite;
+}
+@keyframes live-dot {
+  0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 60%, transparent); }
+  70% { box-shadow: 0 0 0 var(--sp-4) transparent; }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .demo-live-dot { animation: none; }
 }
 .demo-caption {
   margin: 0;

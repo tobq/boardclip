@@ -669,8 +669,8 @@ mark { background: var(--mark-bg); color: var(--mark-fg); border-radius: var(--r
 @keyframes bc-sync-spin { from { transform: rotate(0deg); } to { transform: rotate(-360deg); } }
 .sync-btn.syncing .mi { display: inline-block; animation: bc-sync-spin 1.1s linear infinite; }
 
-/* --- Shared plain-text editor (Core.createEditor): app window + demo overlay --- */
-/* Clip windows (editor, viewer, unify + conflict; the demo's overlay too):
+/* --- Shared plain-text editor (Core.createEditor): app window + demo clip window --- */
+/* Clip windows (editor, viewer, unify + conflict; the demo's clip window too):
    ONE surface per window. The root paints --surface, every band in it (bar,
    find, pane heads, merge gap, footer) is transparent and split by one
    --line hairline, so the writing surface is never grey under white chrome.
@@ -850,11 +850,6 @@ input.bc-bar-title::placeholder { color: var(--text-dim); font-weight: var(--fw-
    (it re-takes the solid surface tokens the popup's glass overrides, so it
    paints exactly the app editor's --surface); All windows = one frosted
    layer over the list (the window roots inside go transparent above). */
-.bc-editor-overlay { position: absolute; inset: 0; z-index: 40; display: none; background: var(--canvas); }
-.bc-popup:not([data-glass-scope="all"]) .bc-editor-overlay { --canvas: var(--bg); --surface: var(--surface-solid); --surface2: var(--surface2-solid); --input: var(--input-solid); }
-.bc-popup[data-surface="glass"][data-glass-scope="all"] .bc-editor-overlay { background: var(--glass-tint); -webkit-backdrop-filter: var(--glass-blur); backdrop-filter: var(--glass-blur); }
-.bc-editor-overlay.show { display: block; }
-.bc-editor-overlay .bc-editor { box-shadow: 0 8px 30px var(--shadow); }
 /* IntelliJ-style merge (CodeMirror 5 merge addon, skinned with our tokens):
    Current (read-only) | Result (editable) | Incoming (read-only); 2-pane =
    Current (edited in place into the result) | Incoming. One plane: the root

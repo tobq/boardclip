@@ -535,11 +535,18 @@ clear-all). All popup CSS + theme variables live in `site/shared/clipboard-popup
   (mac softer, Windows snappier; none under reduced motion). `renderWindowBar({webControls})`
   (non-native = the demo) draws the OS controls: macOS traffic lights first (grey while
   inactive), Windows caption buttons last (close red); close carries `data-x="close"` so the
-  view's own close runs. The popup has no maximise (the app's has none); its close goes to the
-  dock under the demo, whose BoardClip icon reopens it (the tray icon). Menus open in the window
-  they came from (adapter `menuHostAt(x, y)` -> `createMenu` picks its host per open); the
-  clip window gets `controller.onClick` + `installSubmenuAutoflip` itself; both roots wear the
-  theme / appearance (`demoRoots`). The guide tour's entrance must be unmissable: the page dims and
+  view's own close runs. The popup has no maximise (the app's has none); its close leaves the
+  dock's BoardClip icon to reopen it (the tray icon). The dock (`.demo-dock-slot`, `updateDock`)
+  shows ONLY with something to offer: the popup closed, or a clip window open / minimised (its
+  button lives as long as the window); the open popup alone shows none (owner: a lone icon
+  "feels like a random thing"); qa site-windows asserts it. Menus open in the window they came
+  from (adapter `menuHostAt(x, y)` -> `createMenu` picks its host per open), and so do dialogs
+  and toasts (`createDialogs(activeDemoWindow)` takes a host function; the clip window has its own
+  `#demo-clip-toast`); the clip window gets `controller.onClick` + `installSubmenuAutoflip`
+  itself and mounts its view straight into `#demo-clipwin-body` (the old in-popup
+  `.bc-editor-overlay` is gone); both roots wear the theme / appearance (`demoRoots`). A "Live
+  demo" pill above it says copying text on the page lands in it and a click copies a clip
+  (visitors took the demo for a picture). The guide tour's entrance must be unmissable: the page dims and
   blurs under an accent spotlight on the popup (`.demo-dim`: radial light + two vignettes in
   `--scrim` + `backdrop-filter`, aimed by `--spot-x/-y/-r`), the popup scales to 1.06 (a
   transform on the POPUP, never on an ancestor of the windows: a maximised window is
@@ -611,7 +618,7 @@ clear-all). All popup CSS + theme variables live in `site/shared/clipboard-popup
   `attachSearchBox` owns the query (`getQuery`/`setQuery`, onChange); one toggle component
   `Core.attachToggle` = the search box's Regex and the find bar's Regex + case (Alt+C); every
   toggle chord goes through ONE document listener and the innermost scope holding the focus takes it
-  (the demo's editor overlay sits inside its popup; the search box's scope is its `.main-view`).
+  (the search box's scope is its `.main-view`; a find bar's is its editor).
   Regex typing (key by key, QA'd): a fresh `-` `(` `)` `"` types natively, `:` after a recognised
   key unwraps `/group/` to `group:`, typing over a selection and IME/dead-key compositions go
   through the same edit, and every edit is undoable (`insertText`, one Ctrl/Cmd+Z per wrap).
@@ -813,7 +820,7 @@ clear-all). All popup CSS + theme variables live in `site/shared/clipboard-popup
   clip write); editor delete sets `session.suppressCommit` so the close-commit can't
   resurrect the clip from the draft. `ui-parity.test.js` #12 guards the viewer/menu contexts.
   The editor menu holds "Revert to original" (`editor.revert()` commits at once and, given
-  `toastEl`, offers Undo: assigning the textarea drops its native undo). The demo editor overlay
+  `toastEl`, offers Undo: assigning the textarea drops its native undo). The demo's clip window
   gets the SAME menu: `controller.openClipMenu(id, x, y, 'editor')` (the 4th arg overrides the
   adapter's menuContext) + `revertClip` / `setClipTitle` routed through the open editor.
 - **QA harness = `scripts/lib/qa-sandbox.js` (2026-10-07), never a hand-rolled launch**: one
@@ -1029,7 +1036,7 @@ clear-all). All popup CSS + theme variables live in `site/shared/clipboard-popup
   search, options panel and chip row; `.settings-hdr`; every `.bc-bar`, `.bc-editor-foot`,
   `.bc-merge-heads`, `.bc-reconcile-actions`), ending on the `--line` hairline; content sits
   on `--canvas` (role token: solid = `--bg`, glass = `--glass-tint`), painted ONLY by the
-  window (`body` in clipboard-window.css, `.demo-window`, the demo's `.bc-editor-overlay`); the
+  window (`body` in clipboard-window.css, each `.demo-window`); the
   content roots (`.settings-view`, `.bc-editor`, `.bc-viewer`, `.bc-reconcile`, list) paint
   nothing. Raised things on the canvas use `--surface` (expanded preview, approval card). The
   editor's find row is a band too (its bottom hairline IS the field underline, accent on focus);
@@ -1047,8 +1054,9 @@ clear-all). All popup CSS + theme variables live in `site/shared/clipboard-popup
   is 7 % so it reads on white; `.item.similar` = `--similar-mix` of `--hover` (60 % dark, 35 %
   light), so hover stays the strongest neutral row state. The theme blocks keep the solid values
   as `--surface-solid`/`--surface2-solid`/`--input-solid` (glass overrides `--surface`): the
-  demo's editor overlay re-takes them under "Glass on: Popup only" (`data-glass-scope` on the
-  demo popup via `applyVariants`), so it paints exactly the app editor window's surface.
+  demo's clip window re-takes them under "Glass on: Popup only" (`.bc-popup.demo-clipwin:not(
+  [data-glass-scope="all"])` in site/styles.css, no backdrop blur either), so it paints exactly
+  the app editor window's surface.
 - **Rows (`Core.renderClipItem`)**: one anatomy (primary line: a real title at `--fw-strong`, an
   untitled clip's first line regular; dim mono preview; meta line), star = pin only (`--icon-md`
   in a `--ctl-md` box centred on the first line), row buttons on the shared `.bc-reveal` (held
@@ -1215,7 +1223,10 @@ Desktop app distribution has TWO consistent paths, both driven by `main`:
   download stays in lockstep with `main` — no version tag needed. (Packaged
   installs still don't self-update; that'd need electron-updater — not wired.)
   **macOS = ONE universal app (2026-10-09)**: `BoardClip-macOS.dmg` / `.zip` (Apple Silicon +
-  Intel; `mac.target` arch `universal`, built on `macos-15`). koffi ships a prebuilt .node per
+  Intel; `mac.target` arch `universal`, built on `macos-15`). `dist:mac` must NOT name targets
+  on the CLI (`--mac dmg zip` makes electron-builder build process.arch only, ignoring the config's
+  arch), and the release copies only `*-universal*` files so a wrong-arch build fails the job.
+  The mac icon is `assets/boardclip-icon-mac.png` (1024, Apple's icon grid). koffi ships a prebuilt .node per
   arch that is IDENTICAL in both slices, so `x64ArchFiles: **/koffi/**` (else @electron/universal
   throws "same in both x64 and arm64 builds"). The publish job drops assets this build no longer
   makes (the old `-Apple-Silicon` / `-Intel` files). Unverifiable on Windows: the first push is

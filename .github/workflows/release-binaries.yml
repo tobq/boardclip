@@ -46,8 +46,9 @@ jobs:
             script: dist:mac
             prepare_assets: |
               New-Item -ItemType Directory -Force release | Out-Null
-              Copy-Item (Get-ChildItem dist -Filter "BoardClip-*.dmg" | Select-Object -First 1).FullName "release/BoardClip-macOS.dmg"
-              Copy-Item (Get-ChildItem dist -Filter "BoardClip-*-mac.zip" | Select-Object -First 1).FullName "release/BoardClip-macOS.zip"
+              # Universal output only: an arch-specific build (no universal file) fails here.
+              Copy-Item (Get-ChildItem dist -Filter "BoardClip-*-universal.dmg" | Select-Object -First 1).FullName "release/BoardClip-macOS.dmg"
+              Copy-Item (Get-ChildItem dist -Filter "BoardClip-*-universal-mac.zip" | Select-Object -First 1).FullName "release/BoardClip-macOS.zip"
             artifacts: |
               release/*.dmg
               release/*.zip

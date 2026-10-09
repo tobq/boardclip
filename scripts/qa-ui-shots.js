@@ -1053,25 +1053,26 @@ const STEPS = [
     // Minimise into the dock, then back from it.
     await page.eval(`(document.querySelector('#demo-clipwin [data-wc="min"]').click(), true)`);
     await qa.sleep(150);
-    const docked = await page.eval(`({ hidden: document.getElementById('demo-clipwin').hidden, items: document.querySelectorAll('#demo-dock .dock-win').length })`);
-    if (!docked.hidden || docked.items !== 1) throw new Error(`minimise: ${J(docked)}`);
+    const docked = await page.eval(`({ hidden: document.getElementById('demo-clipwin').hidden, items: document.querySelectorAll('#demo-dock .dock-win').length, dock: document.getElementById('demo-dock-slot').classList.contains('show') })`);
+    if (!docked.hidden || docked.items !== 1 || !docked.dock) throw new Error(`minimise: ${J(docked)}`);
     await c.shot(page, 'site-windows-dock', { clip: { ...both, scale: 1 } });
     await page.eval(`(document.querySelector('#demo-dock .dock-win').click(), true)`);
     await qa.sleep(150);
-    const back = await page.eval(`({ hidden: document.getElementById('demo-clipwin').hidden, items: document.querySelectorAll('#demo-dock .dock-win').length })`);
-    if (back.hidden || back.items !== 0) throw new Error(`restore from the dock: ${J(back)}`);
+    const back = await page.eval(`({ hidden: document.getElementById('demo-clipwin').hidden, running: !!document.querySelector('#demo-dock .dock-win.running') })`);
+    if (back.hidden || !back.running) throw new Error(`restore from the dock: ${J(back)}`);
     // Close it, then close the popup and open it again from the dock.
     await page.eval(`(document.querySelector('#demo-clipwin [data-x="close"]').click(), true)`);
     await qa.sleep(150);
     await page.eval(`(document.getElementById('demo-close-button').click(), true)`);
     await qa.sleep(150);
-    const closed = await page.eval(`({ clip: document.getElementById('demo-clipwin').hidden, popup: document.getElementById('demo-window').hidden, running: document.getElementById('demo-dock-app').classList.contains('running') })`);
-    if (!closed.clip || !closed.popup || closed.running) throw new Error(`close: ${J(closed)}`);
+    const closed = await page.eval(`({ clip: document.getElementById('demo-clipwin').hidden, popup: document.getElementById('demo-window').hidden, running: document.getElementById('demo-dock-app').classList.contains('running'), dock: document.getElementById('demo-dock-slot').classList.contains('show'), items: document.querySelectorAll('#demo-dock .dock-win').length })`);
+    if (!closed.clip || !closed.popup || closed.running || !closed.dock || closed.items !== 0) throw new Error(`close: ${J(closed)}`);
     await page.eval(`(document.getElementById('demo-dock-app').click(), true)`);
     await qa.sleep(150);
-    const reopened = await page.eval(`({ popup: !document.getElementById('demo-window').hidden, running: document.getElementById('demo-dock-app').classList.contains('running'), focus: document.activeElement && document.activeElement.id })`);
+    const reopened = await page.eval(`({ popup: !document.getElementById('demo-window').hidden, running: document.getElementById('demo-dock-app').classList.contains('running'), focus: document.activeElement && document.activeElement.id, dock: document.getElementById('demo-dock-slot').classList.contains('show') })`);
     c.note('site-windows-reopen', reopened);
-    if (!reopened.popup || !reopened.running || reopened.focus !== 'demo-search') throw new Error(`reopen from the dock: ${J(reopened)}`);
+    // The open popup alone: no dock (a lone icon would read as a random thing).
+    if (!reopened.popup || !reopened.running || reopened.focus !== 'demo-search' || reopened.dock) throw new Error(`reopen from the dock: ${J(reopened)}`);
   } },
   // The guide's entrance: a real (trusted) mouse move with the demo in view
   // starts it; the page dims and blurs under a spotlight on the demo and the
@@ -1104,7 +1105,7 @@ const STEPS = [
       const edit = pop.querySelector('.item [data-action="edit"]');
       const id = edit.dataset.id;
       edit.click();
-      const overlay = document.getElementById('demo-editor-overlay');
+      const overlay = document.getElementById('demo-clipwin');
       overlay.scrollIntoView({ block: 'center' });
       const area = overlay.querySelector('.bc-editor-area');
       const original = area.value;
@@ -1121,7 +1122,7 @@ const STEPS = [
       if (revert) revert.click();
       await new Promise((r) => setTimeout(r, 120));
       const afterRevert = area.value;
-      const undo = pop.querySelector('.toast.show .toast-action');
+      const undo = document.querySelector('#demo-clip-toast.show .toast-action');
       const undoClass = undo ? undo.className : null;
       if (undo) undo.click();
       await new Promise((r) => setTimeout(r, 120));
@@ -1132,7 +1133,7 @@ const STEPS = [
     if (got.surface !== want) throw new Error(`demo editor canvas is ${got.surface}, the app editor window's is ${want}: ${J(got)}`);
     if (!got.menuBtn || !got.rows.includes('revert') || got.rows.includes('edit')) throw new Error(`demo editor menu is not the editor's: ${J(got)}`);
     if (!got.reverted || !/btn quiet sm accent/.test(got.undoClass || '') || !got.undone) throw new Error(`Revert / Undo: ${J(got)}`);
-    await page.eval(`(() => { const x = document.querySelector('#demo-editor-overlay [data-x="close"]'); if (x) x.click(); return true; })()`);
+    await page.eval(`(() => { const x = document.querySelector('#demo-clipwin [data-x="close"]'); if (x) x.click(); return true; })()`);
   } },
   { name: 'site', run: async (c) => {
     const page = await c.sb.openWindow(c.site.url, { theme: c.theme });

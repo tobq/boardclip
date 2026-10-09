@@ -2,7 +2,11 @@
 // installers and the site all draw the ONE logo:
 //   assets/boardclip-logo.svg  -> icon.png (256), icon@2x.png (512),
 //     assets/boardclip-icon.png (512), assets/boardclip-icon.ico (16-256),
-//     site/favicon.png (256) and site/favicon.svg (the source itself)
+//     site/favicon.png (256), site/favicon.svg (the source itself) and
+//     assets/boardclip-icon-mac.png (1024: the tile inset to Apple's icon
+//     grid, 824 px on the canvas with its soft shadow, so it sits like every
+//     other Mac app icon in Finder and Launchpad; Windows, the site and the
+//     tray keep the full-bleed tile)
 //   assets/boardclip-tray.svg  -> iconTemplate.png (16) + @2x (32): the macOS
 //     menu-bar TEMPLATE (black on transparent; macOS keeps only its alpha and
 //     paints it in the menu bar's label colour)
@@ -20,8 +24,11 @@ const { app, BrowserWindow } = require('electron');
 const ROOT = path.join(__dirname, '..');
 const ICO_SIZES = [16, 20, 24, 32, 40, 48, 64, 128, 256];
 
-async function rasterize(win, svg, size) {
+// inset: px of transparent margin on each side (the macOS grid), with the
+// grid's soft shadow under the tile.
+async function rasterize(win, svg, size, inset = 0) {
   const src = `data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`;
+  const body = size - 2 * inset;
   const dataUrl = await win.webContents.executeJavaScript(`new Promise((resolve, reject) => {
     const img = new Image();
     img.onload = () => {
@@ -30,7 +37,12 @@ async function rasterize(win, svg, size) {
       c.height = ${size};
       const ctx = c.getContext('2d');
       ctx.imageSmoothingQuality = 'high';
-      ctx.drawImage(img, 0, 0, ${size}, ${size});
+      if (${inset} > 0) {
+        ctx.shadowColor = 'rgba(0, 0, 0, 0.3)';
+        ctx.shadowBlur = ${Math.round(size * 0.028)};
+        ctx.shadowOffsetY = ${Math.round(size * 0.012)};
+      }
+      ctx.drawImage(img, ${inset}, ${inset}, ${body}, ${body});
       resolve(c.toDataURL('image/png'));
     };
     img.onerror = () => reject(new Error('svg failed to load'));
@@ -91,6 +103,7 @@ async function main() {
   write('icon.png', png256);
   write('site/favicon.png', png256);
   write('site/favicon.svg', logo);
+  write('assets/boardclip-icon-mac.png', await rasterize(win, logo, 1024, 100));
   const ico = [];
   for (const size of ICO_SIZES) ico.push({ size, png: await rasterize(win, logo, size) });
   write('assets/boardclip-icon.ico', icoFromPngs(ico));

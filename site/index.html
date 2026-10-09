@@ -114,19 +114,24 @@
       </div>
 
       <div class="demo" aria-label="Interactive BoardClip demo">
+        <p class="demo-live"><span class="demo-live-dot" aria-hidden="true"></span><strong>Live demo</strong> Copy any text on this page and it lands here. Click a clip to copy it.</p>
         <div class="demo-stage">
           <div class="demo-window bc-popup" id="demo-window"></div>
-          <div class="demo-window demo-clipwin bc-popup" id="demo-clipwin" hidden><div class="bc-editor-overlay show" id="demo-editor-overlay"></div></div>
+          <div class="demo-window demo-clipwin bc-popup" id="demo-clipwin" hidden><div class="demo-clipwin-body" id="demo-clipwin-body"></div><div class="toast" id="demo-clip-toast"></div></div>
         </div>
-        <div class="demo-dock" id="demo-dock" role="toolbar" aria-label="Open windows">
-          <button class="dock-item running" id="demo-dock-app" type="button" title="BoardClip" aria-label="BoardClip"><img src="favicon.svg" width="28" height="28" alt=""></button>
+        <div class="demo-dock-slot" id="demo-dock-slot" inert>
+          <div class="demo-dock-clip">
+            <div class="demo-dock" id="demo-dock" role="toolbar" aria-label="Open windows">
+              <button class="dock-item running" id="demo-dock-app" type="button" title="BoardClip" aria-label="BoardClip"><img src="favicon.svg" width="28" height="28" alt=""></button>
+            </div>
+          </div>
         </div>
         <div class="demo-guide" id="demo-guide" aria-hidden="true">
           <span class="demo-guide-pulse"></span>
           <svg class="demo-guide-cursor" viewBox="0 0 24 32"><path d="M3 2.5v24l6.2-6.1 4.2 8.7 4.4-2.1-4.2-8.3h8.8L3 2.5Z"/></svg>
           <span class="demo-guide-tip" id="demo-guide-tip"></span>
         </div>
-        <p class="demo-caption">The real popup, running in this page with sample clips. Right-click a clip for its menu, open Settings, or try a search:
+        <p class="demo-caption">The real popup with sample clips. Right-click a clip for its menu, or try a search:
           <button class="try" type="button" data-try="invoice">invoice</button>
           <button class="try" type="button" data-try="group:work">group:work</button>
           <button class="try" type="button" data-try="is:image">is:image</button>
@@ -260,7 +265,14 @@
     `);
     const clipWinEl = document.getElementById("demo-clipwin");
     const demoRoots = [demoWindowEl, clipWinEl];
-    const dialogs = Core.createDialogs(demoWindowEl);
+    // The window an action came from (the active one; the clip window while
+    // the popup is closed): its dialogs and toasts open there, as each of the
+    // app's windows has its own.
+    function activeDemoWindow() {
+      if (!clipWinEl.hidden && (clipWinEl.dataset.active !== undefined || demoWindowEl.hidden)) return clipWinEl;
+      return demoWindowEl;
+    }
+    const dialogs = Core.createDialogs(activeDemoWindow);
     const osLabels = {
       mac: "macOS terminal",
       linux: "Linux terminal",
@@ -580,11 +592,13 @@
       });
     }
 
+    const activeToast = () => (activeDemoWindow() === clipWinEl ? document.getElementById("demo-clip-toast") : demoToast);
     function showToast(message) {
-      demoToast.textContent = message || "Copied";
-      demoToast.classList.add("show");
+      const toast = activeToast();
+      toast.textContent = message || "Copied";
+      toast.classList.add("show");
       window.clearTimeout(toastTimer);
-      toastTimer = window.setTimeout(() => demoToast.classList.remove("show"), 1200);
+      toastTimer = window.setTimeout(() => toast.classList.remove("show"), 1200);
     }
 
     async function copyCommand(id, trigger) {
@@ -898,7 +912,7 @@
         showToast(`Pasted ${texts.length}`);
       },
       startUnify: (ids) => runDemoUnify(ids),
-      offerUndo: ({ count, undo }) => Core.showActionToast(demoToast, {
+      offerUndo: ({ count, undo }) => Core.showActionToast(activeToast(), {
         message: `Deleted ${count} clip${count === 1 ? "" : "s"}`,
         actionLabel: "Undo",
         onAction: undo,
@@ -988,21 +1002,37 @@
     });
     // The popup is a window on the page (the shared Core.attachWebWindow): its
     // header moves it (a click focuses the search, as in the app), its edges
-    // resize it, its close sends it to the dock, whose BoardClip icon opens it
-    // again, as the app's tray icon does. No maximise: the app's popup has none.
+    // resize it, its close leaves the dock's BoardClip icon to open it again,
+    // as the app's tray icon does. No maximise: the app's popup has none.
     const popupWin = Core.attachWebWindow(demoWindowEl, { minWidth: 320, minHeight: 320 });
     popupWin.handle(demoMainView.querySelector(".sticky"), { onClick: () => search.focus() });
     popupWin.handle(settingsPanel.querySelector(".settings-hdr"), {});
+    // The dock (the demo's taskbar) shows only when it has something to
+    // offer: the popup is closed (its BoardClip icon opens it again) or a clip
+    // window is open or minimised (its button brings it to the front or back
+    // from the dock). With just the open popup there is nothing to show.
     const demoDock = document.getElementById("demo-dock");
+    const demoDockSlot = document.getElementById("demo-dock-slot");
     const dockApp = document.getElementById("demo-dock-app");
     demoDock.dataset.os = Core.webWindowOs();
+    let popupShown = true;
+    let clipShown = false;
+    function updateDock() {
+      const show = !popupShown || clipShown;
+      demoDockSlot.classList.toggle("show", show);
+      demoDockSlot.toggleAttribute("inert", !show);
+      dockApp.classList.toggle("running", popupShown);
+      if (clipDockItem) clipDockItem.classList.toggle("running", clipShown && !clipWin.isMinimized());
+    }
     function closePopup() {
       controller.closeMenu();
-      dockApp.classList.remove("running");
+      popupShown = false;
+      updateDock();
       popupWin.close();
     }
     function openPopup() {
-      dockApp.classList.add("running");
+      popupShown = true;
+      updateDock();
       if (popupWin.isOpen()) popupWin.focus(); else popupWin.open();
       search.focus({ preventScroll: true });
     }
@@ -1046,7 +1076,7 @@
     // resizes, maximises, minimises (into the dock) and closes it, with the
     // visitor's OS controls and motion. Opening another clip replaces what it
     // shows; it opens where the visitor last left it.
-    const demoEditorOverlay = document.getElementById("demo-editor-overlay");
+    const clipBody = document.getElementById("demo-clipwin-body");
     let clipDockItem = null;
     let clipView = { icon: "edit_note", title: "" };
     let clipMounts = 0; // a late close never clears a newer view
@@ -1056,21 +1086,24 @@
       minHeight: 240,
       maximizable: true,
       dockTarget: () => clipDockItem,
-      onMinimize: () => addClipDockItem(),
-      onRestore: () => removeClipDockItem(),
+      onMinimize: () => updateDock(),
+      onRestore: () => updateDock(),
     });
     clipWinEl.addEventListener("click", (event) => controller.onClick(event));
     Core.installSubmenuAutoflip(clipWinEl);
-    function addClipDockItem() {
-      removeClipDockItem();
-      clipDockItem = document.createElement("button");
-      clipDockItem.type = "button";
-      clipDockItem.className = "dock-item dock-win";
+    // The clip window's dock button lives while the window does (open or
+    // minimised): it brings the window back from the dock, or to the front.
+    function syncClipDockItem() {
+      if (!clipDockItem) {
+        clipDockItem = document.createElement("button");
+        clipDockItem.type = "button";
+        clipDockItem.className = "dock-item dock-win";
+        clipDockItem.addEventListener("click", () => { if (clipWin.isMinimized()) clipWin.restore(); else clipWin.focus(); });
+        demoDock.appendChild(clipDockItem);
+      }
       clipDockItem.title = clipView.title;
       clipDockItem.setAttribute("aria-label", clipView.title);
       clipDockItem.innerHTML = `<span class="mi lg">${clipView.icon}</span>`;
-      clipDockItem.addEventListener("click", () => clipWin.restore());
-      demoDock.appendChild(clipDockItem);
     }
     function removeClipDockItem() {
       if (clipDockItem) clipDockItem.remove();
@@ -1079,9 +1112,12 @@
     function showClipWindow(viewEl, view) {
       clipMounts += 1;
       clipView = view;
-      demoEditorOverlay.innerHTML = "";
-      demoEditorOverlay.appendChild(viewEl);
+      clipBody.innerHTML = "";
+      clipBody.appendChild(viewEl);
       clipWin.handle(viewEl.querySelector(".bc-bar"), { ignore: "input.bc-bar-title" });
+      clipShown = true;
+      syncClipDockItem();
+      updateDock();
       if (clipWin.isMinimized()) { clipWin.restore(); return; }
       if (clipWin.isOpen()) { clipWin.focus(); return; }
       clipWin.open();
@@ -1092,9 +1128,11 @@
     }
     function hideClipWindow() {
       const mounts = clipMounts;
+      clipShown = false;
       removeClipDockItem();
+      updateDock();
       if (popupWin.isOpen()) search.focus({ preventScroll: true });
-      clipWin.close().then(() => { if (mounts === clipMounts) demoEditorOverlay.innerHTML = ""; });
+      clipWin.close().then(() => { if (mounts === clipMounts) clipBody.innerHTML = ""; });
     }
     // What the window shows now goes (its edits saved) before another clip opens there.
     function retireClipView() {
@@ -1137,7 +1175,7 @@
     }
     // Right-click on the editor chrome (not the text, where the browser menu
     // belongs) opens the same clip menu as its "...", like the app editor window.
-    demoEditorOverlay.addEventListener("contextmenu", (event) => {
+    clipBody.addEventListener("contextmenu", (event) => {
       if (!demoEditor || demoEditorClipId == null || !event.target.closest(".bc-editor")) return;
       if (event.target.closest(".bc-editor-area, input, textarea")) return;
       event.preventDefault();
@@ -1205,7 +1243,7 @@
           renderClips();
         },
         onClose: closeDemoEditor,
-        toastEl: demoToast,
+        toastEl: document.getElementById("demo-clip-toast"),
         // "..." (and a right-click on the bar) = the app editor's clip menu,
         // through the popup's controller in the editor context.
         ...(id != null ? { onMenu: (x, y) => { if (demoEditorClipId != null) controller.openClipMenu(demoEditorClipId, x, y, "editor"); } } : {}),

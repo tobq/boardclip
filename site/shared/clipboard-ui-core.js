@@ -1551,9 +1551,9 @@
   // the focus from the field being typed in.
   //   opts: { label, key ('R'), get(), set(on), hint? (the tooltip's second
   //           sentence while on), scope }
-  // Every toggle's chord goes through ONE document listener: when scopes nest
-  // (the demo's editor overlay inside its popup: the find bar's Regex inside
-  // the search box's), the innermost scope holding the focus takes it.
+  // Every toggle's chord goes through ONE document listener: the innermost
+  // scope holding the focus takes it (the search box's Regex is scoped to the
+  // popup's main view, a find bar's to its editor).
   const toggleChords = new Set();
   function onToggleChord(e) {
     if (e.repeat) return;
@@ -1920,8 +1920,7 @@
       hint: 'What you type becomes /pattern/',
       get: () => regexOn,
       set: (on) => setRegex(on),
-      // The popup's main view (not Settings, not the demo's editor overlay,
-      // whose find bar has its own Regex).
+      // The popup's main view (not Settings; a clip window's find bar has its own Regex).
       scope: inputEl.closest('.main-view') || inputEl.closest('.bc-popup') || document.documentElement,
     }) : null;
     function applySuggestion(i) {
@@ -3114,7 +3113,7 @@
     setOrClear('data-density', o.uiDensity, 'normal');
     setOrClear('data-corners', o.uiCorners, 'soft');
     setOrClear('data-borders', o.uiBorders, 'bordered');
-    // Glass scope: only the demo reads it (its editor overlay stands in for the
+    // Glass scope: only the demo reads it (its clip window stands in for the
     // app's editor window, solid unless 'all'); main resolves the app's windows.
     setOrClear('data-glass-scope', o.glassScope, 'popup');
   }
@@ -3312,17 +3311,19 @@
   // so a confirm flow (group delete, numpad replace, clear all, add-group name)
   // can never drift between them. Creates its own DOM in `host`; Promise-based;
   // Escape + backdrop dismiss; capture-phase keys so they beat global nav.
+  // host: the element the dialogs open in, or a function returning it per
+  // dialog (the demo: the window the action came from).
   function createDialogs(host) {
     if (typeof document === 'undefined') {
       return { confirm: () => Promise.resolve(false), prompt: () => Promise.resolve(null), isOpen: () => false, dismiss: () => {} };
     }
     trackInputModality();
-    const root = host || document.body;
+    const hostEl = () => (typeof host === 'function' ? host() : host) || document.body;
     const make = (inner) => {
       const overlay = document.createElement('div');
       overlay.className = 'overlay';
       overlay.innerHTML = inner;
-      root.appendChild(overlay);
+      hostEl().appendChild(overlay);
       return overlay;
     };
     // Buttons are the shared .btn set: Cancel is the default button, the
@@ -3339,6 +3340,8 @@
     // it came from a field or the keyboard.
     function run(overlay, setup, getValue, focusEl, danger) {
       return new Promise((resolve) => {
+        const into = hostEl();
+        if (overlay.parentNode !== into) into.appendChild(overlay);
         setup();
         overlay.classList.add('show');
         const yesBtn = q(overlay, 'yes');
@@ -4580,7 +4583,7 @@
     }
     // Public entry for hosts without clip rows (the standalone editor/viewer
     // windows): open the shared clip menu for `id` at x,y. `context` overrides
-    // the adapter's menuContext (the demo's editor overlay shares the popup's
+    // the adapter's menuContext (the demo's clip window shares the popup's
     // controller but shows the editor's menu).
     function openClipMenuAt(id, x, y, context) {
       const item = a.itemById(id);
@@ -5103,7 +5106,7 @@
   }
   // ── ONE window bar (.bc-bar) for every clip window: the editor, the image
   // viewer and the merge view (unify + conflict), in the app's own windows and
-  // in the demo's overlay. Left to right: an optional leading control (the
+  // in the demo's clip window. Left to right: an optional leading control (the
   // viewer's drag-out handle), a clip window's star (with `tags`: the row's
   // pin), the clip's own title (an editable flat field or plain text, sentence
   // case), an optional dim context label, the clip's keys strip (`tags`: its
@@ -5490,7 +5493,7 @@
     };
   }
   // Shared plain-text editor — ONE implementation mounted by BOTH the desktop
-  // app (in its own window) and the website demo (in an in-page overlay).
+  // app (in its own window) and the website demo (in its clip window).
   // Edits are captured live: every keystroke fires onInput (the host persists
   // a crash-safe draft), and after a short idle / on blur / on close / on
   // Ctrl+S onCommit fires (the host writes the clip; the footer shows Saving...
@@ -5831,8 +5834,8 @@
     // Not `onclick = openFind`: the click event would arrive as the query and
     // fill the field with "[object MouseEvent]".
     q('find').onclick = () => openFind();
-    // Opt-in clip menu (the app's editor window wires the shared clip menu here;
-    // the demo's in-page editor overlay has no clip context so no button).
+    // Opt-in clip menu (the app's editor window and the demo's clip window wire
+    // the shared clip menu here; a new note has no clip yet, so no button).
     const menuBtn = q('menu');
     if (menuBtn) menuBtn.onclick = (e) => { e.stopPropagation(); const r = menuBtn.getBoundingClientRect(); o.onMenu(r.right, r.bottom + 2); };
     // Back to the text and title the editor opened with (the clip menu's

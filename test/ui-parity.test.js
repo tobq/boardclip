@@ -1025,16 +1025,17 @@ const siteCss = read('site/styles.css');
   for (const theme of ['dark', 'light']) {
     assert.ok(new RegExp(`\\[data-theme="${theme}"\\]\\[data-surface="glass"\\][^{]*\\{[^}]*--canvas: var\\(--glass-tint\\)`).test(tokensCss), `${theme} glass: the canvas is the glass tint`);
   }
-  // The demo's editor overlay is the app editor WINDOW: solid --surface unless Glass on: All windows.
+  // The demo's clip window is the app editor WINDOW: solid --surface unless Glass on: All windows.
   for (const theme of ['dark', 'light']) {
     const block = (tokensCss.match(new RegExp(`:root\\[data-theme="${theme}"\\], \\.bc-popup\\[data-theme="${theme}"\\] \\{([^}]*)\\}`)) || [])[1] || '';
-    assert.ok(/--surface: var\(--surface-solid\);/.test(block) && /--surface-solid:/.test(block), `${theme}: --surface is the solid surface the overlay can re-take`);
+    assert.ok(/--surface: var\(--surface-solid\);/.test(block) && /--surface-solid:/.test(block), `${theme}: --surface is the solid surface the clip window can re-take`);
   }
-  assert.ok(/--surface: var\(--surface-solid\)/.test(ruleOf('.bc-popup:not([data-glass-scope="all"]) .bc-editor-overlay').body), 'the demo editor (Glass on: Popup only) paints the app editor\'s solid surface');
-  assert.ok(/background: var\(--canvas\)/.test(ruleOf('.bc-editor-overlay').body) && /--canvas: var\(--bg\)/.test(ruleOf('.bc-popup:not([data-glass-scope="all"]) .bc-editor-overlay').body), 'the overlay host is the window canvas (solid under Glass on: Popup only)');
+  const clipSolid = rules(siteCss).find((r) => r.sel === '.bc-popup.demo-clipwin:not([data-glass-scope="all"])');
+  assert.ok(clipSolid && /--surface: var\(--surface-solid\)/.test(clipSolid.body) && /--canvas: var\(--bg\)/.test(clipSolid.body) && /backdrop-filter: none/.test(clipSolid.body), 'the demo clip window (Glass on: Popup only) paints the app editor window\'s solid canvas + surface, no second blur');
+  assert.ok(!/bc-editor-overlay/.test(popupCss + siteCss + siteHtml), 'the in-popup editor overlay is gone (the clip window replaced it)');
   assert.ok(/setOrClear\('data-glass-scope', o\.glassScope, 'popup'\)/.test(coreSrc) && /glassScope: demoLook\.glassScope/.test(siteHtml), 'the demo passes Glass on to its window');
   assert.ok(/onMenu: \(x, y\) => \{[^}]*controller\.openClipMenu\(demoEditorClipId, x, y, "editor"\)/.test(siteHtml) && /revertClip: \(\) => \{ if \(demoEditor\) demoEditor\.revert\(\); \}/.test(siteHtml), 'the demo editor has the app editor\'s clip menu, Revert included');
-  assert.ok(/toastEl: document\.getElementById\('toast'\)/.test(read('editor.html')) && /toastEl: demoToast/.test(siteHtml) && /showActionToast\(o\.toastEl, \{ message: 'Reverted to the original', actionLabel: 'Undo'/.test(coreSrc), 'Revert to original offers Undo, app and demo');
+  assert.ok(/toastEl: document\.getElementById\('toast'\)/.test(read('editor.html')) && /toastEl: document\.getElementById\("demo-clip-toast"\)/.test(siteHtml) && /showActionToast\(o\.toastEl, \{ message: 'Reverted to the original', actionLabel: 'Undo'/.test(coreSrc), 'Revert to original offers Undo, app and demo');
   // One numpad glyph ('#'), one icon-button hover (no accent hover), ONE toggle component (search + find).
   for (const [name, src] of [['core', coreSrc], ['mcp-approval.html', approvalHtml]]) assert.ok(!/dialpad/.test(src), `${name}: the numpad is the # (tag) glyph everywhere`);
   assert.ok(!rules(popupCss).some((r) => /\.icon-btn\.accent/.test(r.sel)) && !/icon-btn accent/.test(coreSrc + appHtml + siteHtml), 'icon buttons hover --text + --hover (accent is not a hover colour)');

@@ -149,7 +149,8 @@ jobs:
         run: |
           APP=dist/mac-universal/BoardClip.app
           codesign --verify --deep --strict --verbose=2 "$APP"
-          INFO=$(codesign -dv "$APP" 2>&1); echo "$INFO"
+          # -dvv: the Authority (certificate) lines only appear at verbosity 2.
+          INFO=$(codesign -dvv "$APP" 2>&1); echo "$INFO"
           REQ=$(codesign -d -r- "$APP" 2>&1); echo "$REQ"
           if [ -n "$MAC_CSC_LINK" ]; then
             echo "$INFO" | grep -q 'Authority=Developer ID Application'

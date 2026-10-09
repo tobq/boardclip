@@ -1153,6 +1153,20 @@ npx --yes netlify-cli@latest deploy --prod --dir site
 Verify the edge served new bytes (bypasses browser cache):
 `curl -s "https://boardclip.app/shared/clipboard-ui-core.js?cb=$(date +%s)" | grep -c createClipController`.
 
+Site measurement (set up 2026-10-09; the APP itself has no analytics, the privacy section says so):
+- **Ahrefs Web Analytics** (cookieless): project "Boardclip" id `10509522` in the TwoShot Ahrefs
+  workspace (one workspace for every domain), script `data-key` in `site/index.html`. Downloads
+  count as outbound clicks to GitHub on their own; custom events `install_copied`,
+  `update_copied`, `demo_used` (once per visit) are registered under Tracked events. Read with
+  the `ahrefs` MCP `web-analytics-*` tools (`project_id: 10509522`, `event_name` dimension).
+  Rank Tracker: 8 keywords (US); competitors maccy.app, pasteapp.io, ditto-cp.sourceforge.io.
+- **Search Console**: Domain property `sc-domain:boardclip.app` on the owner's PERSONAL Google
+  account (TXT record at Porkbun; Porkbun is signed in on the Teraplex/TwoShot Chrome profiles,
+  not personal). The `gsc` MCP is the TwoShot account and cannot see it.
+- **Google Cloud project `boardclip`** (personal account): Drive + Picker APIs on, for the
+  "coming soon" read-your-clips-in-a-browser viewer (client-only, `drive.file` + Picker, no
+  server of ours).
+
 Desktop app distribution has TWO consistent paths, both driven by `main`:
 - **Git/CLI installs** auto-update via `lib/auto-update.js` — polls the latest
   `main` commit (GitHub API) every ~4h + 90s after launch, runs `update.bat`

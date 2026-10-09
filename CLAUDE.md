@@ -1165,7 +1165,12 @@ Site measurement (set up 2026-10-09; the APP itself has no analytics, the privac
   not personal). The `gsc` MCP is the TwoShot account and cannot see it.
 - **Google Cloud project `boardclip`** (personal account): Drive + Picker APIs on, for the
   "coming soon" read-your-clips-in-a-browser viewer (client-only, `drive.file` + Picker, no
-  server of ours).
+  server of ours). Auth Platform: External, still in Testing (test user = the owner), no
+  scopes declared yet. Web OAuth client "BoardClip web" =
+  `843202289715-aq4jmccua8fh4knvjfnmqqbiodv1pto3.apps.googleusercontent.com` (origins
+  https://boardclip.app + http://localhost:8080; the token flow needs no secret, none is
+  stored). API key "BoardClip Picker (web)" (Credentials page) is limited to the Picker API
+  and those two referrers. Publishing to production needs the scopes + a privacy policy URL.
 
 Desktop app distribution has TWO consistent paths, both driven by `main`:
 - **Git/CLI installs** auto-update via `lib/auto-update.js` — polls the latest
@@ -1231,21 +1236,39 @@ Desktop app distribution has TWO consistent paths, both driven by `main`:
   'CalculateNativeWinOcclusion')` on win32 before ready + `backgroundThrottling:false` on the
   popup; `app.start.win_occlusion` reports `disabled`. A restart clears the bad compositor state
   on its own; the switch is what stops the recurrence.
-- **Installer downloads** (`.exe`/`.dmg`): `release-binaries.yml` now runs on
-  every push to `main` that touches app code (`paths-ignore: site/**`, docs) and
-  republishes a single rolling **`latest`** GitHub release (`make_latest: true`)
-  that the site's `/releases/latest/download/...` button points at. So the
-  download stays in lockstep with `main` — no version tag needed. (Packaged
-  installs still don't self-update; that'd need electron-updater — not wired.)
+- **Installer downloads** (`.exe`/`.dmg`): `release-binaries.yml` runs on every push to `main`
+  that touches app code (`paths-ignore`: site page, docs) and publishes a NEW numbered release
+  `v<major.minor>.<run_number>` (e.g. v2.1.104; `npm version` stamps it in CI only, the repo's
+  package.json keeps 2.1.1) with `make_latest: true`, the same asset names every time and a
+  `SHA256SUMS.txt`. The site's `/releases/latest/download/...` links resolve to it unchanged.
+  The rolling release tagged `latest` it replaced (9 Oct 2026) is deleted by the publish job
+  (no-op once gone): a tag literally named "latest" must not sit next to `/releases/latest`.
+  Runs on other branches build but never publish (`if: github.ref == 'refs/heads/main'`).
+  (Packaged installs still don't self-update; that'd need electron-updater, not wired.)
+- **Package managers = `tobq/homebrew-boardclip`** (one repo: `Casks/boardclip.rb` for Homebrew,
+  `bucket/boardclip.json` for Scoop). It bumps ITSELF: a scheduled workflow there reads this
+  repo's latest release + `SHA256SUMS.txt` with its own GITHUB_TOKEN (no cross-repo PAT), commits
+  version + hashes, then installs both on clean runners (the cask clears the quarantine flag in
+  `postflight_steps` + `writable_paths`, so a brew install opens with no Gatekeeper prompt).
+  Install lines: `brew install --cask tobq/boardclip/boardclip`; `scoop bucket add boardclip
+  https://github.com/tobq/homebrew-boardclip` + `scoop install boardclip/boardclip`.
+- **Stable self-signed mac signature**: secrets `MAC_SELF_SIGN_P12` + `MAC_SELF_SIGN_PASSWORD`
+  (public half `assets/boardclip-selfsign.pem`, CN "BoardClip Self-Signed", valid to 2051). An
+  ad-hoc app's designated requirement is its cdhash, so every update looked like a new app to
+  TCC and the Accessibility grant (paste needs it) silently stopped applying; signing every build
+  with one certificate keeps the grant. electron-builder lists only TRUSTED identities, so the
+  build trusts the cert for code signing (`sudo security add-trusted-cert`) and passes
+  `CSC_NAME`. The "Check macOS signature" step fails the build if the signature is not the one
+  expected (Developer ID / self-signed with a certificate requirement / ad-hoc). Losing the
+  secret = make a new cert; users re-grant Accessibility once.
   **macOS = ONE universal app (2026-10-09)**: `BoardClip-macOS.dmg` / `.zip` (Apple Silicon +
   Intel; `mac.target` arch `universal`, built on `macos-15`). `dist:mac` must NOT name targets
   on the CLI (`--mac dmg zip` makes electron-builder build process.arch only, ignoring the config's
   arch), and the release copies only `*-universal*` files so a wrong-arch build fails the job.
   The mac icon is `assets/boardclip-icon-mac.png` (1024, Apple's icon grid). koffi ships a prebuilt .node per
   arch that is IDENTICAL in both slices, so `x64ArchFiles: **/koffi/**` (else @electron/universal
-  throws "same in both x64 and arm64 builds"). The publish job drops assets this build no longer
-  makes (the old `-Apple-Silicon` / `-Intel` files). Unverifiable on Windows: the first push is
-  the test. **Gatekeeper "Not Opened / could not verify"** = unsigned + unnotarised. The
+  throws "same in both x64 and arm64 builds"). **Gatekeeper "Not Opened / could not verify"** =
+  not notarised (ad-hoc and self-signed alike; the Homebrew cask avoids it). The
   workflow signs + notarises the mac build by itself once these repo secrets exist:
   `MAC_CSC_LINK` (Developer ID Application cert, base64 .p12), `MAC_CSC_KEY_PASSWORD`,
   `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID` (exported in the build step ONLY when present:
@@ -1254,7 +1277,6 @@ Desktop app distribution has TWO consistent paths, both driven by `main`:
   runtime with `assets/entitlements.mac.plist` = electron-builder's defaults + Apple Events for
   the osascript paste path). Until then the site's Mac note says System Settings > Privacy &
   Security > Open Anyway; the curl install (git clone) is never quarantined.
-Tagging is optional/archival now, not required to ship.
 
 ## Debugging
 

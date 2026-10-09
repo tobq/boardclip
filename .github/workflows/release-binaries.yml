@@ -1,10 +1,14 @@
 name: Build desktop binaries
 
-# Continuous delivery: every push to main that touches app code rebuilds the
-# installers and republishes the rolling "latest" GitHub release the website
-# download button points at (/releases/latest/download/...). Keeps the installer
-# in lockstep with the git-based auto-update. Site-only / docs-only pushes are
-# skipped (Netlify handles those). Manual runs via workflow_dispatch.
+# Continuous delivery: every push to main that touches app code builds the
+# installers and publishes them as a new numbered release, v<major.minor>.<run>
+# (e.g. v2.1.104), marked as the repo's latest. The website's download links
+# (/releases/latest/download/<asset>) keep working because every release uses
+# the same asset names. Numbered releases are what package managers need: the
+# Homebrew cask and the Scoop manifest in tobq/homebrew-boardclip pin a version
+# + sha256 (SHA256SUMS.txt), and that repo bumps itself from here. Site-only /
+# docs-only pushes are skipped (Netlify handles those). Manual runs via
+# workflow_dispatch; a run on any other branch builds but never publishes.
 on:
   workflow_dispatch:
   push:
@@ -23,8 +27,22 @@ permissions:
   contents: write
 
 jobs:
+  version:
+    name: Version
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      # major.minor from package.json, patch = this workflow's run number: monotonic,
+      # no manual bumps, and a re-run of the same run rebuilds the same version.
+      - id: v
+        run: echo "version=$(node -p "require('./package.json').version.split('.').slice(0, 2).join('.')").${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+
   build:
     name: Build ${{ matrix.platform.name }}
+    needs: version
     runs-on: ${{ matrix.platform.runner }}
     strategy:
       fail-fast: false
@@ -76,13 +94,25 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # macOS signing + notarisation switch on by themselves once these
-      # secrets exist (a Developer ID Application certificate as base64 .p12
-      # + its password, and an Apple ID app-specific password + team id);
-      # without them the build is unsigned, as before. Windows never sees them.
-      # The electron-builder variables are exported ONLY when the certificate
+      # The app, the installer metadata and the release tag all carry one version.
+      - name: Stamp version
+        run: npm version "${{ needs.version.outputs.version }}" --no-git-tag-version --allow-same-version
+
+      # macOS signing, in order of preference:
+      # 1. Developer ID (+ notarisation): switches on by itself once these
+      #    secrets exist (a Developer ID Application certificate as base64 .p12
+      #    + its password, and an Apple ID app-specific password + team id).
+      # 2. The project's own self-signed certificate (MAC_SELF_SIGN_P12 +
+      #    MAC_SELF_SIGN_PASSWORD; its public half is assets/boardclip-selfsign.pem).
+      #    Not notarised, so Gatekeeper still asks once, like ad-hoc, BUT the
+      #    designated requirement names this certificate instead of the build's
+      #    hash, so macOS keeps the Accessibility permission (needed to paste)
+      #    across updates. electron-builder only lists TRUSTED identities, so the
+      #    certificate is trusted for code signing on the runner first.
+      # 3. Neither: electron-builder's ad-hoc signature, as before.
+      # The electron-builder variables are exported ONLY when a certificate
       # exists: an EMPTY CSC_LINK is read as a path (the project folder) and
-      # fails the signing step with "... not a file".
+      # fails the signing step with "... not a file". Windows never sees them.
       - name: Build binaries
         shell: bash
         env:
@@ -92,6 +122,8 @@ jobs:
           MAC_APPLE_ID: ${{ secrets.APPLE_ID }}
           MAC_APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           MAC_APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          MAC_SELF_SIGN_P12: ${{ secrets.MAC_SELF_SIGN_P12 }}
+          MAC_SELF_SIGN_PASSWORD: ${{ secrets.MAC_SELF_SIGN_PASSWORD }}
         run: |
           export CSC_IDENTITY_AUTO_DISCOVERY=false
           if [ "$PLATFORM" = "macOS" ] && [ -n "$MAC_CSC_LINK" ]; then
@@ -99,8 +131,34 @@ jobs:
             if [ -n "$MAC_APPLE_ID" ]; then
               export APPLE_ID="$MAC_APPLE_ID" APPLE_APP_SPECIFIC_PASSWORD="$MAC_APPLE_APP_SPECIFIC_PASSWORD" APPLE_TEAM_ID="$MAC_APPLE_TEAM_ID"
             fi
+          elif [ "$PLATFORM" = "macOS" ] && [ -n "$MAC_SELF_SIGN_P12" ]; then
+            sudo security add-trusted-cert -d -r trustRoot -p codeSign -k /Library/Keychains/System.keychain assets/boardclip-selfsign.pem
+            export CSC_IDENTITY_AUTO_DISCOVERY=true CSC_LINK="$MAC_SELF_SIGN_P12" CSC_KEY_PASSWORD="$MAC_SELF_SIGN_PASSWORD" CSC_NAME="BoardClip Self-Signed"
           fi
           npm run ${{ matrix.platform.script }}
+
+      # A broken or missing signature on a quarantined app reads as "BoardClip is
+      # damaged" on Apple silicon, and a signature that names no certificate loses
+      # the Accessibility permission on every update: fail the build instead.
+      - name: Check macOS signature
+        if: matrix.platform.name == 'macOS'
+        shell: bash
+        env:
+          MAC_CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          MAC_SELF_SIGN_P12: ${{ secrets.MAC_SELF_SIGN_P12 }}
+        run: |
+          APP=dist/mac-universal/BoardClip.app
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          INFO=$(codesign -dv "$APP" 2>&1); echo "$INFO"
+          REQ=$(codesign -d -r- "$APP" 2>&1); echo "$REQ"
+          if [ -n "$MAC_CSC_LINK" ]; then
+            echo "$INFO" | grep -q 'Authority=Developer ID Application'
+          elif [ -n "$MAC_SELF_SIGN_P12" ]; then
+            echo "$INFO" | grep -q 'Authority=BoardClip Self-Signed'
+            echo "$REQ" | grep -q 'certificate'
+          else
+            echo "$INFO" | grep -q 'Signature=adhoc'
+          fi
 
       - name: Prepare release assets
         shell: pwsh
@@ -114,9 +172,12 @@ jobs:
           if-no-files-found: error
 
   publish:
-    name: Publish latest build
+    name: Publish release
     runs-on: ubuntu-24.04
-    needs: build
+    needs: [version, build]
+    if: github.ref == 'refs/heads/main'
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
     steps:
       - name: Download build artifacts
         uses: actions/download-artifact@v7
@@ -124,27 +185,36 @@ jobs:
           path: release
           merge-multiple: true
 
-      # One rolling release (tag "latest"), refreshed every run + marked as the
-      # repo's latest, so /releases/latest/download/<asset> always serves the
-      # current build. Versioned v* releases (if ever cut) archive alongside it.
-      - name: Publish rolling "latest" release
+      # The package managers read the hashes from here instead of downloading
+      # every installer again.
+      - name: Checksums
+        working-directory: release
+        run: sha256sum -- * > SHA256SUMS.txt && cat SHA256SUMS.txt
+
+      - name: Publish v${{ needs.version.outputs.version }}
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: latest
-          name: Latest build
+          tag_name: v${{ needs.version.outputs.version }}
+          target_commitish: ${{ github.sha }}
+          name: BoardClip ${{ needs.version.outputs.version }}
           prerelease: false
           make_latest: true
           files: release/*
           body: |
-            Rolling build from `${{ github.sha }}`, auto-published on every push to `main`.
+            Built from `${{ github.sha }}` on every push to `main`.
 
-      # A name this build no longer makes (the per-architecture macOS files
-      # before the universal app) goes, so the rolling release only ever
-      # serves current binaries.
-      - name: Drop stale assets
+            - macOS: `brew install --cask tobq/boardclip/boardclip`, or BoardClip-macOS.dmg (Apple Silicon + Intel)
+            - Windows: BoardClip-Setup-Windows.exe, or `scoop bucket add boardclip https://github.com/tobq/homebrew-boardclip` then `scoop install boardclip/boardclip`
+            - Linux: BoardClip-Linux.AppImage / BoardClip-Linux.deb
+
+      # The rolling "latest" release (one release re-uploaded on every push) was
+      # replaced by these numbered releases on 9 Oct 2026. Its tag literally named
+      # "latest" must not linger next to /releases/latest, so it goes once the new
+      # release is live (a no-op once it is gone).
+      - name: Remove the old rolling release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release view latest --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' | while read -r name; do
-            if [ ! -e "release/$name" ]; then gh release delete-asset latest "$name" --repo "$GITHUB_REPOSITORY" --yes; fi
-          done
+          if gh release view latest --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release delete latest --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes
+          fi

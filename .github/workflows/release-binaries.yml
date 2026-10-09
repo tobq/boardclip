@@ -80,15 +80,27 @@ jobs:
       # secrets exist (a Developer ID Application certificate as base64 .p12
       # + its password, and an Apple ID app-specific password + team id);
       # without them the build is unsigned, as before. Windows never sees them.
+      # The electron-builder variables are exported ONLY when the certificate
+      # exists: an EMPTY CSC_LINK is read as a path (the project folder) and
+      # fails the signing step with "... not a file".
       - name: Build binaries
-        run: npm run ${{ matrix.platform.script }}
+        shell: bash
         env:
-          CSC_IDENTITY_AUTO_DISCOVERY: ${{ matrix.platform.name == 'macOS' && secrets.MAC_CSC_LINK != '' }}
-          CSC_LINK: ${{ matrix.platform.name == 'macOS' && secrets.MAC_CSC_LINK || '' }}
-          CSC_KEY_PASSWORD: ${{ matrix.platform.name == 'macOS' && secrets.MAC_CSC_KEY_PASSWORD || '' }}
-          APPLE_ID: ${{ matrix.platform.name == 'macOS' && secrets.APPLE_ID || '' }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ matrix.platform.name == 'macOS' && secrets.APPLE_APP_SPECIFIC_PASSWORD || '' }}
-          APPLE_TEAM_ID: ${{ matrix.platform.name == 'macOS' && secrets.APPLE_TEAM_ID || '' }}
+          PLATFORM: ${{ matrix.platform.name }}
+          MAC_CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          MAC_CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          MAC_APPLE_ID: ${{ secrets.APPLE_ID }}
+          MAC_APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          MAC_APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          export CSC_IDENTITY_AUTO_DISCOVERY=false
+          if [ "$PLATFORM" = "macOS" ] && [ -n "$MAC_CSC_LINK" ]; then
+            export CSC_IDENTITY_AUTO_DISCOVERY=true CSC_LINK="$MAC_CSC_LINK" CSC_KEY_PASSWORD="$MAC_CSC_KEY_PASSWORD"
+            if [ -n "$MAC_APPLE_ID" ]; then
+              export APPLE_ID="$MAC_APPLE_ID" APPLE_APP_SPECIFIC_PASSWORD="$MAC_APPLE_APP_SPECIFIC_PASSWORD" APPLE_TEAM_ID="$MAC_APPLE_TEAM_ID"
+            fi
+          fi
+          npm run ${{ matrix.platform.script }}
 
       - name: Prepare release assets
         shell: pwsh

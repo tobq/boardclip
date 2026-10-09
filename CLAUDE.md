@@ -1233,7 +1233,9 @@ Desktop app distribution has TWO consistent paths, both driven by `main`:
   the test. **Gatekeeper "Not Opened / could not verify"** = unsigned + unnotarised. The
   workflow signs + notarises the mac build by itself once these repo secrets exist:
   `MAC_CSC_LINK` (Developer ID Application cert, base64 .p12), `MAC_CSC_KEY_PASSWORD`,
-  `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID` (Windows never sees them; hardened
+  `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID` (exported in the build step ONLY when present:
+  an EMPTY `CSC_LINK` is read as a path and fails signing with "<project dir> not a file", which
+  broke the first universal build, 2026-10-09; Windows never sees them; hardened
   runtime with `assets/entitlements.mac.plist` = electron-builder's defaults + Apple Events for
   the osascript paste path). Until then the site's Mac note says System Settings > Privacy &
   Security > Open Anyway; the curl install (git clone) is never quarantined.

@@ -8,6 +8,22 @@ Everyday desktop builds are available from the website:
 
 [Download BoardClip](https://boardclip.app)
 
+With a package manager:
+
+```sh
+# macOS (Homebrew): the app opens with no security prompt
+brew install --cask tobq/tap/boardclip
+
+# Windows (Scoop)
+scoop bucket add tobq https://github.com/tobq/homebrew-tap
+scoop install tobq/boardclip
+
+# Any OS with Node.js 18+ (then run `boardclip`; update with `npm update -g boardclip`)
+npm i -g boardclip
+```
+
+Or try it without installing: `npx boardclip`.
+
 Terminal install keeps a source checkout on your machine and reuses the same local lifecycle scripts for future updates. This path requires Git, and install/dependency updates also require npm.
 It also registers a normal launcher: `BoardClip` in the Windows Start Menu or `~/Applications/BoardClip.app` on macOS.
 

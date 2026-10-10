@@ -792,6 +792,9 @@ function text(text, extra = {}) {
     assert.deepStrictEqual(autoUpdate.updateSupport(appDir, { fullCommit: 'abc', dirty: true }, 'linux'), { supported: false, reason: 'dirty-checkout' });
     assert.deepStrictEqual(autoUpdate.updateSupport(appDir, { fullCommit: 'abc', dirty: true }, 'linux', { updateMode: 'development' }), { supported: true, reason: 'supported' });
     assert.deepStrictEqual(autoUpdate.updateSupport(appDir, { fullCommit: 'abc', dirty: false }, 'linux'), { supported: true, reason: 'supported' });
+    // The npm package (no git, no build commit) is updated by npm, and says so.
+    assert.deepStrictEqual(autoUpdate.updateSupport(path.join(appDir, 'lib', 'node_modules', 'boardclip'), null, 'linux'), { supported: false, reason: 'npm-install' });
+    assert.deepStrictEqual(autoUpdate.updateSupport('C:\\Users\\x\\AppData\\Roaming\\npm\\node_modules\\boardclip', { fullCommit: 'abc' }, 'win32'), { supported: false, reason: 'npm-install' });
   } finally {
     fs.rmSync(appDir, { recursive: true, force: true });
   }

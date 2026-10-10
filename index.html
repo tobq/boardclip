@@ -913,6 +913,8 @@ function updateUnavailableText(reason) {
   switch (reason) {
     case 'dirty-checkout':
       return 'Source checkout has local changes; run the public update command';
+    case 'npm-install':
+      return 'Installed with npm; update with npm update -g boardclip';
     case 'not-git-checkout':
       return 'Packaged build; source auto-update unavailable';
     case 'missing-update-script':

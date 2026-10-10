@@ -108,10 +108,14 @@ app.setName('BoardClip');
 
 // --- Paths ---
 const SCRIPT_DIR = __dirname;
+// A git checkout (the curl / irm install and dev clones) keeps its data in the
+// checkout itself. Everything else (packaged builds, and the npm package, whose
+// folder `npm update -g` replaces wholesale) uses Electron's per-user data dir,
+// so an update can never take the history with it.
+const RUNS_FROM_CHECKOUT = !app.isPackaged && fs.existsSync(path.join(SCRIPT_DIR, '.git'));
 // BOARDCLIP_DATA_DIR points the app at a custom data directory (used for an
-// isolated test/second instance, or to relocate data); otherwise packaged builds
-// use Electron's per-user data dir and source checkouts use the checkout itself.
-const DATA_DIR = process.env.BOARDCLIP_DATA_DIR || (app.isPackaged ? app.getPath('userData') : SCRIPT_DIR);
+// isolated test/second instance, or to relocate data).
+const DATA_DIR = process.env.BOARDCLIP_DATA_DIR || (RUNS_FROM_CHECKOUT ? SCRIPT_DIR : app.getPath('userData'));
 const DB_PATH = path.join(DATA_DIR, 'clipboard-history.json');
 const SETTINGS_PATH = path.join(DATA_DIR, 'clipboard-settings.json');
 const CONFLICTS_PATH = path.join(DATA_DIR, 'clipboard-conflicts.json');
@@ -198,9 +202,17 @@ function escapeVbsString(value) {
 
 function windowsDevStartupScript() {
   const startBat = path.join(SCRIPT_DIR, 'start.bat');
+  // A checkout starts through start.bat (it clears leftovers first). The npm
+  // package has no start.bat: run its Electron on this app directory, from
+  // that directory (a bare electron.exe with no app path opens Electron's
+  // default app).
+  const run = fs.existsSync(startBat)
+    ? `shell.Run """${escapeVbsString(startBat)}""", 0, False`
+    : `shell.Run """${escapeVbsString(process.execPath)}"" ""${escapeVbsString(SCRIPT_DIR)}""", 0, False`;
   return [
     'Set shell = CreateObject("WScript.Shell")',
-    `shell.Run """${escapeVbsString(startBat)}""", 0, False`,
+    `shell.CurrentDirectory = "${escapeVbsString(SCRIPT_DIR)}"`,
+    run,
     '',
   ].join('\r\n');
 }
@@ -7403,7 +7415,9 @@ if (!gotLock) {
 // user's reopen attempts. Written only once we hold the lock (never by a second
 // instance that is about to quit), removed on exit; a stale file after an
 // external kill is harmless because the reader checks path + start time.
-const PID_FILE = path.join(SCRIPT_DIR, 'boardclip.pid');
+// Outside a checkout (the npm package) the app folder may not be writable
+// (a global install under /usr/local) and no kill script reads it there.
+const PID_FILE = path.join(RUNS_FROM_CHECKOUT ? SCRIPT_DIR : DATA_DIR, 'boardclip.pid');
 function writePidFile() {
   if (app.isPackaged) return;
   try { fs.writeFileSync(PID_FILE, JSON.stringify({ pid: process.pid, startedAt: Date.now(), exe: process.execPath })); } catch {}

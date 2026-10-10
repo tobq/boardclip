@@ -1245,13 +1245,31 @@ Desktop app distribution has TWO consistent paths, both driven by `main`:
   (no-op once gone): a tag literally named "latest" must not sit next to `/releases/latest`.
   Runs on other branches build but never publish (`if: github.ref == 'refs/heads/main'`).
   (Packaged installs still don't self-update; that'd need electron-updater, not wired.)
-- **Package managers = `tobq/homebrew-boardclip`** (one repo: `Casks/boardclip.rb` for Homebrew,
+- **Package managers = `tobq/homebrew-tap`** (one repo: `Casks/boardclip.rb` for Homebrew,
   `bucket/boardclip.json` for Scoop). It bumps ITSELF: a scheduled workflow there reads this
   repo's latest release + `SHA256SUMS.txt` with its own GITHUB_TOKEN (no cross-repo PAT), commits
   version + hashes, then installs both on clean runners (the cask clears the quarantine flag in
   `postflight_steps` + `writable_paths`, so a brew install opens with no Gatekeeper prompt).
-  Install lines: `brew install --cask tobq/boardclip/boardclip`; `scoop bucket add boardclip
-  https://github.com/tobq/homebrew-boardclip` + `scoop install boardclip/boardclip`.
+  Install lines: `brew install --cask tobq/tap/boardclip`; `scoop bucket add tobq
+  https://github.com/tobq/homebrew-tap` + `scoop install tobq/boardclip` (renamed from
+  `homebrew-boardclip` on 10 Oct 2026; GitHub redirects the old name). One tap for every app.
+- **npm package `boardclip`** (`npm i -g boardclip`, `npx boardclip`): the release workflow's `npm`
+  job runs `scripts/prepare-npm-package.js <version>` (Electron moves from devDependencies, which
+  electron-builder requires, to dependencies; `files` = build.files + bin/), installs the tarball,
+  checks `boardclip --version`, publishes with provenance. Gated on the `NPM_TOKEN` secret (a
+  notice otherwise). `bin/boardclip.js` starts the bundled Electron on the app dir, detached.
+  Data location rule (`RUNS_FROM_CHECKOUT` in main.js): only a git checkout keeps data in its
+  own folder; packaged builds AND the npm package use `userData` (%APPDATA%\BoardClip,
+  ~/Library/Application Support/BoardClip), because `npm update -g` replaces the package folder.
+  npm installs: updater reason `npm-install` ("update with npm update -g boardclip"); Windows
+  start-at-login VBS runs `electron.exe <app dir>` when there is no start.bat. Mac/Linux
+  start-at-login for unpackaged installs is still Electron's login item (opens bare Electron).
+- **build.files is the ONE runtime file list** (installers, DMG, npm). Until 10 Oct 2026 it lacked
+  editor.html, viewer.html, their preloads and iconTemplate*.png, and `icon.png` (also an
+  extraResources entry) was left out of app.asar: every packaged build had blank editor / viewer
+  windows and an EMPTY tray icon, unnoticed because the owner's machines run checkouts. Found by
+  reading the shipped .deb's app.asar header. `test/package-files.test.js` now fails when a file
+  main.js loads via `path.join(SCRIPT_DIR, ...)` is not packaged.
 - **Stable self-signed mac signature**: secrets `MAC_SELF_SIGN_P12` + `MAC_SELF_SIGN_PASSWORD`
   (public half `assets/boardclip-selfsign.pem`, CN "BoardClip Self-Signed", valid to 2051). An
   ad-hoc app's designated requirement is its cdhash, so every update looked like a new app to

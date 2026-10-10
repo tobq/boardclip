@@ -5,7 +5,7 @@ name: Build desktop binaries
 # (e.g. v2.1.104), marked as the repo's latest. The website's download links
 # (/releases/latest/download/<asset>) keep working because every release uses
 # the same asset names. Numbered releases are what package managers need: the
-# Homebrew cask and the Scoop manifest in tobq/homebrew-boardclip pin a version
+# Homebrew cask and the Scoop manifest in tobq/homebrew-tap pin a version
 # + sha256 (SHA256SUMS.txt), and that repo bumps itself from here. Site-only /
 # docs-only pushes are skipped (Netlify handles those). Manual runs via
 # workflow_dispatch; a run on any other branch builds but never publishes.
@@ -204,9 +204,10 @@ jobs:
           body: |
             Built from `${{ github.sha }}` on every push to `main`.
 
-            - macOS: `brew install --cask tobq/boardclip/boardclip`, or BoardClip-macOS.dmg (Apple Silicon + Intel)
-            - Windows: BoardClip-Setup-Windows.exe, or `scoop bucket add boardclip https://github.com/tobq/homebrew-boardclip` then `scoop install boardclip/boardclip`
+            - macOS: `brew install --cask tobq/tap/boardclip`, or BoardClip-macOS.dmg (Apple Silicon + Intel)
+            - Windows: BoardClip-Setup-Windows.exe, or `scoop bucket add tobq https://github.com/tobq/homebrew-tap` then `scoop install tobq/boardclip`
             - Linux: BoardClip-Linux.AppImage / BoardClip-Linux.deb
+            - Any OS with Node.js: `npm i -g boardclip`, or try it with `npx boardclip`
 
       # The rolling "latest" release (one release re-uploaded on every push) was
       # replaced by these numbered releases on 9 Oct 2026. Its tag literally named
@@ -219,3 +220,47 @@ jobs:
           if gh release view latest --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release delete latest --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes
           fi
+
+  # The same version on npm (npm i -g boardclip / npx boardclip) once an
+  # NPM_TOKEN secret exists (an npmjs.com granular token allowed to publish);
+  # without it the job only leaves a notice. The package is the repo's runtime
+  # files (build.files) with Electron as a real dependency, see
+  # scripts/prepare-npm-package.js. It is installed and run before publishing.
+  npm:
+    name: Publish to npm
+    runs-on: ubuntu-24.04
+    needs: [version, publish]
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+    steps:
+      - name: No npm token yet
+        if: env.NODE_AUTH_TOKEN == ''
+        run: echo "::notice::No NPM_TOKEN secret, so boardclip@$VERSION was not published to npm."
+
+      - name: Checkout
+        if: env.NODE_AUTH_TOKEN != ''
+        uses: actions/checkout@v6
+
+      - name: Setup Node
+        if: env.NODE_AUTH_TOKEN != ''
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - name: Build and smoke-test the package
+        if: env.NODE_AUTH_TOKEN != ''
+        run: |
+          node scripts/prepare-npm-package.js "$VERSION"
+          npm pack
+          npm install --global "./boardclip-$VERSION.tgz"
+          test "$(boardclip --version)" = "$VERSION"
+          node -e "const p = require(require('path').join(process.argv[1], 'boardclip/node_modules/electron')); require('fs').accessSync(p); console.log('electron:', p)" "$(npm root --global)"
+
+      - name: Publish boardclip@${{ needs.version.outputs.version }}
+        if: env.NODE_AUTH_TOKEN != ''
+        run: npm publish "./boardclip-$VERSION.tgz" --access public --provenance

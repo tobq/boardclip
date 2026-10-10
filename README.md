@@ -18,11 +18,11 @@ brew install --cask tobq/tap/boardclip
 scoop bucket add tobq https://github.com/tobq/homebrew-tap
 scoop install tobq/boardclip
 
-# Any OS with Node.js 18+ (then run `boardclip`; update with `npm update -g boardclip`)
-npm i -g boardclip
+# Any OS with Node.js 18+ (then run `boardclip`; update with `npm update -g @tobq/boardclip`)
+npm i -g @tobq/boardclip
 ```
 
-Or try it without installing: `npx boardclip`.
+Or try it without installing: `npx @tobq/boardclip`.
 
 Terminal install keeps a source checkout on your machine and reuses the same local lifecycle scripts for future updates. This path requires Git, and install/dependency updates also require npm.
 It also registers a normal launcher: `BoardClip` in the Windows Start Menu or `~/Applications/BoardClip.app` on macOS.

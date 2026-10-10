@@ -1253,15 +1253,23 @@ Desktop app distribution has TWO consistent paths, both driven by `main`:
   Install lines: `brew install --cask tobq/tap/boardclip`; `scoop bucket add tobq
   https://github.com/tobq/homebrew-tap` + `scoop install tobq/boardclip` (renamed from
   `homebrew-boardclip` on 10 Oct 2026; GitHub redirects the old name). One tap for every app.
-- **npm package `boardclip`** (`npm i -g boardclip`, `npx boardclip`): the release workflow's `npm`
-  job runs `scripts/prepare-npm-package.js <version>` (Electron moves from devDependencies, which
+- **npm package `@tobq/boardclip`** (`npm i -g @tobq/boardclip`, `npx @tobq/boardclip`, command
+  `boardclip`; npm refused the bare name as too close to `board-clip`, 10 Oct 2026, so the scope
+  is set by `prepare-npm-package.js` only, the repo's package.json stays `boardclip` because the
+  installer/.deb file names come from it): the release workflow's `npm` job runs
+  `scripts/prepare-npm-package.js <version>` (Electron moves from devDependencies, which
   electron-builder requires, to dependencies; `files` = build.files + bin/), installs the tarball,
-  checks `boardclip --version`, publishes with provenance. Gated on the `NPM_TOKEN` secret (a
-  notice otherwise). `bin/boardclip.js` starts the bundled Electron on the app dir, detached.
+  checks `boardclip --version`, publishes with provenance through npm TRUSTED PUBLISHING (GitHub
+  OIDC, no token; same as tobq/loadable). npm only lets a package that already exists name a
+  trusted publisher, so the first version was published by hand from the owner's `npm login`,
+  then `npx npm@latest trust github @tobq/boardclip --file release-binaries.yml --repo tobq/boardclip
+  --allow-publish` (configs are stage-only unless `--allow-publish`; an unvalidated config
+  expires after 48 h, so a CI publish must follow). OIDC needs npm 11.5.1+ (Node 24 in the job).
+  `bin/boardclip.js` starts the bundled Electron on the app dir, detached.
   Data location rule (`RUNS_FROM_CHECKOUT` in main.js): only a git checkout keeps data in its
   own folder; packaged builds AND the npm package use `userData` (%APPDATA%\BoardClip,
   ~/Library/Application Support/BoardClip), because `npm update -g` replaces the package folder.
-  npm installs: updater reason `npm-install` ("update with npm update -g boardclip"); Windows
+  npm installs: updater reason `npm-install` ("update with npm update -g @tobq/boardclip"); Windows
   start-at-login VBS runs `electron.exe <app dir>` when there is no start.bat. Mac/Linux
   start-at-login for unpackaged installs is still Electron's login item (opens bare Electron).
 - **build.files is the ONE runtime file list** (installers, DMG, npm). Until 10 Oct 2026 it lacked

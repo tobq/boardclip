@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// `boardclip` command of the npm package (npm i -g boardclip / npx boardclip):
+// `boardclip` command of the npm package (npm i -g @tobq/boardclip, npx @tobq/boardclip):
 // starts the tray app with the Electron that npm installed beside it, detached
 // so the terminal is free again and closing it does not take the app along.
 // A second start only brings the running app's popup up (single-instance lock).
@@ -20,7 +20,7 @@ let electron;
 try {
   electron = require('electron');
 } catch (error) {
-  console.error('BoardClip needs its Electron download. Reinstall with: npm i -g boardclip');
+  console.error('BoardClip needs its Electron download. Reinstall with: npm i -g @tobq/boardclip');
   process.exit(1);
 }
 

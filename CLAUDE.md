@@ -51,6 +51,19 @@
 - **`setClipboardToItem(item)`** — shared helper to write text or image to clipboard
 - **Backup/restore**: `backupClipboard()` saves text/html/rtf/image, `restoreClipboard()` writes them back. Used by numpad quick-paste.
 - **`pollGate`** flag pauses polling during paste sequences to prevent interference
+- **Copy without pasting (2026-10-11)**: "Copy" leads the clip menu, a Copy button leads every row's
+  reveal (text + image), "Copy all (n)" sits beside "Paste all" (bulk menu + selection bar). ONE
+  adapter `copyClip(id)` (also the settings numpad slot's copy) over the `copy-clip` IPC (formerly the
+  misnamed `paste` IPC: setClipboardToItem, no paste; the poller then sees it like any copy, so the clip
+  moves to the top as a paste does) + `copyMany(ids)` over `copy-many` (`joinedClipText` shared with
+  pasteMany, `lastText` set so the join is never captured). The empty-search digit quick-paste stands
+  down while a menu is open (`controller.isMenuOpen()`): typing "1ndex" into the + picker pasted slot 1.
+  QA: `qa-ui-shots --only popup-copy` (fails with the guard removed).
+- **The UI is moving to React + Tailwind on @twoshot/ui-kit (ticket 2026-10-11)**: ONE migration, with
+  Forge's menu/selection family lifted into the kit:
+  [BoardClip on React + shared ui-kit menus](https://forge.teraplex.io/#/c/forge/017929b2-9222-44fc-87c0-feca12cb1d7d),
+  spec `REACT-MIGRATION-PLAN.md`. Group-picker type-to-filter (decided behaviour in the spec) lands
+  there; do not add vanilla UI the migration would delete.
 - **Editor clipboard follow (`lib/clipboard-follow.js`, 2026-10-07)**: while the clipboard holds an open
   editor's note (exact text, line endings ignored, either the live draft or the last save), every save of
   that note also goes onto the clipboard, so nobody re-copies from the editor. It is re-checked on editor

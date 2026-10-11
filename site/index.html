@@ -859,20 +859,24 @@
       deleteClip: (id) => { clips = Core.deleteItem(clips, id); },
       clearUnpinned: () => { clips = clips.filter((clip) => Core.isPinned(clip)); },
       setGroupSharedAi: (group) => { if (demoSharedGroups.has(group)) demoSharedGroups.delete(group); else demoSharedGroups.add(group); },
-      copyNumpadSlot: async (id) => {
-        const clip = demoAdapter.itemById(id);
-        if (!clip) return;
-        if (clip.type === "image") { const ok = await writeImageClipboard(clip).catch(() => false); if (!ok) await writeBrowserClipboard(clip.text || ""); }
-        else await writeBrowserClipboard(clip.text || "");
-      },
-      activateClip: async (id) => {
+      // Copy without pasting (the controller says "Copied"). A page cannot paste
+      // into another app, so the demo's click (activateClip) copies too.
+      copyClip: async (id) => {
         const clip = demoAdapter.itemById(id);
         if (!clip) return;
         if (clip.type === "image") { const ok = await writeImageClipboard(clip).catch(() => false); if (!ok) await writeBrowserClipboard(clip.text || ""); }
         else await writeBrowserClipboard(clip.text || "");
         clips = Core.touchItem(clips, id);
-        showToast("Copied");
         renderClips();
+      },
+      // Copy all: the app's Paste all text (text clips, one per line).
+      copyMany: async (ids) => {
+        const text = ids.map((id) => demoAdapter.itemById(id)).filter((clip) => clip && clip.type !== "image").map((clip) => clip.text || "").join("\n");
+        if (text) await writeBrowserClipboard(text);
+      },
+      activateClip: async (id) => {
+        await demoAdapter.copyClip(id);
+        showToast("Copied");
       },
       editClip: (id, _itemEl, options) => openDemoEditor(id, { ...Core.editorFindFor(state.query), ...(options || {}) }),
       // The open editor's title field is authoritative for its clip (it rides

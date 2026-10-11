@@ -9,7 +9,7 @@ contextBridge.exposeInMainWorld('api', {
     return () => ipcRenderer.removeListener('history-changed', listener);
   },
   getSettings: () => ipcRenderer.invoke('get-settings'),
-  paste: (id) => ipcRenderer.invoke('paste', id),
+  copyClip: (id) => ipcRenderer.invoke('copy-clip', id),
   pasteAndHide: (id) => ipcRenderer.invoke('paste-and-hide', id),
   numpadPasteAndHide: (slot) => ipcRenderer.invoke('numpad-paste-and-hide', slot),
   hidePopup: () => ipcRenderer.invoke('hide-popup'),
@@ -22,6 +22,7 @@ contextBridge.exposeInMainWorld('api', {
   restoreItems: (snaps) => ipcRenderer.invoke('restore-items', snaps),
   groupAssignMany: (targets, group, shouldHave) => ipcRenderer.invoke('group-assign-many', targets, group, shouldHave), // [{ id, rev }]
   pasteMany: (ids) => ipcRenderer.invoke('paste-many', ids),
+  copyMany: (ids) => ipcRenderer.invoke('copy-many', ids),
   startUnify: (ids) => ipcRenderer.invoke('start-unify', ids),
   deleteAll: () => ipcRenderer.invoke('delete-all'),
   pin: (id, rev) => ipcRenderer.invoke('pin', id, rev),

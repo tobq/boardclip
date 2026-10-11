@@ -385,7 +385,8 @@ const appAdapter = {
   // Always the id-based path: window.api.copy() only takes a string, so it
   // would silently drop the clip's html/rtf. paste(id) puts every captured
   // format on the clipboard for both text and image clips.
-  copyNumpadSlot: (id) => { const it = itemById(id); if (!it) return; return window.api.paste(id); },
+  copyClip: (id) => window.api.copyClip(id),
+  copyMany: (ids) => window.api.copyMany(ids),
   activateClip: (id) => window.api.pasteAndHide(id),
   editClip: (id, _itemEl, options) => window.api.openEditor(id, { ...Core.editorFindFor(query), ...(options || {}) }),
   setClipTitle: (id, title) => revGuard(() => window.api.setClipTitle(id, title, clipRevOf(id)), false),
@@ -491,6 +492,9 @@ document.getElementById('copyDiagnostics').addEventListener('click', async () =>
 
 // --- Search ---
 searchEl.addEventListener('keydown', e => {
+  // A digit typed while a menu or popover is open belongs to it, never a
+  // quick-paste (typing "1ndex" with the + picker open pasted slot 1).
+  if (controller.isMenuOpen()) return;
   if (query === '' && !e.altKey && !e.ctrlKey && !e.metaKey && e.key >= '1' && e.key <= '9') {
     const n = +e.key;
     const nmap = numpadMap();

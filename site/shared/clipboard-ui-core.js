@@ -898,7 +898,7 @@
   // (popup, editor, viewer), so an action looks the same wherever it appears
   // and no two actions share a glyph.
   const CLIP_ACTION_ICONS = {
-    pin: 'star', edit: 'edit_note', 'open-img': 'open_in_full', 'open-img-ext': 'open_in_new', 'save-img': 'download',
+    copy: 'content_copy', pin: 'star', edit: 'edit_note', 'open-img': 'open_in_full', 'open-img-ext': 'open_in_new', 'save-img': 'download',
     rename: 'drive_file_rename_outline', revert: 'history', 'select-similar': 'select_all', del: 'delete',
   };
   function renderClipActions(item, options) {
@@ -906,7 +906,9 @@
     const id = itemId(item) || '';
     const isImage = item && item.type === 'image';
     const I = CLIP_ACTION_ICONS;
-    let html = '';
+    // Copy (no paste) leads every row: the clip goes on the clipboard and the
+    // popup stays.
+    let html = `<button class="icon-btn" data-action="copy" data-id="${escapeHtml(id)}" title="Copy" aria-label="Copy"><span class="mi">${I.copy}</span></button>`;
     if (isImage) {
       html += `<button class="icon-btn" data-action="open-img" data-id="${escapeHtml(id)}" title="Open image"><span class="mi">${I['open-img']}</span></button><button class="icon-btn" data-action="save-img" data-id="${escapeHtml(id)}" title="Copy to Downloads"><span class="mi">${I['save-img']}</span></button>`;
     } else {
@@ -1025,6 +1027,7 @@
     const nmap = opts.numpadMap || numpadMap(items);
     const row = (action, label, cls, extra) => menuRowHtml({ icon: CLIP_ACTION_ICONS[action], label, cls, ...(extra || {}), attrs: { 'data-action': action, 'data-id': id, ...((extra && extra.attrs) || {}) } });
     let html = '<div class="bc-menu-list">';
+    html += row('copy', 'Copy');
     html += row('pin', pinned ? 'Unpin' : 'Pin');
     if (isImage) {
       if (context !== 'viewer') html += row('open-img', 'Open image');
@@ -1071,6 +1074,7 @@
     const row = (action, icon, label, cls) => menuRowHtml({ icon, label, cls, attrs: { 'data-action': action } });
     let html = '<div class="bc-menu-list">';
     html += row('bulk-paste', 'content_paste', `Paste all (${count})`);
+    html += row('bulk-copy', CLIP_ACTION_ICONS.copy, `Copy all (${count})`);
     html += submenuNodeHtml({ icon: 'sell', label: 'Add to group' }, bulkGroupTreeHtml(groups, selItems, Search.groupWeights(opts.items || [])));
     if (allText) html += row('bulk-unify', 'merge', `Unify (${count})`);
     html += MENU_SEPARATOR + row('bulk-delete', CLIP_ACTION_ICONS.del, `Delete (${count})`, 'danger');
@@ -1098,6 +1102,7 @@
     return `<span class="selection-count">${count} selected</span>
       <div class="selection-actions">
         <button class="icon-btn" type="button" data-action="bulk-paste" title="Paste all (Enter)" aria-label="Paste all"><span class="mi">content_paste</span></button>
+        <button class="icon-btn" type="button" data-action="bulk-copy" title="Copy all" aria-label="Copy all"><span class="mi">${CLIP_ACTION_ICONS.copy}</span></button>
         <button class="icon-btn" type="button" data-action="bulk-group-open" title="Group" aria-label="Group" aria-haspopup="true"><span class="mi">sell</span></button>
         ${allText ? '<button class="icon-btn" type="button" data-action="bulk-unify" title="Unify into one clip" aria-label="Unify into one clip"><span class="mi">merge</span></button>' : ''}
         <button class="icon-btn danger" type="button" data-action="bulk-delete" title="Delete selected" aria-label="Delete selected"><span class="mi">delete</span></button>
@@ -3438,8 +3443,9 @@
   //   mutate:  pin(id), numpadAssign(id,slot), numpadUnassign(slot),
   //            toggleGroup(id,group) [add-or-remove], createGroup(name),
   //            deleteGroup(group), deleteClip(id), clearUnpinned(),
-  //            setGroupSharedAi(group), copyNumpadSlot(id)
-  //   actions: activateClip(id), editClip(id,itemEl), openImage(item),
+  //            setGroupSharedAi(group)
+  //   actions: activateClip(id), copyClip(id) [the clipboard only, no paste],
+  //            copyMany(ids) [Paste all's joined text, no paste], editClip(id,itemEl), openImage(item),
   //            saveImage(item)->feedbackString|null
   //   keyboard:isSettingsOpen(), closeSettings(), hidePopup(),
   //            moveSelection(dir), activateSelected()
@@ -4500,6 +4506,14 @@
       try { if (a.pasteMany) await a.pasteMany(ids); }
       finally { clearSelection(); } // always drop the selection (app hides the popup; demo hides the bar)
     }
+    // Copy all: Paste all's joined text onto the clipboard, nothing pasted;
+    // the popup and the selection stay.
+    async function copySelection() {
+      const ids = selectionInfo().ids;
+      if (!ids.length || !a.copyMany) return;
+      await a.copyMany(ids);
+      toast('Copied');
+    }
     async function deleteIds(ids) {
       if (!ids || !ids.length) return;
       ids.forEach((id) => selectedIds.delete(id));
@@ -4709,6 +4723,16 @@
       const bulkGroupOpen = t.closest('[data-action="bulk-group-open"]');
       if (bulkGroupOpen) { event.stopPropagation(); const r = bulkGroupOpen.getBoundingClientRect(); openBulkGroupMenu(r.left, r.bottom + 2); return true; }
       if (t.closest('[data-action="bulk-paste"]')) { event.stopPropagation(); pasteSelection(); return true; }
+      if (t.closest('[data-action="bulk-copy"]')) { event.stopPropagation(); copySelection(); return true; }
+      // Copy without pasting (a row's Copy, the clip menu's Copy): the row
+      // button carries data-id, the menu root does (closest).
+      const copyBtn = t.closest('[data-action="copy"]');
+      if (copyBtn) {
+        event.stopPropagation();
+        const owner = copyBtn.dataset.id ? copyBtn : copyBtn.closest('[data-id]');
+        if (owner && owner.dataset.id) { await a.copyClip(owner.dataset.id); toast('Copied'); }
+        return true;
+      }
       if (t.closest('[data-action="bulk-unify"]')) { event.stopPropagation(); unifySelection(); return true; }
       if (t.closest('[data-action="bulk-delete"]')) { event.stopPropagation(); deleteSelection(); return true; }
       if (t.closest('[data-action="bulk-clear"]')) { event.stopPropagation(); clearSelection(); return true; }
@@ -4763,7 +4787,7 @@
       const npRemove = t.closest('.np-remove');
       if (npRemove) { event.stopPropagation(); await a.numpadUnassign(Number(npRemove.dataset.slot)); refresh(); return true; }
       const slotEl = t.closest('.np-slot.has-content');
-      if (slotEl && slotEl.dataset.slotId) { event.stopPropagation(); await a.copyNumpadSlot(slotEl.dataset.slotId); toast('Copied'); return true; }
+      if (slotEl && slotEl.dataset.slotId) { event.stopPropagation(); await a.copyClip(slotEl.dataset.slotId); toast('Copied'); return true; }
       const share = t.closest('.gp-share');
       if (share) { event.stopPropagation(); await a.setGroupSharedAi(share.dataset.group); refresh(); return true; }
       const gpDel = t.closest('.gp-del');
@@ -4996,6 +5020,9 @@
       // re-painting selection classes after a full list rebuild) + exposed for tests.
       selection: selectionInfo,
       focusedId: () => focusId,
+      // An open menu or popover owns the keys (the app's empty-search digit
+      // quick-paste must not fire under it).
+      isMenuOpen: () => menu.isOpen(),
       clearSelection,
       selectAll,
       moveFocus,

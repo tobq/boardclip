@@ -4889,9 +4889,9 @@ async function pasteAndHide(id) {
   }
 }
 
-// "Paste all": join the selected TEXT clips (newline-separated) and paste them in
-// one go. Images can't concatenate into text, so they're skipped.
-async function pasteMany(ids) {
+// "Paste all" / "Copy all": the selected TEXT clips joined (newline-separated)
+// in one go. Images can't concatenate into text, so they're skipped.
+function joinedClipText(ids) {
   const parts = [];
   for (const id of (Array.isArray(ids) ? ids : [])) {
     const item = findHistoryItem(id);
@@ -4899,17 +4899,29 @@ async function pasteMany(ids) {
     textBlobStore.hydrateTextItem(item, TEXT_DIR);
     parts.push(item.text || '');
   }
-  const text = parts.join('\n');
+  return parts.join('\n');
+}
+// The joined text onto the clipboard, never captured back as a new clip.
+function writeJoinedText(text) {
+  clipboard.writeText(text);
+  lastText = text;
+  lastImgHash = '';
+}
+async function pasteMany(ids) {
+  const text = joinedClipText(ids);
   if (!text) { hidePopup(); return; }
   pollGate = false;
   try {
-    clipboard.writeText(text);
-    lastText = text;   // don't re-capture our own joined paste as a new clip
-    lastImgHash = '';
+    writeJoinedText(text);
     await hideAndPasteForeground();
   } finally {
     pollGate = true;
   }
+}
+// "Copy all": the same text, nothing pasted; the popup stays.
+function copyMany(ids) {
+  const text = joinedClipText(ids);
+  if (text) writeJoinedText(text);
 }
 
 function validNumpadSlot(slot) {
@@ -6739,7 +6751,9 @@ function setupIPC() {
     },
   }));
 
-  ipcMain.handle('paste', (_, id) => {
+  // Copy without pasting: the clip onto the clipboard (the poller then sees it
+  // like any copy, so it moves to the top as a paste does).
+  ipcMain.handle('copy-clip', (_, id) => {
     const item = findHistoryItem(id);
     if (!item) return;
     setClipboardToItem(item);
@@ -6966,6 +6980,7 @@ function setupIPC() {
   ipcMain.handle('restore-items', (_, snaps) => applyRestoreItems(snaps));
   ipcMain.handle('group-assign-many', (_, targets, group, shouldHave) => applyGroupAssignMany(targets, group, shouldHave));
   ipcMain.handle('paste-many', (_, ids) => pasteMany(ids));
+  ipcMain.handle('copy-many', (_, ids) => copyMany(ids));
   ipcMain.handle('start-unify', (_, ids) => startUnify(ids));
   ipcMain.handle('unify-step', (_, sessionId, payload) => unifyStep(sessionId, payload));
 

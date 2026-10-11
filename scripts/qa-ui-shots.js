@@ -404,11 +404,11 @@ const STEPS = [
     await press(p, 'ArrowDown'); // the list cursor onto the first row (Launch plan)
     await press(p, 'F10', { shift: true });
     await p.waitFor(`!!document.querySelector('.bc-menu')`, 'menu open', 3000);
-    await expect('the menu opens on its first row', (f) => f.inMenu && f.label === 'Unpin');
+    await expect('the menu opens on its first row', (f) => f.inMenu && f.label === 'Copy');
     await press(p, 'End'); await expect('End = the last row', (f) => f.label === 'Delete');
-    await press(p, 'Home'); await expect('Home = the first row', (f) => f.label === 'Unpin');
-    for (let i = 0; i < 3; i += 1) await press(p, 'ArrowDown');
-    await expect('Down x3', (f) => f.label === 'Add to group');
+    await press(p, 'Home'); await expect('Home = the first row', (f) => f.label === 'Copy');
+    for (let i = 0; i < 4; i += 1) await press(p, 'ArrowDown');
+    await expect('Down x4', (f) => f.label === 'Add to group');
     await press(p, 'ArrowRight');
     // Groups sort by use (Search.groupWeights): Work, the most used, leads.
     await expect('Right opens the groups on the first group (the most used)', (f) => f.inSub && f.subShown && f.label === 'Work');
@@ -427,7 +427,8 @@ const STEPS = [
     // Enter runs a row: Rename... opens the prompt; Esc cancels; focus returns.
     await press(p, 'F10', { shift: true });
     await p.waitFor(`!!document.querySelector('.bc-menu')`, 'menu reopened', 3000);
-    await press(p, 'ArrowDown'); await press(p, 'ArrowDown'); await expect('Down to Rename...', (f) => f.label === 'Rename...');
+    for (let i = 0; i < 3; i += 1) await press(p, 'ArrowDown');
+    await expect('Down to Rename...', (f) => f.label === 'Rename...');
     await press(p, 'Enter');
     await p.waitFor(`!!document.querySelector('.overlay.show .prompt-input') && document.activeElement === document.querySelector('.overlay.show .prompt-input')`, 'the rename prompt has focus', 3000);
     await press(p, 'Escape');
@@ -439,7 +440,7 @@ const STEPS = [
     await p.click(`${row(c.ids.url)} [data-action="clip-menu"]`);
     await p.waitFor(`!!document.querySelector('.bc-menu')`, 'menu opened by the mouse', 3000);
     await expect('a mouse open leaves focus alone', (f) => !f.inMenu);
-    await press(p, 'ArrowDown'); await expect('the first arrow enters the menu', (f) => f.inMenu && f.label === 'Pin');
+    await press(p, 'ArrowDown'); await expect('the first arrow enters the menu', (f) => f.inMenu && f.label === 'Copy');
     await press(p, 'Escape'); await menuGone('menu closed');
     // 1-9 on a row's # popover (mouse-opened) assigns that key; then remove it.
     const keyOf = async () => ((await c.sb.historyState()).find((i) => i.id === c.ids.url).pin || {}).number || null;
@@ -1161,6 +1162,61 @@ const STEPS = [
     const overflow = await page.eval('document.documentElement.scrollWidth - document.documentElement.clientWidth');
     if (overflow > 0) throw new Error(`the site scrolls sideways at 360px (${overflow}px)`);
     await c.fullPage(page, 'site-360', 360);
+  } },
+  // Copy without pasting: a row's Copy, the clip menu's Copy and the selection
+  // bar's Copy all put text on the (sandbox's fake) clipboard, toast "Copied",
+  // keep the popup and paste nothing. With a popover open over an empty
+  // search, a digit is never a numpad quick-paste (typing "1ndex" into the +
+  // picker used to paste slot 1).
+  { name: 'popup-copy', popup: true, run: async (c) => {
+    const p = c.popup;
+    const clip = () => c.sb.mainEval(`({ text: __qa.clipboard.text, writes: __qa.clipboard.writes })`);
+    const pastes = async () => (await c.sb.events()).filter((e) => e.type === 'paste_blocked').length;
+    const shown = () => c.sb.mainEval(`__qa.electron.BrowserWindow.getAllWindows().find((x) => /index\\.html/.test(x.webContents.getURL())).isVisible()`);
+    const toastSaysCopied = () => p.waitFor(`(() => { const t = document.querySelector('.toast'); return !!t && t.classList.contains('show') && /Copied/.test(t.textContent); })()`, 'the Copied toast', 3000);
+    const textOf = (id) => c.items.find((i) => i.id === id).text;
+    const pastes0 = await pastes();
+    // 1. The row's Copy button.
+    await p.hover(`${row(c.ids.plan)} .content`); await qa.sleep(300);
+    await c.shot(p, 'popup-copy-row');
+    await p.click(`${row(c.ids.plan)} [data-action="copy"]`);
+    await qa.waitFor(async () => (await clip()).text === textOf(c.ids.plan), 'the row Copy put the clip on the clipboard', 5000);
+    await toastSaysCopied();
+    if (!(await shown())) throw new Error('the popup closed after Copy');
+    // 2. The clip menu's Copy (first row).
+    await openRowMenu(c, c.ids.plan);
+    const first = await p.eval(`(() => { const r = document.querySelector('.bc-menu .bc-menu-item'); return r ? r.dataset.action : null; })()`);
+    if (first !== 'copy') throw new Error(`the clip menu does not lead with Copy (${first})`);
+    const writes0 = (await clip()).writes;
+    await p.click('.bc-menu [data-action="copy"]');
+    await qa.waitFor(async () => (await clip()).writes > writes0 && (await clip()).text === textOf(c.ids.plan), 'the menu Copy wrote the clip', 5000);
+    await p.waitFor(`!document.querySelector('.bc-menu')`, 'the menu closes after Copy', 3000);
+    // 3. Copy all: Paste all's joined text, the selection and the popup stay.
+    await p.eval(`(() => {
+      const click = (id) => document.querySelector('.item[data-id="' + id + '"] .content').dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, ctrlKey: true }));
+      click(${J(c.ids.url)}); click(${J(c.ids.fox)});
+      return true;
+    })()`);
+    await p.click('#selectionBar [data-action="bulk-copy"]');
+    await qa.waitFor(async () => { const t2 = (await clip()).text; return t2.includes(textOf(c.ids.url)) && t2.includes(textOf(c.ids.fox)) && t2.split('\n').length === 2; }, 'Copy all joined the two clips, one per line', 5000);
+    await toastSaysCopied();
+    const still = await p.eval(`document.querySelectorAll('.item.multi-selected').length`);
+    if (still !== 2) throw new Error(`Copy all dropped the selection (${still})`);
+    await c.shot(p, 'popup-copy-all');
+    await escape(p);
+    // 4. A digit with the + picker open over an empty search: no quick-paste.
+    await p.hover(`${row(c.ids.fox)} .content`); await qa.sleep(300);
+    await p.click(`${row(c.ids.fox)} .meta-ghost[data-action="tag-add"]`);
+    await p.waitFor(`!!document.querySelector('.bc-menu .bc-group-list')`, 'the + picker', 3000);
+    await p.eval(`(document.getElementById('search').focus(), document.getElementById('search').value === '')`);
+    const before = await clip();
+    await press(p, '1'); // the Launch plan's numpad key
+    await qa.sleep(400);
+    if (await pastes() !== pastes0) throw new Error('a digit typed under an open picker quick-pasted');
+    if ((await clip()).writes !== before.writes) throw new Error('a digit typed under an open picker wrote the clipboard');
+    if (!(await shown())) throw new Error('the popup hid (quick-paste) on a digit under an open picker');
+    await escape(p);
+    if (await pastes() !== pastes0) throw new Error('Copy pasted something');
   } },
 ];
 

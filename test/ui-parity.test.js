@@ -123,14 +123,14 @@ const siteCss = read('site/styles.css');
 {
   const textActions = ui.renderClipActions({ id: 'x', type: 'text', text: 'a'.repeat(200) + '\nb' }, { expanded: false });
   assert.ok(!textActions.includes('data-action="expand"'), 'text item should use editor open, not inline expand');
-  for (const a of ['edit', 'clip-menu']) {
+  for (const a of ['copy', 'edit', 'clip-menu']) {
     assert.ok(textActions.includes(`data-action="${a}"`), `renderClipActions text row missing data-action="${a}"`);
   }
   for (const a of ['rename', 'del']) {
     assert.ok(!textActions.includes(`data-action="${a}"`), `renderClipActions row should NOT keep demoted action "${a}" (moved to the menu)`);
   }
   const imageActions = ui.renderClipActions({ id: 'y', type: 'image' }, {});
-  for (const a of ['open-img', 'save-img', 'clip-menu']) {
+  for (const a of ['copy', 'open-img', 'save-img', 'clip-menu']) {
     assert.ok(imageActions.includes(`data-action="${a}"`), `renderClipActions image row missing data-action="${a}"`);
   }
   assert.ok(!imageActions.includes('data-action="edit"'), 'image item should not offer the text editor');
@@ -138,12 +138,12 @@ const siteCss = read('site/styles.css');
   // The "..." menu is the complete surface: it carries the demoted + all quick
   // actions, keyed by the SAME data-action attributes the controller dispatches.
   const textMenu = ui.renderClipMenu({ id: 'x', type: 'text', text: 'hi' }, { items: [], groups: ['Work'], numpadMap: {} });
-  for (const a of ['pin', 'edit', 'rename', 'add-group', 'del']) {
+  for (const a of ['copy', 'pin', 'edit', 'rename', 'add-group', 'del']) {
     assert.ok(textMenu.includes(`data-action="${a}"`), `renderClipMenu text missing data-action="${a}"`);
   }
   assert.ok(textMenu.includes('class="np-btn'), 'renderClipMenu should embed the numpad grid');
   const imageMenu = ui.renderClipMenu({ id: 'y', type: 'image', image: 'a.png' }, { items: [], groups: [], numpadMap: {} });
-  for (const a of ['pin', 'open-img', 'save-img', 'rename', 'del']) {
+  for (const a of ['copy', 'pin', 'open-img', 'save-img', 'rename', 'del']) {
     assert.ok(imageMenu.includes(`data-action="${a}"`), `renderClipMenu image missing data-action="${a}"`);
   }
   assert.ok(!imageMenu.includes('data-action="edit"'), 'image menu should not offer the text editor');
@@ -163,7 +163,7 @@ const siteCss = read('site/styles.css');
   assert.ok(typeof ui.createMenu === 'function', 'core must export the shared popover menu');
   // Bulk menu content: paste-all + group + delete always; unify only for all-text.
   const bulkText = ui.renderBulkMenu({ count: 3, hasImage: false }, { groups: ['Work'], selectedItems: [] });
-  for (const a of ['bulk-paste', 'bulk-group', 'bulk-add-group', 'bulk-unify', 'bulk-delete']) {
+  for (const a of ['bulk-paste', 'bulk-copy', 'bulk-group', 'bulk-add-group', 'bulk-unify', 'bulk-delete']) {
     assert.ok(bulkText.includes(`data-action="${a}"`), `renderBulkMenu missing data-action="${a}"`);
   }
   const bulkMixed = ui.renderBulkMenu({ count: 2, hasImage: true }, { groups: [], selectedItems: [] });
@@ -171,7 +171,7 @@ const siteCss = read('site/styles.css');
   const bar = ui.renderSelectionBar({ count: 4, hasImage: false });
   // Group is its OWN bar button (opens the tri-state group popover) — not fused
   // with an ambiguous "more" menu.
-  for (const a of ['bulk-paste', 'bulk-group-open', 'bulk-unify', 'bulk-delete', 'bulk-clear']) {
+  for (const a of ['bulk-paste', 'bulk-copy', 'bulk-group-open', 'bulk-unify', 'bulk-delete', 'bulk-clear']) {
     assert.ok(bar.includes(`data-action="${a}"`), `renderSelectionBar missing data-action="${a}"`);
   }
   for (const [name, html] of [['index.html', appHtml], ['site/index.html', siteHtml]]) {
@@ -828,8 +828,21 @@ const siteCss = read('site/styles.css');
   // Distinct glyphs for the image menu's open / open externally / save.
   const imgMenu = ui.renderClipMenu({ id: 'img:a.png', type: 'image', image: 'a.png' }, { items: [], groups: [] });
   const glyph = (action) => (new RegExp(`data-action="${action}"[^>]*><span class="mi" aria-hidden="true">([a-z_]+)<`).exec(imgMenu) || [])[1];
-  const glyphs = ['open-img', 'open-img-ext', 'save-img'].map(glyph);
-  assert.ok(glyphs.every(Boolean) && new Set(glyphs).size === 3, `image menu actions need distinct glyphs: ${glyphs}`);
+  const glyphs = ['copy', 'open-img', 'open-img-ext', 'save-img'].map(glyph);
+  assert.ok(glyphs.every(Boolean) && new Set(glyphs).size === 4, `image menu actions need distinct glyphs: ${glyphs}`);
+  // Copy without pasting: ONE copy adapter (copyClip, also the settings numpad
+  // slot's copy) + copyMany beside pasteMany, over the copy-clip / copy-many
+  // IPCs; the misnamed 'paste' IPC (it only set the clipboard) is gone.
+  const preloadSrc = read('preload.js');
+  const mainCopySrc = read('main.js');
+  assert.ok(!/copyNumpadSlot/.test(appHtml + siteHtml + read('site/shared/clipboard-ui-core.js')), 'one copy adapter: copyClip');
+  assert.ok(/copyClip: \(id\) => window\.api\.copyClip\(id\)/.test(appHtml) && /copyMany: \(ids\) => window\.api\.copyMany\(ids\)/.test(appHtml), 'the app adapter copies through the copy IPCs');
+  assert.ok(/copyClip: async \(id\)/.test(siteHtml) && /copyMany: async \(ids\)/.test(siteHtml), 'the demo adapter copies too');
+  assert.ok(/invoke\('copy-clip', id\)/.test(preloadSrc) && /invoke\('copy-many', ids\)/.test(preloadSrc) && !/invoke\('paste', /.test(preloadSrc), 'preload: copy-clip + copy-many, no paste IPC');
+  assert.ok(/ipcMain\.handle\('copy-clip'/.test(mainCopySrc) && /ipcMain\.handle\('copy-many'/.test(mainCopySrc) && !/ipcMain\.handle\('paste',/.test(mainCopySrc), 'main: copy-clip + copy-many, no paste IPC');
+  assert.ok(/function joinedClipText\(ids\)/.test(mainCopySrc) && /const text = joinedClipText\(ids\);[\s\S]{0,120}hidePopup\(\); return; \}/.test(mainCopySrc), 'Paste all and Copy all join the same text');
+  // A digit typed with a menu or popover open never quick-pastes.
+  assert.ok(/searchEl\.addEventListener\('keydown', e => \{\s*\/\/[^\n]*\n\s*\/\/[^\n]*\n\s*if \(controller\.isMenuOpen\(\)\) return;/.test(appHtml), 'the empty-search quick-paste stands down while a menu is open');
   // One rename wording (dialog-opening rows end with "..."); Revert is in the editor menu.
   for (const ctx of ['popup', 'editor', 'viewer']) {
     for (const it of [work, { id: 'img:a.png', type: 'image', image: 'a.png' }]) {

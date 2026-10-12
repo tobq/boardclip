@@ -412,6 +412,53 @@ function text(text, extra = {}) {
   assert.strictEqual(model.numpadSlotOf(history[0]), 5);
   assert.deepStrictEqual(model.groupsOf(history[0]), ['work']);
   assert.deepStrictEqual(result.tombstoneIds, []);
+  // Both sides already hold the same text and title: nothing to merge.
+  assert.strictEqual(result.conflict, null);
+}
+
+{
+  // A save from an editor whose base was edited since (another window, another
+  // device): the base id is gone, but the edit lineage leads to the note's
+  // newest version, so the fork carries a conflict record against it (2026-10-12:
+  // a second editor's save forked a note with nothing to merge).
+  const T = Date.now() - 60000; // the ledger keeps 30 days of links
+  const opened = text('shopping: eggs', { ts: T / 1000, updatedAt: T });
+  const openedId = opened.id;
+  const history = [opened];
+  const moved = model.applyTextEdit(history, { id: openedId, originalText: 'shopping: eggs', newText: 'shopping: eggs, milk', now: T + 10000 });
+  assert.strictEqual(moved.reason, 'updated');
+  const headId = model.itemKey(moved.item);
+  const supersedes = moved.supersedes;
+  assert.deepStrictEqual(supersedes.map(s => [s.from, s.to]), [[openedId, headId]]);
+
+  const stale = model.applyTextEdit(history, {
+    id: openedId, originalText: 'shopping: eggs', newText: 'shopping: eggs, bread', sourceGroups: ['home'], supersedes, now: T + 20000,
+  });
+  assert.strictEqual(stale.reason, 'conflict_created');
+  assert.strictEqual(history.length, 2, 'the note and the fork both survive');
+  assert.ok(stale.conflict, 'a conflict record is produced');
+  assert.strictEqual(stale.conflict.kind, 'editor');
+  assert.strictEqual(stale.conflict.left.id, headId, 'left = the note\'s newest version');
+  assert.strictEqual(stale.conflict.left.text, 'shopping: eggs, milk');
+  assert.strictEqual(stale.conflict.right.text, 'shopping: eggs, bread');
+  assert.strictEqual(stale.conflict.base.text, 'shopping: eggs', 'the original is the merge base');
+  assert.strictEqual(stale.conflict.targetId, model.itemKey(stale.item));
+
+  // Without the lineage (no supersedes passed) the old behaviour stands: a fork
+  // with no record.
+  const history2 = [text('shopping: eggs, milk', { ts: (T + 10000) / 1000, updatedAt: T + 10000 })];
+  const blind = model.applyTextEdit(history2, { id: openedId, originalText: 'shopping: eggs', newText: 'shopping: eggs, jam', now: T + 20000 });
+  assert.strictEqual(blind.reason, 'conflict_created');
+  assert.strictEqual(blind.conflict, null);
+
+  // The stale editor typed exactly what the note now says: one clip, no record.
+  const history3 = [text('shopping: eggs', { ts: T / 1000, updatedAt: T })];
+  const again = model.applyTextEdit(history3, { id: model.itemKey(history3[0]), originalText: 'shopping: eggs', newText: 'shopping: eggs, milk', now: T + 10000 });
+  const same = model.applyTextEdit(history3, {
+    id: openedId, originalText: 'shopping: eggs', newText: 'shopping: eggs, milk', supersedes: again.supersedes, now: T + 20000,
+  });
+  assert.strictEqual(history3.length, 1);
+  assert.strictEqual(same.conflict, null);
 }
 
 {

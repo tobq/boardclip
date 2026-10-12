@@ -19,7 +19,8 @@
 //   checkout and relaunch it) are recorded, never performed. (main.js itself
 //   puts no tray icon up and installs no keyboard hook when isolated.)
 // Blocked actions land in globalThis.__qa.events for assertions; __qa also
-// carries require / electron / the fake clipboard for the harness's main eval.
+// carries require / electron / the fake clipboard for the harness's main eval,
+// and the unshown notifications (emit 'click' / 'action' on one to act on it).
 
 const path = require('path');
 const childProcess = require('child_process');
@@ -278,7 +279,16 @@ dialog.showMessageBoxSync = (a, b) => {
   return Number.isInteger(opts.cancelId) ? opts.cancelId : 0;
 };
 dialog.showErrorBox = (title, content) => { record('dialog_blocked', { kind: 'error', message: `${str(title)}: ${str(content)}`.slice(0, 200) }); };
-Notification.prototype.show = function show() { record('notification_blocked', { title: str(this.title).slice(0, 120) }); };
+// Never shown; kept on __qa.notifications so a script can emit its 'click' / 'action'.
+const notifications = [];
+Notification.prototype.show = function show() {
+  notifications.push(this);
+  record('notification_blocked', {
+    title: str(this.title).slice(0, 120),
+    toastXml: str(this.toastXml).slice(0, 1000),
+    actions: Array.isArray(this.actions) ? this.actions.map((a) => str(a && a.text)) : [],
+  });
+};
 lib('auto-update.js').createAutoUpdater = () => ({
   start() { record('auto_update_blocked'); },
   stop() {},
@@ -295,4 +305,4 @@ function selfCheck() {
   return { ok: mainLoaded && Object.values(counts).every((n) => n === 1), mainLoaded, counts };
 }
 
-globalThis.__qa = { require, electron, events, clipboard: fake, record, selfCheck, root: ROOT, sandbox: process.env.BOARDCLIP_QA_SANDBOX };
+globalThis.__qa = { require, electron, events, notifications, clipboard: fake, record, selfCheck, root: ROOT, sandbox: process.env.BOARDCLIP_QA_SANDBOX };

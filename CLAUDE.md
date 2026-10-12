@@ -250,6 +250,20 @@ Otherwise the key passes through so normal numpad typing works. Main thread call
   await between fold and commit by construction. `editor.text_applied` now logs `base_found` /
   `base_text_matches` so a fork's cause is readable from the log. RULE: never `await` between a
   `foldRemoteState` and the `history` replacement without re-folding the live history.
+- **Stale editor saves become a merge, not a silent fork (2026-10-12)**: the one-window-per-note map
+  was keyed by the id an editor OPENED with, so after its first save (new content-hash id) reopening
+  the note started a SECOND editor; the first one's next save left the second stale and typing in it
+  forked the note ("saved as a separate clip", base_found false, no record). Now (1)
+  `findEditSessionForClip` matches a session by the note's edit lineage (`supersedeMap`), (2)
+  `applyTextEdit` gets `supersedes` and follows a vanished base to the note's newest version, so the
+  fork carries an `editor` conflict record (base = the text the editor opened with) and the editor
+  turns into the merge view, (3) the notification (`lib/notifications.js`: Windows toast XML with a
+  foreground button = Electron's 'click'; macOS `actions`, shown only with the Alerts style; body click
+  everywhere) has a Merge button -> `showConflict` (the editor already showing it, else a conflict
+  window; `open-conflict` uses it too), (4) resolving an `editor` record writes into the NOTE and
+  `foldForkInto` removes the fork (its groups / numpad key join the note, supersede link fork -> note).
+  QA: `node scripts/qa-edit-conflict.js` (15 checks; the sandbox keeps unshown notifications on
+  `__qa.notifications` to emit their click).
 - **Search facets (2026-09-03)**: `len:` accepts ranges (`len:50-200`), plus `lines:`/`ln:` and
   `words:`/`wd:` with the same comparators, and `is:url` / `is:multiline` / `is:rich`. ONE
   table describes every field: `FIELD_INFO` in clip-search.js (`desc`, `short` alias, per-value

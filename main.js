@@ -49,6 +49,7 @@ const { ControlServer } = require('./lib/control-server');
 const windowsConsole = require('./lib/windows-console');
 const windowsDwm = require('./lib/windows-dwm');
 const appearance = require('./lib/appearance');
+const { createNotifier } = require('./lib/notifications');
 
 function guardBrokenPipe(stream) {
   try {
@@ -931,6 +932,7 @@ function applyExternalTextEdit({ id, originalText, originalTitle, sourceGroups, 
     newTitle,
     sourceGroups,
     groupTombstones: settings.group_tombstones,
+    supersedes: settings.supersedes,
     now: Date.now(),
     ignoreBlank: true,
   });
@@ -5079,11 +5081,10 @@ function refreshTray() {
 //      prefix so they're retained but not resurrected).
 //   5. Disk retention - finished drafts are kept (LRU-pruned) as a last resort.
 //
-// editSessions: sessionId -> session. editWindowsByClip: originalId -> sessionId
-// (enforces one window per clip). A session re-anchors baseText/currentId after
-// each commit so the chain stays contiguous (in-place, not a fork).
+// editSessions: sessionId -> session (one window per note: findEditSessionForClip).
+// A session re-anchors baseText/currentId after each commit so the chain stays
+// contiguous (in-place, not a fork).
 const editSessions = new Map();
-const editWindowsByClip = new Map();
 const conflictWindows = new Map();
 const EDIT_DRAFT_RE = /^boardclip-edit-[0-9a-f]{12}-\d+(?:-\d+)?\.txt$/;   // in-flight drafts only (legacy `-<ts>` and current `-<ts>-<seq>` names)
 let editSessionSeq = 0;
@@ -5134,22 +5135,34 @@ function readDraftFile(sessionOrPath, fallback = {}) {
   return editorPayloadFrom(raw, fallback);
 }
 
+const notifier = createNotifier({
+  Notification,
+  onError: (error) => diagnostics.record('notification.error', { error: error && error.message }, { forceFile: true }),
+});
+
 function showEditNotification(title, body) {
-  try {
-    if (Notification && Notification.isSupported && Notification.isSupported()) {
-      new Notification({ title, body, silent: true }).show();
-    }
-  } catch {}
+  notifier.show({ title, body });
 }
 
-// Surface the conflict-fork outcome so a stale-based commit is never mistaken
-// for a clobber: the user's edit was kept as a new clip, untouched.
+// Surface a stale-based save so it is never mistaken for a clobber: the edit
+// was kept beside the note, and Merge (or a click on the notification) opens
+// the merge view that folds the two back into one note.
 function notifyEditOutcome(result) {
-  if (!result || (result.reason !== 'conflict_created' && result.reason !== 'conflict_merged')) return;
-  showEditNotification(
-    'BoardClip - saved as a separate clip',
-    'This clip changed while you were editing, so your version was kept as a new clip instead of overwriting. Nothing was lost.'
-  );
+  if (!result) return;
+  const record = result.conflictRecord;
+  if (record && record.kind === 'editor') {
+    notifier.show({
+      title: 'BoardClip - this note changed while you were editing',
+      body: 'Your version is kept as a separate clip, so nothing is lost.',
+      action: 'Merge',
+      onAction: () => showConflict(record.id),
+    });
+  } else if (!record && result.reason === 'conflict_created') {
+    showEditNotification(
+      'BoardClip - saved as a new clip',
+      'The clip you were editing was deleted, so your version is kept as a new clip.'
+    );
+  }
 }
 
 // --- Editor <-> clipboard follow (lib/clipboard-follow.js) ---
@@ -5218,6 +5231,7 @@ function commitEditSession(session, payload) {
     notifyEditOutcome(result);
     if (result.conflictRecord && session.win && !session.win.isDestroyed()) {
       session.inConflict = true;
+      session.conflictId = result.conflictRecord.id;
       try { session.win.webContents.send('editor-conflict', conflictModel.normalizeConflictRecord(result.conflictRecord)); } catch {}
     }
   }
@@ -5415,9 +5429,6 @@ function createEditorWindow(session, presentOptions = {}) {
   trackWindowBounds(editorWin, 'editor_bounds');
   editorWin.on('closed', () => {
     editSessions.delete(session.id);
-    if (session.originalId != null && editWindowsByClip.get(session.originalId) === session.id) {
-      editWindowsByClip.delete(session.originalId);
-    }
     // Safety net: commit the latest on-disk draft (the IPC commit may have raced
     // the window teardown), then mark the draft finished so it's retained but not
     // re-recovered, and prune. suppressCommit = the clip was deliberately deleted
@@ -5460,19 +5471,47 @@ function presentSecondaryWindow(targetWin, options = {}) {
   hidePopup();
 }
 
+// A note's id changes on every save (content-addressed), so its open editor is
+// found by the note's edit lineage, never by the id it opened with. Matching
+// only that id let a reopen start a second editor on the same note; the
+// first one's next save then left the second stale, and typing in it forked
+// the note.
+function findEditSessionForClip(id) {
+  const key = String(id || '');
+  if (!key) return null;
+  const lineage = clipboardModel.supersedeMap(settings.supersedes);
+  const head = (clipId) => lineage.get(clipId) || clipId;
+  const target = head(key);
+  for (const session of editSessions.values()) {
+    if (!session.currentId || !session.win || session.win.isDestroyed()) continue;
+    if (session.currentId === key || head(session.currentId) === target) return session;
+  }
+  return null;
+}
+
+// The merge view of a conflict: the editor already showing it (an editor turns
+// into the merge view when its save conflicts), else a conflict window.
+function showConflict(conflictId) {
+  const id = String(conflictId || '');
+  for (const session of editSessions.values()) {
+    if (session.conflictId === id && session.win && !session.win.isDestroyed()) {
+      presentSecondaryWindow(session.win);
+      return { ok: true };
+    }
+  }
+  return openConflictWindow(id);
+}
+
 function openEditor(id, options = {}) {
   if (id != null) {
-    const openSessionId = editWindowsByClip.get(id);
-    if (openSessionId) {
-      const s = editSessions.get(openSessionId);
-      if (s && s.win && !s.win.isDestroyed()) {
-        try {
-          presentSecondaryWindow(s.win, options);
-          if (options && options.find) s.win.webContents.send('editor-find', { query: options.find, findRegex: !!options.findRegex });
-          if (options && options.focusTitle) s.win.webContents.send('editor-find', { focusTitle: true });
-        } catch {}
-        return;
-      }
+    const s = findEditSessionForClip(id);
+    if (s) {
+      try {
+        presentSecondaryWindow(s.win, options);
+        if (options && options.find) s.win.webContents.send('editor-find', { query: options.find, findRegex: !!options.findRegex });
+        if (options && options.focusTitle) s.win.webContents.send('editor-find', { focusTitle: true });
+      } catch {}
+      return;
     }
   }
   let baseText = '';
@@ -5522,7 +5561,6 @@ function openEditor(id, options = {}) {
   session.follow.observe(editorNoteTexts(session));
   writeDraftFile(session);
   editSessions.set(session.id, session);
-  if (originalId != null) editWindowsByClip.set(originalId, session.id);
   createEditorWindow(session, options);
 }
 
@@ -5649,6 +5687,51 @@ function clipWindowState(id) {
   return { item, items, groups: [...(settings.groups || [])], aiGroup: mcpCore.AI_GROUP_NAME };
 }
 
+// A clip by an id a conflict record holds, followed to its newest version
+// when it was edited since.
+function liveTextClip(id) {
+  const key = String(id || '');
+  if (!key) return null;
+  const item = findHistoryItem(key) || findHistoryItem(clipboardModel.supersedeMap(settings.supersedes).get(key));
+  return item && item.type !== 'image' ? item : null;
+}
+
+// An editor conflict joins two clips: the note (left) and the edit kept beside
+// it (targetId). Resolving it makes them one note again.
+function conflictForkPair(record) {
+  if (!record || record.kind !== 'editor') return null;
+  const note = liveTextClip(record.left && record.left.id);
+  const fork = liveTextClip(record.targetId || (record.right && record.right.id));
+  return note && fork && note !== fork ? { note, fork } : null;
+}
+
+// The resolved text went into the note, which keeps its pin, numpad key and
+// lineage. The fork folds into it like an edit: its groups (and a numpad key
+// the note lacks) join the note, and a supersede link sends a stale copy or
+// an open editor of it to the note.
+function foldForkInto(fork, note) {
+  if (!fork || !note || fork === note) return;
+  const forkIndex = history.indexOf(fork);
+  if (forkIndex < 0) return; // the write already merged the two (same text)
+  const forkId = itemKey(fork);
+  const noteId = itemKey(note);
+  const forkSlot = numpadSlotOf(fork);
+  const noteGroups = groupsOf(note);
+  const newGroups = groupsOf(fork).filter(group => !noteGroups.includes(group));
+  if (newGroups.length) {
+    const pin = ensurePin(note);
+    pin.groups = [...(pin.groups || []), ...newGroups];
+    touchPinGroups(note);
+  }
+  if (isPinned(fork) && !note.pin) ensurePin(note);
+  deleteHistoryIndex(forkIndex, { tombstone: false });
+  addTombstone(forkId, null);
+  addSupersede({ from: forkId, to: noteId, updatedAt: Date.now() });
+  saveSettingsFile();
+  saveHistory();
+  if (forkSlot != null && numpadSlotOf(note) == null) applyNumpadAssign(noteId, forkSlot, clipboardModel.clipRevision(note));
+}
+
 function applyConflictResolution(resolution) {
   const payload = resolution && typeof resolution === 'object' ? resolution : {};
   const conflictId = String(payload.id || '');
@@ -5661,9 +5744,11 @@ function applyConflictResolution(resolution) {
     const text = write.text;
     const title = snapshot ? titleOf(snapshot) : clipboardModel.titleOf({ title: write.title });
     const targetId = record.targetId || snapshot && snapshot.id || record.right && record.right.id || record.left && record.left.id || '';
-    const target = findHistoryItem(targetId);
+    const fork = conflictForkPair(record);
+    const target = fork ? fork.note : findHistoryItem(targetId);
     if (target && target.type !== 'image') {
-      applyTextEditToItem(target, { newText: text, newTitle: title });
+      const written = applyTextEditToItem(target, { newText: text, newTitle: title });
+      if (fork) foldForkInto(fork.fork, (written && written.item) || fork.note);
     } else if (text.trim()) {
       applyExternalTextEdit({
         id: '',
@@ -6973,7 +7058,7 @@ function setupIPC() {
   });
   ipcMain.handle('resolve-conflict', (_, payload) => applyConflictResolution(payload));
   ipcMain.handle('get-conflicts', () => conflictListForRenderer());
-  ipcMain.handle('open-conflict', (_, id) => openConflictWindow(id));
+  ipcMain.handle('open-conflict', (_, id) => showConflict(id));
 
   // Multi-select bulk operations.
   ipcMain.handle('delete-items', (_, targets) => applyDeleteItems(targets));

@@ -1224,6 +1224,39 @@
     return scored.map((s) => s.i);
   }
 
+  // Does the query hold a /regex/ anywhere (a top-level term, an excluded one,
+  // or a leaf of a custom expression)? A regex is the one term whose cost has
+  // no bound: y.*t.*b.*\?.*t= backtracked for minutes on a 20,000-char line
+  // and froze the popup for good (12 Oct 2026), so such a query is searched
+  // off the page's thread (searchJob in Core.createSearchWorker's worker).
+  function hasRegexTerm(parsed) {
+    const p = parsed || {};
+    const inNode = (n) => !!n && (n.type === 'leaf' ? !!(n.leaf && n.leaf.regex) : (n.children || []).some(inNode));
+    return (p.content || []).some((c) => c.regex) || (p.terms || []).some((c) => c.regex) || (p.compound || []).some(inNode);
+  }
+  // One whole search, as the worker runs it: the ranked ORIGINAL indexes, where
+  // each match first sits in its body (the row's preview window; -1 = none),
+  // and the empty-result nudge. It also marks every match's title and body
+  // once (termSpans), so a pattern that takes too long on a matched clip
+  // stalls HERE, off the page's thread; the row highlight then only marks a
+  // short window of those same texts. req: { query, sortMode, now }.
+  function searchJob(docs, hays, req) {
+    const r = req || {};
+    const parsed = parseQuery(r.query || '');
+    const now = r.now || Date.now();
+    const list = docs || [];
+    const indexes = filterRankIndexes(null, parsed, { docs: list, searchTextLower: hays || null, now, sortMode: r.sortMode || null });
+    const first = new Array(indexes.length);
+    for (let k = 0; k < indexes.length; k += 1) {
+      const doc = list[indexes[k]];
+      first[k] = doc.type === 'image' ? -1 : firstMatchIndex(parsed, doc.body);
+      termSpans(parsed, doc.title, 'title', 100);
+      if (doc.type !== 'image') termSpans(parsed, doc.body, 'body', 100);
+    }
+    const relax = indexes.length ? null : bestRelaxation(list, parsed, { now, searchTextLower: hays || null });
+    return { indexes, first, relax };
+  }
+
   // ── IntelliJ camel-hump fuzzy matcher (ported from Forge src/renderer/lib/fuzzy.ts,
   //    React stripped). `sdi` -> "Sync Data-loss Incident". Returns {score, positions}|null. ──
   const F_BONUS_WORD_START = 24, F_BONUS_STRING_START = 12, F_BONUS_CONSECUTIVE = 16, F_BONUS_CASE = 2, F_PENALTY_GAP = -2, F_PENALTY_LEAD = -1, F_LEAD_CAP = -6;
@@ -2315,6 +2348,7 @@
     tokenizeQuery, quoteToken, parseQuery, scanQuery, serializeQuery, applyFacet, stripFacet, clearFacet, facetState, facetTokenState,
     anyFilterActive, hasSearchTerms, resolveTimeMs,
     matchDoc, relevanceScore, recencyScore, decayWeight, groupWeights, compareGroupUse, rankMode, filterRankIndexes, bodyIndexOf,
+    hasRegexTerm, searchJob,
     compileTerm, escapeRegExp, termSpans, firstMatchIndex,
     regexTypingEdit, regexBackspaceEdit, toggleRegexAt, legacyRegexQuery, dimConnective, setDimConnective, normalizeJoins,
     promptOptionState, promptOptionLabel, FIELD_EXAMPLE,

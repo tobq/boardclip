@@ -41,6 +41,7 @@ const syncJournal = require('./lib/sync-journal');
 const fsProbe = require('./lib/fs-probe');
 const tailscale = require('./lib/tailscale');
 const mcpCore = require('./lib/mcp-core');
+const mcpSearchThread = require('./lib/mcp-search-thread');
 const mcpPaths = require('./lib/mcp-paths');
 const mcpInstallers = require('./lib/mcp-installers');
 const { Worker } = require('worker_threads');
@@ -156,6 +157,9 @@ const HISTORY_BACKUP_MAX_BYTES = 1024 * 1024 * 1024;
 const HISTORY_BACKUP_MAX_MANIFESTS = 2000;
 const HISTORY_BACKUP_MIN_INTERVAL_MS = 60 * 1000;
 const IMAGE_ORPHAN_RECOVERY_WINDOW_MS = 30 * 60 * 1000;
+// Once Chromium calls the popup renderer unresponsive, how long it may stay so
+// before it is ended and reloaded (createPopup's 'unresponsive' backstop).
+const POPUP_HANG_RELOAD_MS = 5000;
 const IMAGE_ORPHAN_RECOVERY_MAX_FILES = 20;
 const SYNC_REMOTE_WRITE_TIMEOUT_MS = 8000;
 const SYNC_PROVIDER_READ_TIMEOUT_MS = 12000;
@@ -4389,12 +4393,30 @@ function createPopup() {
       onFailed(null, null, error && error.message);
     }
   });
+  // Backstop: a popup renderer that STAYS hung (a page script that never
+  // returns, as a /regex/ on the page's thread did, 12 Oct 2026) used to sit
+  // dead until someone killed it. It is ended now and the render-process-gone
+  // recovery above reloads it; the popup holds no unsaved work. Every firing is
+  // a bug report (popup.renderer_hung_reload).
+  let popupHangTimer = null;
   win.webContents.on('unresponsive', () => {
     diagnostics.record('popup.renderer_unresponsive_native', {
       visible: isPopupOpen(),
     }, { forceFile: true });
+    if (popupHangTimer) return;
+    popupHangTimer = setTimeout(() => {
+      popupHangTimer = null;
+      if (!win || win.isDestroyed() || app.isQuitting) return;
+      diagnostics.record('popup.renderer_hung_reload', { visible: isPopupOpen(), after_ms: POPUP_HANG_RELOAD_MS }, { forceFile: true });
+      try {
+        win.webContents.forcefullyCrashRenderer();
+      } catch (error) {
+        diagnostics.record('popup.renderer_hung_reload_failed', { error: error && error.message }, { forceFile: true });
+      }
+    }, POPUP_HANG_RELOAD_MS);
   });
   win.webContents.on('responsive', () => {
+    if (popupHangTimer) { clearTimeout(popupHangTimer); popupHangTimer = null; }
     diagnostics.record('popup.renderer_responsive_native', {
       visible: isPopupOpen(),
     }, { forceFile: true });
@@ -6717,10 +6739,10 @@ async function mcpHandleRequest(reqPath, payload, ctx = {}) {
   // Re-check after the (possibly long) approval await: if AI access was toggled
   // off while the modal was open, refuse before performing the action.
   if (!settings.ai_access_enabled) throw new Error('ai_access_disabled');
-  return mcpExecute(tool, args);
+  return mcpExecute(tool, args, ctx);
 }
 
-function mcpExecute(tool, args) {
+function mcpExecute(tool, args, ctx = {}) {
   switch (tool) {
     case 'read_clip': {
       const item = findHistoryItem(args.id);
@@ -6731,7 +6753,8 @@ function mcpExecute(tool, args) {
       return { ...mcpCore.fullTextResult(item, sharedSet), viaApproval: true };
     }
     case 'search_all':
-      return mcpCore.searchClips(history, settings, { query: args.query, regex: !!args.regex, scope: 'all', limit: args.limit || mcpCore.DEFAULT_LIST_LIMIT });
+      // A /regex/ runs on a worker thread: it must never hang this process.
+      return mcpSearchThread.searchClipsOffThread(history, settings, { query: args.query, regex: !!args.regex, scope: 'all', limit: args.limit || mcpCore.DEFAULT_LIST_LIMIT }, { signal: ctx.signal });
     case 'image_path': {
       const item = findHistoryItem(args.id);
       if (!item || item.type !== 'image') throw new Error('not_an_image');

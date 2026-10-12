@@ -941,7 +941,11 @@ const siteCss = read('site/styles.css');
     assert.ok(/Core\.createCensusCache\(/.test(src), `${name}: one census cache`);
     assert.ok(/getCensus:/.test(src), `${name}: the options panel reads the census`);
     assert.ok(/renderFilterBar\(\{[\s\S]{0,300}census/.test(src), `${name}: the chip bar reads the census`);
-    assert.ok(/Core\.renderRelaxNudge\(Core\.search\.bestRelaxation\(/.test(src), `${name}: the empty state shows the relax nudge`);
+    assert.ok(/Core\.renderRelaxNudge\([^)]*Core\.search\.bestRelaxation\(/.test(src), `${name}: the empty state shows the relax nudge`);
+    // A /regex/ never runs on the page's thread: the query goes to the shared
+    // search worker, and the rows keep the query they were found with.
+    assert.ok(/Core\.createSearchWorker\(/.test(src) && /Core\.search\.hasRegexTerm\(/.test(src), `${name}: a regex query is searched on the shared worker`);
+    assert.ok(/query: shownQuery/.test(src), `${name}: rows highlight against the query they were found with`);
     assert.ok(/setQuery: \(next\) =>/.test(src), `${name}: the adapter applies the nudge's query`);
   }
   assert.ok(/data-action="apply-query"\]'\)/.test(coreSrc) && /a\.setQuery\(/.test(coreSrc), 'the controller dispatches the nudge');

@@ -290,6 +290,176 @@
     const list = items || [];
     return filterItemIndexes(list, state).map((i) => list[i]);
   }
+  // A search that holds a /regex/ (and the find bar's regex) runs on a worker
+  // thread (search-worker.js beside this file): a pattern can backtrack for
+  // minutes on one long line (y.*t.*b.*\?.*t= froze the popup for good on a
+  // 20,000-char line, 12 Oct 2026), and nothing can interrupt a RegExp on the
+  // page's thread. The latest request wins. A worker still busy GRACE ms after
+  // its result stopped being wanted is ended (it may be stuck for hours) and
+  // the next request starts a fresh one. The worker holds its own copy of the
+  // docs, synced by doc OBJECT, so a new history revision sends only new or
+  // changed clips. opts: { url, graceMs, onBusy(busy) (a wanted result has been
+  // outstanding for busyMs), busyMs, onError(message) (the worker failed; the job
+  // then runs on the page, as before) }.
+  const SEARCH_WORKER_URL = (() => {
+    try { return new URL('search-worker.js', document.currentScript.src).href; } catch { return ''; }
+  })();
+  function createSearchWorker(opts) {
+    const o = opts || {};
+    const url = o.url || SEARCH_WORKER_URL;
+    const graceMs = o.graceMs != null ? o.graceMs : 250;
+    const busyMs = o.busyMs != null ? o.busyMs : 150;
+    const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
+    const keys = new WeakMap();
+    let nextKey = 1;
+    let worker = null;
+    let sent = new WeakSet();
+    let syncedDocs = null;
+    let running = null; // { job, startedAt }
+    let queued = null;
+    let wanted = 0;
+    let seq = 0;
+    let killTimer = null;
+    let busyTimer = null;
+    let busy = false;
+    let idleWaiters = [];
+    const setBusy = (next) => {
+      if (busy === next) return;
+      busy = next;
+      if (typeof o.onBusy === 'function') o.onBusy(next);
+    };
+    const settleIdle = () => {
+      if (wanted) return;
+      clearTimeout(busyTimer);
+      setBusy(false);
+      const waiters = idleWaiters;
+      idleWaiters = [];
+      waiters.forEach((fn) => fn());
+    };
+    function kill() {
+      clearTimeout(killTimer);
+      killTimer = null;
+      if (worker) worker.terminate();
+      worker = null;
+      running = null;
+      sent = new WeakSet();
+      syncedDocs = null;
+    }
+    function keyOf(doc) {
+      let k = keys.get(doc);
+      if (!k) { k = nextKey; nextKey += 1; keys.set(doc, k); }
+      return k;
+    }
+    function sync(docs, hays) {
+      if (docs === syncedDocs) return;
+      const list = docs || [];
+      const order = new Array(list.length);
+      const add = [];
+      for (let i = 0; i < list.length; i += 1) {
+        const doc = list[i];
+        if (!doc) { order[i] = 0; continue; }
+        const k = keyOf(doc);
+        order[i] = k;
+        if (!sent.has(doc)) { sent.add(doc); add.push([k, doc, hays ? hays[i] : null]); }
+      }
+      worker.postMessage({ type: 'sync', order, add });
+      syncedDocs = docs;
+    }
+    // No worker (it failed to load): the job runs here, as before.
+    function runHere(job) {
+      const m = job.msg;
+      if (m.type === 'search') return { type: 'search', id: m.id, ...Search.searchJob(job.docs, job.hays, m) };
+      const term = Search.compileTerm(m.query, { regex: !!m.regex, caseSensitive: !!m.caseSensitive });
+      return { type: 'find', id: m.id, matches: term.all(String(m.text || '')), valid: term.valid, error: term.error };
+    }
+    function deliver(job, result) {
+      if (job.id !== wanted) return;
+      wanted = 0;
+      try { job.cb(result); } finally { settleIdle(); }
+    }
+    function start(job) {
+      if (!worker && url && typeof Worker === 'function') {
+        try {
+          worker = new Worker(url);
+          worker.onmessage = onMessage;
+          worker.onerror = onError;
+        } catch { worker = null; }
+      }
+      if (!worker) { deliver(job, runHere(job)); return; }
+      if (job.msg.type === 'search') sync(job.docs, job.hays);
+      running = { job, startedAt: now() };
+      worker.postMessage(job.msg);
+    }
+    function next() {
+      const job = queued;
+      queued = null;
+      if (job) start(job);
+    }
+    function onMessage(event) {
+      const m = event.data || {};
+      if (!running || m.id !== running.job.id) return;
+      const job = running.job;
+      running = null;
+      clearTimeout(killTimer);
+      killTimer = null;
+      deliver(job, m);
+      next();
+    }
+    // The worker failed (it could not load, or ran out of memory): it is
+    // ended, and the job it held runs here so its answer still arrives.
+    function onError(event) {
+      if (event && typeof event.preventDefault === 'function') event.preventDefault();
+      if (typeof o.onError === 'function') o.onError(String(event && event.message || 'search worker failed'));
+      const job = running && running.job;
+      kill();
+      if (job) deliver(job, runHere(job));
+      next();
+    }
+    // The running job's result is not wanted any more: end its worker once it
+    // has had graceMs (a quick job just finishes and the queue moves on).
+    function armKill() {
+      if (!running || running.job.id === wanted) return;
+      clearTimeout(killTimer);
+      killTimer = setTimeout(() => {
+        killTimer = null;
+        if (!running || running.job.id === wanted) return;
+        kill();
+        next();
+      }, Math.max(0, graceMs - (now() - running.startedAt)));
+    }
+    function request(type, msg, cb, docs, hays) {
+      seq += 1;
+      const job = { id: seq, msg: { ...msg, type, id: seq }, cb, docs, hays };
+      wanted = job.id;
+      clearTimeout(busyTimer);
+      busyTimer = setTimeout(() => { if (wanted) setBusy(true); }, busyMs);
+      if (running) { queued = job; armKill(); } else start(job);
+      return job.id;
+    }
+    return {
+      // req: { docs, hays (the lowercased haystacks, or null), query, sortMode, now }
+      search(req, cb) {
+        const r = req || {};
+        return request('search', { query: r.query || '', sortMode: r.sortMode || null, now: r.now || Date.now() }, cb, r.docs || [], r.hays || null);
+      },
+      // req: { text, query, regex, caseSensitive }
+      find(req, cb) {
+        const r = req || {};
+        return request('find', { text: String(r.text || ''), query: String(r.query || ''), regex: !!r.regex, caseSensitive: !!r.caseSensitive }, cb);
+      },
+      // The outstanding result is not wanted any more.
+      cancel() {
+        wanted = 0;
+        queued = null;
+        armKill();
+        settleIdle();
+      },
+      busy: () => busy,
+      // Resolves once no wanted result is outstanding (QA drivers await it).
+      whenIdle: () => (wanted ? new Promise((resolve) => idleWaiters.push(resolve)) : Promise.resolve()),
+      dispose() { wanted = 0; queued = null; kill(); settleIdle(); },
+    };
+  }
   function itemCountLabel(total, visible, state) {
     const count = Number(total) || 0;
     const shown = Number(visible) || 0;
@@ -5784,14 +5954,30 @@
       findHl.innerHTML = `${html}\n`;
       syncHlScroll();
     }
-    function recomputeMatches() {
-      const term = findInput.value ? Search.compileTerm(findInput.value, { regex: findRegex, caseSensitive: findCase }) : null;
-      matches = term ? term.all(area.value) : [];
-      findCount.title = term && !term.valid ? `Not a valid regular expression: ${term.error}.` : '';
-      findBar.classList.toggle('bad-pattern', !!(term && !term.valid));
-      if (!matches.length) { findIdx = -1; findCount.textContent = term && !term.valid ? 'Invalid' : findInput.value ? '0/0' : ''; }
-      else if (findIdx < 0 || findIdx >= matches.length) findIdx = 0;
-      renderFindHighlights();
+    // A regex runs on the search worker (createSearchWorker): one pattern can
+    // backtrack for minutes on a long line, and the page's thread cannot stop
+    // it. A plain word is a linear scan, done here. `after` runs once the
+    // matches are in (at once for a word, on the worker's answer for a regex).
+    let findWorker = null;
+    function recomputeMatches(after) {
+      const query = findInput.value;
+      const term = query ? Search.compileTerm(query, { regex: findRegex, caseSensitive: findCase }) : null;
+      const apply = (list) => {
+        matches = list;
+        findCount.title = term && !term.valid ? `Not a valid regular expression: ${term.error}.` : '';
+        findBar.classList.toggle('bad-pattern', !!(term && !term.valid));
+        if (!matches.length) { findIdx = -1; findCount.textContent = term && !term.valid ? 'Invalid' : query ? '0/0' : ''; }
+        else if (findIdx < 0 || findIdx >= matches.length) findIdx = 0;
+        renderFindHighlights();
+        if (after) after();
+      };
+      if (term && term.valid && term.regex) {
+        if (!findWorker) findWorker = createSearchWorker({ onBusy: (busy) => { if (busy) findCount.textContent = '...'; } });
+        findWorker.find({ text: area.value, query, regex: true, caseSensitive: findCase }, (r) => apply(r.matches || []));
+        return;
+      }
+      if (findWorker) findWorker.cancel();
+      apply(term ? term.all(area.value) : []);
     }
     function step(dir) {
       if (!matches.length) return;
@@ -5805,8 +5991,7 @@
       if (opt.regex != null) findRegex = !!opt.regex;
       updateFindButtons();
       findIdx = -1;
-      recomputeMatches();
-      selectMatch({ preserveFocus: true });
+      recomputeMatches(() => selectMatch({ preserveFocus: true }));
       findInput.focus();
       if (opt.select !== false) findInput.select();
     }
@@ -5817,8 +6002,7 @@
       if (sel && !sel.includes('\n')) findInput.value = sel.slice(0, 120);
       updateFindButtons();
       findIdx = -1;
-      recomputeMatches();
-      selectMatch({ preserveFocus: true });
+      recomputeMatches(() => selectMatch({ preserveFocus: true }));
       findInput.focus();
       findInput.select();
     }
@@ -5843,12 +6027,12 @@
       else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') { e.preventDefault(); openFind(); }
       else if (e.key === 'Enter') { e.preventDefault(); commit(); area.focus(); } // done naming: back to the text
     });
-    findInput.addEventListener('input', () => { findIdx = -1; recomputeMatches(); selectMatch({ preserveFocus: true }); });
+    findInput.addEventListener('input', () => { findIdx = -1; recomputeMatches(() => selectMatch({ preserveFocus: true })); });
     findInput.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') { e.preventDefault(); step(e.shiftKey ? -1 : 1); }
       else if (e.key === 'Escape') { e.preventDefault(); closeFind(); }
     });
-    const refind = () => { updateFindButtons(); findIdx = -1; recomputeMatches(); selectMatch({ preserveFocus: true }); };
+    const refind = () => { updateFindButtons(); findIdx = -1; recomputeMatches(() => selectMatch({ preserveFocus: true })); };
     // The shared chord toggles: Regex (Alt+R) and match case (Alt+C).
     const findRegexToggle = attachToggle(findRegexBtn, {
       label: 'Regex',
@@ -5923,7 +6107,7 @@
       revert,
       // A host that drops the editor without closing its window (the demo's
       // overlay) lets go of its chords.
-      destroy() { findRegexToggle.destroy(); findCaseToggle.destroy(); },
+      destroy() { findRegexToggle.destroy(); findCaseToggle.destroy(); if (findWorker) findWorker.dispose(); },
     };
   }
   // Shared in-app IMAGE VIEWER — the image twin of createEditor, mounted by the
@@ -6920,6 +7104,7 @@
     createImageZoom,
     createClipController,
     findAllMatches,
+    createSearchWorker,
     editorFindFor,
     flipChildren,
     attachToggle,

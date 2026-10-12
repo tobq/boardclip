@@ -242,22 +242,54 @@ function renderGroupFilters() {
 // relaxCache: the same for the empty-result nudge (Core.search.bestRelaxation).
 const searchRefineCache = {};
 const relaxCache = {};
+// A query with a /regex/ is searched on a worker (Core.createSearchWorker): the
+// list keeps its rows, dimmed after a moment, until the answer arrives.
+// shownQuery is the query the rows on screen were found with, so a row built
+// meanwhile (a scroll) highlights against it, never against a pattern the
+// worker has not run yet. regexFirst: where each regex match first sits in its
+// body (the worker found it; the row never scans the body itself).
+let shownQuery = '';
+let regexFirst = null;
+const searchWorker = Core.createSearchWorker({
+  onBusy: (busy) => { listEl.classList.toggle('searching', busy); listEl.setAttribute('aria-busy', busy ? 'true' : 'false'); updateCount(); },
+  onError: (message) => { const p = window.api.recordDiagnostics?.('renderer.search_worker_error', { message }); if (p && p.catch) p.catch(() => {}); },
+});
 function applyFilter() {
   const startedAt = performance.now();
-  const firstTerm = parsedQuery().terms.find(c => !c.regex && c.scope !== 'title');
+  if (Core.search.hasRegexTerm(parsedQuery())) {
+    const q = query;
+    const docs = searchDocs;
+    searchWorker.search({ docs, hays: searchTextLower, query: q, sortMode, now: Date.now() }, (r) => {
+      if (docs !== searchDocs) { scheduleRerenderList(); return; } // the history moved on: search again
+      regexFirst = new Map();
+      r.indexes.forEach((ri, k) => regexFirst.set(ri, r.first[k]));
+      showFiltered(q, r.indexes, r.relax);
+      updateCount();
+      recordRendererPerf('list.regex_search', startedAt, { rendered: renderedCount(), regex: true }, 400);
+    });
+    return;
+  }
+  searchWorker.cancel();
+  regexFirst = null;
+  showFiltered(query, Core.filterItemIndexes(items, { query, docs: searchDocs, searchTextLower, sortMode, cache: searchRefineCache }));
+  recordRendererPerf('list.apply_filter', startedAt, { rendered: renderedCount(), regex: searchBox.getRegex() }, 60);
+}
+// relax: the worker's empty-result nudge (a regex query), else worked out here.
+function showFiltered(q, rows, relax) {
+  shownQuery = q;
+  const parsed = Core.search.parseQuery(q);
+  const firstTerm = parsed.terms.find(c => !c.regex && c.scope !== 'title');
   previewTerm = firstTerm ? String(firstTerm.value).trim().toLowerCase() || null : null;
-  filtered = Core.filterItemIndexes(items, { query, docs: searchDocs, searchTextLower, sortMode, cache: searchRefineCache });
-  const rows = filtered;
+  filtered = rows;
   const rowItems = items;
   clipList.update({
     ids: rows.map(ri => itemId(rowItems[ri])),
     tsAt: (i) => Number(rowItems[rows[i]] && rowItems[rows[i]].ts) || 0,
-    mode: Core.search.rankMode(parsedQuery(), sortMode),
-    queryKey: query,
+    mode: Core.search.rankMode(parsed, sortMode),
+    queryKey: q,
     // Only when the list IS empty: the one filter whose removal brings clips back.
-    emptyHtml: () => Core.renderEmptyState({ total: items.length, query, groups, nudgeHtml: Core.renderRelaxNudge(Core.search.bestRelaxation(searchDocs, query, { searchTextLower, cache: relaxCache })) }),
+    emptyHtml: () => Core.renderEmptyState({ total: items.length, query: q, groups, nudgeHtml: Core.renderRelaxNudge(relax !== undefined ? relax : Core.search.bestRelaxation(searchDocs, q, { searchTextLower, cache: relaxCache })) }),
   });
-  recordRendererPerf('list.apply_filter', startedAt, { rendered: renderedCount(), regex: searchBox.getRegex() }, 60);
 }
 function renderedCount() { const w = clipList.window(); return w.end - w.start; }
 
@@ -299,6 +331,7 @@ function scheduleRelativeTimeRefresh() {
 // haystack (no scan of the body itself); null lets the preview search instead.
 let previewTerm = null;
 function previewMatchIndex(ri) {
+  if (regexFirst) return regexFirst.has(ri) ? regexFirst.get(ri) : -1;
   if (!previewTerm || !searchDocs[ri]) return null;
   return Core.search.bodyIndexOf(searchDocs[ri], searchTextLower[ri], previewTerm);
 }
@@ -308,7 +341,7 @@ function buildItem(it, ri) {
   // similar rows (it lives in the shared controller).
   return Core.renderClipItem(it, {
     imageSrc: item => `clip-img:///${esc(item.image)}`,
-    query,
+    query: shownQuery,
     matchIndex: previewMatchIndex(ri),
     selection: controller ? controller.selection() : null,
     actionsHtml: Core.renderClipActions(it),
@@ -318,7 +351,7 @@ function buildItem(it, ri) {
 function updateCount() {
   const total = items.length;
   const visible = filtered.length;
-  countEl.textContent = Core.itemCountLabel(total, visible, { query });
+  countEl.textContent = searchWorker.busy() ? 'Searching...' : Core.itemCountLabel(total, visible, { query });
 }
 
 // The clear / sort / mode / options buttons slide in and out with the field's

@@ -352,6 +352,9 @@
    .bc-scroll-fade, Core.createClipList); scroll-padding keeps the keyboard
    cursor out of the fades when it is scrolled into view. */
 .list { flex: 1; overflow-y: auto; padding: 0 0 var(--sp-4); min-height: 0; scroll-padding-block: 36px; }
+/* A /regex/ search still running on the search worker: the rows on screen are the last answer, not this one. */
+.list { transition: opacity var(--dur) var(--ease); }
+.list.searching { opacity: .55; }
 .item { padding: var(--sp-4) var(--gutter); cursor: pointer; transition: background-color var(--dur) var(--ease); position: relative; border-bottom: 1px solid var(--line-faint); color: inherit; }
 /* Row states: hover = the --hover overlay; the keyboard cursor (the row Enter
    pastes) = --accent-bg; a candidate duplicate of the hovered or cursor row

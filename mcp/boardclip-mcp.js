@@ -26,6 +26,7 @@ const { StdioServerTransport } = require('@modelcontextprotocol/sdk/server/stdio
 const model = require('../lib/clipboard-model');
 const textBlobStore = require('../lib/text-blob-store');
 const mcpCore = require('../lib/mcp-core');
+const { searchClipsOffThread } = require('../lib/mcp-search-thread');
 const mcpPaths = require('../lib/mcp-paths');
 const controlClient = require('../lib/control-client');
 
@@ -136,14 +137,18 @@ server.registerTool('search_clips', {
     include_unshared: z.boolean().optional(),
     limit: z.number().int().min(1).max(200).optional(),
   },
-}, async ({ query, regex, include_unshared, limit }) => {
+}, async ({ query, regex, include_unshared, limit }, extra) => {
   if (include_unshared) {
     return runForward('search_all', { query, regex: !!regex, limit: limit || mcpCore.DEFAULT_LIST_LIMIT });
   }
-  const res = mcpCore.searchClips(readHistory(), readSettings(), {
-    query, regex: !!regex, limit: limit || mcpCore.DEFAULT_LIST_LIMIT,
-  });
-  return jsonResult(res);
+  try {
+    const res = await searchClipsOffThread(readHistory(), readSettings(), {
+      query, regex: !!regex, limit: limit || mcpCore.DEFAULT_LIST_LIMIT,
+    }, { signal: extra && extra.signal });
+    return jsonResult(res);
+  } catch (error) {
+    return errorResult(error && error.message ? error.message : String(error));
+  }
 });
 
 server.registerTool('get_clip', {

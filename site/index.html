@@ -493,28 +493,54 @@
     // Rows render through the SAME shared list as the app (Core.createClipList,
     // created below): it keeps your place across every rebuild.
     let visibleRows = [];
+    // As in the app: a query with a /regex/ is searched on the shared worker
+    // (Core.createSearchWorker); the rows on screen keep the query they were
+    // found with (shownQuery) and where each regex match first sits (regexFirst).
+    let shownQuery = "";
+    let regexFirst = null;
+    const demoSearchWorker = Core.createSearchWorker({
+      onBusy: (busy) => { clipList.classList.toggle("searching", busy); clipList.setAttribute("aria-busy", busy ? "true" : "false"); if (busy) clipCount.textContent = "Searching..."; },
+    });
     function renderClipRow(clip) {
+      const id = Core.itemId(clip);
       return Core.renderClipItem(clip, {
         imageSrc: item => item.imageSrc,
-        query: state.query,
+        query: shownQuery,
+        ...(regexFirst ? { matchIndex: regexFirst.has(id) ? regexFirst.get(id) : -1 } : {}),
         selection: controller ? controller.selection() : null,
         actionsHtml: Core.renderClipActions(clip),
       });
     }
     function renderClips() {
-      const visible = Core.filterItems(clips, state);
-      clipCount.textContent = Core.itemCountLabel(clips.length, visible.length, state);
       updateClearControls();
       updateDemoSortButton(); // defined below; renderClips first runs at the bottom of this script
       renderFilterChips();
       renderDemoSettings();
+      const q = state.query;
+      if (Core.search.hasRegexTerm(Core.search.parseQuery(q))) {
+        const list = clips;
+        demoSearchWorker.search({ docs: demoSearchDocs(), query: q, sortMode: state.sortMode, now: Date.now() }, (r) => {
+          if (list !== clips) { renderClips(); return; } // the clips moved on: search again
+          regexFirst = new Map(r.indexes.map((i, k) => [Core.itemId(list[i]), r.first[k]]));
+          showDemoRows(q, r.indexes.map((i) => list[i]), r.relax);
+        });
+        return;
+      }
+      demoSearchWorker.cancel();
+      regexFirst = null;
+      showDemoRows(q, Core.filterItems(clips, state));
+    }
+    // relax: the worker's empty-result nudge (a regex query), else worked out here.
+    function showDemoRows(q, visible, relax) {
+      shownQuery = q;
+      clipCount.textContent = Core.itemCountLabel(clips.length, visible.length, { query: q });
       visibleRows = visible;
       demoList.update({
         ids: visible.map((clip) => Core.itemId(clip)),
         tsAt: (i) => Number(visible[i] && visible[i].ts) || 0,
-        mode: Core.search.rankMode(Core.search.parseQuery(state.query), state.sortMode),
-        queryKey: state.query,
-        emptyHtml: () => Core.renderEmptyState({ total: clips.length, query: state.query, groups: labels, nudgeHtml: Core.renderRelaxNudge(Core.search.bestRelaxation(demoSearchDocs(), state.query, { cache: demoRelaxCache })) }),
+        mode: Core.search.rankMode(Core.search.parseQuery(q), state.sortMode),
+        queryKey: q,
+        emptyHtml: () => Core.renderEmptyState({ total: clips.length, query: q, groups: labels, nudgeHtml: Core.renderRelaxNudge(relax !== undefined ? relax : Core.search.bestRelaxation(demoSearchDocs(), q, { cache: demoRelaxCache })) }),
       });
     }
 

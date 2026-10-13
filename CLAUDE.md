@@ -430,10 +430,12 @@ build could re-trigger the race.
   route mousedown. Both consumers must wire mousedown + mouseup (ui-parity guard).
   The keepPopup gestures
   -> main's `presentSecondaryWindow` shows the window with `showInactive()` and does NOT
-  `hidePopup()`, so several results can be opened one after another; the popup still
-  blur-hides the moment the user clicks into one of the windows (that is what makes it NOT
-  "sticky" - the July complaint was a popup that ignored blur, never revisit a blur-suppress
-  flag). Keyboard opens (Ctrl/Alt+Enter) stay a hand-off: show + focus + hidePopup.
+  `hidePopup()`, so several results can be opened one after another; going INTO one of the
+  windows closes the popup (that is what makes it NOT "sticky" - the July complaint was a popup
+  that ignored blur, never revisit a blur-suppress flag). That close is each clip window's own
+  `focus` hook (`trackClipWindow`), so it works on macOS too: until 2026-10-13 the popup's blur
+  handler kept it open whenever focus went to ANY own window, so it never closed (owner: "still
+  doesnt close going to clip"). A focus within 300 ms of a keepPopup show is ignored (backstop). Keyboard opens (Ctrl/Alt+Enter) stay a hand-off: show + focus + hidePopup.
   **Where a clip window opens (2026-10-13, owner: "spawns under BC itself" / "multi spawning they
   dont stack")**: `lib/window-placement.js` (pure, `test/window-placement.test.js`) via main's
   `clipWindowBoundsFromSettings` for editor, viewer, unify and conflict: the kind's saved spot,

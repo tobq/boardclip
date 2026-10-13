@@ -4467,10 +4467,10 @@ function createPopup() {
       setTimeout(() => {
         if (Date.now() < ignoreBlurUntil || !isPopupOpen()) return;
         if (!win.isFocused()) {
-          // Focus moved to one of BoardClip's OWN windows (e.g. an editor opened
-          // from the popup)? Keep the popup open so the user can open several
-          // items in a row. It still dismisses when focus leaves to another app
-          // (getFocusedWindow() is null then) or via Escape / the close button.
+          // Focus moved to one of BoardClip's OWN windows: a clip window's own
+          // focus hook (trackClipWindow) closes the popup; any other (the AI
+          // approval prompt) leaves it open. Focus leaving to another app
+          // (getFocusedWindow() is null then) closes it here.
           const focused = BrowserWindow.getFocusedWindow();
           if (focused && focused !== win) return;
           hidePopup();
@@ -5405,9 +5405,20 @@ function restoreWindowMaximized(childWin, key, options) {
 // (lib/window-placement.js). The work area is the popup's display, else the
 // saved spot's, else the cursor's.
 const clipWindows = new Set();
+// Going INTO a clip window (clicking it, or any other way it takes the focus)
+// closes the popup, on every platform: the "open several" gestures leave the
+// popup up only while the new windows open behind the scenes (showInactive).
+// Owner 2026-10-13: "still doesnt close going to clip. inconsisnte" - the
+// popup's blur handler kept it open whenever the focus went to one of our own
+// windows, and macOS has no blur-to-hide at all.
+let clipFocusHideHeldUntil = 0;
 function trackClipWindow(childWin) {
   clipWindows.add(childWin);
   try { placedBounds.set(childWin, childWin.getBounds()); } catch {}
+  childWin.on('focus', () => {
+    if (Date.now() < clipFocusHideHeldUntil || !isPopupOpen()) return;
+    hidePopup();
+  });
   childWin.once('closed', () => clipWindows.delete(childWin));
 }
 function clipWindowBoundsFromSettings(key, defaults, options) {
@@ -5525,6 +5536,9 @@ function sourceGroupsForNewNote(options) {
 function presentSecondaryWindow(targetWin, options = {}) {
   if (!targetWin || targetWin.isDestroyed()) return;
   if (options && options.keepPopup) {
+    // Backstop: a focus event the inactive show raises on its own must not
+    // close the popup the user is still opening clips from.
+    clipFocusHideHeldUntil = Date.now() + 300;
     targetWin.showInactive();
     if (typeof targetWin.moveTop === 'function') { try { targetWin.moveTop(); } catch {} }
     return;

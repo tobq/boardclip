@@ -7,6 +7,7 @@
 // no system clipboard, no focus taken):
 // 1. middle-clicking several notes with the popup up opens each BESIDE the
 //    popup, never under it, each on its own cascade spot, and the popup stays;
+//    Going into one of those windows then closes the popup;
 // 2. a plain click on the clip menu's "Open in editor" closes the popup, like
 //    the row's own open button;
 // 3. with the popup gone, editors opened from the same saved spot cascade.
@@ -57,6 +58,19 @@ async function main() {
     const spots = new Set(kept.map((b) => `${b.x},${b.y}`));
     check(spots.size === kept.length, `each editor has its own cascade spot: ${[...spots].join(' ')}`);
 
+    // 1b. Going into one of those windows closes the popup ("still doesnt close
+    // going to clip"). The sandbox never hands a window the real focus, so the
+    // focus event a click would raise is emitted here.
+    await qa.sleep(400);
+    await sb.mainEval(`(() => { const w = __qa.electron.BrowserWindow.getAllWindows().find((x) => !x.isDestroyed() && /editor\\.html/.test(x.webContents.getURL())); w.emit('focus'); return true; })()`);
+    await qa.waitFor(() => hides() === 1, 'popup closed on going into a clip window', 5000).catch(() => {});
+    check(hides() === 1, 'going into a window opened with the popup up closes the popup');
+    // Open the popup again for the next step.
+    const shows = () => sb.diagnostics().filter((e) => e.event === 'popup.show').length;
+    const shown = shows();
+    await sb.mainEval(`(__qa.electron.app.emit('second-instance', {}, [], process.cwd()), true)`);
+    await qa.waitFor(() => shows() > shown, 'popup open again', 10000);
+
     // 2. The clip menu's Open in editor is a hand-off: the popup closes.
     const menuOpened = await popup.eval(`(async () => {
       const row = document.querySelector('#list [data-id="${ids[4]}"]');
@@ -71,8 +85,8 @@ async function main() {
     })()`);
     check(menuOpened === 'clicked', `the clip menu offers Open in editor (${menuOpened})`);
     await qa.waitFor(async () => (await editors()).length === kept.length + 1, 'menu open', 15000);
-    await qa.waitFor(() => hides() > 0, 'popup closed after the menu open', 5000).catch(() => {});
-    check(hides() > 0, "a plain click on the menu's Open in editor closes the popup, like the row button");
+    await qa.waitFor(() => hides() > 1, 'popup closed after the menu open', 5000).catch(() => {});
+    check(hides() > 1, "a plain click on the menu's Open in editor closes the popup, like the row button");
     const handed = (await editors()).find((b) => !kept.some((k) => k.x === b.x && k.y === b.y));
     check(handed && handed.x === SAVED.x && handed.y === SAVED.y, `with the popup closing, the window opens at its saved spot: ${J(handed)}`);
 

@@ -220,7 +220,7 @@
         check: state === 'include',
         label: node.label || group,
         hint: disabled ? '' : String(count),
-        cls: `group-filter-row${state === 'exclude' ? ' excluded' : ''}${disabled ? ` is-disabled${v.kind === 'structural' ? ' dis-structural' : ''}` : ''}`,
+        cls: `group-filter-row group-name${state === 'exclude' ? ' excluded' : ''}${disabled ? ` is-disabled${v.kind === 'structural' ? ' dis-structural' : ''}` : ''}`,
         attrs: { 'data-group': group, title, 'aria-disabled': disabled ? 'true' : null },
       };
       return hasChildren
@@ -1166,7 +1166,7 @@
       const group = normalizeTagName(node && node.name);
       if (!group) return '';
       const [icon, checked] = MEMBERSHIP_GLYPH[state(group)] || MEMBERSHIP_GLYPH.none;
-      const row = { icon, check: true, label: node.label || group, role: 'menuitemcheckbox', attrs: { 'data-action': action, 'data-group': group, 'aria-checked': checked, title: group } };
+      const row = { icon, check: true, label: node.label || group, cls: 'group-name', role: 'menuitemcheckbox', attrs: { 'data-action': action, 'data-group': group, 'aria-checked': checked, title: group } };
       return node.children && node.children.length
         ? submenuNodeHtml(row, renderGroupChecklist(node.children, state, action))
         : menuRowHtml(row);
@@ -4986,18 +4986,19 @@
         refresh();
         return true;
       }
-      // The row's primary open button is the "normal" open: a hand-off (the
-      // popup closes, like before). Only the detached "..."/right-click MENU's
-      // Open in editor / Open image keeps the popup, alongside middle/alt-click.
-      const fromMenu = !!t.closest('.bc-menu-item');
+      // A plain click on any Open (the row's own open button or the clip menu's
+      // Open in editor / Open image) is a hand-off: the window takes the focus
+      // and the popup closes. Only the "open several" gestures keep the popup:
+      // middle-click, right-click on the open button, Alt+click (owner
+      // 2026-10-13: "when i click on note, bc doesnt close... inconsisntent").
       const openImg = t.closest('[data-action="open-img"]');
-      if (openImg) { event.stopPropagation(); await a.openImage(a.itemById(openImg.dataset.id), fromMenu ? KEEP_POPUP : undefined); return true; }
+      if (openImg) { event.stopPropagation(); await a.openImage(a.itemById(openImg.dataset.id)); return true; }
       const openImgExt = t.closest('[data-action="open-img-ext"]');
       if (openImgExt) { event.stopPropagation(); if (a.openImageExternal) await a.openImageExternal(a.itemById(openImgExt.dataset.id)); return true; }
       const saveImg = t.closest('[data-action="save-img"]');
       if (saveImg) { event.stopPropagation(); toast(await a.saveImage(a.itemById(saveImg.dataset.id))); return true; }
       const edit = t.closest('[data-action="edit"]');
-      if (edit) { event.stopPropagation(); await a.editClip(edit.dataset.id, edit.closest('.item'), fromMenu ? KEEP_POPUP : undefined); return true; }
+      if (edit) { event.stopPropagation(); await a.editClip(edit.dataset.id, edit.closest('.item')); return true; }
       const rename = t.closest('[data-action="rename"]');
       if (rename) { event.stopPropagation(); await renameClip(rename.dataset.id); return true; }
       const revert = t.closest('[data-action="revert"]');

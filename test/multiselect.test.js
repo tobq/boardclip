@@ -194,9 +194,9 @@ const read = (rel) => fs.readFileSync(path.join(__dirname, '..', rel), 'utf8');
     assert.strictEqual(lastEdit, 'txt1', 'middle-click on text row calls editClip');
     assert.deepStrictEqual(lastEditOpts, { keepPopup: true }, 'middle-click keeps the popup open (mouse-driven open)');
 
-    // (d) The row's primary open button (data-action=edit, NOT inside the menu) is
-    //     the normal open: a hand-off with no keepPopup. The same action fired from
-    //     a detached menu item keeps the popup.
+    // (d) A plain click on any Open is a hand-off with no keepPopup: the row's
+    //     own open button AND the clip menu's Open in editor / Open image (owner
+    //     2026-10-13: the menu's open kept the popup up, "inconsisntent").
     function makeActionEvent(action, { fromMenu = false, id = 'txt1' } = {}) {
       const row = { dataset: { id }, closest(sel) { return sel === '.item' ? this : null; } };
       const btn = { dataset: { id }, closest(sel) {
@@ -214,14 +214,14 @@ const read = (rel) => fs.readFileSync(path.join(__dirname, '..', rel), 'utf8');
     lastEdit = null; lastEditOpts = null;
     await c.onClick(makeActionEvent('edit', { fromMenu: true }));
     assert.strictEqual(lastEdit, 'txt1', 'menu Open in editor opens the editor');
-    assert.deepStrictEqual(lastEditOpts, { keepPopup: true }, 'menu Open in editor keeps the popup');
+    assert.strictEqual(lastEditOpts, null, 'menu Open in editor is a hand-off like the row button');
     lastOpen = null; lastOpenOpts = null;
     await c.onClick(makeActionEvent('open-img', { id: 'img1' }));
     assert.deepStrictEqual(lastOpen, imgItem, 'row open-image button opens the viewer');
     assert.strictEqual(lastOpenOpts, null, 'row open-image button is a hand-off');
     lastOpen = null; lastOpenOpts = null;
     await c.onClick(makeActionEvent('open-img', { id: 'img1', fromMenu: true }));
-    assert.deepStrictEqual(lastOpenOpts, { keepPopup: true }, 'menu Open image keeps the popup');
+    assert.strictEqual(lastOpenOpts, null, 'menu Open image is a hand-off like the row button');
 
     // (e) Middle-click = armed mousedown (default prevented: no autoscroll widget)
     //     + in-place mouseup on the same row -> open with keepPopup. A dragged

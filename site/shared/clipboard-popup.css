@@ -316,7 +316,13 @@
               display: inline-flex; align-items: center; gap: var(--sp-1); vertical-align: top; font-family: inherit; }
 .filter-tag.icon-filter { min-width: var(--ctl-sm); height: var(--ctl-sm); justify-content: center; padding: 0 var(--sp-2); }
 .filter-tag:hover { background: var(--hover); color: var(--text); }
-.filter-tag.group-tag, .filter-tag.group-tag:hover { color: var(--accent-text); }
+/* A group name reads in the accent text shade wherever it shows: its chip, a
+   clip's meta line and window bar, every group picker and chip dropdown row,
+   Settings > Groups (owner 2026-10-09 on the chips: "too hard to see before
+   selected"; 2026-10-13: "blue tags should be consistent everywhere"). Hover
+   keeps the colour (the wash says hover); a picked chip's fill and an excluded
+   name's strike override it. */
+.filter-tag.group-tag, .filter-tag.group-tag:hover, .meta-tags > .meta-tag, .bc-menu-item.group-name > .bc-menu-label, .group-row .si-name { color: var(--accent-text); }
 .filter-tag.active, .filter-tag.active:hover { background: var(--accent); color: var(--active-fg); --icon-fill: 1; }
 .filter-tag.active:hover { background: var(--accent-hover); }
 .filter-tag.excluded { color: var(--text-dim); text-decoration: line-through; text-decoration-thickness: 1px; opacity: .6; }
@@ -414,7 +420,7 @@
 /* A group chip's dropdown holds menu rows (renderTagTreeMenuNode, depth > 0):
    an excluded group is struck through like its chip, a greyed one dims in the
    chips' two tiers, and a parent row stays lit while its submenu is out. */
-.bc-menu-item.excluded > .bc-menu-label { text-decoration: line-through; }
+.bc-menu-item.excluded > .bc-menu-label { color: var(--text-dim); text-decoration: line-through; }
 .bc-menu-item.is-disabled { opacity: .4; cursor: default; }
 .bc-menu-item.is-disabled.dis-structural { opacity: .25; }
 .bc-menu-item.is-disabled:hover { background: none; }
@@ -494,7 +500,8 @@
    at the last name and the + follows it instead of the box's far edge. */
 .item:hover .meta-tag.meta-cut, .item:focus-within .meta-tag.meta-cut, .item.actions-held .meta-tag.meta-cut { display: none; }
 .meta-tag { display: block; flex: 0 1 auto; min-width: 0; max-width: 140px; overflow: hidden; text-overflow: ellipsis; }
-.meta-np:hover, .meta-tag:hover, .meta-ghost:hover { color: var(--text); background: var(--hover); }
+.meta-np:hover, .meta-ghost:hover { color: var(--text); }
+.meta-np:hover, .meta-tag:hover, .meta-ghost:hover { background: var(--hover); }
 .meta-ghost { display: inline-flex; align-items: center; justify-content: center; width: var(--meta-h); padding: 0; }
 .meta-ghost .mi { font-size: var(--icon-sm); }
 .meta > .meta-reveal, .bc-tag-strip > .meta-reveal { margin-left: calc(-1 * var(--sp-3)); --reveal-gap: var(--sp-3); }

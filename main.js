@@ -14,6 +14,7 @@ const macPaste = require('./lib/macos-paste');
 const winClipboard = require('./lib/windows-clipboard');
 const { createQuickPaster } = require('./lib/quick-paste');
 const { createClipboardFollower } = require('./lib/clipboard-follow');
+const { placeClipWindowBounds } = require('./lib/window-placement');
 const { dragFileNames } = require('./lib/drag-files');
 const { createHistoryFeed } = require('./lib/history-feed');
 // Shared UI core (pure UMD, no DOM at load): main reuses its chord tests.
@@ -5359,6 +5360,7 @@ function windowBoundsFromSettings(key, defaults) {
   return out;
 }
 const saveBoundsTimers = new Map();
+const placedBounds = new WeakMap(); // clip window -> the bounds it was opened at
 function scheduleWindowBoundsSave(childWin, key) {
   if (!childWin || childWin.isDestroyed()) return;
   const prior = saveBoundsTimers.get(key);
@@ -5368,6 +5370,14 @@ function scheduleWindowBoundsSave(childWin, key) {
     if (!childWin || childWin.isDestroyed()) return;
     const maximized = childWin.isMaximized() || childWin.isFullScreen();
     const { x, y, width, height } = maximized ? childWin.getNormalBounds() : childWin.getBounds();
+    // A window still where it was placed (a cascade step, beside the popup)
+    // never becomes the saved spot: only a move or resize by the user does, so
+    // untouched windows do not drift the next one's start.
+    const placed = placedBounds.get(childWin);
+    const savedNow = settings[key] || {};
+    if (placed && placed.x === x && placed.y === y && placed.width === width && placed.height === height
+      && maximized === (savedNow.maximized === true)) return;
+    placedBounds.delete(childWin);
     settings[key] = { x, y, width: Math.max(360, width), height: Math.max(240, height), maximized };
     saveSettingsFile({ localOnly: true });
   }, 300);
@@ -5389,15 +5399,45 @@ function restoreWindowMaximized(childWin, key, options) {
   if (!saved || saved.maximized !== true || (options && options.keepPopup)) return;
   try { childWin.maximize(); } catch {}
 }
-function editorBoundsFromSettings() { return windowBoundsFromSettings('editor_bounds', { width: 560, height: 520 }); }
+// Every clip window (editor, viewer, unify, conflict) opens at its kind's saved
+// bounds, then cascades past the clip windows already showing and, when the
+// popup stays up (keepPopup), goes beside the popup instead of under it
+// (lib/window-placement.js). The work area is the popup's display, else the
+// saved spot's, else the cursor's.
+const clipWindows = new Set();
+function trackClipWindow(childWin) {
+  clipWindows.add(childWin);
+  try { placedBounds.set(childWin, childWin.getBounds()); } catch {}
+  childWin.once('closed', () => clipWindows.delete(childWin));
+}
+function clipWindowBoundsFromSettings(key, defaults, options) {
+  const base = windowBoundsFromSettings(key, defaults);
+  const keepPopup = !!(options && options.keepPopup) && isPopupOpen();
+  const avoid = keepPopup && win && !win.isDestroyed() ? win.getBounds() : null;
+  const anchor = avoid
+    ? { x: avoid.x + Math.round(avoid.width / 2), y: avoid.y + Math.round(avoid.height / 2) }
+    : Number.isFinite(base.x) ? { x: base.x + Math.round(base.width / 2), y: base.y + Math.round(base.height / 2) }
+      : screen.getCursorScreenPoint();
+  const area = screen.getDisplayNearestPoint(anchor).workArea;
+  const taken = [];
+  for (const other of clipWindows) {
+    try {
+      if (other.isDestroyed() || !other.isVisible() || other.isMinimized() || other.isMaximized()) continue;
+      const b = other.getBounds();
+      taken.push({ x: b.x, y: b.y });
+    } catch {}
+  }
+  return placeClipWindowBounds(base, { area, taken, avoid });
+}
+function editorBoundsFromSettings(options) { return clipWindowBoundsFromSettings('editor_bounds', { width: 560, height: 520 }, options); }
 // The merge windows (unify, conflict) keep their own size: two or three panes
 // with a head each need width a plain editor does not (and a widened unify
 // must not leave the next editor wide).
-function mergeBoundsFromSettings() { return windowBoundsFromSettings('merge_bounds', { width: 780, height: 560 }); }
+function mergeBoundsFromSettings(options) { return clipWindowBoundsFromSettings('merge_bounds', { width: 780, height: 560 }, options); }
 
 function createEditorWindow(session, presentOptions = {}) {
   const editorWin = new BrowserWindow({
-    ...editorBoundsFromSettings(),
+    ...editorBoundsFromSettings(presentOptions),
     minWidth: 360,
     minHeight: 240,
     resizable: true,
@@ -5414,6 +5454,7 @@ function createEditorWindow(session, presentOptions = {}) {
     },
   });
   noteSecondarySurface(editorWin);
+  trackClipWindow(editorWin);
   session.win = editorWin;
   editorWin.loadFile(path.join(SCRIPT_DIR, 'editor.html'));
   // Show + focus the editor, then dismiss the popup so it doesn't linger behind
@@ -5477,7 +5518,7 @@ function sourceGroupsForNewNote(options) {
 // Bring an editor/viewer window on screen. Default = a deliberate hand-off: the
 // window takes focus and the popup is dismissed (a popup lingering behind the
 // editor felt "sticky" - you had to click back to it + Escape). With
-// options.keepPopup (mouse-driven opens: middle-click, alt+click, the row menu)
+// options.keepPopup (the "open several" gestures: middle-click, right-click on the open button, alt+click)
 // the window is shown WITHOUT activating and the popup stays where it is, so
 // several results can be opened one after another; the popup still hides on
 // its own blur the moment the user clicks into one of the windows.
@@ -5648,7 +5689,7 @@ function openImageViewer(id, options = {}) {
     return;
   }
   const viewerWin = new BrowserWindow({
-    ...windowBoundsFromSettings('viewer_bounds', { width: 720, height: 560 }),
+    ...clipWindowBoundsFromSettings('viewer_bounds', { width: 720, height: 560 }, options),
     minWidth: 360,
     minHeight: 240,
     resizable: true,
@@ -5665,6 +5706,7 @@ function openImageViewer(id, options = {}) {
     },
   });
   noteSecondarySurface(viewerWin);
+  trackClipWindow(viewerWin);
   viewerWindows.set(key, viewerWin);
   viewerWin.loadFile(path.join(SCRIPT_DIR, 'viewer.html'));
   viewerWin.once('ready-to-show', () => {
@@ -5821,6 +5863,7 @@ function openConflictWindow(conflictId) {
     },
   });
   noteSecondarySurface(conflictWin);
+  trackClipWindow(conflictWin);
   conflictWindows.set(id, conflictWin);
   const sessionId = `conflict:${id}`;
   conflictWin.loadFile(path.join(SCRIPT_DIR, 'editor.html'));
@@ -5938,6 +5981,7 @@ function openUnifyWindow(session) {
     },
   });
   noteSecondarySurface(unifyWin);
+  trackClipWindow(unifyWin);
   session.win = unifyWin;
   unifyWin.loadFile(path.join(SCRIPT_DIR, 'editor.html'));
   unifyWin.once('ready-to-show', () => {

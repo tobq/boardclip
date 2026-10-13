@@ -915,12 +915,12 @@ const siteCss = read('site/styles.css');
   assert.ok(!/is-disabled/.test(ui.renderFilterBar({ items: [], groups: ['Nope'], query: '', census })), 'with no other filter an empty group stays a live chip');
   // A group chip's dropdown holds the shared menu rows, filtering like chips.
   const dd = ui.renderFilterBar({ items: [], groups: ['Work', 'Work/Clients'], query: '' });
-  assert.ok(/<button class="bc-menu-item group-filter-row"[^>]*data-group="Work\/Clients"/.test(dd) && !/<span class="filter-tag[^"]*"[^>]*data-group="Work\/Clients"/.test(dd), 'a chip dropdown row is the shared menu row, not a chip');
+  assert.ok(/<button class="bc-menu-item group-filter-row group-name"[^>]*data-group="Work\/Clients"/.test(dd) && !/<span class="filter-tag[^"]*"[^>]*data-group="Work\/Clients"/.test(dd), 'a chip dropdown row is the shared menu row, not a chip');
   // The cluster holds exactly the values in the query: a selected or excluded
   // sub-group is its own chip there, under its full name (its parent stays with
   // the rest, and the parent's dropdown row shows the same state).
   const sub = ui.renderFilterBar({ items: [], groups: ['Work', 'Work/Clients'], excludedFilters: new Set(['Work/Clients']), query: '-group:Work/Clients' });
-  assert.ok(/<span class="filter-tag[^"]*"[^>]*data-group="Work\/Clients"[^>]*>[^]*?Work\/Clients/.test(sub) && /<button class="bc-menu-item group-filter-row excluded"[^>]*data-group="Work\/Clients"/.test(sub),
+  assert.ok(/<span class="filter-tag[^"]*"[^>]*data-group="Work\/Clients"[^>]*>[^]*?Work\/Clients/.test(sub) && /<button class="bc-menu-item group-filter-row group-name excluded"[^>]*data-group="Work\/Clients"/.test(sub),
     'an excluded sub-group is a cluster chip with its full name, and its row in the parent dropdown is excluded too');
   assert.ok(/FILTER_TARGET = [^;]*\.group-filter-row\[data-group\]/.test(coreSrc), 'dropdown rows filter like chips (click includes, right-click excludes)');
   const tiers = rules(popupCss);

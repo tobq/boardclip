@@ -61,7 +61,7 @@
   QA: `qa-ui-shots --only popup-copy` (fails with the guard removed).
 - **The UI is moving to React + Tailwind on @twoshot/ui-kit (ticket 2026-10-11)**: ONE migration, with
   Forge's menu/selection family lifted into the kit:
-  [BoardClip on React + shared ui-kit menus](https://forge.teraplex.io/#/c/forge/017929b2-9222-44fc-87c0-feca12cb1d7d),
+  [BoardClip on React + shared ui-kit menus](https://forge.fast/#/c/forge/017929b2-9222-44fc-87c0-feca12cb1d7d),
   spec `REACT-MIGRATION-PLAN.md`. Group-picker type-to-filter (decided behaviour in the spec) lands
   there; do not add vanilla UI the migration would delete.
 - **Editor clipboard follow (`lib/clipboard-follow.js`, 2026-10-07)**: while the clipboard holds an open
@@ -420,10 +420,10 @@ build could re-trigger the race.
 - **Confirm dialog** shared between numpad reassign, group delete, and clear all
 - **Opening a clip in the editor/viewer from the popup (2026-09-02/03):** "open several" gestures
   pass `{ keepPopup: true }`: middle-click or RIGHT-click on the row's own open button (the owner's
-  actual ask - right-click there opens, it never shows the row menu), middle-click / alt+click on
-  the row body, and the detached right-click/"..." menu's Open in editor / Open image (detected via
-  `.bc-menu-item`). A NORMAL click on the row's open button and Ctrl/Alt+Enter stay a hand-off
-  (popup closes). middle-click is `controller.onMousedown` (prevents the
+  actual ask - right-click there opens, it never shows the row menu) and middle-click / alt+click on
+  the row body. EVERY plain click on an Open is a hand-off (popup closes): the row's open button,
+  the clip menu's Open in editor / Open image (it kept the popup until 2026-10-13, owner: "when i
+  click on note, bc doesnt close... inconsisntent"), Ctrl/Alt+Enter. middle-click is `controller.onMousedown` (prevents the
   default: the ONLY way to stop Chromium's autoscroll widget, measured) + `controller.onMouseup`
   (opens on an in-place release; a preventDefault'ed middle mousedown makes Chromium SKIP
   `auxclick`, measured 2026-09-03) - `onAuxclick` is only a fallback for consumers that don't
@@ -434,6 +434,15 @@ build could re-trigger the race.
   blur-hides the moment the user clicks into one of the windows (that is what makes it NOT
   "sticky" - the July complaint was a popup that ignored blur, never revisit a blur-suppress
   flag). Keyboard opens (Ctrl/Alt+Enter) stay a hand-off: show + focus + hidePopup.
+  **Where a clip window opens (2026-10-13, owner: "spawns under BC itself" / "multi spawning they
+  dont stack")**: `lib/window-placement.js` (pure, `test/window-placement.test.js`) via main's
+  `clipWindowBoundsFromSettings` for editor, viewer, unify and conflict: the kind's saved spot,
+  cascading 28 px past any clip window already showing there (wraps inside the work area); a
+  keepPopup open whose spot is under the popup (always on top, so it was hidden) goes beside the
+  popup and fans out away from it. A window still where it was placed never saves its bounds
+  (`placedBounds`): only a user move/resize sets the saved spot, else untouched cascades drifted
+  the next start. QA: `node scripts/qa-window-spawn.js` (it counts `popup.hide` diagnostics: a
+  parked popup stays isVisible()).
 - **Settings auto-save** — max age/size save on input change, no Save button
 - **`saveSettingsFile({ localOnly: true })`** for per-machine keys (popup/editor/viewer geometry, and a
   `save-settings` body made only of `LOCAL_ONLY_SETTING_KEYS`, e.g. `image_preview_height`): writes the
@@ -1050,7 +1059,8 @@ clear-all). All popup CSS + theme variables live in `site/shared/clipboard-popup
   / `.sm`; `.btn.quiet.sm.accent` = every accent text action: Undo, "Did you mean", Accept, the
   merge note; `.btn.discard` = red on hover), `.icon-btn` (hovers `--text` + `--hover`, `.danger`
   = red + `--red-bg`; accent is never a hover colour), `.bc-menu-item` (every menu / submenu /
-  picker / suggest row), `.filter-tag` chip (idle group chips in `--accent-text`, a picked chip a solid
+  picker / suggest row), `.filter-tag` chip (idle group chips in `--accent-text`, as is EVERY group name: meta line, window bar,
+  pickers, chip dropdown rows, Settings > Groups, one rule; owner 2026-10-13 "blue tags should be consistent everywhere"; a picked chip a solid
   `--accent` fill with `--active-fg`: owner 2026-10-09, dim grey chips were "too hard to see"), `.overline` (uppercase SECTION heading) vs `.bc-label`
   (sentence-case label for a control group / pane: options rows, settings list titles, merge
   heads), `.bc-bar` window bar (every clip window + the approval prompt), one scrollbar, one

@@ -402,29 +402,12 @@
 .np-btn.current { background: var(--accent-bg); color: var(--accent-text); font-weight: var(--fw-strong); }
 .np-btn.current:hover { background: var(--accent-bg-strong); }
 .bc-menu.bc-keypad, .bc-menu .tag-submenu.bc-keypad { min-width: 0; }
-.filter-tag.virtual { opacity: .82; font-style: italic; }
 .tag-caret { flex: 0 0 auto; font-size: var(--icon-md); line-height: 1; opacity: .72; margin-left: auto; }
-.filter-tag .tag-caret { margin-left: var(--sp-1); margin-right: calc(-1 * var(--sp-1)); }
 .tag-label { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; line-height: var(--lh-ui); }
 .tag-menu-node { position: relative; display: block; }
-.group-filters > .tag-menu-node { display: inline-flex; }
-.tag-submenu { display: none; position: absolute; top: 100%; left: 0; min-width: 150px; max-width: 240px; z-index: 70; }
-.tag-menu-node:hover > .tag-submenu, .tag-menu-node:focus-within > .tag-submenu { display: block; }
-.tag-submenu .tag-submenu { top: calc(-1 * var(--sp-2)); left: calc(100% - 1px); }
-/* A chip's submenu in the top layer (popover="manual", placed and shown by
-   installSubmenuAutoflip): its own box, and shown only while it is open (the
-   :hover rule above would otherwise show it in place inside the strip). */
-.group-filters .tag-menu-node > .tag-submenu[popover] { position: fixed; inset: auto; margin: 0; border: 0; overflow: visible; color: inherit; }
-.group-filters .tag-menu-node > .tag-submenu[popover]:not(:popover-open) { display: none; }
-.group-filters .tag-menu-node > .tag-submenu[popover]:popover-open { display: block; }
-/* A group chip's dropdown holds menu rows (renderTagTreeMenuNode, depth > 0):
-   an excluded group is struck through like its chip, a greyed one dims in the
-   chips' two tiers, and a parent row stays lit while its submenu is out. */
-.bc-menu-item.excluded > .bc-menu-label { color: var(--text-dim); text-decoration: line-through; }
-.bc-menu-item.is-disabled { opacity: .4; cursor: default; }
-.bc-menu-item.is-disabled.dis-structural { opacity: .25; }
-.bc-menu-item.is-disabled:hover { background: none; }
-.group-filters .tag-menu-node:hover > .bc-menu-item { background: var(--menu-hover); }
+/* Every submenu sits in a menu (.bc-menu .tag-submenu places it beside its row). */
+.tag-submenu { display: none; position: absolute; min-width: 150px; max-width: 240px; z-index: 70; }
+.tag-menu-node:hover > .tag-submenu { display: block; }
 .content { flex: 1; min-width: 0; }
 /* Row anatomy (Core.renderClipItem): the primary line (a real title at the
    strong weight, or an untitled clip's first line at the regular weight), the
@@ -1040,6 +1023,11 @@ input.bc-bar-title::placeholder { color: var(--text-dim); font-weight: var(--fw-
 .bc-menu-hint { flex-shrink: 0; color: var(--text-dim); font-size: var(--fs-meta); font-variant-numeric: tabular-nums; }
 .bc-menu-item > .tag-caret { margin-left: 0; font-size: var(--icon-sm); color: var(--text-dim); opacity: 1; }
 .bc-menu-sep { height: 1px; margin: var(--sp-2) 0; background: var(--line); }
+/* A group list's tag rows are their own part: once the window cannot hold
+   them all it scrolls (Core.capGroupRows sets its max-height from the window,
+   Core.attachScrollFade fades its edges), with "New group..." below it, always
+   in view. */
+.bc-group-rows { overflow-y: auto; overscroll-behavior: contain; }
 /* A submenu opens beside its row (the row and its .tag-submenu share one
    .tag-menu-node): on hover, or .open from the keyboard (Right / Enter). Focus
    on a parent row alone does not open it. */

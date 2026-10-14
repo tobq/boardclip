@@ -76,6 +76,10 @@
             <dt><kbd>Numpad 1-9</kbd></dt>
             <dd>Paste a numpad slot without opening the popup. <span class="dim">On a Mac: <kbd>Cmd</kbd><kbd>Option</kbd><kbd>1-9</kbd></span></dd>
           </div>
+          <div>
+            <dt><kbd>Win</kbd><kbd>N</kbd></dt>
+            <dd>A new note, from any app. <span class="dim">On a Mac: record a shortcut in Settings</span></dd>
+          </div>
         </dl>
 
         <div class="get" id="download">
@@ -164,7 +168,7 @@
         </div>
         <div>
           <dt><span class="mi spec-icon" aria-hidden="true">star</span>Pins, groups and titles</dt>
-          <dd>Pinned clips never expire. Groups nest with a slash, like work/api, and any clip can carry a title, so a snippet you keep reads as a note rather than a fragment.</dd>
+          <dd>Pinned clips never expire. A clip can sit in several groups (type <code>work, api</code> to add both), and any clip can carry a title, so a snippet you keep reads as a note rather than a fragment.</dd>
         </div>
         <div>
           <dt><span class="mi spec-icon" aria-hidden="true">image</span>Images</dt>
@@ -344,7 +348,11 @@
       }
     };
     const DEMO_SHOTS = ["assets/demo-shot-waveform.svg", "assets/demo-shot-dashboard.svg", "assets/demo-shot-architecture.svg"];
-    let labels = ["work", "work/api", "work/release", "code", "code/review", "support", "ideas", "legal", "sales", "design", "finance", "ops", "personal", "release", "meeting", "writing", "bug", "social"];
+    // The tags each seed slot's clips carry, typed as in the app ("work, api"
+    // is two tags); labels is every tag once, first use first.
+    const DEMO_TAG_SLOTS = ["work", "work, api", "work, release", "code", "code, review", "support", "ideas", "legal", "sales", "design", "finance", "ops", "personal", "release", "meeting", "writing", "bug", "social"];
+    let labels = Core.search.splitTagInput(DEMO_TAG_SLOTS.join(", "));
+    const slotTags = (slot) => Core.search.splitTagInput(DEMO_TAG_SLOTS[slot % DEMO_TAG_SLOTS.length]);
     const numpadSlots = new Map([
       [0, 1],
       [5, 4],
@@ -390,8 +398,8 @@
       const isImage = Boolean(example.image) || /screenshot|image|diagram|png/i.test(text) || index % 17 === 0;
       const pin = {};
       if (numpadSlots.has(index)) pin.number = numpadSlots.get(index);
-      if (index % 11 === 0 || index < 4) pin.groups = [labels[index % labels.length]];
-      if (index % 23 === 0) pin.groups = [...new Set([...(pin.groups || []), labels[(index * 3 + 4) % labels.length]])];
+      if (index % 11 === 0 || index < 4) pin.groups = slotTags(index);
+      if (index % 23 === 0) pin.groups = [...new Set([...(pin.groups || []), ...slotTags(index * 3 + 4)])];
       if (DEMO_EXTRA_GROUPS.has(index)) pin.groups = [...new Set([...(pin.groups || []), DEMO_EXTRA_GROUPS.get(index)])];
       const hasPin = index % 19 === 0 || index < 2 || Object.keys(pin).length > 0;
       return {
@@ -411,7 +419,7 @@
     // The search box TEXT is the single source of truth (same model as the app): facets live
     // as group:/is:/num:/since: tokens inside `query`; chip state is DERIVED from it.
     const state = { query: "", sortMode: null };
-    const facetState = () => Core.search.facetState(Core.search.parseQuery(state.query));
+    const facetState = () => Core.search.facetState(Core.search.parseQuery(state.query), labels);
     const installState = { mode: "installer", downloadOS: "win" };
     const clipList = document.getElementById("clip-list");
     const clipCount = document.getElementById("clip-count");
@@ -579,6 +587,9 @@
       demoZoom.bindInput(document.getElementById("imagePreviewHeight"), document.getElementById("imagePreviewHeightReset"));
       document.getElementById("shortcutRecord").textContent = `${mod} + Shift + V`;
       document.getElementById("quickPasteRecord").textContent = `${mod} + Shift + B`;
+      const newNoteRecord = document.getElementById("newNoteShortcutRecord");
+      newNoteRecord.textContent = isMac ? "Not set" : "Win + N";
+      newNoteRecord.classList.toggle("unset", isMac);
       const providers = [
         { name: "Google Drive", path: isMac ? "~/Library/CloudStorage/GoogleDrive/BoardClip" : "G:\\My Drive\\BoardClip" },
         { name: "OneDrive", path: isMac ? "~/Library/CloudStorage/OneDrive/BoardClip" : "C:\\Users\\you\\OneDrive\\BoardClip" },
@@ -824,14 +835,24 @@
     // uses, via an adapter backed by the in-memory clips + browser APIs. Click
     // routing, confirm/prompt dialogs, numpad-replace, add-group and keyboard nav
     // therefore behave identically to the app and cannot drift.
-    function stripGroupFromClips(group) {
-      clips = clips.map((clip) => {
-        if (!clip.pin || !Array.isArray(clip.pin.groups)) return clip;
-        const groups = clip.pin.groups.filter((label) => label !== group);
-        const nextPin = { ...clip.pin };
-        if (groups.length) nextPin.groups = groups; else delete nextPin.groups;
-        return { ...clip, pin: Object.keys(nextPin).length ? nextPin : null };
-      });
+    // The demo's tags follow the app's rules through the same shared functions
+    // (Core.search.inputTagNames / tagTogglePlan, the app's tagInputNames and
+    // applyGroup* read input the same way): flat, ONE stored spelling per tag
+    // whatever the case it is typed in, and "a, b" typed in one go is two tags.
+    const storedTag = (name) => labels.find((label) => Core.search.sameTag(label, name)) || null;
+    const demoTagNames = (input) => Core.search.inputTagNames(input, labels, null, Core.search.tagSpellings([labels]));
+    // Tags that come with data (a new note's filter tags, unions) in their stored spelling.
+    const demoTagList = (names) => Core.search.expandTagNames(names, null, Core.search.tagSpellings([labels]));
+    function registerDemoTags(names) {
+      for (const name of names) if (!storedTag(name)) labels.push(name);
+    }
+    // One clip in or out of one tag (any case). True when it changed.
+    function setDemoTag(id, name, shouldHave) {
+      const clip = clips.find((item) => Core.itemId(item) === id);
+      const own = clip && Core.groupsOf(clip).find((group) => Core.search.sameTag(group, name));
+      if (!clip || !!own === !!shouldHave) return false;
+      clips = Core.toggleGroup(clips, id, own || name);
+      return true;
     }
     function closeDemoSettings() {
       settingsPanel.classList.remove("show");
@@ -851,6 +872,10 @@
       deletedToast: "Deleted",
       itemById: (id) => clips.find((item) => Core.itemId(item) === id),
       numpadMap: () => Core.numpadMap(clips),
+      // The popup's quick keys (controller.armQuickKeys): a digit does what its
+      // slot's click does here (copies it), N opens a new note.
+      quickPaste: (slot) => demoAdapter.activateClip(Core.numpadMap(clips)[slot]),
+      newNote: () => openDemoEditor(null),
       protectedGroups: () => new Set(),
       getQuery: () => state.query,
       applyFacet: (token, intent) => demoSearchBox.applyFacet(token, intent),
@@ -874,17 +899,50 @@
           return { ...clip, pin: Object.keys(pin).length ? pin : null };
         });
       },
-      toggleGroup: (id, group) => { if (!labels.includes(group)) labels.push(group); clips = Core.toggleGroup(clips, id, group); }, // matches the app's applyGroupAssign (toggles)
-      createGroup: (name) => { if (!labels.includes(name)) labels.push(name); },
-      deleteGroup: (group) => {
-        labels = labels.filter((l) => l !== group);
-        state.query = Core.search.stripFacet(state.query, { kind: "group", value: group });
+      // The app's applyGroupAssign: several tags at once are one decision (the
+      // missing ones are added; a clip that has them all loses them all).
+      toggleGroup: (id, text) => {
+        const clip = demoAdapter.itemById(id);
+        const names = clip ? demoTagNames(text) : [];
+        if (!names.length) return false;
+        const { add: added, remove: removed } = Core.search.tagTogglePlan(Core.groupsOf(clip), names);
+        registerDemoTags(added);
+        for (const name of added) setDemoTag(id, name, true);
+        for (const name of removed) setDemoTag(id, name, false);
+        return { ok: true, added, removed };
+      },
+      // The tags made (or reused, in their stored spelling), or false.
+      createGroup: (text) => {
+        const names = demoTagNames(text);
+        if (!names.length) return false;
+        registerDemoTags(names);
+        return names;
+      },
+      // ONE tag by its name (any case, never split), off every clip that had
+      // it; returns what restoreGroup (the Undo) puts back.
+      deleteGroup: (name) => {
+        const stored = storedTag(name);
+        if (!stored) return false;
+        labels = labels.filter((label) => label !== stored);
+        state.query = Core.search.stripFacet(state.query, { kind: "group", value: stored });
         if (typeof demoSearchBox !== "undefined" && demoSearchBox) demoSearchBox.setQuery(state.query);
-        stripGroupFromClips(group);
+        const ids = clips.map((clip) => Core.itemId(clip)).filter((id) => setDemoTag(id, stored, false));
+        // A deleted tag is shared with no one (made again, it starts private).
+        const shared = demoSharedGroups.delete(stored);
+        return { ok: true, name: stored, ids, shared };
+      },
+      restoreGroup: (result) => {
+        const name = Core.search.cleanTagName(result && result.name);
+        if (!name) return false;
+        registerDemoTags([name]);
+        const stored = storedTag(name);
+        for (const id of (result.ids || [])) setDemoTag(id, stored, true);
+        if (result.shared) demoSharedGroups.add(stored);
+        return true;
       },
       deleteClip: (id) => { clips = Core.deleteItem(clips, id); },
       clearUnpinned: () => { clips = clips.filter((clip) => Core.isPinned(clip)); },
-      setGroupSharedAi: (group) => { if (demoSharedGroups.has(group)) demoSharedGroups.delete(group); else demoSharedGroups.add(group); },
+      setGroupSharedAi: (group, shared) => { if (shared) demoSharedGroups.add(group); else demoSharedGroups.delete(group); }, // shared: the switch's new state
       // Copy without pasting (the controller says "Copied"). A page cannot paste
       // into another app, so the demo's click (activateClip) copies too.
       copyClip: async (id) => {
@@ -959,12 +1017,13 @@
         const present = new Set(clips.map((clip) => Core.itemId(clip)));
         clips = Core.sortItems([...clips, ...snaps.filter((snap) => !present.has(Core.itemId(snap)))]);
       },
-      groupAssignMany: (ids, group, shouldHave) => {
-        if (!labels.includes(group)) labels.push(group);
-        for (const id of ids) {
-          const clip = clips.find((item) => Core.itemId(item) === id);
-          if (clip && Core.isInGroup(clip, group) !== shouldHave) clips = Core.toggleGroup(clips, id, group);
-        }
+      // "a, b" adds (or removes) both, on every clip given.
+      groupAssignMany: (ids, text, shouldHave) => {
+        const names = demoTagNames(text);
+        if (shouldHave) registerDemoTags(names);
+        let changed = false;
+        for (const id of ids) for (const name of names) if (setDemoTag(id, name, shouldHave)) changed = true;
+        return changed;
       },
       pasteMany: async (ids) => {
         // Text-only join, matching the app's pasteMany (images can't concatenate).
@@ -976,11 +1035,7 @@
         showToast(`Pasted ${texts.length}`);
       },
       startUnify: (ids) => runDemoUnify(ids),
-      offerUndo: ({ count, undo }) => Core.showActionToast(activeToast(), {
-        message: `Deleted ${count} clip${count === 1 ? "" : "s"}`,
-        actionLabel: "Undo",
-        onAction: undo,
-      }),
+      offerUndo: ({ message, undo }) => Core.showActionToast(activeToast(), { message, actionLabel: "Undo", onAction: undo }),
       toast: (msg) => showToast(msg),
       // Commit-on-add for the demo editor's tag strip on a NEW note: commit the
       // draft through the shared editor commit (which records the created id).
@@ -1036,7 +1091,7 @@
     // kept per visitor in localStorage (the app keeps them per device).
     const DEMO_OPTIONS_HEIGHT_KEY = "boardclip-demo-options-height";
     const DEMO_REGEX_KEY = "boardclip-demo-regex";
-    const DEMO_JOINS_KEY = "boardclip-demo-joins";
+    const DEMO_JOINS_KEY = "boardclip-demo-joins-2";
     const DEMO_FIND_PREFS_KEY = "boardclip-demo-find";
     let demoOptionsHeight = 0;
     let demoRegex = false;
@@ -1050,6 +1105,15 @@
         localStorage.removeItem("boardclip-demo-search-mode");
       }
       demoRegex = localStorage.getItem(DEMO_REGEX_KEY) === "1";
+      // Several tags now join with AND by default: a remembered tag join goes,
+      // once (the old key is folded in, then removed); the kinds' join stays.
+      const oldJoins = localStorage.getItem("boardclip-demo-joins");
+      if (oldJoins !== null) {
+        localStorage.removeItem("boardclip-demo-joins");
+        const kept = { ...(JSON.parse(oldJoins) || {}) };
+        delete kept.group;
+        if (localStorage.getItem(DEMO_JOINS_KEY) === null) localStorage.setItem(DEMO_JOINS_KEY, JSON.stringify(kept));
+      }
       demoJoins = JSON.parse(localStorage.getItem(DEMO_JOINS_KEY) || "null");
     } catch {}
     const demoSearchBox = Core.attachSearchBox(search, {
@@ -1095,6 +1159,7 @@
       popupWin.close();
     }
     function openPopup() {
+      controller.armQuickKeys(); // 1-9 and N act until the first press or other key
       popupShown = true;
       updateDock();
       if (popupWin.isOpen()) popupWin.focus(); else popupWin.open();
@@ -1134,6 +1199,11 @@
     // Keyboard nav (arrows/Enter/Escape + multi-select) when focus is inside the
     // demo window, so the demo honors its own "type, press Enter, and paste" pitch.
     demoWindowEl.addEventListener("keydown", (event) => controller.onKeydown(event));
+    // Any press in the popup, the search field included, ends the quick keys.
+    // They arm when the popup opens (openPopup, which focuses its search), as
+    // the app's do; not at page load: the popup starts open but unfocused, and
+    // the click that would focus it ends them.
+    demoWindowEl.addEventListener("pointerdown", (event) => controller.onPointerdown(event), true);
 
     // ONE clip window (the editor, the image viewer, Unify), a window on the
     // page like the app's own windows: the shared Core.attachWebWindow moves,
@@ -1276,8 +1346,8 @@
       let currentId = id;
       let currentText = clip ? (clip.text || "") : "";
       let currentTitle = clip ? Core.titleOf(clip) : "";
-      const sourceGroups = id == null ? Core.sourceGroupsFromFilters(facetState().active) : [];
-      sourceGroups.forEach((group) => { if (!labels.includes(group)) labels.push(group); });
+      const sourceGroups = id == null ? demoTagList(Core.sourceGroupsFromFilters(facetState().active)) : [];
+      registerDemoTags(sourceGroups);
       retireClipView();
       demoEditorClipId = id;
       demoEditor = Core.createEditor({
@@ -1304,7 +1374,7 @@
             if (created) {
               created.title = nextTitle || undefined;
               created.titleUpdatedAt = Date.now();
-              sourceGroups.forEach((group) => { if (!Core.groupsOf(created).includes(group)) clips = Core.toggleGroup(clips, Core.itemId(created), group); });
+              sourceGroups.forEach((group) => setDemoTag(Core.itemId(created), group, true));
             }
             if (created) currentId = Core.itemId(created);
           }
@@ -1339,7 +1409,7 @@
         .sort((a, b) => (a.ts || 0) - (b.ts || 0));
       if (sources.length < 2) return;
       const total = sources.length - 1;
-      const unionGroups = new Set(sources.flatMap(Core.groupsOf));
+      const unionGroups = demoTagList(sources.flatMap(Core.groupsOf));
       let acc = clipSnapshot(sources[0]);
       let step = 0;
       retireClipView();
@@ -1352,7 +1422,8 @@
         if (created) {
           created.title = acc.title || undefined;
           created.titleUpdatedAt = Date.now();
-          for (const g of unionGroups) { if (!labels.includes(g)) labels.push(g); if (!Core.groupsOf(created).includes(g)) clips = Core.toggleGroup(clips, Core.itemId(created), g); }
+          registerDemoTags(unionGroups);
+          for (const g of unionGroups) setDemoTag(Core.itemId(created), g, true);
         }
         abort();
         renderClips();

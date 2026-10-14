@@ -514,6 +514,16 @@ async function launch(opts = {}) {
     async discovery(timeoutMs = 30000) {
       return waitFor(() => { try { return JSON.parse(fs.readFileSync(discoveryPath, 'utf8')); } catch { return null; } }, 'MCP discovery file', timeoutMs);
     },
+    // The id and expected_rev an AI client holds for a clip (lib/mcp-core's boundary):
+    // keyed with this app's own secret, a real id only while the clip is shared with
+    // AI. The renderer's id and rev are NOT what an AI holds, and the app refuses them.
+    async aiRef(item) {
+      const mcpCore = require(path.join(ROOT, 'lib', 'mcp-core.js'));
+      let stored = {};
+      try { stored = JSON.parse(fs.readFileSync(path.join(dataDir, 'clipboard-settings.json'), 'utf8')); } catch {}
+      const boundary = { ...stored, mcp_secret: (await sb.discovery()).secret };
+      return { id: mcpCore.publicId(item, boundary), expected_rev: mcpCore.publicRev(item, boundary) };
+    },
     // One MCP action through the control channel, as an AI client sends it.
     async mcp(tool, args, { client = 'QA sandbox', timeoutMs = 60000, keepalive } = {}) {
       const controlClient = require(path.join(ROOT, 'lib', 'control-client.js'));

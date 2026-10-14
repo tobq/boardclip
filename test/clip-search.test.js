@@ -292,41 +292,80 @@ const idsOf = (items, parsed, opts) => S.filterRankIndexes(items, parsed, opts).
 
 // ── the or / and of an OR dimension (the chip row's leading toggle, the panel's Type row) ──
 {
-  assert.strictEqual(S.dimConnective(S.parseQuery('group:A'), 'group'), null, 'one value: nothing to join');
+  // A lone value under "and" (tags by default) greys what "and" would empty,
+  // so its toggle always shows: the way to "or" from the chips.
+  assert.strictEqual(S.dimConnective(S.parseQuery('group:A'), 'group'), 'and', 'one tag under the default and: the toggle shows (the way to or)');
+  assert.strictEqual(S.dimConnective(S.parseQuery('group:A'), 'group', { group: 'and' }), 'and', 'a remembered and is the default and');
+  assert.strictEqual(S.dimConnective(S.parseQuery('group:A'), 'group', { group: 'or' }), 'or', 'one tag under a remembered or: the toggle shows (the way back to and)');
+  assert.strictEqual(S.dimConnective(S.parseQuery('is:text'), 'type', { type: 'and' }), 'and', 'one kind under a remembered and: the way back to or');
+  assert.strictEqual(S.dimConnective(S.parseQuery('is:text'), 'type'), null, 'one kind: kinds OR by default, nothing greyed, no toggle');
+  assert.strictEqual(S.dimConnective(S.parseQuery('num:1'), 'num'), null, 'numpad keys always OR: a lone key has nothing to flip');
   assert.strictEqual(S.dimConnective(S.parseQuery('group:A OR group:B'), 'group'), 'or');
   assert.strictEqual(S.dimConnective(S.parseQuery('group:A x group:B'), 'group'), 'and');
-  assert.strictEqual(S.dimConnective(S.parseQuery('-group:A group:B'), 'group'), null, 'an exclusion is not joined');
+  assert.strictEqual(S.dimConnective(S.parseQuery('-group:A group:B'), 'group'), 'and', 'an exclusion is not joined: B is a lone tag (under the default and)');
+  assert.strictEqual(S.dimConnective(S.parseQuery('-group:A group:B'), 'group', { group: 'or' }), 'or', 'and alone under a remembered or it shows the way back');
+  assert.strictEqual(S.dimConnective(S.parseQuery('-group:A'), 'group'), null, 'only an exclusion: nothing to join');
   assert.strictEqual(S.setDimConnective('x group:A OR group:B', 'group', 'and'), 'x group:A group:B');
   assert.strictEqual(S.setDimConnective('group:A x group:B', 'group', 'or'), 'group:A OR group:B x');
   assert.strictEqual(S.setDimConnective('is:text OR is:url', 'type', 'and'), 'is:text is:url');
   assert.strictEqual(S.setDimConnective('group:A', 'group', 'and'), 'group:A');
 }
 
-// ── the remembered or / and, and one choice per group family ──
+// ── tags AND by default (a remembered or still ORs), kinds OR; flat tags,
+//    matched in any case ──
 {
   const g = (v) => ({ kind: 'group', value: v });
-  const and = { joins: { group: 'and', type: 'and' } };
-  assert.strictEqual(S.applyFacet('group:A', g('B'), 'include'), 'group:A OR group:B', 'default: either');
-  assert.strictEqual(S.applyFacet('group:A', g('B'), 'include', and), 'group:A group:B', 'a remembered and joins the second value');
-  assert.strictEqual(S.applyFacet('group:A OR group:B', g('C'), 'include', and), 'group:A OR group:B OR group:C', 'a written OR keeps its join');
-  assert.strictEqual(S.applyFacet('is:text', { kind: 'is', value: 'url' }, 'include', and), 'is:text is:url');
+  const or = { joins: { group: 'or' } };
+  assert.strictEqual(S.applyFacet('group:A', g('B'), 'include'), 'group:A group:B', 'default: a second tag narrows (AND)');
+  assert.strictEqual(S.applyFacet('group:A', g('B'), 'include', or), 'group:A OR group:B', 'a remembered or still ORs');
+  assert.strictEqual(S.applyFacet('group:A group:B', g('C'), 'include', or), 'group:A group:B group:C', 'a written AND keeps its join');
+  assert.strictEqual(S.applyFacet('group:A OR group:B', g('C'), 'include'), 'group:A OR group:B OR group:C', 'a written OR keeps its join');
+  assert.strictEqual(S.applyFacet('is:text', { kind: 'is', value: 'url' }, 'include'), 'is:text OR is:url', 'kinds of clip stay OR');
+  assert.strictEqual(S.applyFacet('is:text', { kind: 'is', value: 'url' }, 'include', { joins: { type: 'and' } }), 'is:text is:url');
   assert.strictEqual(S.applyFacet('num:1', { kind: 'num', value: 2 }, 'include', { joins: { num: 'and' } }), 'num:1 OR num:2', 'numpad keys are never remembered as and (a clip has one key)');
-  assert.deepStrictEqual(S.normalizeJoins({ group: 'and', type: 'or', num: 'and', x: 'and' }), { group: 'and' });
+  assert.deepStrictEqual(S.normalizeJoins({ group: 'or', type: 'and', num: 'and', x: 'and' }), { group: 'or', type: 'and' });
+  assert.deepStrictEqual(S.normalizeJoins({ group: 'and', type: 'or' }), {}, 'a default is not kept (an old remembered and is the new default)');
   assert.deepStrictEqual(S.normalizeJoins(null), {});
-  // A parent absorbs its selected sub-groups; a sub-group drills down from its parent.
-  assert.strictEqual(S.applyFacet('x group:Work/Clients', g('Work'), 'include'), 'x group:Work');
-  assert.strictEqual(S.applyFacet('group:Work', g('Work/Clients'), 'include'), 'group:Work/Clients');
-  assert.strictEqual(S.applyFacet('group:Ideas OR group:Work/Clients', g('Work'), 'include'), 'group:Ideas OR group:Work', 'an OR keeps its join');
-  assert.strictEqual(S.applyFacet('group:Ideas group:Work/Clients', g('Work'), 'include'), 'group:Ideas group:Work', 'an AND keeps its join');
-  assert.strictEqual(S.applyFacet('group:Work/Clients', g('Work'), 'exclude'), '-group:Work', 'excluding a parent drops its selected sub-groups');
-  assert.strictEqual(S.applyFacet('group:Work', g('Work/Clients'), 'exclude'), 'group:Work -group:Work/Clients', 'Work except Clients');
-  assert.strictEqual(S.applyFacet('-group:Work/Clients', g('Work'), 'include'), 'group:Work -group:Work/Clients');
-  assert.strictEqual(S.applyFacet('group:Workshop', g('Work'), 'include'), 'group:Work OR group:Workshop', 'a name prefix is not a family');
-  // The census greys by the remembered join: with A selected, B counts A and B.
-  const docs = [['A'], ['B'], ['A', 'B']].map((groups, i) => S.clipToDoc({ id: `t${i}`, type: 'text', text: `c${i}`, ts: 1, pin: { groups } }));
+  assert.deepStrictEqual([S.dimJoin({}, 'group'), S.dimJoin(null, 'type'), S.dimJoin({ num: 'and' }, 'num')], ['and', 'or', 'or']);
+  // Flat: no tag absorbs another, a '/' is part of a name, a prefix is no kin.
+  assert.strictEqual(S.applyFacet('x group:todo/forge', g('todo'), 'include'), 'x group:todo group:todo/forge', 'no family absorption');
+  assert.strictEqual(S.applyFacet('group:todo', g('todo/forge'), 'include'), 'group:todo group:todo/forge');
+  assert.strictEqual(S.applyFacet('group:todo', g('todo/forge'), 'exclude'), 'group:todo -group:todo/forge');
+  assert.strictEqual(S.applyFacet('group:Workshop', g('Work'), 'include'), 'group:Work group:Workshop');
+  // A tag the query names in another case IS that chip: never added twice.
+  assert.strictEqual(S.applyFacet('group:work', g('Work'), 'include'), '', 'already included in another case: a click clears it');
+  assert.strictEqual(S.applyFacet('group:work OR group:x', g('Work'), 'include'), 'group:x');
+  assert.strictEqual(S.applyFacet('group:work', g('Work'), 'exclude'), '-group:Work');
+  assert.strictEqual(S.applyFacet('-group:WORK', g('Work'), 'exclude'), '');
+  assert.strictEqual(S.stripFacet('group:work OR group:B -group:WORK x', g('Work')), 'group:B x');
+  assert.strictEqual(S.facetTokenState(S.parseQuery('group:work'), g('Work')), 'include');
+  assert.strictEqual(S.facetTokenState(S.parseQuery('-group:work'), g('WORK')), 'exclude');
+  const state = S.facetState(S.parseQuery('group:work -group:IDEAS group:new'), ['Work', 'Ideas']);
+  assert.deepStrictEqual([[...state.active], [...state.excluded]], [['Work', 'new'], ['Ideas']], 'facetState names a tag by its stored spelling');
+  // Case-insensitive matching: group:work finds Work.
+  const items = [['Work'], ['work', 'Ideas'], ['ideas']].map((groups, i) => ({ id: `txt:c${i}`, type: 'text', text: `c${i}`, ts: 10 - i, pin: { groups } }));
+  assert.deepStrictEqual(idsOf(items, S.parseQuery('group:WORK')), ['txt:c0', 'txt:c1']);
+  assert.deepStrictEqual(idsOf(items, S.parseQuery('group:work group:ideas')), ['txt:c1'], 'two tags side by side: both');
+  assert.deepStrictEqual(idsOf(items, S.parseQuery('-group:Ideas')), ['txt:c0']);
+  // The census greys by the join: with A selected, B counts what A and B share
+  // (AND, the default), or what it adds under a remembered or.
+  const docs = [['A'], ['B'], ['A', 'B'], ['C']].map((groups, i) => S.clipToDoc({ id: `t${i}`, type: 'text', text: `c${i}`, ts: 1, pin: { groups } }));
   const p = S.parseQuery('group:A');
-  assert.strictEqual(S.facetCensus(docs, p, { groups: ['A', 'B'] }).count('group:B'), 2, 'or: what B adds');
-  assert.strictEqual(S.facetCensus(docs, p, { groups: ['A', 'B'], joins: { group: 'and' } }).count('group:B'), 1, 'and: what A and B share');
+  const groups = ['A', 'B', 'C'];
+  assert.strictEqual(S.facetCensus(docs, p, { groups }).count('group:B'), 1, 'and: what A and B share');
+  assert.strictEqual(S.facetCensus(docs, p, { groups, joins: { group: 'or' } }).count('group:B'), 2, 'or: what B adds (its own clips)');
+  let v = S.facetOptionVerdict(S.facetCensus(docs, p, { groups }), p, g('C'));
+  assert.deepStrictEqual([v.enabled, v.kind], [false, 'transient'], 'a tag AND would empty is greyed');
+  v = S.facetOptionVerdict(S.facetCensus(docs, p, { groups, joins: { group: 'or' } }), p, g('C'));
+  assert.deepStrictEqual([v.enabled, v.count], [true, 1], 'under or it adds');
+  // One census entry per tag, whatever the case of the query, the docs or the key.
+  const mixed = [['a'], ['A', 'b'], ['B']].map((gs, i) => S.clipToDoc({ id: `m${i}`, type: 'text', text: `m${i}`, ts: 1, pin: { groups: gs } }));
+  const c = S.facetCensus(mixed, S.parseQuery('group:a'), { groups: ['A', 'B', 'b'] });
+  assert.deepStrictEqual([c.count('group:B'), c.count('group:b'), S.censusKey(g('B'))], [1, 1, 'group:b']);
+  assert.ok(c.present('group:A') && c.present('group:a'));
+  assert.strictEqual(S.facetCensus(mixed, S.parseQuery(''), { groups: ['A', 'B'] }).count('group:A'), 2, 'a doc tagged a counts for A');
+  v = S.facetOptionVerdict(c, S.parseQuery('group:a'), g('A'));
+  assert.ok(v.enabled, 'the chip of a tag the query names in another case is the selection');
 }
 
 // ── autocomplete + highlight of the one language ──
@@ -485,13 +524,13 @@ const idsOf = (items, parsed, opts) => S.filterRankIndexes(items, parsed, opts).
   const D = 24 * H;
   const items = [
     textItem('a short note', { id: 'n1', ts: sec(2 * H), pin: { groups: ['Work'] } }),
-    textItem('line one\nline two\nline three', { id: 'n2', ts: sec(3 * D), pin: { groups: ['Work/Docs'] } }),
+    textItem('line one\nline two\nline three', { id: 'n2', ts: sec(3 * D), pin: { groups: ['Work', 'Docs'] } }),
     textItem('https://example.com/x', { id: 'n3', ts: sec(10 * D) }),
     textItem('x'.repeat(600), { id: 'n4', ts: sec(40 * D), pin: { number: 3 } }),
     imageItem('pic', { ts: sec(1 * H) }),
   ];
   const docs = items.map(S.clipToDoc);
-  const census = (q, groups) => S.facetCensus(docs, S.parseQuery(q), { now: NOW, groups: groups || ['Work', 'Work/Docs', 'Empty'] });
+  const census = (q, groups) => S.facetCensus(docs, S.parseQuery(q), { now: NOW, groups: groups || ['Work', 'Docs', 'Empty'] });
   const verdict = (q, token, groups) => S.facetOptionVerdict(census(q, groups), S.parseQuery(q), token);
 
   // Census: counts under the OTHER filters, one pass. No filters = history totals.
@@ -501,8 +540,9 @@ const idsOf = (items, parsed, opts) => S.filterRankIndexes(items, parsed, opts).
   assert.strictEqual(c.count('is:url'), 1);
   assert.strictEqual(c.count('is:multiline'), 1);
   assert.strictEqual(c.count('is:pinned'), 3);
-  assert.strictEqual(c.count('group:Work'), 2, 'a parent group counts its sub-groups');
-  assert.strictEqual(c.count('group:Work/Docs'), 1);
+  assert.strictEqual(c.count('group:Work'), 2, 'a tag counts its own clips');
+  assert.strictEqual(c.count('group:Docs'), 1);
+  assert.strictEqual(c.count('group:Empty'), 0);
   assert.strictEqual(c.count('since:24h'), 2);
   assert.strictEqual(c.count('since:7d'), 3);
   assert.strictEqual(c.count('len:>500'), 1);
@@ -517,7 +557,7 @@ const idsOf = (items, parsed, opts) => S.filterRankIndexes(items, parsed, opts).
   // Free text is not part of the census.
   assert.strictEqual(census('whatever words since:24h').count('since:7d'), 3);
   // FAILURE_CAP: a doc failing two filters counts for neither.
-  c = census('since:24h group:Work/Docs');
+  c = census('since:24h group:Docs');
   assert.strictEqual(c.count('since:7d'), 1, 'n2 fails only since');
   assert.strictEqual(S.FAILURE_CAP, 2);
   // Empty history = permissive: nothing greys.
@@ -580,7 +620,10 @@ const idsOf = (items, parsed, opts) => S.filterRankIndexes(items, parsed, opts).
   const viaAB = S.applyFacet(S.applyFacet('titel:foo "a b"', { kind: 'group', value: 'Zed' }, 'include'), { kind: 'group', value: 'alpha' }, 'include');
   const viaBA = S.applyFacet(S.applyFacet('titel:foo "a b"', { kind: 'group', value: 'alpha' }, 'include'), { kind: 'group', value: 'Zed' }, 'include');
   assert.strictEqual(viaAB, viaBA);
-  assert.strictEqual(viaAB, 'titel:foo "a b" group:alpha OR group:Zed', 'a second group ORs in, in name order');
+  assert.strictEqual(viaAB, 'titel:foo "a b" group:alpha group:Zed', 'a second tag goes in beside the first (AND), in name order');
+  const orAB = (a, b) => S.applyFacet(S.applyFacet('x', { kind: 'group', value: a }, 'include', { joins: { group: 'or' } }), { kind: 'group', value: b }, 'include', { joins: { group: 'or' } });
+  assert.strictEqual(orAB('Zed', 'alpha'), orAB('alpha', 'Zed'));
+  assert.strictEqual(orAB('Zed', 'alpha'), 'x group:alpha OR group:Zed', 'under a remembered or, an OR in name order');
   assert.strictEqual(S.applyFacet('group:A group:C', { kind: 'group', value: 'B' }, 'include'), 'group:A group:B group:C', 'two groups side by side (the pill\'s "and") take a third the same way');
   assert.strictEqual(S.applyFacet('group:A OR group:C', { kind: 'group', value: 'B' }, 'include'), 'group:A OR group:B OR group:C');
   assert.strictEqual(S.applyFacet('group:A OR group:B', { kind: 'group', value: 'A' }, 'include'), 'group:B', 'a click takes a value out of its OR');
@@ -614,17 +657,41 @@ const idsOf = (items, parsed, opts) => S.filterRankIndexes(items, parsed, opts).
   }
   p = val('group:wrk', { groups: ['Work', 'Personal'] });
   assert.strictEqual(p[0].didYouMean, 'group:Work', 'a group typo suggests the nearest group');
-  // Group names match exactly: a whole name in the wrong case is flagged with
-  // the right one, the list keeps offering it, and a prefix in any case is fine.
-  const caseGroups = ['Work', 'Work/Clients', 'Ideas'];
-  p = val('group:work', { groups: caseGroups });
-  assert.deepStrictEqual([p.length, p[0] && p[0].kind, p[0] && p[0].didYouMean], [1, 'invalid-value', 'group:Work'], 'group:work is flagged with group:Work');
-  assert.deepStrictEqual(val('g:work/clients', { groups: caseGroups }).map((x) => x.didYouMean), ['g:Work/Clients'], 'a sub-group too, through the short alias');
-  assert.deepStrictEqual(val('group:wor', { groups: caseGroups }), [], 'a prefix in any case is still being typed');
-  assert.deepStrictEqual(val('group:Work', { groups: caseGroups }), []);
-  assert.deepStrictEqual(val('group:Work', { groups: ['Work/Clients'] }), [], 'a parent path is a valid group');
-  assert.deepStrictEqual(S.suggestQuery('group:work', 10, { groups: caseGroups }).suggestions.map((s) => s.text), ['group:Work', 'group:Work/Clients'], 'the wrong case is not complete: the list offers the right one');
-  assert.strictEqual(S.filterRankIndexes([{ id: 'txt:w', type: 'text', text: 'x', ts: 1, pin: { groups: ['Work'] } }], S.parseQuery('group:work'), {}).length, 0, 'matching is exact, which is why the case is flagged');
+  // Tags match in any case (group:work finds Work), so no case is flagged, and
+  // a prefix in any case is still being typed.
+  const tags = ['Work', 'Clients', 'Ideas'];
+  assert.deepStrictEqual(val('group:work', { groups: tags }), [], 'group:work is valid when the tag is Work');
+  assert.deepStrictEqual(val('-G:IDEAS', { groups: tags }), []);
+  assert.deepStrictEqual(val('group:wor', { groups: tags }), [], 'a prefix in any case is still being typed');
+  assert.deepStrictEqual(val('group:Work', { groups: ['Work/Clients'] }), [], 'a prefix of a name with a / is still being typed');
+  assert.strictEqual(val('group:Clients', { groups: ['Work/Clients'] })[0].kind, 'invalid-value', 'a part of a name is not a tag');
+  assert.strictEqual(S.suggestQuery('group:work', 10, { groups: tags }), null, 'a tag in another case is complete');
+  assert.deepStrictEqual(S.suggestQuery('group:i', 7, { groups: ['Ideas', 'Clients'] }).suggestions.map((s) => s.text), ['group:Ideas', 'group:Clients'], 'in its stored spelling');
+  assert.deepStrictEqual(S.suggestQuery('group:i', 7, { groups: ['Ideas', 'ideas'] }).suggestions.map((s) => s.text), ['group:ideas'], 'each tag once (two spellings: the one preferredSpelling keeps)');
+  const r0 = S.suggestQuery('g:CLI', 5, { groups: tags });
+  assert.deepStrictEqual([S.ghostCompletion('g:CLI', 5, r0), S.uniqueCompletion('g:CLI', r0).text], ['ents', 'g:Clients'], 'ghost and unique completion ignore case');
+  assert.strictEqual(S.filterRankIndexes([{ id: 'txt:w', type: 'text', text: 'x', ts: 1, pin: { groups: ['Work'] } }], S.parseQuery('group:work'), {}).length, 1, 'matching ignores case');
+  // A nested name (the old todo/forge habit) whose parts are tags is flagged
+  // with the flat tags it means, all required.
+  const flat = ['todo', 'forge', 'my notes', 'a', 'b', 'c'];
+  p = val('group:todo/forge', { groups: flat });
+  assert.deepStrictEqual([p.length, p[0].kind, p[0].message], [1, 'nested-group', 'Groups are not nested: this is todo and forge.']);
+  assert.deepStrictEqual(p[0].fix, { start: 0, end: 16, text: 'group:todo group:forge' });
+  assert.ok(/Did you mean group:todo group:forge\?$/.test(S.describeProblem(p[0])));
+  assert.strictEqual(val('x -g:todo/forge y', { groups: flat })[0].fix.text, '-(g:todo g:forge)', 'negated: not both, with the key as typed');
+  assert.strictEqual(val('group:todo/forge OR x', { groups: flat })[0].fix.text, '(group:todo group:forge)', 'a side of an OR: in brackets');
+  assert.strictEqual(val('a OR Group:"Todo/my notes"', { groups: flat })[0].fix.text, '(Group:todo Group:"my notes")', 'stored spellings, a name with a space quoted');
+  assert.strictEqual(val('group:a/b/c', { groups: flat })[0].message, 'Groups are not nested: this is a, b and c.');
+  assert.deepStrictEqual(val('group:todo/fo', { groups: flat }), [], 'its last part still being typed');
+  assert.deepStrictEqual(val('group:todo/', { groups: flat }), []);
+  assert.deepStrictEqual(val('group:a/b', { groups: ['a/b', 'a', 'b'] }), [], 'a tag named with a / is that tag');
+  assert.strictEqual(val('group:todo/nope', { groups: flat })[0].kind, 'invalid-value', 'a part that is no tag: no such fix');
+  const fixed = (q) => { const pr = val(q, { groups: flat })[0]; return q.slice(0, pr.fix.start) + pr.fix.text + q.slice(pr.fix.end); };
+  const nestItems = [['todo', 'forge'], ['todo'], ['forge'], ['x']].map((groups, i) => ({ id: `txt:n${i}`, type: 'text', text: `n${i}`, ts: 10 - i, pin: { groups } }));
+  assert.deepStrictEqual(idsOf(nestItems, S.parseQuery(fixed('group:todo/forge'))), ['txt:n0'], 'the fix finds what the nested name meant');
+  assert.deepStrictEqual(idsOf(nestItems, S.parseQuery(fixed('-group:todo/forge'))), ['txt:n1', 'txt:n2', 'txt:n3']);
+  assert.deepStrictEqual(idsOf(nestItems, S.parseQuery(fixed('group:todo/forge OR group:x'))), ['txt:n0', 'txt:n3']);
+  assert.strictEqual(S.flatGroupTokens('group:', ['todo'], true, false), '-group:todo');
   // Unknown keys: "did you mean" only for a likely filter whose value is valid
   // there, never a 1-2 letter alias, and never for a key the parser keeps as text.
   const dym = (q) => val(q).map((x) => x.didYouMean);
@@ -709,7 +776,7 @@ const idsOf = (items, parsed, opts) => S.filterRankIndexes(items, parsed, opts).
   rel = S.bestRelaxation(docs, 'nothingmatches since:24h', { now: NOW });
   assert.strictEqual(rel, null, 'free text still has to match: no nudge');
   assert.strictEqual(S.bestRelaxation(docs, 'just words', { now: NOW }), null, 'no filters, no nudge');
-  rel = S.bestRelaxation(docs, 'group:Work/Docs is:url', { now: NOW });
+  rel = S.bestRelaxation(docs, 'group:Docs is:url', { now: NOW });
   assert.ok(rel && rel.count === 1 && !rel.time);
 
   // The nudge's refine cache: typing more of the words equals a full pass.
@@ -753,11 +820,15 @@ console.log('clip-search.test.js: all assertions passed');
   const now = 1800000000 * 1000;
   const nowS = now / 1000;
   const clip = (id, ago, groups, text) => ({ id, type: 'text', text: text || 'x', ts: nowS - ago * DAY, pin: groups ? { groups } : null });
-  const clips = [clip('a', 1, ['Fresh']), clip('b', 60, ['Old']), clip('c', 61, ['Old']), clip('d', 2, ['Work/Docs'])];
+  const clips = [clip('a', 1, ['Fresh']), clip('b', 60, ['Old']), clip('c', 61, ['old']), clip('d', 2, ['Work', 'Docs']), clip('e', 3, ['todo/forge'])];
   const w = S.groupWeights(clips, now);
-  assert.ok(w.get('Fresh') > w.get('Old'), 'one fresh clip outweighs two from two months ago');
-  assert.strictEqual(w.get('Work'), w.get('Work/Docs'), 'a parent counts its sub-groups');
-  assert.strictEqual(w.max, w.get('Fresh'));
+  const use = (name) => w.get(S.tagKey(name));
+  assert.ok(use('Fresh') > use('Old'), 'one fresh clip outweighs two from two months ago');
+  assert.ok(use('Old') > S.decayWeight(60 * DAY * 1000, 14 * DAY * 1000), 'keyed by tag key: Old and old are one tag');
+  assert.strictEqual(use('Work'), use('Docs'), 'each tag counts its own clips');
+  assert.strictEqual(use('todo'), undefined, 'no roll-up: a / is part of a name');
+  assert.ok(use('todo/forge') > 0);
+  assert.strictEqual(w.max, use('Fresh'));
   assert.deepStrictEqual(['Old', 'Fresh', 'Empty', 'Work'].sort(S.compareGroupUse(w)), ['Fresh', 'Work', 'Old', 'Empty'], 'by use, then by name');
   assert.strictEqual(S.groupWeights(clips, now), w, 'kept per list and hour');
   assert.ok(Math.abs(S.decayWeight(3 * DAY * 1000, 3 * DAY * 1000) - Math.exp(-1)) < 1e-12);

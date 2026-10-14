@@ -51,7 +51,7 @@ function seed() {
     { text: 'Thanks, see you tomorrow at 10! I will bring the printed slides.', ago: 3700 },
     { text: 'see you   tomorrow at 10', ago: 3800 },
     { text: 'hello@example.com', ago: 5400 },
-    { text: 'SELECT id, email, last_seen\nFROM users\nWHERE last_seen > now() - interval \'7 days\'\nORDER BY last_seen DESC;', title: 'SQL: active users', pin: { groups: ['Snippets', 'Work/Clients'] }, ago: 7200 },
+    { text: 'SELECT id, email, last_seen\nFROM users\nWHERE last_seen > now() - interval \'7 days\'\nORDER BY last_seen DESC;', title: 'SQL: active users', pin: { groups: ['Snippets', 'Work', 'Clients'] }, ago: 7200 },
     { text: 'Meeting notes - design review\nAttendees: Sam, Alex, Priya\nDecisions: ship the new search panel, keep the slide-in buttons', title: 'Design review', html: '<b>Meeting notes</b> - design review<br>Attendees: Sam, Alex, Priya', pin: { groups: ['Work'] }, ago: 10800 },
     { text: 'npm run build && npm test', pin: { groups: ['Snippets'] }, ago: 14400 },
     { text: '42 Wallaby Way, Sydney', ago: 20000 },
@@ -77,7 +77,7 @@ function seed() {
   }] };
   // Solid surface: a glass page is translucent, and a CDP screenshot has no OS
   // blur behind it.
-  const settings = { groups: ['Work', 'Work/Clients', 'Personal', 'Snippets', 'AI', 'Ideas'], groups_shared_with_ai: ['AI'], ai_approval_timeout_sec: 120, surface_style: 'solid' };
+  const settings = { groups: ['Work', 'Clients', 'Personal', 'Snippets', 'AI', 'Ideas'], groups_shared_with_ai: ['AI'], ai_approval_timeout_sec: 120, surface_style: 'solid' };
   return { history, images, conflicts, settings };
 }
 
@@ -392,7 +392,7 @@ const STEPS = [
   } },
   // Keyboard-driven menus (real CDP keys): Shift+F10 opens the cursor row's
   // menu on its first row; Home / End / Down / Right / Left / Enter / Esc walk
-  // the rows, the group submenu (a nested tag included) and the keypad; Esc
+  // the rows, the group submenu (flat: a group row opens nothing) and the keypad; Esc
   // hands focus back to the search; Enter on a row runs it (Rename... opens the
   // prompt, Esc cancels, focus returns); a mouse-opened menu moves no focus
   // until the first arrow key; 1-9 press the visible keypad's key.
@@ -413,10 +413,9 @@ const STEPS = [
     // Groups sort by use (Search.groupWeights): Work, the most used, leads.
     await expect('Right opens the groups on the first group (the most used)', (f) => f.inSub && f.subShown && f.label === 'Work');
     await press(p, 'ArrowRight');
-    await expect('Right opens Work > Clients', (f) => f.label === 'Clients' && f.subShown);
+    await expect('Right on a group row opens nothing (tags are flat)', (f) => f.label === 'Work' && f.inSub && f.subShown);
     await c.shot(p, 'popup-menu-keyboard-groups');
-    await press(p, 'ArrowLeft'); await expect('Left closes one level', (f) => f.label === 'Work' && f.expanded === 'false');
-    await press(p, 'Escape'); await expect('Esc closes one level', (f) => f.label === 'Add to group' && f.expanded === 'false');
+    await press(p, 'ArrowLeft'); await expect('Left closes one level', (f) => f.label === 'Add to group' && f.expanded === 'false');
     await press(p, 'ArrowDown'); await expect('Down to Numpad', (f) => f.label === 'Numpad');
     await press(p, 'Enter'); await expect('Enter opens the keypad on 7', (f) => f.n === '7' && f.subShown);
     await press(p, 'ArrowDown'); await press(p, 'ArrowRight'); await expect('the keypad moves in 2-D (7, 4, 5)', (f) => f.n === '5');
@@ -488,18 +487,12 @@ const STEPS = [
     await c.shot(c.popup, 'popup-bulk-group-popover');
     await escape(c.popup);
   } },
-  { name: 'popup-filter-chip-sub', popup: true, run: async (c) => {
+  // Tags are flat: no chip opens a dropdown (a hover over one shows nothing).
+  { name: 'popup-filter-chips-flat', popup: true, run: async (c) => {
     await c.popup.hover('.group-filters .filter-tag[data-group="Work"]');
-    const sub = await c.popup.eval(`(() => {
-      const node = document.querySelector('.group-filters .filter-tag[data-group="Work"]').closest('.tag-menu-node');
-      const menu = node && node.querySelector(':scope > .tag-submenu');
-      if (!menu || getComputedStyle(menu).display === 'none') return 'submenu not open';
-      const r = menu.getBoundingClientRect();
-      const hit = document.elementFromPoint(r.left + r.width / 2, r.top + Math.min(r.height / 2, 12));
-      return hit && menu.contains(hit) ? 'ok' : \`covered by \${hit ? hit.className : 'nothing'}\`;
-    })()`);
-    if (sub !== 'ok') throw new Error(`the Work chip's submenu is not visible: ${sub}`);
-    await c.shot(c.popup, 'popup-filter-chip-sub');
+    await qa.sleep(250);
+    const nested = await c.popup.eval(`document.querySelectorAll('.group-filters .tag-submenu, .group-filters .tag-menu-node, .group-filters .tag-caret, .group-filters [popover]').length`);
+    if (nested) throw new Error(`the chip row still has ${nested} dropdown part(s)`);
   } },
   // Many groups: the chip row stays ONE line that scrolls sideways under the
   // mask fade (right edge only at the start, both mid-way), and shows every
@@ -533,6 +526,101 @@ const STEPS = [
     const back = await strip();
     if (back.expanded || back.lines !== 1 || back.h !== one.h) throw new Error(`closing the panel should fold the chips back to one line: ${J(back)}`);
     await c.popup.eval(`(async () => { for (const g of ${J(extra)}) await window.api.groupDelete(g); await refreshGroupsAndList(); return true; })()`);
+    await qa.sleep(300);
+  } },
+  // A long flat tag list (30 tags, the owner has 28) never runs past the
+  // window: in the + picker, the clip menu's Add to group submenu and the
+  // selection bar's Group popover the tag rows scroll (edge-faded) and "New
+  // group..." stays in view; the menu keys reach the last tag and keep it in
+  // view; a wheel scrolls the rows without closing the menu. The extra tags are
+  // removed again so later steps see the usual set.
+  { name: 'popup-group-lists-many', popup: true, run: async (c) => {
+    const p = c.popup;
+    const extra = Array.from({ length: 24 }, (_, i) => `Topic ${String(i + 1).padStart(2, '0')}`);
+    await p.eval(`(async () => { for (const g of ${J(extra)}) await window.api.groupCreate(g); await refreshGroupsAndList(); return true; })()`);
+    await qa.sleep(400);
+    // surface: the floating box holding the list (the popover menu or the submenu).
+    const measure = (surfaceSel) => p.eval(`(() => {
+      const surface = document.querySelector(${J(surfaceSel)});
+      if (!surface) return null;
+      const rows = surface.querySelector('.bc-group-rows');
+      const add = [...surface.querySelectorAll('.bc-menu-item')].find((b) => /New group/.test(b.textContent));
+      const box = (el) => { const r = el.getBoundingClientRect(); return { top: Math.round(r.top), bottom: Math.round(r.bottom) }; };
+      const tags = rows ? rows.querySelectorAll('.bc-menu-item').length : 0;
+      return { winH: window.innerHeight, surface: box(surface), rows: rows ? { ...box(rows), scrollTop: Math.round(rows.scrollTop), scrolls: rows.scrollHeight > rows.clientHeight + 1,
+        fadeTop: rows.style.getPropertyValue('--fade-top'), fadeBottom: rows.style.getPropertyValue('--fade-bottom'), masked: rows.classList.contains('bc-scroll-fade') } : null,
+        add: add ? box(add) : null, addOutsideRows: !!(add && rows && !rows.contains(add)), tags, open: !!document.querySelector('.bc-menu') };
+    })()`);
+    const inWindow = (m, what) => {
+      if (!m || !m.rows) throw new Error(`${what}: no group list: ${J(m)}`);
+      if (m.surface.top < 0 || m.surface.bottom > m.winH) throw new Error(`${what}: the list runs past the window: ${J(m)}`);
+      if (!m.rows.scrolls || !m.rows.masked) throw new Error(`${what}: the tag rows do not scroll under the edge fade: ${J(m)}`);
+      if (!m.add || !m.addOutsideRows || m.add.bottom > m.winH || m.add.top < m.rows.bottom) throw new Error(`${what}: "New group..." is not in view below the rows: ${J(m)}`);
+      if (m.tags < 30) throw new Error(`${what}: ${m.tags} tag rows, expected every tag: ${J(m)}`);
+    };
+    // 1) The + picker on a row.
+    await p.hover(`${row(c.ids.fox)} .content`);
+    await qa.sleep(300);
+    await p.click(`${row(c.ids.fox)} .meta-ghost[data-action="tag-add"]`);
+    await p.waitFor(`!!document.querySelector('.bc-menu .bc-group-list')`, 'picker open', 5000);
+    await qa.sleep(250);
+    let m = await measure('.bc-menu');
+    inWindow(m, 'the + picker');
+    if (m.rows.fadeTop !== '0px' || m.rows.fadeBottom !== '24px') throw new Error(`the + picker's rows should fade only at the bottom at first: ${J(m)}`);
+    c.note('groupPickerMany', m);
+    await c.shot(p, 'popup-group-picker-many');
+    // The keys: Down enters, End = "New group...", Up = the last tag, kept in view.
+    await press(p, 'ArrowDown');
+    await press(p, 'End');
+    let f = await focused(p);
+    if (f.label !== 'New group...') throw new Error(`End should reach "New group...": ${J(f)}`);
+    await press(p, 'ArrowUp');
+    f = await focused(p);
+    const last = await p.eval(`(() => {
+      const rows = document.querySelector('.bc-menu .bc-group-rows');
+      const el = document.activeElement;
+      const r = el.getBoundingClientRect(), b = rows.getBoundingClientRect();
+      return { label: el.textContent.trim(), inRows: rows.contains(el), visible: r.top >= b.top - 0.5 && r.bottom <= b.bottom + 0.5, scrollTop: Math.round(rows.scrollTop),
+        atEnd: Math.abs(rows.scrollTop + rows.clientHeight - rows.scrollHeight) < 2 };
+    })()`);
+    if (!last.inRows || !last.visible || !last.atEnd || last.scrollTop <= 0) throw new Error(`Up from "New group..." should reveal the last tag: ${J({ f, last })}`);
+    m = await measure('.bc-menu');
+    if (m.rows.fadeTop !== '24px' || m.rows.fadeBottom !== '0px') throw new Error(`scrolled to the end, the rows should fade only at the top: ${J(m)}`);
+    await c.shot(p, 'popup-group-picker-many-end');
+    // A wheel over the rows scrolls them and keeps the menu open.
+    const mid = await p.eval(`(() => { const r = document.querySelector('.bc-menu .bc-group-rows').getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+    await p.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: mid.x, y: mid.y, deltaX: 0, deltaY: -120 });
+    await qa.sleep(350);
+    m = await measure('.bc-menu');
+    if (!m.open || m.rows.scrollTop >= last.scrollTop) throw new Error(`a wheel over the rows should scroll them, menu open: ${J(m)}`);
+    await escape(p);
+    await p.waitFor(`!document.querySelector('.bc-menu')`, 'picker closed', 3000);
+    // 2) The clip menu's Add to group submenu (hover).
+    await openRowMenu(c, c.ids.plan);
+    const at = await menuItemCenter(p, '/Add to group/');
+    if (!at) throw new Error('no Add to group row in the clip menu');
+    await p.mouse('mouseMoved', at.x, at.y);
+    await qa.sleep(350);
+    m = await measure('.bc-menu .tag-menu-node:hover > .tag-submenu');
+    inWindow(m, 'the Add to group submenu');
+    c.note('groupSubmenuMany', m);
+    await c.shot(p, 'popup-row-menu-group-sub-many');
+    await escape(p);
+    await p.waitFor(`!document.querySelector('.bc-menu')`, 'menu closed', 3000);
+    // 3) The selection bar's Group popover.
+    await p.eval(`(() => {
+      const click = (id) => document.querySelector('.item[data-id="' + id + '"] .content').dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, ctrlKey: true }));
+      click(${J(c.ids.plan)}); click(${J(c.ids.json)});
+      return true;
+    })()`);
+    await p.click('[data-action="bulk-group-open"]');
+    await p.waitFor(`!!document.querySelector('.bc-menu .bc-group-list')`, 'bulk group popover', 3000);
+    await qa.sleep(250);
+    inWindow(await measure('.bc-menu'), 'the bulk Group popover');
+    await c.shot(p, 'popup-bulk-group-popover-many');
+    await escape(p);
+    await p.eval(`(controller.clearSelection(), true)`);
+    await p.eval(`(async () => { for (const g of ${J(extra)}) await window.api.groupDelete(g); await refreshGroupsAndList(); return true; })()`);
     await qa.sleep(300);
   } },
   { name: 'popup-search-facet', popup: true, run: async (c) => { await setQuery(c, 'group:Work plan'); await c.shot(c.popup, 'popup-search-facet'); } },
@@ -744,9 +832,10 @@ const STEPS = [
     c.note('viewer', await look(vw));
     await c.shot(vw, 'appearance-viewer');
     const sql = c.items.find((i) => i.title === 'SQL: active users');
+    const sqlRef = await c.sb.aiRef(sql);
     let req = null;
     const ap = await c.sb.newPage(/mcp-approval\.html/, () => {
-      req = c.sb.mcp('delete_clip', { id: sql.id, expected_rev: sql.rev }, { client: 'Claude (appearance)' }).then(() => 'unexpected success', (e) => e.message);
+      req = c.sb.mcp('delete_clip', sqlRef, { client: 'Claude (appearance)' }).then(() => 'unexpected success', (e) => e.message);
     }, { label: 'approval (appearance)' });
     await ap.waitFor(`document.getElementById('explain').textContent.length > 0 && document.documentElement.getAttribute('data-accent') === 'custom'`, 'approval rendered with the custom accent');
     await ap.fontsReady();
@@ -977,9 +1066,10 @@ const STEPS = [
   } },
   { name: 'approval-modal', run: async (c) => {
     const sql = c.items.find((i) => i.title === 'SQL: active users');
+    const sqlRef = await c.sb.aiRef(sql);
     let req = null;
     const ap = await c.sb.newPage(/mcp-approval\.html/, () => {
-      req = c.sb.mcp('delete_clip', { id: sql.id, expected_rev: sql.rev }, { client: 'Claude (UI audit)' }).then(() => 'unexpected success', (e) => e.message);
+      req = c.sb.mcp('delete_clip', sqlRef, { client: 'Claude (UI audit)' }).then(() => 'unexpected success', (e) => e.message);
     }, { label: 'approval' });
     await ap.waitFor(`document.getElementById('explain').textContent.length > 0`, 'approval rendered');
     await ap.fontsReady();
@@ -1001,7 +1091,9 @@ const STEPS = [
   { name: 'site-windows', run: async (c) => {
     const page = await c.sb.openWindow(c.site.url, { theme: c.theme });
     await page.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false });
-    await page.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
+    // setEmulatedMedia REPLACES every emulated feature: the theme openWindow set
+    // goes with it unless it is listed again (the light shots came out dark).
+    await page.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }, { name: 'prefers-color-scheme', value: c.theme }] });
     await page.waitFor(`document.readyState === 'complete' && !!document.getElementById('demo-new-note')`, 'site loaded');
     await page.fontsReady();
     const rect = (sel) => page.eval(`(() => { const e = document.querySelector(${J(sel)}); if (!e || e.hidden) return null; const r = e.getBoundingClientRect(); return { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) }; })()`);

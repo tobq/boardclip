@@ -547,7 +547,7 @@ function text(text, extra = {}) {
 }
 
 {
-  assert.deepStrictEqual(ui.sourceGroupsFromFilters(new Set(['work/api', '__pinned__'])), ['work/api']);
+  assert.deepStrictEqual(ui.sourceGroupsFromFilters(new Set([' work ', 'a/b', '__pinned__'])), ['work', 'a/b']);
 }
 
 {
@@ -584,7 +584,7 @@ function text(text, extra = {}) {
   const base = [
     { id: 'a', type: 'text', text: 'alpha invoice', ts: 10, pin: { groups: ['work'] } },
     { id: 'b', type: 'text', text: 'beta macro', ts: 20, pin: { number: 2, groups: ['code'] } },
-    { id: 'c', type: 'text', title: 'API plan', text: 'gamma note', ts: 30, pin: { groups: ['work/api'] } },
+    { id: 'c', type: 'text', title: 'API plan', text: 'gamma note', ts: 30, pin: { groups: ['Work', 'api'] } },
   ];
   assert.deepStrictEqual(ui.groupsOf({ id: 'legacy', type: 'text', text: 'legacy', ts: 1, labels: ['work'], pin: null }), []);
   assert.deepStrictEqual(ui.groupsOf(base[0]), model.groupsOf(base[0]));
@@ -595,13 +595,14 @@ function text(text, extra = {}) {
     ['__pinned__', 3, false],
     ['__numbered__', 1, true],
   ]);
-  const filterBar = ui.renderFilterBar({ items: base, groups: ['code', 'work/api'], activeFilters: new Set(['__numbered__']), query: '' });
+  // Tags are flat: one chip per tag, no dropdowns.
+  const filterBar = ui.renderFilterBar({ items: base, groups: ['code', 'work', 'api'], activeFilters: new Set(['__numbered__']), query: '' });
   assert(filterBar.includes('data-filter="__numbered__"'));
   assert(filterBar.includes('data-group="code"'));
   assert(filterBar.includes('data-group="work"'));
-  assert(filterBar.includes('data-group="work/api"'));
-  assert(filterBar.includes('class="tag-submenu"'));
-  assert(!filterBar.includes('data-action="toggle-tag-parent"'));
+  assert(filterBar.includes('data-group="api"'));
+  assert(/data-group="work" title="work - 2 items"/.test(filterBar), 'a chip counts its clips whatever the case');
+  assert(!filterBar.includes('tag-submenu'));
   assert(!filterBar.includes('data-filter="image"'));
   assert(!filterBar.includes('class="chip'));
   const clipItem = ui.renderClipItem(base[1], { imageSrc: () => '' });
@@ -610,15 +611,17 @@ function text(text, extra = {}) {
   assert(/<button class="meta-np"[^>]*data-action="numpad-open"[^>]*>#2<\/button>/.test(clipItem));
   assert(clipItem.includes('class="meta-tag" type="button" data-group="code"'));
   // The row's keypad + group pickers are the clip menu's components.
-  const menu = ui.renderClipMenu(base[1], { items: base, groups: ['code', 'work/api'] });
+  const menu = ui.renderClipMenu(base[1], { items: base, groups: ['code', 'work', 'api'] });
   assert(/class="np-btn current"[^>]*aria-checked="true"[^>]*data-n="2"/.test(menu));
   assert(/role="menuitemcheckbox"[^>]*data-action="toggle-group" data-group="code" aria-checked="true"/.test(menu));
-  assert(menu.includes('data-group="work/api"'));
-  assert(menu.includes('class="tag-submenu"'));
+  assert(/data-action="toggle-group" data-group="api" aria-checked="false"/.test(menu));
+  assert(menu.includes('class="tag-submenu"')); // the menu's own Add to group / Numpad submenus
   assert(menu.includes('data-action="add-group"'));
   // The query text is the one filter model (a chip click writes a token into it).
   assert.deepStrictEqual(ui.filterItems(base, { query: 'group:work invoice' }).map(i => i.id), ['a']);
   assert.deepStrictEqual(ui.filterItems(base, { query: 'group:work' }).map(i => i.id).sort(), ['a', 'c']);
+  assert.deepStrictEqual(ui.filterItems(base, { query: 'group:api' }).map(i => i.id), ['c']);
+  assert.deepStrictEqual(ui.filterItems(base, { query: 'group:work/api' }).map(i => i.id), [], 'a nested name is no tag');
   assert.deepStrictEqual(ui.filterItems(base, { query: '-group:work' }).map(i => i.id), ['b']);
   assert.deepStrictEqual(ui.filterItems(base, { query: 'api plan' }).map(i => i.id), ['c']);
   assert.deepStrictEqual(ui.filterItemIndexes(base, { query: 'is:numpad group:code macro' }), [1]);

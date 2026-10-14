@@ -18,7 +18,8 @@
 // pre-disable every detected provider, and only electron processes whose
 // command line contains the temp dir are killed.
 //
-// Usage: node scripts/qa-sync-two-instances.js [p2p|cloud|all] [--keep]
+// Usage: node scripts/qa-sync-two-instances.js [p2p|cloud|all|legacy] [--keep]
+//   legacy: QA_LEGACY_ROOT=<old-build checkout> [QA_PARENT_DIR=<scratch>] (see runLegacyScenario)
 
 const { spawn, execFileSync } = require('child_process');
 const crypto = require('crypto');
@@ -207,8 +208,342 @@ async function runScenario(name, { bP2P }) {
   return out;
 }
 
+// --- scenario legacy: sync with a device still on the PREVIOUS build ---------------
+// QA_LEGACY_ROOT = a checkout of the old build (e.g. `git worktree add <dir> <commit>`
+// with node_modules junctioned in; never npm-install there). A runs THIS checkout,
+// B the old build, each through its own checkout's scripts/lib/qa-sandbox.js (so B's
+// guard and main.js are the old ones), seeded with the same NESTED tags, sharing one
+// temp cloud folder and P2P (the harness launches with P2P off; it is turned on
+// through the Settings toggle's IPC, with a secret only these sandboxes share).
+// Asserted from the data files + diagnostics: A ends flat with no clip lost, B keeps
+// every tag, the history files stop changing, and B restarted on THIS build with its
+// own files (history, settings, conflicts, sync-state.json) ends flat too.
+// QA_PARENT_DIR = where the sandboxes and the cloud folder go (default os tmpdir).
+async function runLegacyScenario() {
+  const out = { scenario: 'legacy', ok: false };
+  const oldRoot = process.env.QA_LEGACY_ROOT;
+  if (!oldRoot || !fs.existsSync(path.join(oldRoot, 'main.js')) || !fs.existsSync(path.join(oldRoot, 'scripts', 'lib', 'qa-sandbox.js'))) {
+    return { ...out, error: 'set QA_LEGACY_ROOT to a checkout of the old build (main.js + scripts/lib/qa-sandbox.js)' };
+  }
+  const harness = require('./lib/qa-sandbox');
+  const oldHarness = require(path.join(oldRoot, 'scripts', 'lib', 'qa-sandbox.js'));
+  const parentDir = process.env.QA_PARENT_DIR || os.tmpdir();
+  const work = fs.mkdtempSync(path.join(parentDir, 'bc-two-legacy-'));
+  const cloudDir = path.join(work, 'cloud');
+  fs.mkdirSync(cloudDir, { recursive: true });
+  const { check, results, summary } = harness.createChecks();
+  const secret = crypto.randomBytes(32).toString('hex');
+  const nowSec = Math.floor(Date.now() / 1000);
+
+  // Seed: the same clips on both, plus a few only on each side. ts in seconds.
+  const clip = (label, ageSec, pin) => { const it = textItem(`legacy ${label}`, nowSec - ageSec); if (pin) it.pin = pin; it.label = label; return it; };
+  const S = [
+    clip('S1 todo/forge (explicit groupsUpdatedAt)', 100, { groups: ['todo/forge'], groupsUpdatedAt: (nowSec - 100) * 1000, updatedAt: (nowSec - 100) * 1000 }),
+    clip('S2 twoshot/support', 110, { groups: ['twoshot/support'] }),
+    clip('S3 Notes (capital)', 120, { groups: ['Notes'] }),
+    clip('S4 notes (lower)', 130, { groups: ['notes'] }),
+    clip('S5 several', 140, { groups: ['todo/forge', 'twoshot/support', 'Notes', 'todo'] }),
+    clip('S6 numpad 3 + todo/done', 150, { number: 3, groups: ['todo/done'] }),
+    clip('S7 plain unpinned', 160, null),
+    clip('S8 literal-slash target (untagged at seed)', 170, null),
+  ];
+  const A_ONLY = [clip('A1 only on new: todo/forge', 90, { groups: ['todo/forge'] })];
+  const B_ONLY = [
+    clip('B1 only on old: todo/forge (a retired name)', 80, { groups: ['todo/forge'] }),
+    clip('B2 only on old: todo/newthing (a nested name A never had)', 70, { groups: ['todo/newthing'] }),
+    clip('B3 only on old: Notes', 60, { groups: ['Notes'] }),
+  ];
+  const strip = (list) => list.map(({ label, ...rest }) => JSON.parse(JSON.stringify(rest))).sort((x, y) => y.ts - x.ts);
+  const ALL = [...S, ...A_ONLY, ...B_ONLY];
+  const label = new Map(ALL.map(c => [c.id, c.label]));
+  const seedById = new Map(ALL.map(c => [c.id, c]));
+  const S8 = S[7].id;
+  const B2ID = B_ONLY[1].id;
+  // Expected flat tag keys on a new-build device (stored spelling checked separately).
+  const flatExpect = new Map([
+    [S[0].id, ['todo', 'forge']], [S[1].id, ['twoshot', 'support']], [S[2].id, ['notes']], [S[3].id, ['notes']],
+    [S[4].id, ['todo', 'forge', 'twoshot', 'support', 'notes']], [S[5].id, ['todo', 'done']], [S[6].id, []], [S[7].id, []],
+    [A_ONLY[0].id, ['todo', 'forge']], [B_ONLY[0].id, ['todo', 'forge']], [B_ONLY[2].id, ['notes']],
+  ]);
+  const seedGroups = ['todo/forge', 'twoshot/support', 'Notes', 'notes', 'todo', 'todo/done'];
+  const baseSettings = (deviceId, extraGroups = []) => ({
+    p2p_secret: secret, p2p_device_id: deviceId, diagnostics_enabled: true, ai_access_enabled: false,
+    sync_custom_paths: [cloudDir], surface_style: 'solid', groups: [...seedGroups, ...extraGroups],
+  });
+
+  const readJson = (file, fallback) => { for (let i = 0; i < 5; i++) { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { /* mid-rename */ } } return fallback; };
+  const histOf = sb => readJson(path.join(sb.dataDir, 'clipboard-history.json'), []);
+  const settingsOf = sb => readJson(path.join(sb.dataDir, 'clipboard-settings.json'), {});
+  const groupsOf = it => (it && it.pin && Array.isArray(it.pin.groups) ? it.pin.groups : []);
+  const keys = names => new Set(names.map(n => String(n).trim().toLowerCase()).filter(Boolean));
+  const flatKeys = names => new Set(names.flatMap(n => String(n).split('/')).map(p => p.trim().toLowerCase()).filter(Boolean));
+  const sameSet = (a, b) => a.size === b.size && [...a].every(x => b.has(x));
+  const covers = (big, small) => [...small].every(x => big.has(x));
+  const fileHash = file => { try { return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex').slice(0, 12); } catch { return 'missing'; } };
+  const fileMtime = file => { try { return fs.statSync(file).mtimeMs; } catch { return 0; } };
+  const journalCount = () => { let n = 0; try { for (const d of fs.readdirSync(path.join(cloudDir, 'sync'))) n += fs.readdirSync(path.join(cloudDir, 'sync', d)).length; } catch {} return n; };
+  const errorsOf = sb => sb.diagnostics().filter(e => /error/.test(e.event)).map(e => `${e.event}: ${e.error || e.message || ''}`.slice(0, 160));
+  const slashNames = (items, s) => ({
+    clips: items.flatMap(it => groupsOf(it).filter(g => g.includes('/')).map(g => `${label.get(it.id) || it.id.slice(0, 12)} -> ${g}`)),
+    groups: (s.groups || []).filter(g => g.includes('/')),
+    shared: (s.groups_shared_with_ai || []).filter(g => g.includes('/')),
+  });
+  const enableP2P = async (sb) => {
+    const popup = await sb.popup();
+    await popup.waitFor('!!(window.api && window.api.setP2PEnabled)', 'popup api', 30000);
+    return popup.eval('window.api.setP2PEnabled(true).then((s) => ({ enabled: s.enabled, running: s.running, port: s.port }))');
+  };
+  const waitUntil = async (fn, ms) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { const v = fn(); if (v) return Date.now() - t0; await sleep(250); } return null; };
+  // ~60 s of samples: content changes (hash) and writes (mtime) per file, journal files
+  // added, and merges that changed local history, per instance.
+  const watchQuiet = async (name, files, instances, ms) => {
+    const state = {};
+    for (const [k, f] of Object.entries(files)) state[k] = { file: f, hash: fileHash(f), mtime: fileMtime(f), content_changes: 0, writes: 0 };
+    const diagBefore = new Map(instances.map(([n, sb]) => [n, sb.diagnostics().length]));
+    const journalsBefore = journalCount();
+    const t0 = Date.now();
+    while (Date.now() - t0 < ms) {
+      await sleep(1000);
+      for (const s of Object.values(state)) {
+        const h = fileHash(s.file); const m = fileMtime(s.file);
+        if (h !== s.hash) { s.content_changes += 1; s.hash = h; }
+        if (m !== s.mtime) { s.writes += 1; s.mtime = m; }
+      }
+    }
+    const merges = {};
+    for (const [n, sb] of instances) {
+      const fresh = sb.diagnostics().slice(diagBefore.get(n));
+      merges[n] = {
+        cloud_merges_changed: fresh.filter(e => e.event === 'sync.merge' && e.local_changed).length,
+        delta_applies_changed: fresh.filter(e => e.event === 'sync.delta_apply' && e.local_changed).length,
+        delta_applies: fresh.filter(e => e.event === 'sync.delta_apply').length,
+        p2p_pushes: fresh.filter(e => e.event === 'p2p.push').length,
+        journal_writes: fresh.filter(e => e.event === 'sync.journal.write').length,
+      };
+    }
+    const files_ = Object.fromEntries(Object.entries(state).map(([k, s]) => [k, { content_changes: s.content_changes, writes: s.writes }]));
+    return { name, seconds: Math.round((Date.now() - t0) / 1000), files: files_, journal_files_added: journalCount() - journalsBefore, merges };
+  };
+  // A normal quit; done = the app's own app.exit line (a pid probe on Windows still
+  // answers while the harness holds the child's handle).
+  const quitGracefully = async (sb) => {
+    try { await sb.mainEval('(setTimeout(() => __qa.electron.app.quit(), 50), true)', { timeoutMs: 5000 }); } catch {}
+    for (let i = 0; i < 100; i++) {
+      const exit = sb.diagnostics().find(e => e.event === 'app.exit');
+      if (exit) return { app_exit_code: exit.code, reason: exit.reason };
+      await sleep(100);
+    }
+    return false;
+  };
+
+  let A = null; let B = null; let B2 = null; let bKeptDir = null;
+  try {
+    // ---- Phase 1: A on this build, B on the old build ------------------------------
+    A = await harness.launch({ name: 'lgA', parentDir, settings: baseSettings(crypto.randomBytes(16).toString('hex')), history: strip([...S, ...A_ONLY]) });
+    B = await oldHarness.launch({ name: 'lgB', parentDir, settings: baseSettings(crypto.randomBytes(16).toString('hex'), ['todo/newthing']), history: strip([...S, ...B_ONLY]) });
+    out.dirs = { A: A.dir, B: B.dir, cloud: cloudDir };
+    out.p2p_on = { A: await enableP2P(A), B: await enableP2P(B) };
+    const t0 = Date.now();
+    const hasAll = sb => { const ids = new Set(histOf(sb).map(it => it.id)); return ALL.every(c => ids.has(c.id)); };
+    const convergedMs = await waitUntil(() => hasAll(A) && hasAll(B), 90000);
+    check('phase 1: A (new) and B (old) both hold every seeded clip', convergedMs != null, `converged in ${convergedMs} ms, ${ALL.length} clips`);
+    // Settle a few passes (the 30 s poll floor) before judging tags.
+    await sleep(8000);
+
+    const aH = histOf(A); const aS = settingsOf(A); const aById = new Map(aH.map(it => [it.id, it]));
+    const bH = histOf(B); const bS = settingsOf(B); const bById = new Map(bH.map(it => [it.id, it]));
+    const aMissing = ALL.filter(c => !aById.has(c.id)).map(c => c.label);
+    const bMissing = ALL.filter(c => !bById.has(c.id)).map(c => c.label);
+    check('phase 1: A lost no clip', aMissing.length === 0, `${ALL.length - aMissing.length}/${ALL.length} present${aMissing.length ? `; missing ${aMissing.join(', ')}` : ''}; A holds ${aH.length}`);
+    check('phase 1: B lost no clip', bMissing.length === 0, `${ALL.length - bMissing.length}/${ALL.length} present${bMissing.length ? `; missing ${bMissing.join(', ')}` : ''}; B holds ${bH.length}`);
+    const aSlash = slashNames(aH, aS);
+    const aSlashRetired = aSlash.clips.filter(x => !/todo\/newthing$/.test(x));
+    check('phase 1: A has no retired (seeded nested) name left anywhere', aSlashRetired.length === 0 && !aSlash.groups.some(g => g !== 'todo/newthing') && aSlash.shared.length === 0,
+      `clips ${aSlashRetired.length}, settings.groups ${JSON.stringify(aSlash.groups)}, shared ${aSlash.shared.length}`);
+    // A nested name the OLD device makes after A's cutover is one tag on A until that device
+    // updates and retires it (phase 3): transitional by design, nothing else may carry a '/'.
+    check('phase 1: the only "/" name on A is the one the old device made after the cutover', aSlash.clips.every(x => /todo\/newthing$/.test(x)) && aSlash.groups.every(g => g === 'todo/newthing'),
+      `slash names on clips: ${JSON.stringify(aSlash.clips)}; settings.groups: ${JSON.stringify(aSlash.groups)}`);
+    const aWrong = [];
+    for (const [id, want] of flatExpect) {
+      const got = keys(groupsOf(aById.get(id)));
+      if (!sameSet(got, new Set(want))) aWrong.push(`${label.get(id)}: ${JSON.stringify([...got])} want ${JSON.stringify(want)}`);
+    }
+    check('phase 1: A holds the expected flat tags on every clip', aWrong.length === 0, aWrong.length ? aWrong.join(' | ') : `${flatExpect.size} clips exact`);
+    const notesSpellings = [...new Set(aH.flatMap(it => groupsOf(it)).filter(g => g.toLowerCase() === 'notes'))];
+    check('phase 1: A stores one spelling for Notes/notes ("notes")', notesSpellings.length === 1 && notesSpellings[0] === 'notes', JSON.stringify(notesSpellings));
+    const splits = (aS.group_splits || []).map(r => r.name).sort();
+    check('phase 1: A recorded the retired names in group_splits', ['todo/done', 'todo/forge', 'twoshot/support'].every(n => splits.includes(n)), JSON.stringify(splits));
+    const aFlatten = A.diagnostics().filter(e => e.event === 'groups.flatten');
+    out.a_flatten = aFlatten.map(e => ({ cutover: e.cutover, retired: e.retired, clips_changed: e.clips_changed, groups_before: e.groups_before, groups_after: e.groups_after, copy_path: e.copy_path ? 'yes' : '' }));
+    check('phase 1: A cut over exactly once at start (groups.flatten cutover:true)', aFlatten.filter(e => e.cutover).length === 1,
+      JSON.stringify(out.a_flatten));
+    out.a_stragglers = A.diagnostics().filter(e => e.event === 'groups.flatten.straggler').map(e => ({ source: e.source, local_clips: e.local_clips }));
+    out.a_straggler_events = out.a_stragglers.length;
+    // B (old) must keep every tag it had: the old names literally, and every flat part.
+    const bWrong = [];
+    let bLiteralKept = 0; let bFlatKept = 0; let bTagged = 0;
+    for (const c of [...S, ...B_ONLY]) {
+      const want = groupsOf(c);
+      if (!want.length) continue;
+      bTagged += 1;
+      const got = groupsOf(bById.get(c.id));
+      const lit = covers(new Set(got), new Set(want));
+      const flat = covers(flatKeys(got), flatKeys(want));
+      if (lit) bLiteralKept += 1;
+      if (flat) bFlatKept += 1;
+      if (!lit || !flat) bWrong.push(`${c.label}: ${JSON.stringify(got)} seed ${JSON.stringify(want)}`);
+    }
+    out.b_tags = Object.fromEntries([...S, ...A_ONLY, ...B_ONLY].map(c => [c.label, groupsOf(bById.get(c.id))]));
+    check('phase 1: B (old) kept every tag (old names literally + every flat part)', bWrong.length === 0,
+      `${bLiteralKept}/${bTagged} literal, ${bFlatKept}/${bTagged} flat-equivalent${bWrong.length ? `; ${bWrong.join(' | ')}` : ''}`);
+    const aOnB = groupsOf(bById.get(A_ONLY[0].id));
+    check('phase 1: A-only clip reached B with its flat parts', covers(keys(aOnB), new Set(['todo', 'forge'])), JSON.stringify(aOnB));
+    // No clock moved, no pin lost or added, the numpad key kept.
+    const clockMoves = []; const pinFlips = [];
+    for (const [who, byId] of [['A', aById], ['B', bById]]) {
+      for (const c of ALL) {
+        const it = byId.get(c.id);
+        if (!it) continue;
+        if (it.ts !== c.ts) clockMoves.push(`${who} ${c.label}: ts ${c.ts} -> ${it.ts}`);
+        if (!!it.pin !== !!c.pin) pinFlips.push(`${who} ${c.label}: pinned ${!!c.pin} -> ${!!it.pin}`);
+      }
+    }
+    check('phase 1: no clip clock moved (ts) on A or B', clockMoves.length === 0, clockMoves.length ? clockMoves.join(' | ') : `${ALL.length * 2} ts equal`);
+    check('phase 1: no pin added or removed on A or B', pinFlips.length === 0, pinFlips.length ? pinFlips.join(' | ') : `${ALL.length * 2} pin states equal`);
+    const nA = (aById.get(S[5].id) || {}).pin; const nB = (bById.get(S[5].id) || {}).pin;
+    check('phase 1: numpad key 3 kept on both', !!nA && nA.number === 3 && !!nB && nB.number === 3, `A ${nA && nA.number}, B ${nB && nB.number}`);
+    const p1Errors = { A: errorsOf(A), B: errorsOf(B) };
+    check('phase 1: no error events in either diagnostics log', !p1Errors.A.length && !p1Errors.B.length, JSON.stringify(p1Errors).slice(0, 300));
+    const sources = (sb) => { const m = {}; for (const e of sb.diagnostics().filter(x => x.event === 'sync.delta_apply' || x.event === 'sync.merge')) { const k = e.event === 'sync.merge' ? 'cloud-merge' : e.source; m[k] = (m[k] || 0) + 1; } return m; };
+    out.phase1_transport = { A: sources(A), B: sources(B), A_saw_B: A.diagnostics().some(e => e.event === 'p2p.peer.seen'), B_saw_A: B.diagnostics().some(e => e.event === 'p2p.peer.seen') };
+    check('phase 1: P2P paired both ways (p2p.peer.seen on A and B)', out.phase1_transport.A_saw_B && out.phase1_transport.B_saw_A, JSON.stringify(out.phase1_transport));
+
+    // ---- Phase 1b: a NEW literal '/' tag made on A after its cutover ------------------
+    const aItems = await A.historyState();
+    const s8 = aItems.find(it => it.id === S8);
+    const popupA = await A.popup();
+    out.literal_assign = await popupA.eval(`window.api.groupAssign(${JSON.stringify(S8)}, 'AC/DC', ${JSON.stringify(s8 && s8.rev)})`);
+    const litMs = await waitUntil(() => groupsOf(new Map(histOf(B).map(it => [it.id, it])).get(S8)).includes('AC/DC'), 60000);
+    check('phase 1b: literal tag "AC/DC" made on A reaches old B unchanged', litMs != null, `assign ${JSON.stringify(out.literal_assign)}, arrived in ${litMs} ms`);
+
+    // ---- Phase 2: no ping-pong ---------------------------------------------------------
+    await sleep(5000);
+    const q1 = await watchQuiet('A(new) + B(old)', {
+      A_history: path.join(A.dataDir, 'clipboard-history.json'), B_history: path.join(B.dataDir, 'clipboard-history.json'),
+      cloud_snapshot: path.join(cloudDir, 'clipboard-history.json'),
+      A_settings: path.join(A.dataDir, 'clipboard-settings.json'), B_settings: path.join(B.dataDir, 'clipboard-settings.json'),
+    }, [['A', A], ['B', B]], 62000);
+    out.quiet_phase2 = q1;
+    check('phase 2: history files stop changing (A, B, cloud snapshot; 62 s)', q1.files.A_history.content_changes === 0 && q1.files.B_history.content_changes === 0 && q1.files.cloud_snapshot.content_changes === 0,
+      `content changes A ${q1.files.A_history.content_changes} (writes ${q1.files.A_history.writes}), B ${q1.files.B_history.content_changes} (writes ${q1.files.B_history.writes}), cloud ${q1.files.cloud_snapshot.content_changes} (writes ${q1.files.cloud_snapshot.writes}), journals +${q1.journal_files_added}, merges ${JSON.stringify(q1.merges)}`);
+    check('phase 2: no merge changed local history during the window', Object.values(q1.merges).every(m => !m.cloud_merges_changed && !m.delta_applies_changed),
+      JSON.stringify(q1.merges));
+
+    // ---- Phase 3: B restarted on THIS build with its own files -------------------------
+    const bLegacyDiag = B.diagnostics();
+    out.b_quit_graceful = await quitGracefully(B);
+    process.env.QA_KEEP = '1';
+    try { await B.kill(); } finally { delete process.env.QA_KEEP; }
+    bKeptDir = B.dir;
+    const bData = B.dataDir;
+    const blobDirs = ['clipboard-text', 'clipboard-html', 'clipboard-rtf'].filter(d => { try { return fs.readdirSync(path.join(bData, d)).length > 0; } catch { return false; } });
+    if (blobDirs.length) throw new Error(`B has text blobs this restart does not carry: ${blobDirs.join(', ')}`);
+    const bFinalHistory = readJson(path.join(bData, 'clipboard-history.json'), null);
+    const bFinalSettings = readJson(path.join(bData, 'clipboard-settings.json'), null);
+    if (!Array.isArray(bFinalHistory) || !bFinalSettings) throw new Error('could not read B\'s files after quit');
+    const bConflicts = readJson(path.join(bData, 'clipboard-conflicts.json'), null);
+    // The harness writes history, settings and conflicts; sync-state.json (change tracker
+    // + P2P / journal cursors) and the images ride in through its images map ('..' = the
+    // data dir itself).
+    const carry = {};
+    try { carry['../sync-state.json'] = fs.readFileSync(path.join(bData, 'sync-state.json')); } catch {}
+    try { for (const f of fs.readdirSync(path.join(bData, 'clipboard-images'))) carry[f] = fs.readFileSync(path.join(bData, 'clipboard-images', f)); } catch {}
+    out.b_carried = { history: bFinalHistory.length, settings_keys: Object.keys(bFinalSettings).length, conflicts: !!bConflicts, files: Object.keys(carry) };
+    B2 = await harness.launch({ name: 'lgB2', parentDir, settings: bFinalSettings, history: bFinalHistory, ...(bConflicts ? { conflicts: bConflicts } : {}), images: carry });
+    out.p2p_on.B2 = await enableP2P(B2);
+    const sameTags = () => {
+      const a = new Map(histOf(A).map(it => [it.id, it])); const b = new Map(histOf(B2).map(it => [it.id, it]));
+      return ALL.every(c => a.has(c.id) && b.has(c.id) && sameSet(keys(groupsOf(a.get(c.id))), keys(groupsOf(b.get(c.id)))));
+    };
+    const flatMs = await waitUntil(() => slashNames(histOf(B2), settingsOf(B2)).clips.every(x => /AC\/DC$/.test(x)) && sameTags(), 90000);
+    check('phase 3: B (now new) and A converge to the same tags on every clip, B with no retired "/" name on any clip', flatMs != null, `in ${flatMs} ms`);
+    await sleep(8000);
+    const a3 = histOf(A); const a3S = settingsOf(A); const a3ById = new Map(a3.map(it => [it.id, it]));
+    const b3 = histOf(B2); const b3S = settingsOf(B2); const b3ById = new Map(b3.map(it => [it.id, it]));
+    const b2Flatten = B2.diagnostics().filter(e => e.event === 'groups.flatten');
+    out.b2_flatten = b2Flatten.map(e => ({ cutover: e.cutover, retired: e.retired, clips_changed: e.clips_changed, groups_before: e.groups_before, groups_after: e.groups_after }));
+    check('phase 3: B cut over once on its first new-build start', b2Flatten.filter(e => e.cutover).length === 1, JSON.stringify(out.b2_flatten));
+    // Every '/' left is A's plain 'AC/DC' (phase 1b): no retired name anywhere.
+    const notLiteral = (x) => !/AC\/DC$/.test(x);
+    const b3Slash = slashNames(b3, b3S); const a3Slash = slashNames(a3, a3S);
+    check('phase 3: B ends with no retired "/" name (clips, settings.groups, share list)', !b3Slash.clips.filter(notLiteral).length && !b3Slash.groups.filter(notLiteral).length && !b3Slash.shared.length, JSON.stringify(b3Slash));
+    check('phase 3: A ends with no retired "/" name (clips, settings.groups, share list)', !a3Slash.clips.filter(notLiteral).length && !a3Slash.groups.filter(notLiteral).length && !a3Slash.shared.length, JSON.stringify(a3Slash));
+    const lostA = ALL.filter(c => !a3ById.has(c.id)).map(c => c.label); const lostB = ALL.filter(c => !b3ById.has(c.id)).map(c => c.label);
+    check('phase 3: no clip lost on A or B', !lostA.length && !lostB.length, `A ${ALL.length - lostA.length}/${ALL.length}, B ${ALL.length - lostB.length}/${ALL.length}${lostA.length + lostB.length ? `; lost ${[...lostA, ...lostB].join(', ')}` : ''}`);
+    const b3Wrong = [];
+    for (const [id, want] of flatExpect) {
+      if (id === S8) continue;
+      const got = keys(groupsOf(b3ById.get(id)));
+      if (!sameSet(got, new Set(want))) b3Wrong.push(`${label.get(id)}: ${JSON.stringify([...got])} want ${JSON.stringify(want)}`);
+    }
+    check('phase 3: B holds the expected flat tags (same as A had)', b3Wrong.length === 0, b3Wrong.length ? b3Wrong.join(' | ') : `${flatExpect.size - 1} clips exact`);
+    const tagsLostOnB = [];
+    for (const c of [...S, ...B_ONLY]) {
+      const before = flatKeys(groupsOf(bById.get(c.id)));
+      const after = keys(groupsOf(b3ById.get(c.id)));
+      if (!covers(after, before)) tagsLostOnB.push(`${c.label}: ${JSON.stringify([...before])} -> ${JSON.stringify([...after])}`);
+    }
+    check('phase 3: every tag B had (as flat parts) survived its cutover', tagsLostOnB.length === 0, tagsLostOnB.length ? tagsLostOnB.join(' | ') : `${S.length + B_ONLY.length} clips`);
+    const newthingA = groupsOf(a3ById.get(B2ID));
+    check('phase 3: the old device\'s new nested name (todo/newthing) lands flat on A once B updates', sameSet(keys(newthingA), new Set(['todo', 'newthing'])), JSON.stringify(newthingA));
+    const litA = groupsOf(a3ById.get(S8)); const litB = groupsOf(b3ById.get(S8));
+    check('phase 3: A\'s post-cutover literal tag "AC/DC" survives B\'s later cutover', litA.includes('AC/DC') && litB.includes('AC/DC'),
+      `A ${JSON.stringify(litA)}, B ${JSON.stringify(litB)}, A group_splits ${JSON.stringify((a3S.group_splits || []).map(r => r.name))}`);
+    const partTags = (h, st) => [...new Set([...h.flatMap(groupsOf), ...(st.groups || [])])].filter(g => g === 'AC' || g === 'DC');
+    check('phase 3: no stray AC / DC tags from the late split (on clips or listed)', !partTags(a3, a3S).length && !partTags(b3, b3S).length,
+      `A ${JSON.stringify(partTags(a3, a3S))}, B ${JSON.stringify(partTags(b3, b3S))}, A literals ${JSON.stringify(a3S.group_literals || [])}`);
+    const clock3 = [];
+    for (const [who, byId] of [['A', a3ById], ['B', b3ById]]) for (const c of ALL) { const it = byId.get(c.id); if (it && it.ts !== c.ts) clock3.push(`${who} ${c.label}`); }
+    check('phase 3: no clip clock moved (ts)', clock3.length === 0, clock3.join(' | ') || `${ALL.length * 2} ts equal`);
+    const pin3 = [];
+    for (const [who, byId] of [['A', a3ById], ['B', b3ById]]) for (const c of ALL) { const it = byId.get(c.id); const want = c.id === S8 || !!c.pin; if (it && !!it.pin !== want) pin3.push(`${who} ${c.label}: ${!!it.pin}`); }
+    check('phase 3: pin states as expected (S8 pinned by its tag, S7 unpinned, rest kept)', pin3.length === 0, pin3.join(' | ') || `${ALL.length * 2} ok`);
+    const n3A = (a3ById.get(S[5].id) || {}).pin; const n3B = (b3ById.get(S[5].id) || {}).pin;
+    check('phase 3: numpad key 3 kept on both', !!n3A && n3A.number === 3 && !!n3B && n3B.number === 3, `A ${n3A && n3A.number}, B ${n3B && n3B.number}`);
+    const q2 = await watchQuiet('A(new) + B(new)', {
+      A_history: path.join(A.dataDir, 'clipboard-history.json'), B_history: path.join(B2.dataDir, 'clipboard-history.json'),
+      cloud_snapshot: path.join(cloudDir, 'clipboard-history.json'),
+    }, [['A', A], ['B', B2]], 62000);
+    out.quiet_phase3 = q2;
+    check('phase 3: history files stop changing (A, B, cloud snapshot; 62 s)', q2.files.A_history.content_changes === 0 && q2.files.B_history.content_changes === 0 && q2.files.cloud_snapshot.content_changes === 0,
+      `content changes A ${q2.files.A_history.content_changes} (writes ${q2.files.A_history.writes}), B ${q2.files.B_history.content_changes} (writes ${q2.files.B_history.writes}), cloud ${q2.files.cloud_snapshot.content_changes} (writes ${q2.files.cloud_snapshot.writes}), journals +${q2.journal_files_added}, merges ${JSON.stringify(q2.merges)}`);
+    const p3Errors = { A: errorsOf(A), B: errorsOf(B2), B_old_log: bLegacyDiag.filter(e => /error/.test(e.event)).length };
+    check('phase 3: no error events (A, restarted B)', !p3Errors.A.length && !p3Errors.B.length, JSON.stringify(p3Errors).slice(0, 300));
+    out.b2_stragglers = B2.diagnostics().filter(e => e.event === 'groups.flatten.straggler').map(e => ({ source: e.source, local_clips: e.local_clips }));
+    out.final_tags = Object.fromEntries(ALL.map(c => [c.label, { A: groupsOf(a3ById.get(c.id)), B: groupsOf(b3ById.get(c.id)) }]));
+    out.final_settings = { A: { groups: a3S.groups, group_splits: (a3S.group_splits || []).map(r => r.name) }, B: { groups: b3S.groups, group_splits: (b3S.group_splits || []).map(r => r.name) } };
+    out.timeline_ms = Date.now() - t0;
+  } catch (error) {
+    out.error = error && (error.stack || error.message);
+    check('scenario ran to the end', false, out.error);
+  } finally {
+    const fin = [];
+    for (const sb of [A, B2]) if (sb) { try { fin.push(await sb.finish()); } catch (e) { fin.push({ ok: false, problems: [String(e && e.message)] }); } }
+    if (B && !bKeptDir) { try { fin.push(await B.finish()); } catch (e) { fin.push({ ok: false, problems: [String(e && e.message)] }); } }
+    if (bKeptDir) { try { fs.rmSync(bKeptDir, { recursive: true, force: true, maxRetries: 20, retryDelay: 150 }); } catch (e) { fin.push({ ok: false, problems: [`kept B dir: ${e.message}`] }); } }
+    try { fs.rmSync(work, { recursive: true, force: true, maxRetries: 20, retryDelay: 150 }); } catch {}
+    out.cleanup = { sandboxes_ok: fin.every(f => f.ok !== false), problems: fin.flatMap(f => f.problems || []), b_dir_removed: bKeptDir ? !fs.existsSync(bKeptDir) : null, work_removed: !fs.existsSync(work) };
+  }
+  out.checks = results;
+  out.summary = summary();
+  out.ok = out.summary.failed === 0;
+  return out;
+}
+
 (async () => {
   const results = [];
+  if (SCENARIO === 'legacy') results.push(await runLegacyScenario());
   if (SCENARIO === 'p2p' || SCENARIO === 'all') results.push(await runScenario('p2p', { bP2P: true }));
   if (SCENARIO === 'cloud' || SCENARIO === 'all') results.push(await runScenario('cloud', { bP2P: false }));
   console.log(JSON.stringify(results, null, 2));

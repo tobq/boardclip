@@ -31,6 +31,8 @@ contextBridge.exposeInMainWorld('editorApi', {
   resolveConflict: (payload) => ipcRenderer.invoke('resolve-conflict', payload),
   unifyStep: (payload) => ipcRenderer.invoke('unify-step', sessionId, payload),
   close: () => ipcRenderer.send('editor-close', sessionId),
+  // Ctrl/Cmd+N here: the popup's New note, through the same IPC.
+  newNote: (options) => ipcRenderer.invoke('new-note', options || {}),
   // The find bar's mode + match case, remembered per device.
   saveFindPrefs: (prefs) => ipcRenderer.invoke('save-settings', { find_regex: !!(prefs && prefs.regex), find_case: !!(prefs && prefs.caseSensitive) }),
   // A drag on the idle title moves this window (main's window-drag, sender only).

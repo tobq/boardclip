@@ -42,11 +42,11 @@ async function main() {
   const history = [];
   for (let i = 0; i < 40; i += 1) history.push({ type: 'text', text: i % 5 === 0 ? `https://example.com/page/${i}` : `qa header clip ${i}`, ts: now - i * 60 });
   for (const it of history) it.id = qa.txtId(it.text);
-  // Groups for the chip row's cluster checks: Work used most, Old least.
-  // Work/Clients is a sub-group (the family checks); clip 30 is in Old AND Ideas
-  // (a remembered "and" of the two still shows something, so it is not greyed).
-  history.forEach((it, i) => { const g = i === 5 ? ['Work/Clients'] : i < 6 ? ['Work'] : i < 9 ? ['Ideas'] : i === 30 ? ['Old', 'Ideas'] : i === 31 ? ['Old'] : null; if (g) it.pin = { groups: g }; });
-  const sb = await qa.launch({ name: 'header', history, settings: { surface_style: 'solid', groups: ['Old', 'Ideas', 'Work', 'Work/Clients'] } });
+  // Groups for the chip row's cluster checks: Work used most, Old least. Clip
+  // 30 is in Old AND Ideas (the default "and" of the two still shows
+  // something, so it is not greyed).
+  history.forEach((it, i) => { const g = i < 6 ? ['Work'] : i < 9 ? ['Ideas'] : i === 30 ? ['Old', 'Ideas'] : i === 31 ? ['Old'] : null; if (g) it.pin = { groups: g }; });
+  const sb = await qa.launch({ name: 'header', history, settings: { surface_style: 'solid', groups: ['Old', 'Ideas', 'Work'] } });
   let ok = false;
   try {
     // Block Google Fonts for the whole session BEFORE the popup page loads its
@@ -599,60 +599,72 @@ async function main() {
     const clickGroup = (g, right) => popup.eval(`(() => { const c = document.querySelector('#groupFilters [data-group="${g}"]'); c.dispatchEvent(new MouseEvent(${right ? "'contextmenu'" : "'click'"}, { bubbles: true, cancelable: true, button: ${right ? 2 : 0} })); return true; })()`);
     let cr = await chipRow();
     check('no selection: groups by use (Work, Ideas, Old), no cluster', J(cr.order) === J(['Work', 'Ideas', 'Old']), J(cr));
+    // Several tags join with "and" by default (a second tag narrows), so even
+    // one selected tag is led by the "and" (the way to flip it to "or").
     await clickGroup('Old');
     await sleep(250);
     cr = await chipRow();
-    check('a selected group moves to the front between hairlines (one value: no or / and)', J(cr.order) === J(['|', 'Old', '|', 'Work', 'Ideas']) && cr.query === 'group:Old', J(cr));
+    check('a selected group moves to the front between hairlines, led by the default "and"', J(cr.order) === J(['|', 'conn:and', 'Old', '|', 'Ideas', 'Work']) && cr.query === 'group:Old', J(cr));
     await clickGroup('Ideas');
     await sleep(250);
     cr = await chipRow();
-    check('two selected: the cluster leads with "or" (written group:A OR group:B)', cr.order[1] === 'conn:or' && J(cr.order.slice(2, 4).sort()) === J(['Ideas', 'Old']) && cr.order[5] === 'Work' && / OR /.test(cr.query), J(cr));
-    // (Excluded while still "or": "and" of two disjoint groups shows nothing, so
-    // every other chip is greyed and inert.)
+    check('two selected join with "and" (side by side in the text)', cr.order[1] === 'conn:and' && J(cr.order.slice(2, 4).sort()) === J(['Ideas', 'Old']) && cr.order[5] === 'Work' && !/ OR /.test(cr.query), J(cr));
+    await popup.click('#groupFilters .conn-toggle');
+    await sleep(250);
+    cr = await chipRow();
+    check('the or / and flips to "or" (written group:A OR group:B)', cr.order[1] === 'conn:or' && / OR /.test(cr.query) && /group:Old/.test(cr.query) && /group:Ideas/.test(cr.query), J(cr));
+    // The flip is remembered per device: the next two picks join with "or".
+    check('the or / and is remembered (local setting)', J(await popup.eval(`window.api.getSettings().then((s) => s.facet_joins)`)) === J({ group: 'or' }));
+    // (Excluded while "or": under "and" the two disjoint groups grey Work, and
+    // a greyed chip is inert.)
     await clickGroup('Work', true);
     await sleep(250);
     cr = await chipRow();
     check('a right-click excludes: the excluded chip joins the front after the selected', cr.order.length === 5 && cr.order.indexOf('Work') === 4 && /-group:Work/.test(cr.query), J(cr));
-    await popup.click('#groupFilters .conn-toggle');
-    await sleep(250);
-    cr = await chipRow();
-    check('the or / and flips to "and" (side by side in the text)', cr.order[1] === 'conn:and' && !/ OR /.test(cr.query) && /group:Old/.test(cr.query) && /group:Ideas/.test(cr.query) && /-group:Work/.test(cr.query), J(cr));
-    // The flip is remembered per device: the next two picks join with "and".
-    check('the or / and is remembered (local setting)', J(await popup.eval(`window.api.getSettings().then((s) => s.facet_joins)`)) === J({ group: 'and' }));
     await popup.eval(`(clearSearchAndFilters(), true)`);
     await clickGroup('Old');
     await sleep(150);
     await clickGroup('Ideas');
     await sleep(250);
     cr = await chipRow();
-    check('a remembered "and" joins the next pick that way', /group:Old/.test(cr.query) && /group:Ideas/.test(cr.query) && !/ OR /.test(cr.query) && cr.order[1] === 'conn:and', J(cr));
+    check('a remembered "or" joins the next pick that way', / OR /.test(cr.query) && cr.order[1] === 'conn:or', J(cr));
     await popup.click('#groupFilters .conn-toggle');
     await sleep(250);
-    check('flipping back to "or" is remembered too', J(await popup.eval(`window.api.getSettings().then((s) => s.facet_joins)`)) === J({}), J(await chipRow()));
-    // One group family, one choice: a parent absorbs its selected sub-group, a
-    // sub-group drills down from its parent.
-    await popup.eval(`(clearSearchAndFilters(), true)`);
-    await clickGroup('Work/Clients');
+    check('flipping back to "and" (the default) is remembered too', J(await popup.eval(`window.api.getSettings().then((s) => s.facet_joins)`)) === J({}), J(await chipRow()));
+    // Tags are case-insensitive: group:work selects the Work chip, and a click
+    // on that chip takes the token out again.
+    await popup.eval(`(clearSearchAndFilters(), appAdapter.setQuery('group:work'), renderGroupFilters(), true)`);
     await sleep(200);
-    const fam1 = (await chipRow()).query;
+    const caseOn = await popup.eval(`document.querySelector('#groupFilters [data-group="Work"]').classList.contains('active')`);
     await clickGroup('Work');
     await sleep(200);
-    const fam2 = (await chipRow()).query;
-    await clickGroup('Work/Clients');
-    await sleep(200);
-    const fam3 = (await chipRow()).query;
-    check('a parent absorbs its selected sub-group; a sub-group drills down from its parent', fam1 === 'group:Work/Clients' && fam2 === 'group:Work' && fam3 === 'group:Work/Clients', J([fam1, fam2, fam3]));
-    // A chip that leaves the row fades out where it was (an inert, unkeyed ghost) and is gone after.
+    const caseOff = (await chipRow()).query;
+    check('a tag written in any case selects its chip, and the chip takes it out', caseOn === true && caseOff === '', J({ caseOn, caseOff }));
+    // A chip that leaves the row fades out where it was (an inert, unkeyed
+    // ghost) and is gone after: the last selected tag taken out takes its
+    // cluster (the "and" toggle and the hairlines) with it.
     const ghost = await popup.eval(`(() => {
-      clearSearchAndFilters(); appAdapter.setQuery('group:Ideas OR group:Old'); renderGroupFilters();
-      document.querySelector('#groupFilters [data-group="Ideas"]').dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+      clearSearchAndFilters(); appAdapter.setQuery('group:Old'); renderGroupFilters();
+      const lead = document.querySelector('#groupFilters .conn-toggle');
+      document.querySelector('#groupFilters [data-group="Old"]').dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
       renderGroupFilters();
       const g = [...document.querySelectorAll('#groupFilters .flip-ghost')];
-      return { n: g.length, conn: g.some((x) => x.classList.contains('conn-toggle')), keyed: g.some((x) => x.matches('[data-dim], [data-group], [data-filter]') || !!x.querySelector('[data-group], [data-filter]')), inert: g.every((x) => x.inert), query };
+      return { lead: lead ? lead.dataset.conn : null, n: g.length, conn: g.some((x) => x.classList.contains('conn-toggle')), keyed: g.some((x) => x.matches('[data-dim], [data-group], [data-filter]') || !!x.querySelector('[data-group], [data-filter]')), inert: g.every((x) => x.inert), query };
     })()`);
     await sleep(600);
     const gone = await popup.eval(`document.querySelectorAll('#groupFilters .flip-ghost').length`);
-    check('a chip that leaves fades out where it was (an inert ghost), then is gone', ghost.n >= 1 && ghost.conn && !ghost.keyed && ghost.inert && gone === 0 && ghost.query === 'group:Old', J({ ghost, gone }));
+    check('a chip that leaves fades out where it was (an inert ghost), then is gone', ghost.lead === 'and' && ghost.n >= 1 && ghost.conn && !ghost.keyed && ghost.inert && gone === 0 && ghost.query === '', J({ ghost, gone }));
+    // Under a remembered "or" a lone tag keeps its toggle (the way back to "and").
+    const orLone = await popup.eval(`(() => {
+      clearSearchAndFilters(); searchBox.setJoins({ group: 'or' }); appAdapter.setQuery('group:Ideas OR group:Old'); renderGroupFilters();
+      document.querySelector('#groupFilters [data-group="Ideas"]').dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+      renderGroupFilters();
+      const t = document.querySelector('#groupFilters .conn-toggle:not(.flip-ghost)');
+      const out = { conn: t ? t.dataset.conn : null, query };
+      searchBox.setJoins({});
+      return out;
+    })()`);
+    check('one tag left under a remembered "or" keeps the "or" toggle (the way back)', orLone.conn === 'or' && orLone.query === 'group:Old', J(orLone));
     await popup.eval(`(clearSearchAndFilters(), appAdapter.setQuery('group:Ideas OR group:Old -group:Work'), renderGroupFilters(), true)`);
     await sleep(200);
     cr = await chipRow();

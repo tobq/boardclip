@@ -93,10 +93,13 @@ when you intentionally want Git to autostash local code changes.
 | --- | --- |
 | Cmd+Shift+V / Win+V | Toggle popup |
 | Cmd+Numpad 1-9 / Win+Numpad 1-9 | Quick-paste slot |
-| 1-9 in empty search | Quick-paste slot |
+| 1-9 right after the popup opens | Quick-paste slot |
+| N right after the popup opens | New note |
+| Win+N (Windows; record one on macOS in Settings) | New note |
 | Arrow keys | Navigate items |
 | Enter | Paste selected item |
 | Escape | Close popup |
+| Cmd+N / Ctrl+N in the note editor | New note |
 
 ## Development
 
@@ -148,7 +151,7 @@ kill.bat
 - `preload.js`: safe renderer API bridge.
 - `lib/clipboard-model.js`: shared pure history/pin/group merge logic.
 - `lib/cloud-accounts.js`: Google Drive, OneDrive, and iCloud folder discovery.
-- `lib/windows-hook*`: Windows low-level keyboard hook for Win+V / Win+Numpad.
+- `lib/windows-hook*`: Windows low-level keyboard hook for Win+V / Win+N / Numpad.
 - `site/`: static landing page and remote install/update scripts.
 
 ## Data

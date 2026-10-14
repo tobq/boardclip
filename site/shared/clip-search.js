@@ -21,7 +21,8 @@
 //                            `x a OR b` = x AND (a OR b)); `or` is a plain word
 //   ( ... )   -( ... )       grouping at any depth; `-` negates a term or a group
 //   title:VALUE  text:VALUE  field-scoped content (text:/body: = the clip body only)
-//   group:NAME   g:NAME      group membership (hierarchical: matches NAME and NAME/child)
+//   group:NAME   g:NAME      tag (group) membership: flat, case-insensitive (a '/' is
+//                            part of the name); several side by side = AND
 //   is:pinned is:image is:text is:numpad     boolean facets
 //   num:N                    numpad slot 1-9 (alias for is:numpad + that slot)
 //   since:SPEC  before:SPEC  time bounds ("24h" | "7d" | "2026-01-01" | ISO)
@@ -105,17 +106,109 @@
     return [doc.title, doc.type === 'image' ? 'image' : doc.body, doc.type, doc.groups.join(' ')].join(' ');
   }
 
-  // ── group-name helpers (hierarchical `parent/child`, shared semantics with the tag tree) ──
-  function normalizeTagName(group) {
-    return String(group || '').split('/').map((p) => p.trim()).filter(Boolean).join('/');
+  // ── tags (groups): ONE rule for every surface (the model, sync, MCP, the UI, the demo).
+  // Tags are flat and case-insensitive: "Forge" and "forge" are one tag, which has ONE
+  // stored spelling. tagKey is the identity; a '/' is an ordinary character. Commas
+  // separate several tags typed (or sent by an AI tool) in one go: splitTagInput.
+  // Groups nested with '/' before 14 Oct 2026 were split once into their parts; those
+  // exact retired names stay mapped to the parts (settings.group_splits, applied by
+  // expandTagNames), so an old habit or an old device still lands flat. ──
+  function cleanTagName(name) { return String(name == null ? '' : name).trim(); }
+  function tagKey(name) { return cleanTagName(name).toLowerCase(); }
+  function sameTag(a, b) { const k = tagKey(a); return !!k && k === tagKey(b); }
+  // The names typed (or sent) in one go: comma-separated, trimmed, one per tag.
+  function splitTagInput(text) {
+    const seen = new Set();
+    const out = [];
+    for (const part of String(text == null ? '' : text).split(',')) {
+      const name = cleanTagName(part);
+      const k = name.toLowerCase();
+      if (!name || seen.has(k)) continue;
+      seen.add(k);
+      out.push(name);
+    }
+    return out;
   }
-  function tagMatchesFilter(group, filter) {
-    const tag = normalizeTagName(group);
-    const parent = normalizeTagName(filter);
-    return !!parent && (tag === parent || tag.startsWith(`${parent}/`));
+  // How a nested name ('todo/forge') splits into its parts: the 14 Oct cutover, its
+  // retired-name record, and validateQuery's fix for a query written the old way.
+  // A '/' in a name made after the cutover is literal.
+  function nestedNameParts(name) {
+    return String(name == null ? '' : name).split('/').map((p) => p.trim()).filter(Boolean);
+  }
+  // Two spellings of one tag (a sync of copies made apart): the one with the fewest
+  // capitals, then code-point order - the same answer on every device.
+  function capitalCount(s) { let n = 0; for (const ch of s) if (ch !== ch.toLowerCase()) n += 1; return n; }
+  function preferredSpelling(a, b) {
+    if (!a) return b;
+    if (!b) return a;
+    const ca = capitalCount(a);
+    const cb = capitalCount(b);
+    if (ca !== cb) return ca < cb ? a : b;
+    return a <= b ? a : b;
+  }
+  // key -> stored spelling over every name in `lists` (arrays of names).
+  function tagSpellings(lists) {
+    const map = new Map();
+    for (const list of lists || []) {
+      for (const raw of list || []) {
+        const name = cleanTagName(raw);
+        if (!name) continue;
+        const k = name.toLowerCase();
+        map.set(k, preferredSpelling(map.get(k), name));
+      }
+    }
+    return map;
+  }
+  // A list of tag names in its stored form: retired nested names replaced by their
+  // parts (splits: Map key -> parts), each name in its stored spelling (spellings: Map
+  // key -> name), one entry per tag, first occurrence first. Pure: returns `names`
+  // itself when nothing changes, so an untouched clip keeps its exact JSON.
+  function expandTagNames(names, splits, spellings) {
+    const list = Array.isArray(names) ? names : [];
+    const out = [];
+    const seen = new Set();
+    let changed = false;
+    for (const raw of list) {
+      const name = typeof raw === 'string' ? raw : cleanTagName(raw);
+      const parts = splits && splits.size && splits.has(tagKey(name)) ? splits.get(tagKey(name)) : null;
+      if (parts) changed = true;
+      for (const part of parts || [name]) {
+        const clean = cleanTagName(part);
+        if (clean !== part) changed = true;
+        const k = clean.toLowerCase();
+        if (!clean || seen.has(k)) { changed = true; continue; }
+        seen.add(k);
+        const stored = (spellings && spellings.get(k)) || clean;
+        if (stored !== part) changed = true;
+        out.push(stored);
+      }
+    }
+    return changed ? out : list;
+  }
+  // The tags typed or sent in one go (New group, a picker, an AI tool's group param), in
+  // stored form: an existing tag named in full is that tag (even with a comma in its
+  // name); else the comma-separated names, a retired nested name as its parts, each in
+  // its stored spelling. groups = the tag list. The app (clipboardModel.tagInputNames,
+  // which adds the AI tag's fixed spelling) and the demo both read input through it.
+  function inputTagNames(input, groups, splits, spellings) {
+    if (typeof input === 'string') {
+      const whole = (groups || []).find((g) => sameTag(g, input));
+      if (whole) return [whole];
+    }
+    const typed = Array.isArray(input) ? input.flatMap((v) => splitTagInput(v)) : splitTagInput(input);
+    return expandTagNames(typed, splits, spellings);
+  }
+  // The tag toggle (a row's picker, an AI tool's assign_group): several tags at once are
+  // ONE decision. The missing ones are added; a clip that has them all loses them all.
+  function tagTogglePlan(clipTags, names) {
+    const missing = names.filter((name) => !(clipTags || []).some((g) => sameTag(g, name)));
+    return missing.length ? { add: missing, remove: [] } : { add: [], remove: names };
   }
   function docInGroup(doc, filter) {
-    return doc.groups.some((g) => tagMatchesFilter(g, filter));
+    const k = tagKey(filter);
+    if (!k) return false;
+    for (const g of doc.groups) if (tagKey(g) === k) return true;
+    return false;
   }
 
   // ── ONE recency decay (usage x recency, "frecency"): a weight that falls off
@@ -125,8 +218,8 @@
     return Math.exp(-Math.max(0, ageMs) / scaleMs);
   }
   // How much each group is used: its clips, each weighted by how recently it
-  // was copied or used (ts moves on every paste), on a two-week scale. Every
-  // parent path counts its sub-groups' clips too. ONE score orders the chip
+  // was copied or used (ts moves on every paste), on a two-week scale, keyed by
+  // tagKey (tags are flat and case-insensitive). ONE score orders the chip
   // row, the group pickers and the group autocomplete, and nudges the ranking
   // (clips of the groups you use rank a little higher). list: clips or search
   // docs (both carry ts in seconds); kept per list and per hour. The map's
@@ -147,13 +240,10 @@
       const w = decayWeight(nowMs - (Number(x.ts) || 0) * 1000, GROUP_USAGE_SCALE_MS);
       const seen = new Set();
       for (const g of gs) {
-        const parts = normalizeTagName(g).split('/').filter(Boolean);
-        for (let i = 1; i <= parts.length; i += 1) {
-          const path = parts.slice(0, i).join('/');
-          if (seen.has(path)) continue;
-          seen.add(path);
-          weights.set(path, (weights.get(path) || 0) + w);
-        }
+        const k = tagKey(g);
+        if (!k || seen.has(k)) continue;
+        seen.add(k);
+        weights.set(k, (weights.get(k) || 0) + w);
       }
     }
     let max = 0;
@@ -162,9 +252,9 @@
     if (groupWeightCache) groupWeightCache.set(arr, { hour, weights });
     return weights;
   }
-  // Order group paths by use (groupWeights), then by name.
+  // Order tags by use (groupWeights), then by name.
   function compareGroupUse(weights) {
-    return (a, b) => ((weights && (weights.get(normalizeTagName(b)) || 0)) - (weights && (weights.get(normalizeTagName(a)) || 0)))
+    return (a, b) => ((weights && (weights.get(tagKey(b)) || 0)) - (weights && (weights.get(tagKey(a)) || 0)))
       || a.localeCompare(b, undefined, { sensitivity: 'base', numeric: true });
   }
 
@@ -377,7 +467,7 @@
     if ((m[2][0] === '/' || m[2][0] === '\\') && !RECOGNIZED_PREFIXES.has(rawKey)) return content(plain);
     if (key === 'title') return content(val, 'title');
     if (key === 'text') return content(val, 'body');
-    if (key === 'group') return { field: 'group', value: normalizeTagName(val), neg };
+    if (key === 'group') return { field: 'group', value: cleanTagName(val), neg };
     if (key === 'is') { const v = val.toLowerCase(); if (IS_VALUES.includes(v)) return { field: 'is', value: v, neg }; }
     if (key === 'num') { const n = parseInt(val, 10); if (n >= 1 && n <= 9 && /^\d$/.test(val)) return { field: 'num', value: n, neg }; }
     if (key === 'since' || key === 'before' || key === 'id') return { field: key, value: val, neg };
@@ -417,7 +507,8 @@
   // Which OR dimension a filter value belongs to: every group is one, the
   // kinds of clip (image, text, link, multi-line, rich) are one, numpad keys
   // are one; pinned and "on a key" are each their own (pinned OR image is not
-  // one question). A second chip of an OR dimension adds an OR.
+  // one question). A second chip of a dimension joins the first the dimension's
+  // way (dimJoin: tags AND, kinds and numpad keys OR, unless remembered).
   const TYPE_IS = new Set(['image', 'text', 'url', 'multiline', 'rich']);
   const OR_DIMS = new Set(['group', 'type', 'num']);
   function facetDim(field, value) {
@@ -425,6 +516,10 @@
     if (field === 'is') return TYPE_IS.has(value) ? 'type' : value;
     return null;
   }
+  // One filter value is the same as another: a tag in any case (sameTag),
+  // anything else exactly. valueKey: the key it is counted and compared by.
+  function sameValue(field, a, b) { return field === 'group' ? sameTag(a, b) : a === b; }
+  function valueKey(field, value) { return field === 'group' ? tagKey(value) : value; }
   // A top-level OR whose sides are all positive values of ONE OR dimension
   // (group:A OR group:B): an anyOf (the chip row's or / and). null for any other OR.
   function anyOfGroup(node) {
@@ -437,7 +532,7 @@
       if (!d || !OR_DIMS.has(d) || (dim && d !== dim)) return null;
       dim = d;
       field = k.leaf.field;
-      if (!members.some((x) => x.value === k.leaf.value)) members.push({ value: k.leaf.value, text: k.text, start: k.start, end: k.end });
+      if (!members.some((x) => sameValue(field, x.value, k.leaf.value))) members.push({ value: k.leaf.value, text: k.text, start: k.start, end: k.end });
     }
     return { dim, field, values: members.map((x) => x.value), members, start: node.start, end: node.end };
   }
@@ -639,16 +734,19 @@
   // already there (FACET_ORDER + value order, so chips clicked in any order
   // write the same text), and everything else - the words, their quotes, an
   // unknown prefix, the order the user typed, a custom (a OR b) - stays exactly
-  // as typed. A value joins an OR dimension (groups, kinds of clip, numpad keys)
-  // with OR when it holds one value or an OR already (group:A -> group:A OR
-  // group:B), unless the device remembered "and" for that kind (opts.joins);
-  // two values side by side (an "and") take a third the same way. Only the top level is edited: a value inside a custom expression is
-  // left alone (its chip is greyed).
+  // as typed. A second value of a dimension joins the first the dimension's
+  // way (dimJoin): a second tag goes in beside it (group:A group:B, AND), a
+  // second kind of clip or numpad key with OR (is:text OR is:url), unless the
+  // device remembered the other join for that kind (opts.joins); an existing
+  // OR or two values side by side take a third the way they are written. A
+  // tag is matched in any case, so a chip never adds one the query already
+  // names in another spelling. Only the top level is edited: a value inside a
+  // custom expression is left alone (its chip is greyed).
   const SINGLE_FACETS = ['since', 'before', 'len', 'lines', 'words', 'id'];
   const BOUND_FACETS = ['len', 'lines', 'words'];
   // A chip token -> { field, value } (builtin chip ids are is: kinds).
   function tokenFieldValue(token) {
-    if (token.kind === 'group') return { field: 'group', value: normalizeTagName(token.value) };
+    if (token.kind === 'group') return { field: 'group', value: cleanTagName(token.value) };
     if (token.kind === 'num') return { field: 'num', value: Number(token.value) };
     return { field: 'is', value: BUILTIN_TO_IS[token.value] || token.value };
   }
@@ -704,8 +802,9 @@
   }
   // opts.joins: how a second value of a kind joins the first ({ group, type }:
   // 'or' | 'and', JOIN_DIMS; the device remembers the last or / and the user
-  // picked, normalizeJoins). A value joins an existing OR or AND the way it is
-  // written; the remembered join only decides when one value is there.
+  // picked, normalizeJoins; dimJoin = the default where it remembers nothing).
+  // A value joins an existing OR or AND the way it is written; the join only
+  // decides when one value is there.
   function applyFacet(query, token, intent, opts) {
     const joins = normalizeJoins(opts && opts.joins);
     const text = String(query == null ? '' : query);
@@ -722,33 +821,15 @@
     const { field, value } = tokenFieldValue(token);
     const part = facetPart(field, value);
     const dim = facetDim(field, value);
-    const isLeaf = (item, neg) => item.kind === 'leaf' && item.leaf.field === field && !!item.leaf.neg === neg && item.leaf.value === value;
+    const same = (v) => sameValue(field, v, value);
+    const isLeaf = (item, neg) => item.kind === 'leaf' && item.leaf.field === field && !!item.leaf.neg === neg && same(item.leaf.value);
     const pos = p.items.filter((item) => isLeaf(item, false));
     const negs = p.items.filter((item) => isLeaf(item, true));
-    const holding = p.items.filter((item) => item.kind === 'any' && item.any.field === field && item.any.values.includes(value));
-    // One group family, one choice (group:Work already holds Work/Clients):
-    // a group picked replaces its selected parents and sub-groups (the last
-    // click wins: a parent widens, a sub-group drills down); an excluded group
-    // drops its selected sub-groups (they would show nothing). The selection
-    // keeps the join it had.
-    if (field === 'group' && !pos.length && !holding.length && !negs.length) {
-      const kin = (v) => v !== value && (tagMatchesFilter(v, value) || (intent !== 'exclude' && tagMatchesFilter(value, v)));
-      const family = p.items.filter((item) => (item.kind === 'leaf' && item.leaf.field === 'group' && !item.leaf.neg && kin(item.leaf.value))
-        || (item.kind === 'any' && item.any.field === 'group' && item.any.values.some(kin)));
-      if (family.length) {
-        const stripped = editFacets(text, p, ({ remove, rewriteAny }) => {
-          for (const item of family) {
-            if (item.kind === 'leaf') remove(item);
-            else rewriteAny(item, item.any.members.filter((m) => !kin(m.value)));
-          }
-        });
-        return applyFacet(stripped, token, intent, { joins: { ...joins, group: dimConnective(p, 'group') || joins.group } });
-      }
-    }
+    const holding = p.items.filter((item) => item.kind === 'any' && item.any.field === field && item.any.values.some(same));
     return editFacets(text, p, ({ remove, rewriteAny, insertPart, edits }) => {
       const dropValue = () => {
         pos.forEach(remove);
-        for (const item of holding) rewriteAny(item, item.any.members.filter((m) => m.value !== value));
+        for (const item of holding) rewriteAny(item, item.any.members.filter((m) => !same(m.value)));
       };
       if (intent === 'exclude') {
         if (negs.length) negs.forEach(remove);                // already excluded -> clear
@@ -757,13 +838,14 @@
       }
       if (pos.length || holding.length) { dropValue(); return; } // already included -> clear
       if (negs.length) { negs.forEach(remove); return; }         // excluded -> clear
-      // Add: OR into the dimension's OR, or onto its one value, at its value
-      // order (chips clicked in any order write the same text); else a token.
+      // Add: OR into the dimension's OR, or onto its one value when the
+      // dimension joins with OR, at its value order (chips clicked in any
+      // order write the same text); else a token beside the others (AND).
       if (OR_DIMS.has(dim)) {
         const order = field === 'group' ? byName : field === 'num' ? byNum : byIs;
         const anyItem = p.items.find((item) => item.kind === 'any' && item.any.dim === dim);
         const ones = p.items.filter((item) => item.kind === 'leaf' && !item.leaf.neg && facetDim(item.leaf.field, item.leaf.value) === dim);
-        const members = anyItem ? anyItem.any.members : ones.length === 1 && joins[dim] !== 'and' ? [{ value: ones[0].leaf.value, start: ones[0].start, end: ones[0].end }] : null;
+        const members = anyItem ? anyItem.any.members : ones.length === 1 && dimJoin(joins, dim) === 'or' ? [{ value: ones[0].leaf.value, start: ones[0].start, end: ones[0].end }] : null;
         if (members) {
           const next = members.find((m) => order(m.value, value) > 0);
           if (next) edits.push({ start: next.start, end: next.start, text: `${part} OR ` });
@@ -775,15 +857,16 @@
     });
   }
   // Remove every top-level token of one filter value (both signs, from an OR
-  // too): a deleted group leaves no group: behind.
+  // too, a tag in any case): a deleted group leaves no group: behind.
   function stripFacet(query, token) {
     const text = String(query == null ? '' : query);
     const p = parseQuery(text);
     const { field, value } = tokenFieldValue(token);
+    const same = (v) => sameValue(field, v, value);
     return editFacets(text, p, ({ remove, rewriteAny }) => {
       for (const item of p.items) {
-        if (item.kind === 'leaf' && item.leaf.field === field && item.leaf.value === value) remove(item);
-        else if (item.kind === 'any' && item.any.field === field && item.any.values.includes(value)) rewriteAny(item, item.any.members.filter((m) => m.value !== value));
+        if (item.kind === 'leaf' && item.leaf.field === field && same(item.leaf.value)) remove(item);
+        else if (item.kind === 'any' && item.any.field === field && item.any.values.some(same)) rewriteAny(item, item.any.members.filter((m) => !same(m.value)));
       }
     });
   }
@@ -806,10 +889,11 @@
       return String(cur).toLowerCase() === String(token.value).toLowerCase() ? 'include' : null;
     }
     const { field, value } = tokenFieldValue(token);
+    const same = (v) => sameValue(field, v, value);
     const inc = field === 'group' ? parsed.groups : field === 'num' ? parsed.nums : parsed.is;
     const ex = field === 'group' ? parsed.negGroups : field === 'num' ? parsed.negNums : parsed.negIs;
-    if (inc.includes(value) || (parsed.anyOf || []).some((g) => g.field === field && g.values.includes(value))) return 'include';
-    return ex.includes(value) ? 'exclude' : null;
+    if (inc.some(same) || (parsed.anyOf || []).some((g) => g.field === field && g.values.some(same))) return 'include';
+    return ex.some(same) ? 'exclude' : null;
   }
 
   // Every filter value named inside a custom expression (a OR b, -(a b)): its
@@ -817,7 +901,7 @@
   function nodeFacetKeys(node, out) {
     if (node.type === 'leaf') {
       const l = node.leaf;
-      if (l.field === 'group') out.add(`group:${l.value}`);
+      if (l.field === 'group') out.add(`group:${tagKey(l.value)}`);
       else if (l.field === 'is') out.add(`is:${l.value}`);
       else if (l.field === 'num') out.add(`num:${l.value}`);
       else if (l.field && l.field !== 'content') out.add(`${l.field}:`);
@@ -833,15 +917,20 @@
   }
 
   // Chip active/excluded state for the filter bar, derived straight from the query.
-  function facetState(parsed) {
+  // groups (optional): the stored tag names; a tag the query names in another
+  // case (group:work for Work) is reported in its stored spelling, the name its
+  // chip carries.
+  function facetState(parsed, groups) {
     const active = new Set();
     const excluded = new Set();
-    for (const g of parsed.groups) active.add(g);
-    for (const g of parsed.negGroups) excluded.add(g);
+    const stored = tagSpellings([groups]);
+    const name = (g) => stored.get(tagKey(g)) || g;
+    for (const g of parsed.groups) active.add(name(g));
+    for (const g of parsed.negGroups) excluded.add(name(g));
     for (const v of parsed.is) if (IS_TO_BUILTIN[v]) active.add(IS_TO_BUILTIN[v]);
     for (const v of parsed.negIs) if (IS_TO_BUILTIN[v]) excluded.add(IS_TO_BUILTIN[v]);
     for (const g of parsed.anyOf || []) for (const v of g.values) {
-      if (g.field === 'group') active.add(v);
+      if (g.field === 'group') active.add(name(v));
       else if (g.field === 'is' && IS_TO_BUILTIN[v]) active.add(IS_TO_BUILTIN[v]);
     }
     if (parsed.nums.length || parsed.is.includes('numpad') || (parsed.anyOf || []).some((g) => g.field === 'num')) active.add('__numbered__');
@@ -1143,7 +1232,7 @@
     const use = o.groupUse;
     if (use && use.max > 0 && doc.groups.length) {
       let best = 0;
-      for (const g of doc.groups) { const w = use.get(g) || 0; if (w > best) best = w; } // stored names are normalised
+      for (const g of doc.groups) { const w = use.get(tagKey(g)) || 0; if (w > best) best = w; }
       score += GROUP_USE_WEIGHT * (best / use.max);
     }
     return score;
@@ -1410,7 +1499,7 @@
   const FIELD_INFO = {
     title: { desc: 'match the clip title only', short: 't' },
     text: { desc: 'match the clip body only', short: 'b' },
-    group: { desc: 'in a group (and its sub-groups)', short: 'g' },
+    group: { desc: 'in a group', short: 'g' },
     is: { desc: 'kind of clip', values: { pinned: 'starred (pinned) clips', image: 'a picture', text: 'text, not a picture', numpad: 'on a numpad key', url: 'the clip is a link', multiline: 'spans several lines', rich: 'has HTML or RTF formatting' } },
     num: { desc: 'on numpad key 1-9', short: 'n' },
     since: { desc: 'newer than (1h, 7d or a date)', short: 's', values: { '1h': 'the last hour', '24h': 'the last day', '7d': 'the last week', '30d': 'the last month' } },
@@ -1496,7 +1585,7 @@
     { code: '-word', text: 'excludes' },
     { code: '"a phrase"', text: 'exact' },
     { code: 'a OR b', text: 'either' },
-    { code: '(a b)', text: 'groups' },
+    { code: '(a b)', text: 'brackets' },
     { code: '/regex/', text: 'a pattern' },
   ];
   // The query text a facet token stands for (its chip tooltip).
@@ -1542,11 +1631,12 @@
     if (canon === 'num') return /^[1-9]$/.test(v);
     if (canon === 'sort') return ['new', 'best', 'recent', 'relevance'].includes(v);
     if (canon === 'since' || canon === 'before') return isValidTimeSpec(v) && !isPendingTimeSpec(v);
-    // Group names match exactly (tagMatchesFilter): group:work is NOT complete
-    // when the group is Work, so the list stays up offering the right case.
-    if (canon === 'group') { const n = normalizeTagName(val); return (groups || []).some((g) => normalizeTagName(g) === n); }
+    // A tag matches in any case (sameTag): group:work is complete when the tag is Work.
+    if (canon === 'group') return (groups || []).some((g) => sameTag(g, val));
     return false;
   }
+  // The stored tag names, each once (one per tag key, in its stored spelling).
+  function tagNames(groups) { return [...tagSpellings([groups]).values()]; }
   function tokenAtCaret(text, caret) {
     const s = String(text || '');
     const at = Math.max(0, Math.min(caret == null ? s.length : caret, s.length));
@@ -1587,7 +1677,7 @@
       const hintOf = (v) => (info.values && info.values[v]) || '';
       if (key === 'group') {
         // Prefix matches first, then names containing the fragment.
-        const names = (o.groups || []).filter((g) => !val || g.toLowerCase().includes(val));
+        const names = tagNames(o.groups).filter((g) => !val || g.toLowerCase().includes(val));
         const byUse = compareGroupUse(o.groupWeights);
         names.sort((a, b) => (b.toLowerCase().startsWith(val) - a.toLowerCase().startsWith(val)) || byUse(a, b));
         for (const g of names) push(`${cm[1]}:${quoteToken(g)}`, '');
@@ -1617,15 +1707,13 @@
       };
       for (const canon of Object.keys(FIELD_INFO)) if (canon.startsWith(lower) && `${canon}:` !== lower) offer(canon);
       for (const [alias, canon] of Object.entries(PREFIX_ALIASES)) if (FIELD_INFO[canon] && alias.startsWith(lower)) offer(canon);
-      for (const g of (o.groups || [])) if (g.toLowerCase().startsWith(lower)) push(`group:${quoteToken(g)}`, '');
+      for (const g of tagNames(o.groups)) if (g.toLowerCase().startsWith(lower)) push(`group:${quoteToken(g)}`, '');
       // OR between two terms: offered once a term stands before this one.
       if (!neg && (lower === 'o' || lower === 'or') && body !== 'OR' && /\S/.test(String(text || '').slice(0, tok.start))) push('OR', 'either side may match');
     }
     if (!out.length) return null;
-    // A row that is what was typed in another case (group:work -> group:Work)
-    // leads, then the best continuation (so the ghost and Tab agree with the top row).
-    const caseFix = (s) => s.text.toLowerCase() === lowerTok;
-    out.sort((a, b) => (caseFix(b) - caseFix(a)) || (b.continuation - a.continuation));
+    // The best continuation leads (so the ghost and Tab agree with the top row).
+    out.sort((a, b) => b.continuation - a.continuation);
     return { kind, replaceStart: tok.start, replaceEnd: tok.end, query, quoted, suggestions: out.slice(0, 8) };
   }
   // The new text and caret after taking suggestion s of result res: a key
@@ -1719,6 +1807,16 @@
     }
     return undefined;
   }
+  // A nested name written as the flat tags it means, all required (ONE rule
+  // for the hint's fix and an AI tool's rewrite): the key as typed ('group:',
+  // 'g:'), group:todo group:forge; negated -(group:todo group:forge); a side
+  // of an OR in brackets.
+  function flatGroupTokens(key, parts, neg, inOr) {
+    const quote = (v) => (/[\s()"]/.test(v) ? `"${String(v).replace(/"/g, '')}"` : String(v));
+    const all = parts.map((p) => key + quote(p)).join(' ');
+    if (parts.length === 1) return (neg ? '-' : '') + all;
+    return neg ? `-(${all})` : inOr ? `(${all})` : all;
+  }
   // validateQuery(text, { groups, caret }). A problem may carry `fix`
   // ({ start, end, text }: the one-click repair the hint offers) beside its
   // `didYouMean` label.
@@ -1726,11 +1824,14 @@
     const o = opts || {};
     const s = String(text || '');
     const caret = o.caret == null ? null : o.caret;
-    // Every group path a group: value can name (Work/Clients also offers Work).
-    const groupPaths = [...new Set((o.groups || []).flatMap((g) => normalizeTagName(g).split('/').filter(Boolean).map((_, i, a) => a.slice(0, i + 1).join('/'))))];
+    // The tags a group: value can name (stored names, matched in any case).
+    const groupNames = tagNames(o.groups);
+    const tagOf = (v) => groupNames.find((g) => sameTag(g, v));
     const problems = [];
     const numsSeen = [];
-    for (const tok of scanQuery(s)) {
+    const toks = scanQuery(s);
+    for (let ti = 0; ti < toks.length; ti += 1) {
+      const tok = toks[ti];
       if (tok.t !== 'term') continue;
       const neg = tok.neg ? 1 : 0;
       const body = tok.text.slice(neg);
@@ -1776,19 +1877,32 @@
       } else if (canon === 'len' || canon === 'lines' || canon === 'words') {
         const pending = /^(>=|<=|>|<|=)?$/.test(value) || /^\d+\s*(-|\.\.?)$/.test(value);
         if (!parseBound(value) && !pending) bad(`${key}:${value} is not a count. Use >N, <N, >=N, <=N, N or a range N-M.`);
-      } else if (canon === 'group' && groupPaths.length) {
-        // Names match exactly (tagMatchesFilter: Work is not work). A prefix of
-        // a name in any case is fine while it is typed (the list offers the
-        // right case), but a whole name in the wrong case finds nothing, so it
-        // is flagged with the right one.
-        const n = normalizeTagName(value);
+      } else if (canon === 'group' && groupNames.length) {
+        // Tags match in any case (sameTag: group:work finds Work), and a
+        // prefix of one is fine while it is typed. A name with '/' that is no
+        // tag but whose parts all are is the old nested habit (todo/forge):
+        // tags are flat, so it is flagged with the tags it means, joined
+        // (AND), bracketed where the token is negated or an OR operand.
+        const n = cleanTagName(value);
         const nl = n.toLowerCase();
-        const sameName = groupPaths.find((g) => g.toLowerCase() === nl);
-        const typing = !sameName && groupPaths.some((g) => g.toLowerCase().startsWith(nl));
-        if (n && !groupPaths.some((g) => g === n || g.startsWith(n)) && !typing) {
-          const shown = sameName || closestTo(n, groupPaths, 3);
-          bad(`There is no group named "${value}".`, undefined, shown ? `${key}:${quoteToken(shown)}` : undefined);
+        const typing = (v) => groupNames.some((g) => g.toLowerCase().startsWith(v));
+        if (!n || tagOf(n) || typing(nl)) continue;
+        const parts = n.includes('/') ? nestedNameParts(n) : [];
+        const tags = parts.map(tagOf);
+        if (parts.length && tags.slice(0, -1).every(Boolean)) {
+          // Its last part is still being typed: todo/ or todo/fo (forge is a tag).
+          if (!tags[tags.length - 1]) { if (typing(parts[parts.length - 1].toLowerCase())) continue; }
+          else if (tags.length < 2) continue;
         }
+        if (parts.length > 1 && tags.every(Boolean)) {
+          const operand = (toks[ti - 1] && toks[ti - 1].t === 'or') || (toks[ti + 1] && toks[ti + 1].t === 'or');
+          const fix = flatGroupTokens(`${m[1]}:`, tags, !!neg, operand);
+          const names = tags.length > 2 ? `${tags.slice(0, -1).join(', ')} and ${tags[tags.length - 1]}` : tags.join(' and ');
+          problems.push({ ...base, valueStart, key, value, kind: 'nested-group', message: `Groups are not nested: this is ${names}.`, didYouMean: fix, fix: { start: tok.start, end: tok.end, text: fix } });
+          continue;
+        }
+        const shown = closestTo(n, groupNames, 3);
+        bad(`There is no group named "${value}".`, undefined, shown ? `${key}:${quoteToken(shown)}` : undefined);
       }
     }
     // Two numpad keys side by side ask for a clip on both: it has one key.
@@ -1871,14 +1985,15 @@
     return docHasIs(doc, v);
   }
   // The OR dimensions whose next value goes in with an OR (applyFacet's rule:
-  // one value there under the default "or", or an OR already): dim -> the check dim the census
-  // holds open for that dimension's options ('any:group').
+  // one value there while the dimension joins with "or" (dimJoin), or an OR
+  // already): dim -> the check dim the census holds open for that
+  // dimension's options ('any:group'). Under "and" (tags, by default) a lone
+  // value is a plain filter, so a chip "and" would empty is greyed.
   function openDims(parsed, joins) {
     const open = new Map();
-    const j = normalizeJoins(joins);
     for (const dim of OR_DIMS) {
       if ((parsed.anyOf || []).some((g) => g.dim === dim)) { open.set(dim, `any:${dim}`); continue; }
-      if (j[dim] === 'and') continue; // the next value would AND in: the lone value is a plain filter
+      if (dimJoin(joins, dim) === 'and') continue; // the next value would AND in: the lone value is a plain filter
       const n = dim === 'group' ? parsed.groups.length : dim === 'num' ? parsed.nums.length : parsed.is.filter((v) => TYPE_IS.has(v)).length;
       if (n === 1) open.set(dim, `any:${dim}`);
     }
@@ -1895,8 +2010,8 @@
     const open = openDims(parsed, joins);
     const anyDims = new Set((parsed.anyOf || []).map((g) => g.dim));
     const lone = (dim, own) => (open.has(dim) && !anyDims.has(dim) ? open.get(dim) : own);
-    for (const g of parsed.groups) checks.push({ dim: lone('group', `group:${g}`), ok: (d) => docInGroup(d, g), label: `group:${quoteToken(g)}`, tokens: [[{ kind: 'group', value: g }, 'include']] });
-    for (const g of parsed.negGroups) checks.push({ dim: `-group:${g}`, ok: (d) => !docInGroup(d, g), label: `-group:${quoteToken(g)}`, tokens: [[{ kind: 'group', value: g }, 'exclude']] });
+    for (const g of parsed.groups) checks.push({ dim: lone('group', `group:${tagKey(g)}`), ok: (d) => docInGroup(d, g), label: `group:${quoteToken(g)}`, tokens: [[{ kind: 'group', value: g }, 'include']] });
+    for (const g of parsed.negGroups) checks.push({ dim: `-group:${tagKey(g)}`, ok: (d) => !docInGroup(d, g), label: `-group:${quoteToken(g)}`, tokens: [[{ kind: 'group', value: g }, 'exclude']] });
     for (const v of parsed.is) checks.push({ dim: TYPE_IS.has(v) ? lone('type', `is:${v}`) : `is:${v}`, ok: (d) => docIsFast(d, v), label: `is:${v}`, tokens: [[{ kind: 'is', value: v }, 'include']] });
     for (const v of parsed.negIs) checks.push({ dim: `-is:${v}`, ok: (d) => !docIsFast(d, v), label: `-is:${v}`, tokens: [[{ kind: 'is', value: v }, 'exclude']] });
     for (const n of parsed.nums) checks.push({ dim: lone('num', `num:${n}`), ok: (d) => d.numpad === n, label: `num:${n}`, tokens: [[{ kind: 'num', value: n }, 'include']] });
@@ -1923,15 +2038,18 @@
     }
     return out;
   }
-  // A chip's token -> its census key: 'is:image', 'group:Work', 'since:7d',
-  // 'before:' (the prompt option), 'len:<80'.
+  // A chip's token -> its census key: 'is:image', 'group:work' (a tag by its
+  // key: one per tag, whatever the case), 'since:7d', 'before:' (the prompt
+  // option), 'len:<80'.
   function censusKey(token) {
     const k = token.kind;
-    if (k === 'group') return `group:${normalizeTagName(token.value)}`;
+    if (k === 'group') return `group:${tagKey(token.value)}`;
     if (k === 'builtin' || k === 'is') return `is:${BUILTIN_TO_IS[token.value] || token.value}`;
     if (BOUND_FACETS.includes(k)) return `${k}:${serializeBound(parseBound(String(token.value == null ? '' : token.value)))}`;
     return `${k}:${token.value == null ? '' : String(token.value).toLowerCase()}`;
   }
+  // A census key with its tag by key ('group:Work' asks for 'group:work').
+  function censusTagKey(key) { return key.startsWith('group:') ? `group:${tagKey(key.slice(6))}` : key; }
   // The dim an option belongs to under this query (null = none held open):
   // an excluded value its own, a value of an open OR dimension that
   // dimension's (selecting it would OR it in), a selected value its own.
@@ -1939,17 +2057,18 @@
     const k = token.kind;
     if (SINGLE_FACETS.includes(k)) return k;
     const { field, value } = tokenFieldValue(token);
+    const same = (v) => sameValue(field, v, value);
     const neg = field === 'group' ? parsed.negGroups : field === 'num' ? parsed.negNums : parsed.negIs;
-    if (neg.includes(value)) return `-${field}:${value}`;
+    if (neg.some(same)) return `-${field}:${valueKey(field, value)}`;
     const open = openDims(parsed, joins);
     const dim = facetDim(field, value);
     if (open.has(dim)) return open.get(dim);
     const pos = field === 'group' ? parsed.groups : field === 'num' ? parsed.nums : parsed.is;
-    return pos.includes(value) ? `${field}:${value}` : null;
+    return pos.some(same) ? `${field}:${valueKey(field, value)}` : null;
   }
-  // facetCensus(docs, parsed, { now, groups, searchTextLower }) -> { permissive, total,
+  // facetCensus(docs, parsed, { now, groups, searchTextLower, joins }) -> { permissive, total,
   // count(key), present(key) }. Options counted: every is: value, every
-  // OPTION_FACETS token, and every group (with its parent paths) in `groups`.
+  // OPTION_FACETS token, and every tag in `groups` (one per tag key, censusKey).
   // `present` = the option exists somewhere in history, filters ignored (an
   // absent kind is hidden, never greyed). No docs (history still loading) =
   // permissive: nothing greys.
@@ -1977,15 +2096,10 @@
       }
     }
     for (const o2 of options) o2.dim = optionDim(parsed, o2.token, o.joins);
-    // Groups: bumped from each doc's own groups (and their parents), not tested
-    // one by one against every group.
-    const groupKeys = new Set();
-    for (const g of (o.groups || [])) {
-      const parts = normalizeTagName(g).split('/').filter(Boolean);
-      for (let i = 1; i <= parts.length; i += 1) groupKeys.add(parts.slice(0, i).join('/'));
-    }
+    // Tags: bumped from each doc's own tags (by key), not tested one by one
+    // against every tag.
     const groupDim = new Map();
-    for (const g of groupKeys) groupDim.set(g, optionDim(parsed, { kind: 'group', value: g }, o.joins));
+    for (const g of tagNames(o.groups)) groupDim.set(tagKey(g), optionDim(parsed, { kind: 'group', value: g }, o.joins));
     const counts = new Map();
     const present = new Map();
     const bump = (m, key) => m.set(key, (m.get(key) || 0) + 1);
@@ -2007,14 +2121,11 @@
       if (doc.groups.length) {
         seen.clear();
         for (const g of doc.groups) {
-          const parts = normalizeTagName(g).split('/');
-          for (let i = 1; i <= parts.length; i += 1) {
-            const p = parts.slice(0, i).join('/');
-            if (seen.has(p) || !groupKeys.has(p)) continue;
-            seen.add(p);
-            bump(present, `group:${p}`);
-            if (inBase || (only !== null && groupDim.get(p) === only)) bump(counts, `group:${p}`);
-          }
+          const k = tagKey(g);
+          if (seen.has(k) || !groupDim.has(k)) continue;
+          seen.add(k);
+          bump(present, `group:${k}`);
+          if (inBase || (only !== null && groupDim.get(k) === only)) bump(counts, `group:${k}`);
         }
       }
     }
@@ -2023,8 +2134,8 @@
       total: list.length,
       groupWeights: groupWeights(list, now),
       open: openDims(parsed, o.joins),
-      count: (key) => counts.get(key) || 0,
-      present: (key) => (present.get(key) || 0) > 0,
+      count: (key) => counts.get(censusTagKey(key)) || 0,
+      present: (key) => (present.get(censusTagKey(key)) || 0) > 0,
     };
   }
   // Why an option can never match together with the active filters, whatever
@@ -2284,23 +2395,44 @@
   }
   // ── the or / and of one OR dimension (groups, kinds of clip, numpad keys):
   // the chip row's leading toggle and the panel's ──
-  // The kinds whose or / and the device remembers. Numpad keys are not one
-  // (a clip has one key: "and" always shows nothing).
+  // The kinds whose or / and the device remembers, and how each joins when it
+  // remembers nothing: tags AND (a second tag narrows: todo and forge), kinds
+  // of clip OR (text or link). Numpad keys are not one: they always OR (a
+  // clip has one key, "and" always shows nothing).
   const JOIN_DIMS = ['group', 'type'];
+  const DEFAULT_JOINS = { group: 'and', type: 'or' };
+  // Only the joins that differ from the default are kept ({ group: 'or' }),
+  // so a device that never flipped one follows the default.
   function normalizeJoins(joins) {
     const out = {};
-    for (const dim of JOIN_DIMS) if (joins && joins[dim] === 'and') out[dim] = 'and';
+    for (const dim of JOIN_DIMS) {
+      const j = joins && joins[dim];
+      if ((j === 'and' || j === 'or') && j !== DEFAULT_JOINS[dim]) out[dim] = j;
+    }
     return out;
   }
+  // How a second value of the dimension joins the first: 'and' | 'or'.
+  function dimJoin(joins, dim) {
+    const j = joins && joins[dim];
+    if (!JOIN_DIMS.includes(dim)) return 'or';
+    return j === 'and' || j === 'or' ? j : DEFAULT_JOINS[dim];
+  }
   // 'or' (an OR of its values), 'and' (two or more side by side), or null
-  // (nothing to join). With joins, ONE value under a remembered "and" reads
-  // 'and' too: that join greys what it would empty, so the toggle shows (and
-  // a click on it is the way back to "or").
+  // (nothing to join). ONE value shows the join the next pick would get
+  // whenever that join is "and" (dimJoin: a tag by default): "and" greys every
+  // value it would empty, so the toggle is the way to "or" and must show. Under
+  // "or" nothing is greyed, so a lone value shows it only when "or" is a
+  // remembered non-default (the way back to "and"); kinds of clip OR by default
+  // and show nothing.
   function dimConnective(parsed, dim, joins) {
     const any = (parsed.anyOf || []).filter((g) => g.dim === dim);
     const leaves = (parsed.items || []).filter((it) => it.kind === 'leaf' && !it.leaf.neg && facetDim(it.leaf.field, it.leaf.value) === dim);
     const n = any.reduce((sum, g) => sum + g.values.length, 0) + leaves.length;
-    if (n === 1 && !any.length && normalizeJoins(joins)[dim] === 'and') return 'and';
+    if (n === 1 && !any.length) {
+      if (!JOIN_DIMS.includes(dim)) return null; // numpad keys always OR: nothing to flip
+      const join = dimJoin(joins, dim);
+      return join === 'and' || join !== DEFAULT_JOINS[dim] ? join : null;
+    }
     if (n < 2) return null;
     return any.length ? 'or' : 'and';
   }
@@ -2343,22 +2475,47 @@
     return n % 2 === 1;
   }
 
+  // ── a retired nested name in a query (an AI tool's search, a saved habit):
+  // each group:/g: token naming one (splits: Map tagKey -> parts, the model's
+  // groupSplitMap of settings.group_splits) becomes its parts, all required:
+  // group:todo/forge -> group:todo group:forge, negated -> -(group:todo
+  // group:forge), a side of an OR in brackets. The key is kept as typed. ──
+  function flattenRetiredGroupTokens(query, splits) {
+    const s = String(query == null ? '' : query);
+    if (!splits || !splits.size) return { query: s, rewritten: false };
+    const toks = scanQuery(s);
+    const edits = [];
+    toks.forEach((tok, i) => {
+      if (tok.t !== 'term' || tok.regex) return;
+      const leaf = leafOf(tok);
+      const parts = leaf.field === 'group' ? splits.get(tagKey(leaf.value)) : null;
+      if (!parts || !parts.length) return;
+      const key = tok.body.slice(0, tok.body.indexOf(':') + 1);
+      const inOr = (toks[i - 1] && toks[i - 1].t === 'or') || (toks[i + 1] && toks[i + 1].t === 'or');
+      edits.push({ start: tok.start, end: tok.end, text: flatGroupTokens(key, parts, leaf.neg, inOr) });
+    });
+    let out = s;
+    for (let k = edits.length - 1; k >= 0; k -= 1) out = out.slice(0, edits[k].start) + edits[k].text + out.slice(edits[k].end);
+    return { query: out, rewritten: edits.length > 0 };
+  }
+
   return {
-    clipToDoc, docSearchText, normalizeTagName, tagMatchesFilter, docInGroup,
+    clipToDoc, docSearchText, docInGroup,
+    cleanTagName, tagKey, sameTag, splitTagInput, nestedNameParts, preferredSpelling, tagSpellings, expandTagNames, inputTagNames, tagTogglePlan,
     tokenizeQuery, quoteToken, parseQuery, scanQuery, serializeQuery, applyFacet, stripFacet, clearFacet, facetState, facetTokenState,
     anyFilterActive, hasSearchTerms, resolveTimeMs,
     matchDoc, relevanceScore, recencyScore, decayWeight, groupWeights, compareGroupUse, rankMode, filterRankIndexes, bodyIndexOf,
     hasRegexTerm, searchJob,
     compileTerm, escapeRegExp, termSpans, firstMatchIndex,
-    regexTypingEdit, regexBackspaceEdit, toggleRegexAt, legacyRegexQuery, dimConnective, setDimConnective, normalizeJoins,
+    regexTypingEdit, regexBackspaceEdit, toggleRegexAt, legacyRegexQuery, dimConnective, setDimConnective, normalizeJoins, dimJoin, DEFAULT_JOINS,
     promptOptionState, promptOptionLabel, FIELD_EXAMPLE,
     fuzzyMatch, fuzzyFloor,
     lexQuery, suggestQuery,
     BUILTIN_TO_IS, IS_TO_BUILTIN, IS_VALUES, RECOGNIZED_PREFIXES, NON_FILTER_SCHEMES,
     PREFIX_HINTS, OPTION_FACETS, OPTION_FIELDS, SYNTAX_NOTES, facetTokenText, optionFacetsActive,
     FIELD_INFO, facetKey, applySuggestion, ghostCompletion, uniqueCompletion,
-    validateQuery, describeProblem, problemRanges, levenshtein,
+    validateQuery, describeProblem, problemRanges, levenshtein, flatGroupTokens,
     facetCensus, facetOptionVerdict, structuralReason, censusKey, FAILURE_CAP,
-    bestRelaxation, quotePastedText, insideQuote,
+    bestRelaxation, quotePastedText, insideQuote, flattenRetiredGroupTokens,
   };
 });

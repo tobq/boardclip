@@ -227,8 +227,8 @@ const siteCss = read('site/styles.css');
   const declares = (css, sel) => new RegExp(`(^|[\\s,])\\.${sel}\\s*[,{]`, 'm').test(css);
   assert.ok(declares(popupCss, 'bc-editor'), 'clipboard-popup.css should define .bc-editor');
   assert.ok(!declares(siteCss, 'bc-editor-area'), 'site/styles.css re-declares editor style (belongs in clipboard-popup.css)');
-  assert.ok(popupCss.includes('.tag-submenu { display: none; position: absolute; top: 100%;'),
-    'tag submenus must touch their parent so hover does not drop while moving into the menu');
+  assert.ok(popupCss.includes('.tag-submenu { display: none; position: absolute;') && !/\.tag-menu-node:focus-within/.test(popupCss),
+    'one base submenu rule (hidden until its row is hovered or opened); no dead chip-dropdown geometry');
   assert.ok(popupCss.includes('.bc-menu .tag-submenu { top: -4px; left: calc(100% - 1px);'),
     'menu and popover submenus must overlap horizontally with their parent so hover does not drop');
 }
@@ -278,7 +278,7 @@ const siteCss = read('site/styles.css');
   assert.ok(!/SEARCH_MODE_VALUES|body\.search_mode/.test(mainSrc), 'main takes no search mode');
   // The chip row's selection cluster leads with its or / and, the panel's Type row too.
   assert.ok(uiCore.includes("connToggleHtml('group', Search.dimConnective(Search.parseQuery(query), 'group', options.joins)") && uiCore.includes('connToggleHtml(def.dim, Search.dimConnective(parsed, def.dim, joins)'),
-    'one or / and toggle component for the chip row and the Type row, shown for a lone value under a remembered "and" (the way back to "or")');
+    'one or / and toggle component for the chip row and the Type row, shown for a lone value under "and" (the way to "or") or a remembered non-default join (the way back)');
   assert.ok(/joins: (searchBox|demoSearchBox)\.getJoins\(\)/.test(appHtml) && /joins: demoSearchBox\.getJoins\(\)/.test(siteHtml), 'both chip rows get the remembered join');
   assert.ok(/\.conn-toggle\[data-dim\]/.test(uiCore) && /Search\.setDimConnective\(/.test(uiCore), 'the controller flips it through the engine');
 }
@@ -341,7 +341,7 @@ const siteCss = read('site/styles.css');
 // 13) A clip window's bar shows the clip the way its list row does: the row's
 //     star before the title and the row's meta keys (ONE renderClipKeys: numpad
 //     badge, group names, ghosts # and + on the reveal) after it. ONE
-//     group-picker builder (clipGroupTreeHtml) behind the clip menu's "Add to
+//     group-picker builder (clipGroupListHtml) behind the clip menu's "Add to
 //     group" submenu and the + popover; the strip ships inside the shared
 //     createEditor/createImageViewer chrome and every host (app editor, app
 //     viewer, demo editor) drives it via setTags.
@@ -350,11 +350,11 @@ const siteCss = read('site/styles.css');
   const editorHtml = read('editor.html');
   const coreSrc = read('site/shared/clipboard-ui-core.js');
   assert.ok(typeof ui.renderClipKeys === 'function' && !('renderClipTagChips' in ui), 'core exports renderClipKeys (the chip strip with an x is gone)');
-  assert.ok(typeof ui.clipGroupTreeHtml === 'function', 'core must export clipGroupTreeHtml');
+  assert.ok(typeof ui.clipGroupListHtml === 'function', 'core must export clipGroupListHtml');
   // One picker builder: the clip menu's submenu AND the picker popover both call it.
-  const treeCalls = (coreSrc.match(/clipGroupTreeHtml\(/g) || []).length;
-  assert.ok(treeCalls >= 3, `clipGroupTreeHtml should back both the menu submenu and the + popover (found ${treeCalls} references)`);
-  const item = { id: 'txt:x', type: 'text', text: 'hi', pin: { number: 3, groups: ['work', 'todo/forge'] } };
+  const listCalls = (coreSrc.match(/clipGroupListHtml\(/g) || []).length;
+  assert.ok(listCalls >= 3, `clipGroupListHtml should back both the menu submenu and the + popover (found ${listCalls} references)`);
+  const item = { id: 'txt:x', type: 'text', text: 'hi', pin: { number: 3, groups: ['work', 'forge'] } };
   const keys = ui.renderClipKeys(item, { inWindow: true });
   const meta = ui.renderClipMeta(item);
   assert.ok(meta.endsWith(ui.renderClipKeys(item)), 'the row meta line ends in renderClipKeys (one renderer)');
@@ -754,6 +754,9 @@ const siteCss = read('site/styles.css');
   assert.strictEqual(ui.emptyStateKind({ total: 0, query: 'x' }), 'no-clips');
   assert.strictEqual(ui.emptyStateKind({ total: 5, query: 'zzz' }), 'no-match');
   assert.strictEqual(ui.emptyStateKind({ total: 5, query: 'group:Work' }), 'empty-group');
+  assert.strictEqual(ui.emptyStateKind({ total: 5, query: 'group:work', groups: ['Work'] }), 'empty-group', 'a tag in another case is still that tag');
+  assert.strictEqual(ui.emptyStateKind({ total: 5, query: 'group:todo/forge', groups: ['todo', 'forge'] }), 'filtered', 'a group: value that is no tag (a retired nested name) is a filter, never an empty group');
+  assert.ok(ui.renderEmptyState({ total: 5, query: 'group:WORK', groups: ['Work'] }).includes('No clips in Work yet'), 'the empty state names the tag as it is stored');
   assert.strictEqual(ui.emptyStateKind({ total: 5, query: 'is:pinned since:7d' }), 'filtered');
   assert.ok(ui.renderEmptyState({ total: 5, query: 'zzz' }).includes('data-action="clear-search-filters"'), 'a no-match state offers the way out');
   assert.ok(ui.renderEmptyState({ kind: 'no-match', nudgeHtml: '<b>n</b>' }).includes('<div class="empty-nudge"><b>n</b></div>'), 'the nudge slot is there for the search work');
@@ -791,10 +794,10 @@ const siteCss = read('site/styles.css');
   assert.ok(!/\.(assigned|available|partial)\b/.test(popupCss), 'no membership colour states in the shared sheet');
   const work = { id: 'txt:w', type: 'text', text: 'w', pin: { groups: ['Work'], number: 4 } };
   const surfaces = {
-    clipMenu: ui.renderClipMenu(work, { items: [work], groups: ['Work', 'AI', 'Work/Clients'] }),
+    clipMenu: ui.renderClipMenu(work, { items: [work], groups: ['Work', 'AI', 'Clients'] }),
     bulkMenu: ui.renderBulkMenu({ count: 2, hasImage: false }, { groups: ['Work', 'AI'], selectedItems: [work, { id: 'txt:o', type: 'text', text: 'o' }] }),
-    groupPicker: ui.clipGroupTreeHtml(['Work', 'AI'], work),
-    bulkGroups: ui.bulkGroupTreeHtml(['Work', 'AI'], [work]),
+    groupPicker: ui.clipGroupListHtml(['Work', 'AI'], work),
+    bulkGroups: ui.bulkGroupListHtml(['Work', 'AI'], [work]),
     keypad: ui.renderKeypadMenu(work, [work], ui.numpadMap([work])),
   };
   for (const [name, html] of Object.entries(surfaces)) {
@@ -811,14 +814,17 @@ const siteCss = read('site/styles.css');
   for (const name of ['clipMenu', 'bulkMenu', 'groupPicker', 'bulkGroups']) {
     assert.ok(/<div class="bc-menu-sep" role="separator"><\/div><button class="bc-menu-item"[^>]*data-action="(bulk-)?add-group"><span class="mi" aria-hidden="true">add<\/span><span class="bc-menu-label">New group\.\.\.<\/span>/.test(surfaces[name]), `${name}: "New group..." must be a normal row after a separator`);
   }
-  assert.ok(!/<div class="bc-menu-sep"/.test(ui.clipGroupTreeHtml([], { id: 'x', type: 'text', text: 'x' })), 'no separator above "New group..." when there are no groups');
+  assert.ok(!/<div class="bc-menu-sep"/.test(ui.clipGroupListHtml([], { id: 'x', type: 'text', text: 'x' })), 'no separator above "New group..." when there are no groups');
   // Membership: check glyph + aria-checked; labels never coloured by state.
   assert.ok(/data-group="Work" aria-checked="true"[^>]*><span class="mi bc-menu-check" aria-hidden="true">check<\/span>/.test(surfaces.groupPicker), 'a member group carries the check glyph');
   assert.ok(/data-group="AI" aria-checked="false"[^>]*><span class="mi bc-menu-check" aria-hidden="true"><\/span>/.test(surfaces.groupPicker), 'a non-member group has an empty icon column');
-  assert.ok(/data-group="Work" aria-checked="mixed"[^>]*><span class="mi bc-menu-check" aria-hidden="true">remove<\/span>/.test(ui.bulkGroupTreeHtml(['Work'], [work, { id: 'txt:o', type: 'text', text: 'o' }])), 'bulk "some" = the dash glyph, aria-checked mixed');
+  assert.ok(/data-group="Work" aria-checked="mixed"[^>]*><span class="mi bc-menu-check" aria-hidden="true">remove<\/span>/.test(ui.bulkGroupListHtml(['Work'], [work, { id: 'txt:o', type: 'text', text: 'o' }])), 'bulk "some" = the dash glyph, aria-checked mixed');
   assert.ok(rules(popupCss).some((r) => r.sel === '.bc-menu-item > .bc-menu-check' && /color:\s*var\(--accent\)/.test(r.body)), 'the membership glyph is the accent');
-  // Group rows with child tags open a submenu (aria-haspopup) and still toggle.
-  assert.ok(/data-action="toggle-group" data-group="Work" aria-checked="true" title="Work" aria-haspopup="menu"/.test(surfaces.clipMenu), 'a parent tag row toggles and opens its children');
+  // Tags are flat: every group row is a plain checklist row, never a submenu parent.
+  assert.ok(/data-action="toggle-group" data-group="Work" aria-checked="true" title="Work"><span/.test(surfaces.clipMenu), 'a group row toggles and opens nothing');
+  for (const [name, html] of Object.entries(surfaces)) {
+    for (const m of html.matchAll(/<button[^>]*data-action="(?:toggle-group|bulk-group)"[^>]*>/g)) assert.ok(!/aria-haspopup/.test(m[0]), `${name}: a group row opens a submenu: ${m[0]}`);
+  }
   // Keypad: neutral keys, the clip's own key in the accent, a taken key a dot.
   assert.ok(/class="np-btn current"[^>]*aria-checked="true"[^>]*data-n="4"/.test(surfaces.keypad) && /data-action="numpad-unassign" data-slot="4"/.test(surfaces.keypad), 'keypad: the current key is checked, and it can be removed');
   const npRules = rules(popupCss).filter((r) => /\.np-btn/.test(r.sel));
@@ -841,8 +847,9 @@ const siteCss = read('site/styles.css');
   assert.ok(/invoke\('copy-clip', id\)/.test(preloadSrc) && /invoke\('copy-many', ids\)/.test(preloadSrc) && !/invoke\('paste', /.test(preloadSrc), 'preload: copy-clip + copy-many, no paste IPC');
   assert.ok(/ipcMain\.handle\('copy-clip'/.test(mainCopySrc) && /ipcMain\.handle\('copy-many'/.test(mainCopySrc) && !/ipcMain\.handle\('paste',/.test(mainCopySrc), 'main: copy-clip + copy-many, no paste IPC');
   assert.ok(/function joinedClipText\(ids\)/.test(mainCopySrc) && /const text = joinedClipText\(ids\);[\s\S]{0,120}hidePopup\(\); return; \}/.test(mainCopySrc), 'Paste all and Copy all join the same text');
-  // A digit typed with a menu or popover open never quick-pastes.
-  assert.ok(/searchEl\.addEventListener\('keydown', e => \{\s*\/\/[^\n]*\n\s*\/\/[^\n]*\n\s*if \(controller\.isMenuOpen\(\)\) return;/.test(appHtml), 'the empty-search quick-paste stands down while a menu is open');
+  // A digit typed with a menu or popover open never quick-pastes (the quick
+  // keys live in the shared controller: block 33).
+  assert.ok(/blocked: dialogs\.isOpen\(\) \|\| menu\.isOpen\(\)/.test(coreSrc), 'the quick keys stand down while a menu or dialog is open');
   // One rename wording (dialog-opening rows end with "..."); Revert is in the editor menu.
   for (const ctx of ['popup', 'editor', 'viewer']) {
     for (const it of [work, { id: 'img:a.png', type: 'image', image: 'a.png' }]) {
@@ -913,16 +920,13 @@ const siteCss = read('site/styles.css');
   assert.ok(/class="filter-tag group-tag[^"]*is-disabled[^"]*"[^>]*aria-disabled="true"/.test(bar), 'the chip bar greys a group with nothing behind it (aria-disabled, inert)');
   assert.ok(/title="Nope - No clips in this group yet"/.test(bar), 'the greyed chip says why in its tooltip');
   assert.ok(!/is-disabled/.test(ui.renderFilterBar({ items: [], groups: ['Nope'], query: '', census })), 'with no other filter an empty group stays a live chip');
-  // A group chip's dropdown holds the shared menu rows, filtering like chips.
-  const dd = ui.renderFilterBar({ items: [], groups: ['Work', 'Work/Clients'], query: '' });
-  assert.ok(/<button class="bc-menu-item group-filter-row group-name"[^>]*data-group="Work\/Clients"/.test(dd) && !/<span class="filter-tag[^"]*"[^>]*data-group="Work\/Clients"/.test(dd), 'a chip dropdown row is the shared menu row, not a chip');
-  // The cluster holds exactly the values in the query: a selected or excluded
-  // sub-group is its own chip there, under its full name (its parent stays with
-  // the rest, and the parent's dropdown row shows the same state).
-  const sub = ui.renderFilterBar({ items: [], groups: ['Work', 'Work/Clients'], excludedFilters: new Set(['Work/Clients']), query: '-group:Work/Clients' });
-  assert.ok(/<span class="filter-tag[^"]*"[^>]*data-group="Work\/Clients"[^>]*>[^]*?Work\/Clients/.test(sub) && /<button class="bc-menu-item group-filter-row group-name excluded"[^>]*data-group="Work\/Clients"/.test(sub),
-    'an excluded sub-group is a cluster chip with its full name, and its row in the parent dropdown is excluded too');
-  assert.ok(/FILTER_TARGET = [^;]*\.group-filter-row\[data-group\]/.test(coreSrc), 'dropdown rows filter like chips (click includes, right-click excludes)');
+  // Tags are flat: every tag is its own chip (a '/' is just a character), and
+  // no chip has a dropdown (34 guards the rest).
+  const dd = ui.renderFilterBar({ items: [], groups: ['Work', 'Clients', 'a/b'], query: '' });
+  assert.ok(['Work', 'Clients', 'a/b'].every((g) => new RegExp(`<span class="filter-tag group-tag"[^>]*data-group="${g}"[^>]*><span class="tag-label">${g}</span></span>`).test(dd)), 'one plain chip per tag, labelled with its whole name');
+  // The cluster holds exactly the values in the query, matched by tag.
+  const sub = ui.renderFilterBar({ items: [], groups: ['Work', 'Clients'], excludedFilters: new Set(['clients']), query: '-group:clients' });
+  assert.ok(/<span class="filter-tag group-tag excluded"[^>]*data-group="Clients"/.test(sub) && sub.indexOf('data-group="Clients"') < sub.indexOf('data-group="Work"'), 'an excluded tag (written in another case) is a cluster chip, ahead of the rest');
   const tiers = rules(popupCss);
   assert.ok(tiers.some((r) => /\.filter-tag\.is-disabled\b/.test(r.sel) && /opacity:\s*\.4/.test(r.body)) && tiers.some((r) => r.sel === '.filter-tag.is-disabled.dis-structural' && /opacity:\s*\.25/.test(r.body)),
     'two disabled tiers: transient .4, structural .25');
@@ -1073,6 +1077,196 @@ const siteCss = read('site/styles.css');
   for (const m of coreSrc.matchAll(/help: \[\['\w+', '([^']*)'\]\]/g)) assert.ok(!/\.$/.test(m[1]), `settings help "${m[1]}" ends with a period`);
   // Every header draws the SAME divider under it: the popup header, the settings header, the window bar.
   for (const sel of ['.sticky', '.settings-hdr', '.bc-bar']) assert.ok(/border-bottom: 1px solid var\(--line\)/.test(ruleOf(sel).body), `${sel} draws the header/body hairline`);
+}
+
+// 32) Ctrl+N (Cmd+N on a Mac) in the note editor window = a new note, through
+//     the popup's own New note action: one IPC, one openEditor path. The chord
+//     is the platform's own modifier and nothing else (a Mac's Ctrl+N is the
+//     text fields' line-down; AltGr = Ctrl+Alt types characters).
+{
+  const key = (k, extra) => ({ key: k, code: 'KeyN', ctrlKey: false, metaKey: false, altKey: false, shiftKey: false, ...(extra || {}) });
+  const win = (e) => ui.newNoteKey(e, false);
+  const mac = (e) => ui.newNoteKey(e, true);
+  assert.strictEqual(win(key('n', { ctrlKey: true })), true, 'Windows / Linux: Ctrl+N');
+  assert.strictEqual(win(key('N', { ctrlKey: true })), true, 'Caps Lock on: still Ctrl+N');
+  assert.strictEqual(mac(key('n', { metaKey: true })), true, 'Mac: Cmd+N');
+  assert.strictEqual(mac(key('n', { ctrlKey: true })), false, "a Mac's Ctrl+N stays the text field's line-down");
+  assert.strictEqual(win(key('n', { metaKey: true })), false, 'Win+N is not the chord');
+  for (const extra of ['shiftKey', 'altKey', 'metaKey']) assert.strictEqual(win(key('n', { ctrlKey: true, [extra]: true })), false, `Ctrl+N with ${extra} held is another chord`);
+  for (const extra of ['shiftKey', 'altKey', 'ctrlKey']) assert.strictEqual(mac(key('n', { metaKey: true, [extra]: true })), false, `Cmd+N with ${extra} held is another chord`);
+  assert.strictEqual(win(key('n')), false, 'a bare n is typing');
+  assert.strictEqual(win(key('\u0442', { ctrlKey: true })), true, 'a non-Latin layout (Russian) matches the N key by position');
+  assert.strictEqual(win(key('b', { ctrlKey: true })), false, 'a Latin layout matches the letter, not the position (Dvorak types b on KeyN)');
+  assert.strictEqual(win(key('n', { ctrlKey: true, code: 'KeyB' })), true, 'the letter n, wherever the layout puts it');
+  assert.strictEqual(win(key('n', { ctrlKey: true, isComposing: true })), false, 'never mid IME composition');
+  assert.strictEqual(win(key('Process', { ctrlKey: true, keyCode: 229 })), false, 'never a key the IME is processing');
+  assert.strictEqual(ui.newNoteKey(null), false);
+  // Wiring: the editor window hands the chord to the popup's own action.
+  const editorHtml = read('editor.html');
+  const handler = editorHtml.slice(editorHtml.indexOf("document.addEventListener('keydown'"));
+  assert.ok(/^document\.addEventListener\('keydown', \(e\) => \{\s*if \(!editor \|\| !Core\.newNoteKey\(e\)\) return;\s*e\.preventDefault\(\);\s*if \(e\.repeat\) return;\s*editor\.commit\(\);\s*window\.editorApi\.newNote\(\);/.test(handler),
+    'editor.html: Ctrl/Cmd+N saves this note, then opens a new one (once per press, never from the merge view)');
+  const bridge = "newNote: (options) => ipcRenderer.invoke('new-note', options || {})";
+  assert.ok(read('editor-preload.js').includes(bridge) && read('preload.js').includes(bridge), 'the editor and the popup reach New note through the same IPC');
+  assert.ok(/ipcMain\.handle\('new-note', \(_, options\) => \{\s*openEditor\(null, options \|\| \{\}\);\s*\}\);/.test(read('main.js')), 'new-note opens a blank editor through the one openEditor path');
+}
+
+// 33) The popup's quick keys: right after it opens with the search empty, 1-9
+//     paste a slot and N opens a new note; the first press in the popup (the
+//     search field included) or any other key ends them until the next open.
+//     ONE implementation in the shared controller, armed by each host on open.
+{
+  const ev = (key, extra) => ({ key, code: /^[a-z]$/i.test(key) ? `Key${key.toUpperCase()}` : '', ctrlKey: false, metaKey: false, altKey: false, shiftKey: false, repeat: false, isComposing: false, ...(extra || {}) });
+  const nmap = { 1: 'a', 3: 'c' };
+  const quick = (e) => ui.quickKeyFor(e, nmap);
+  assert.deepStrictEqual(quick(ev('1')), { slot: 1 });
+  assert.strictEqual(quick(ev('2')), null, 'a digit whose slot has no clip types it');
+  assert.deepStrictEqual(quick(ev('n')), { note: true });
+  assert.deepStrictEqual(quick(ev('N')), { note: true }, 'Caps Lock on: still N');
+  assert.strictEqual(quick(ev('N', { shiftKey: true })), null, 'Shift+N types N');
+  assert.deepStrictEqual(quick(ev('1', { shiftKey: true, code: 'Digit1' })), { slot: 1 }, 'the digit the key types (AZERTY types 1 with Shift)');
+  for (const m of ['ctrlKey', 'altKey', 'metaKey']) {
+    assert.strictEqual(quick(ev('1', { [m]: true })), null, `1 with ${m} is a chord`);
+    assert.strictEqual(quick(ev('n', { [m]: true })), null, `N with ${m} is a chord`);
+  }
+  assert.strictEqual(quick(ev('n', { isComposing: true })), null, 'never mid IME composition');
+  // The press that starts an IME composition: Chromium on Windows reports key
+  // 'Process' / keyCode 229 (isComposing still false), a Mac the letter with 229.
+  assert.strictEqual(quick(ev('Process', { code: 'KeyN', keyCode: 229 })), null, 'IME: the N key starting a composition is no N');
+  assert.strictEqual(quick(ev('Process', { code: 'Digit1', keyCode: 229 })), null, 'IME: nor a digit');
+  assert.strictEqual(quick(ev('n', { keyCode: 229 })), null, 'IME on a Mac: the letter the IME takes (keyCode 229) is no N');
+  assert.strictEqual(quick(ev('1', { repeat: true })), null, 'a key repeat is not a press');
+  assert.deepStrictEqual(quick(ev('т', { code: 'KeyN' })), { note: true }, 'a non-Latin layout (Russian) matches the N key by position');
+  assert.strictEqual(quick(ev('b', { code: 'KeyN' })), null, 'a Latin layout matches the letter, not the position');
+  assert.ok(/keyIsLetter\(e, 'n'\)/.test(ui.newNoteKey.toString()) && /keyIsLetter\(e, 'n'\)/.test(ui.quickKeyFor.toString()), 'the popup N and the editor Ctrl+N share one layout rule');
+  const step = (e, c) => ui.quickKeyStep(e, { armed: true, empty: true, blocked: false, nmap, ...(c || {}) });
+  assert.deepStrictEqual(step(ev('1')), { armed: false, act: { slot: 1 } }, 'one quick key per open');
+  assert.deepStrictEqual(step(ev('Shift', { shiftKey: true })), { armed: true, act: null }, 'a lone modifier keeps them');
+  assert.deepStrictEqual(step(ev('CapsLock')), { armed: true, act: null });
+  for (const k of ['ArrowDown', 'Tab', 'Backspace', 'x', '2']) assert.deepStrictEqual(step(ev(k)), { armed: false, act: null }, `${k} first ends them`);
+  assert.deepStrictEqual(step(ev('1'), { empty: false }), { armed: false, act: null }, 'never mid-search');
+  assert.deepStrictEqual(step(ev('n'), { blocked: true }), { armed: false, act: null }, 'never under a menu, dialog or Settings');
+  assert.deepStrictEqual(step(ev('1'), { armed: false }), { armed: false, act: null });
+  assert.deepStrictEqual(step(ev('Process', { code: 'KeyN', keyCode: 229 })), { armed: false, act: null }, 'an IME key acts as nothing and ends them (typing has started)');
+
+  // The controller: off until the host arms it, then one key or one press.
+  const calls = [];
+  let q = '';
+  const c = ui.createClipController({
+    itemById: () => null, visibleIds: () => [], renderSelection() {},
+    numpadMap: () => nmap, getQuery: () => q,
+    quickPaste: (slot) => calls.push(`paste ${slot}`), newNote: () => calls.push('note'),
+  });
+  const press = (k, extra) => { const e = { ...ev(k, extra), target: null, prevented: false, preventDefault() { this.prevented = true; } }; c.onKeydown(e); return e; };
+  assert.ok(!press('1').prevented && !calls.length, 'not armed: 1 types');
+  c.armQuickKeys();
+  assert.ok(press('1').prevented && calls.join() === 'paste 1', 'armed: 1 pastes slot 1 and is not typed');
+  assert.ok(!press('n').prevented && calls.length === 1, 'after a quick key, n types');
+  c.armQuickKeys();
+  press('Shift', { shiftKey: true });
+  assert.ok(press('n').prevented && calls.join() === 'paste 1,note', 'a lone Shift first: n still opens a note');
+  c.armQuickKeys();
+  c.onPointerdown({});
+  assert.ok(!press('1').prevented && calls.length === 2, 'a press in the popup ends them');
+  c.armQuickKeys();
+  press('x');
+  assert.ok(!press('n').prevented && calls.length === 2, 'another key first ends them');
+  c.armQuickKeys(); q = 'a';
+  assert.ok(!press('1').prevented && calls.length === 2, 'never with text in the search');
+  assert.strictEqual(c.quickKeysArmed(), false);
+
+  // Wiring: each host arms on open and ends them on a press (capture phase,
+  // so a click on the search field counts); neither handles the keys itself.
+  const pointer = /addEventListener\(["']pointerdown["'], \((\w+)\) => controller\.onPointerdown\(\1\), true\)/;
+  assert.ok(pointer.test(appHtml) && pointer.test(siteHtml), 'both popups end the quick keys on any press (capture phase)');
+  const reset = appHtml.slice(appHtml.indexOf('window.resetPopupState = function() {'));
+  assert.ok(/^window\.resetPopupState = function\(\) \{\s*controller\.armQuickKeys\(\);/.test(reset), 'the app arms them in resetPopupState (every show and hide)');
+  const openPopup = siteHtml.slice(siteHtml.indexOf('function openPopup() {'));
+  assert.ok(/^function openPopup\(\) \{\s*controller\.armQuickKeys\(\);/.test(openPopup), 'the demo arms them when its popup opens');
+  assert.strictEqual((siteHtml.match(/controller\.armQuickKeys\(\)/g) || []).length, 1, 'the demo arms them only in openPopup (not at load: the popup starts unfocused and the focusing click ends them)');
+  // A shortcut recording never outlives its row (the recorder would eat the
+  // search's keys and save the next chord as a global shortcut).
+  assert.ok(reset.slice(0, reset.indexOf('\n};')).includes('\n  cancelShortcutRecording();'), 'the app cancels a shortcut recording on every popup reset');
+  assert.ok(/function closeSettings\(\) \{\s*cancelShortcutRecording\(\);/.test(appHtml), 'closing Settings cancels a shortcut recording');
+  assert.ok(/if \(e\.key === 'Escape'\) \{\s*await cancelShortcutRecording\(\);/.test(appHtml), 'Esc cancels through the same path');
+  for (const [name, html] of [['index.html', appHtml], ['site/index.html', siteHtml]]) {
+    assert.ok(/\n\s*quickPaste: \(slot\) => /.test(html) && /\n\s*newNote: \(\) => /.test(html), `${name}: the adapter gives quickPaste + newNote`);
+    assert.ok(!/key >= '1'|key <= '9'/.test(html), `${name}: no digit quick-paste outside the shared controller`);
+  }
+  assert.ok(!/searchEl\.addEventListener\('keydown'/.test(appHtml), 'index.html: the search field has no key handler of its own');
+  assert.strictEqual((appHtml.match(/numpadPasteAndHide/g) || []).length, 1, 'index.html pastes a slot only through the adapter');
+
+  // Win+N: a Settings row beside Quick paste shortcut, saved per device, the
+  // Windows hook's default chord (like Win+V), a recorded one a global shortcut.
+  const body = ui.renderSettingsBody();
+  for (const id of ['newNoteShortcutRecord', 'newNoteShortcutReset', 'newNoteShortcutStatus']) assert.ok(body.includes(`id="${id}"`), `settings body has id="${id}"`);
+  assert.ok(body.indexOf('id="quickPasteRecord"') < body.indexOf('id="newNoteShortcutRecord"'), 'the row sits after Quick paste shortcut');
+  const main = read('main.js');
+  assert.ok(main.includes("ipcMain.handle('set-new-note-shortcut', (_, shortcut) => setNewNoteShortcut(shortcut));"));
+  assert.ok(read('preload.js').includes("setNewNoteShortcut: (shortcut) => ipcRenderer.invoke('set-new-note-shortcut', shortcut),"));
+  assert.ok(main.includes('delete remoteSave.new_note_shortcut;'), 'the new-note shortcut is per device, never synced');
+  assert.ok(/function handleNewNoteShortcut\(\) \{[\s\S]{0,300}openEditor\(null, \{\}\);/.test(main), 'the shortcut opens a note through the one openEditor path');
+  assert.ok(/onNewNote: handleNewNoteShortcut/.test(main) && /windowsHook\.setNewNoteHotkey\(newNoteHookKey\)/.test(main), 'Windows: the hook takes Win+N while it is the shortcut');
+  assert.ok(/globalShortcut\.register\(newNoteKey, handleNewNoteShortcut\)/.test(main), 'a recorded chord is a global shortcut');
+  const hookPolicy = read('lib/windows-hook-policy.js');
+  assert.ok(/\[VK\.V, \{ type: 'show'/.test(hookPolicy) && /\[VK\.N, \{ type: 'new-note'/.test(hookPolicy), 'the hook handles Win+N with the Win+V chord machinery (test/windows-hook.test.js runs it)');
+  assert.ok(/case 'new-note':/.test(read('lib/windows-hook.js')));
+  const readme = read('README.md');
+  assert.ok(readme.includes('| 1-9 right after the popup opens | Quick-paste slot |') && readme.includes('| N right after the popup opens | New note |'), 'README lists the quick keys');
+}
+
+// 34) Tags are flat (14 Oct 2026): no chip dropdowns, tree rows, virtual
+//     parents or top-layer submenus anywhere; membership and the chip state
+//     ignore case; "New group..." only ever ADDS (a toggle would take off a
+//     tag the clip already has); a group delete says how many clips it is on
+//     and offers an Undo that puts it back (group-restore).
+{
+  const coreSrc = read('site/shared/clipboard-ui-core.js');
+  const preloadSrc = read('preload.js');
+  for (const gone of ['buildTagTree', 'renderTagTreeMenu', 'tagParentPaths', 'itemMatchesGroupFilter', 'groupFilterCount', 'placeTopLayerSubmenu', 'closeTopLayerSubmenus', 'group-filter-row', 'popover="manual"', "' virtual'"]) {
+    assert.ok(!coreSrc.includes(gone), `clipboard-ui-core.js still has the nested-tag ${gone.trim()}`);
+  }
+  assert.ok(!/\.filter-tag\.virtual|\.filter-tag \.tag-caret|\.group-filters > \.tag-menu-node|\.tag-submenu \.tag-submenu|\.tag-submenu\[popover\]|\.group-filter-row/.test(popupCss), 'the shared sheet still styles nested tags');
+  const bar = ui.renderFilterBar({ items: [], groups: ['todo', 'forge', 'a/b'], query: 'group:Forge', activeFilters: new Set(['Forge']) });
+  assert.ok(!/tag-caret|tag-menu-node|tag-submenu|popover|aria-haspopup/.test(bar), 'no chip has a caret, a dropdown or a popover');
+  assert.ok(/<span class="filter-tag group-tag active"[^>]*data-group="forge"/.test(bar), 'group:Forge selects the forge chip');
+  assert.deepStrictEqual(ui.sortTags(['todo', 'Forge', 'forge', ' x ']), ['Forge', 'todo', 'x'], 'one entry per tag, whatever the case');
+  const it = { id: 'txt:t', type: 'text', text: 't', pin: { groups: ['forge'] } };
+  assert.ok(ui.isInGroup(it, 'FORGE') && ui.groupMembership([it], 'Forge') === 'all', 'membership ignores case');
+  const picker = ui.clipGroupListHtml(['Forge'], it);
+  assert.ok(/data-group="Forge" aria-checked="true"/.test(picker) && (picker.match(/data-action="toggle-group"/g) || []).length === 1, 'the picker lists a tag once and checks it whatever the case');
+  // The core's own tag helpers ignore case too (one tag, one entry).
+  assert.deepStrictEqual(ui.groupsOf({ id: 'g', type: 'text', text: 'g', pin: { groups: ['Forge', 'forge', 'todo'] } }), ['Forge', 'todo'], 'groupsOf: one entry per tag, the first spelling');
+  assert.deepStrictEqual(ui.toggleGroup([{ id: 'g', type: 'text', text: 'g', pin: { groups: ['Forge', 'todo'] } }], 'g', 'forge', 1)[0].pin.groups, ['todo'], 'toggleGroup takes a tag off in whatever spelling the clip carries it');
+  assert.deepStrictEqual(ui.toggleGroup([{ id: 'g', type: 'text', text: 'g', pin: { groups: ['todo'] } }], 'g', ' forge ', 1)[0].pin.groups, ['todo', 'forge'], 'and puts it on, trimmed');
+  // A long flat tag list never runs past its window: the tag rows are their
+  // own scrolling part (capped to the window, edge-faded) and "New group..."
+  // stays outside it; the menu keys walk the rows and keep the focused one in view.
+  const many = ui.clipGroupListHtml(Array.from({ length: 30 }, (_, i) => `tag${i}`), it);
+  assert.ok(/^<div class="bc-group-rows" role="none">(<button class="bc-menu-item[^>]*data-action="toggle-group"[^]*?<\/button>)+<\/div><div class="bc-menu-sep" role="separator"><\/div><button class="bc-menu-item"[^>]*data-action="add-group"/.test(many), 'the tag rows scroll in .bc-group-rows; "New group..." is outside it');
+  assert.ok(/const ITEMS = '[^']*:scope > \.bc-group-rows > \.bc-menu-item/.test(coreSrc) && /revealMenuRow\(items\[next\]\)/.test(coreSrc), 'the menu keyboard walks the scrolling rows and reveals the focused one');
+  assert.ok(/capGroupRows\(el, el\.querySelector\(':scope > \.bc-group-list > \.bc-group-rows'\), vh - 8\)/.test(coreSrc) && /capGroupRows\(sub, sub\.querySelector\(':scope > \.bc-group-rows'\)/.test(coreSrc), 'a group popover and a group submenu are both capped to the window');
+  assert.ok(/attachScrollFade\(rows, 'box'\)/.test(coreSrc) && /\.bc-group-rows \{ overflow-y: auto;/.test(popupCss), 'the scrolling rows use the shared edge fade, no painted gradient');
+  // The AI-share switch: the controller sends the state the switch now shows
+  // (drawn by tag, any case), never a second, exact-case lookup.
+  assert.ok(/a\.setGroupSharedAi\(share\.dataset\.group, !!share\.checked\)/.test(coreSrc), 'the share switch sends its own new state');
+  for (const [name, html] of [['index.html', appHtml], ['site/index.html', siteHtml]]) {
+    assert.ok(/setGroupSharedAi: \(group, shared\) =>/.test(html) && !/setGroupSharedAi: \(group\) =>/.test(html), `${name}: the adapter forwards the switch's state`);
+  }
+  // New group: the typed text goes to createGroup, its names are ADDED.
+  const addSrc = coreSrc.slice(coreSrc.indexOf('async function createGroups('), coreSrc.indexOf('async function clearAll('));
+  assert.ok(/const names = await a\.createGroup\(text\)/.test(addSrc), 'createGroup gets the typed text and answers with the tag names');
+  assert.ok(/a\.groupAssignMany\(ids, names\.join\(', '\), true\)/.test(addSrc), 'the new names are added (shouldHave true), in one write');
+  assert.ok(/filter\(\(name\) => !\(it && isInGroup\(it, name\)\)\)/.test(addSrc), 'without groupAssignMany only the missing names are toggled (an add)');
+  const bulkAdd = coreSrc.slice(coreSrc.indexOf('async function bulkAddGroup('), coreSrc.indexOf('async function unifySelection('));
+  assert.ok(/addTags\(ids, names\)/.test(bulkAdd) && !/bulkGroup\(/.test(bulkAdd), 'the bulk "New group..." adds, never the tri-state toggle');
+  // Delete group: the count, then an Undo through restoreGroup.
+  const delSrc = coreSrc.slice(coreSrc.indexOf('async function deleteGroup('), coreSrc.indexOf('async function tryAssignNumpad('));
+  assert.ok(/It is on \$\{count\} clip/.test(delSrc) && /const result = await a\.deleteGroup\(group\)/.test(delSrc) && /a\.restoreGroup\(result\)/.test(delSrc) && /offerUndo\(\{ message: `Deleted group/.test(delSrc), 'the delete confirm counts the clips and the delete offers an Undo (Ctrl/Cmd+Z too)');
+  assert.ok(/restoreGroup: async \(result\) => \{ await window\.api\.groupRestore\(result\)/.test(appHtml) && /const result = await window\.api\.groupDelete\(group\)/.test(appHtml), 'the app adapter wires the delete result to its Undo');
+  assert.ok(/offerUndo: \(\{ message, undo \}\)/.test(appHtml), 'the app toast shows the message the controller wrote');
+  assert.ok(preloadSrc.includes("groupRestore: (payload) => ipcRenderer.invoke('group-restore', payload)"), 'preload: groupRestore');
+  assert.ok(/ipcMain\.handle\('group-restore'/.test(read('main.js')), 'main: group-restore');
 }
 
 console.log('ui-parity.test.js: all parity guards passed');

@@ -14,10 +14,20 @@
 
   function isPinned(item) { return item && item.pin != null; }
   function numpadOf(item) { return item && item.pin && typeof item.pin.number === 'number' ? item.pin.number : null; }
+  // A clip's tags, one entry per tag (tags ignore case: the first spelling
+  // met is kept, as the model's uniqueTags does).
   function groupsOf(item) {
-    return item && item.pin && Array.isArray(item.pin.groups) ? [...new Set(item.pin.groups)] : [];
+    const list = item && item.pin && Array.isArray(item.pin.groups) ? item.pin.groups : [];
+    const seen = new Set();
+    return list.filter((g) => {
+      const key = Search.tagKey(g);
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
   }
-  function isInGroup(item, group) { return groupsOf(item).includes(group); }
+  // Tags are flat and case-insensitive (Search.sameTag): "Forge" is "forge".
+  function isInGroup(item, group) { return groupsOf(item).some((g) => Search.sameTag(g, group)); }
   function cleanTitle(value) { return String(value == null ? '' : value).replace(/\s+/g, ' ').trim(); }
   function titleOf(item) { return cleanTitle(item && item.title); }
   function itemId(item) { return item && item.id; }
@@ -114,135 +124,74 @@
       ...groupsOf(item),
     ].join(' ');
   }
-  function normalizeTagName(group) {
-    return String(group || '').split('/').map(part => part.trim()).filter(Boolean).join('/');
-  }
-  function tagParentPaths(group) {
-    const name = normalizeTagName(group);
-    if (!name) return [];
-    const parts = name.split('/');
-    const paths = [];
-    for (let i = 1; i <= parts.length; i += 1) paths.push(parts.slice(0, i).join('/'));
-    return paths;
-  }
-  function tagMatchesFilter(group, filter) {
-    const tag = normalizeTagName(group);
-    const parent = normalizeTagName(filter);
-    return !!parent && (tag === parent || tag.startsWith(`${parent}/`));
-  }
-  function itemMatchesGroupFilter(item, filter) {
-    return groupsOf(item).some(group => tagMatchesFilter(group, filter));
-  }
-  function groupFilterCount(items, filter) {
-    const key = normalizeTagName(filter);
-    if (!key) return 0;
-    return (items || []).filter(item => itemMatchesGroupFilter(item, key)).length;
-  }
   function sourceGroupsFromFilters(filters) {
     return [...asFilterSet(filters)]
-      .map(normalizeTagName)
+      .map(Search.cleanTagName)
       .filter(group => group && !group.startsWith('__'));
   }
-  // The group tree, siblings ordered by order.tier(path) first when given
-  // (the chip row: usable chips before greyed ones), then by use
-  // (order.weights = Search.groupWeights: decayed clip usage), then by name.
-  function buildTagTree(groups, order) {
+  // The tags in display order, one per tag (case-insensitive: the first
+  // spelling met is kept): order.tier(name) first when given (the chip row:
+  // usable chips before greyed ones), then by use (order.weights =
+  // Search.groupWeights: decayed clip usage), then by name.
+  function sortTags(groups, order) {
     const o = order || {};
-    const roots = [];
-    const byName = new Map();
-    const sourceGroups = [...new Set((groups || []).map(normalizeTagName).filter(Boolean))];
-    function ensureNode(name, stored) {
-      const tag = normalizeTagName(name);
-      if (!tag) return null;
-      let node = byName.get(tag);
-      if (!node) {
-        node = { name: tag, label: tag.split('/').pop(), depth: tag.split('/').length - 1, stored: false, children: [] };
-        byName.set(tag, node);
-        const slash = tag.lastIndexOf('/');
-        if (slash >= 0) {
-          const parent = ensureNode(tag.slice(0, slash), false);
-          if (parent && !parent.children.includes(node)) parent.children.push(node);
-        } else if (!roots.includes(node)) roots.push(node);
-      }
-      if (stored) node.stored = true;
-      return node;
-    }
-    for (const group of sourceGroups) {
-      for (const path of tagParentPaths(group)) ensureNode(path, path === group);
+    const seen = new Set();
+    const names = [];
+    for (const raw of groups || []) {
+      const name = Search.cleanTagName(raw);
+      const key = Search.tagKey(name);
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      names.push(name);
     }
     const byUse = Search.compareGroupUse(o.weights || null);
-    const sortNodes = (nodes) => {
-      nodes.sort((a, b) => (o.tier ? o.tier(a.name) - o.tier(b.name) : 0) || byUse(a.name, b.name));
-      nodes.forEach(node => sortNodes(node.children));
-    };
-    sortNodes(roots);
-    return roots;
+    return names.sort((a, b) => (o.tier ? o.tier(a) - o.tier(b) : 0) || byUse(a, b));
   }
-  function renderTagTreeMenu(nodes, options, depth) {
-    const opts = options || {};
-    const level = Number(depth) || 0;
-    return (nodes || []).map((node) => renderTagTreeMenuNode(node, opts, level)).join('');
+  // A set of names keyed by tag (the query's group values may be written in
+  // any case: group:Forge selects the forge chip).
+  function tagKeySet(names) {
+    const keys = new Set();
+    for (const name of names || []) { const key = Search.tagKey(name); if (key) keys.add(key); }
+    return keys;
   }
-  function renderTagTreeMenuNode(node, options, depth) {
-    const opts = options || {};
-    const mode = opts.mode || 'filter';
-    const isFilter = mode === 'filter';
-    const group = normalizeTagName(node && node.name);
-    if (!group) return '';
-    // Picker mode (a clip's group checklist) is the shared menu row tree.
-    if (!isFilter) {
-      const itemGroups = asFilterSet(opts.itemGroups);
-      return renderGroupChecklist([node], (g) => (itemGroups.has(g) ? 'all' : 'none'), 'toggle-group');
+  // A group's clip count: from counts (a Map or object of name -> count, the
+  // app's per-history tally) when given, else counted over items; either way
+  // by tag, whatever the case.
+  function tagCounter(items, counts) {
+    const byKey = new Map();
+    if (counts) {
+      const entries = counts instanceof Map ? counts.entries() : Object.entries(counts);
+      for (const [name, n] of entries) { const key = Search.tagKey(name); byKey.set(key, (byKey.get(key) || 0) + (Number(n) || 0)); }
+    } else {
+      for (const item of items || []) for (const key of tagKeySet(groupsOf(item))) byKey.set(key, (byKey.get(key) || 0) + 1);
     }
-    const activeFilters = asFilterSet(opts.activeFilters);
-    const excludedFilters = asFilterSet(opts.excludedFilters);
-    const text = escapeHtml(node.label || group);
-    const hasChildren = !!(node.children && node.children.length);
-    const treeClass = `${hasChildren ? ' has-children' : ''}${node.stored ? '' : ' virtual'}`;
-    // opts.verdict(group): the availability census's word on this chip (its
-    // count under the other filters; greyed + inert when it would show nothing).
-    const v = opts.verdict ? opts.verdict({ kind: 'group', value: group }) : null;
-    const count = v ? v.count : groupFilterCount(opts.items || [], group);
-    const disabled = !!(v && !v.enabled);
-    const title = excludedFilters.has(group)
-      ? `Excluding ${group}`
-      : disabled ? `${group} - ${v.reason}` : `${group} - ${count} item${count !== 1 ? 's' : ''}`;
-    const state = activeFilters.has(group) ? 'include' : excludedFilters.has(group) ? 'exclude' : '';
-    // Inside a chip's dropdown a group is the shared menu row (menuRowHtml):
-    // the include check / exclude glyph in the icon column, the count as its
-    // hint, the label struck through while excluded. Click includes and
-    // right-click excludes (the controller's FILTER_TARGET); a greyed row is
-    // inert like a greyed chip (aria-disabled, never `disabled`, which would
-    // swallow the events the guard reads).
-    if (depth > 0) {
-      const row = {
-        icon: state === 'include' ? 'check' : state === 'exclude' ? 'block' : '',
-        check: state === 'include',
-        label: node.label || group,
-        hint: disabled ? '' : String(count),
-        cls: `group-filter-row group-name${state === 'exclude' ? ' excluded' : ''}${disabled ? ` is-disabled${v.kind === 'structural' ? ' dis-structural' : ''}` : ''}`,
-        attrs: { 'data-group': group, title, 'aria-disabled': disabled ? 'true' : null },
-      };
-      return hasChildren
-        ? `<div class="tag-menu-node has-children">${menuRowHtml({ ...row, caret: true })}<div class="tag-submenu" role="menu">${renderTagTreeMenu(node.children, opts, depth + 1)}</div></div>`
-        : menuRowHtml(row);
-    }
-    const caret = hasChildren ? '<span class="tag-caret mi" aria-hidden="true">expand_more</span>' : '';
-    // A filter chip only filters: deleting a group lives in Settings > Groups
-    // (a hover x here deleted the whole group, 14 px from the filter toggle).
-    const control = renderChip({
-      cls: `group-tag${treeClass}${disabledChipClass(disabled ? { disabled, disabledKind: v.kind } : null)}`,
-      state,
-      attrs: { 'data-group': group, title, 'aria-label': group, 'aria-disabled': disabled ? 'true' : null },
-      html: `<span class="tag-label">${text}</span>${caret}`,
-    });
-    // popover="manual": the chip row is a one-line strip that scrolls under a
-    // mask, which would clip a nested submenu; installSubmenuAutoflip shows it
-    // in the top layer instead, beside its chip.
-    const children = hasChildren
-      ? `<div class="tag-submenu" role="menu" popover="manual">${renderTagTreeMenu(node.children, opts, depth + 1)}</div>`
-      : '';
-    return `<span class="tag-menu-node${hasChildren ? ' has-children' : ''}">${control}${children}</span>`;
+    return (group) => byKey.get(Search.tagKey(group)) || 0;
+  }
+  // The chip row's group chips, one per tag. A chip only filters: click
+  // includes, right-click excludes (the controller's FILTER_TARGET); deleting
+  // a group lives in Settings > Groups (a hover x here deleted the whole
+  // group, 14 px from the filter toggle).
+  //   opts: { activeKeys, excludedKeys (tagKeySet), countOf(group),
+  //           verdict(token)? (the availability census: a chip that would
+  //           show nothing is greyed + inert, its reason the tooltip) }
+  function renderGroupChips(names, opts) {
+    const o = opts || {};
+    return (names || []).map((group) => {
+      const key = Search.tagKey(group);
+      const v = o.verdict ? o.verdict({ kind: 'group', value: group }) : null;
+      const count = v ? v.count : o.countOf(group);
+      const disabled = !!(v && !v.enabled);
+      const state = o.activeKeys.has(key) ? 'include' : o.excludedKeys.has(key) ? 'exclude' : '';
+      const title = state === 'exclude'
+        ? `Excluding ${group}`
+        : disabled ? `${group} - ${v.reason}` : `${group} - ${count} item${count !== 1 ? 's' : ''}`;
+      return renderChip({
+        cls: `group-tag${disabledChipClass(disabled ? { disabled, disabledKind: v.kind } : null)}`,
+        state,
+        attrs: { 'data-group': group, title, 'aria-label': group, 'aria-disabled': disabled ? 'true' : null },
+        html: `<span class="tag-label">${escapeHtml(group)}</span>`,
+      });
+    }).join('');
   }
   function asFilterSet(value) {
     if (value instanceof Set) return value;
@@ -555,30 +504,31 @@
       });
     }
     // Groups: the selection first, as one cluster led by its or / and (once
-    // two or more groups are joined, or one under a remembered "and"), then the
+    // two or more groups are joined, or one under "and" - the default, which
+    // greys what it would empty, so the toggle is the way to "or" - or one
+    // under a remembered "or", the way back: Search.dimConnective), then the
     // excluded ones; then the chips that would show something, then the greyed
     // ones (the row is one line, so greyed chips never push usable ones out of
     // sight); each part by use. The cluster holds exactly the values in the
-    // query: a sub-group is its own chip there under its full name (work/api),
-    // while its parent stays with the rest. A chip that is selected or
+    // query, matched by tag whatever their case. A chip that is selected or
     // unselected glides to its new place (flipChildren, the consumer's paint).
     const tier = verdict ? (g) => { const v = verdict({ kind: 'group', value: g }); return v.enabled ? 0 : v.kind === 'structural' ? 2 : 1; } : null;
     const weights = options.groupWeights || (census && census.groupWeights) || Search.groupWeights(items);
-    const tree = buildTagTree(groups, { weights, tier });
-    const flat = [];
-    const walk = (nodes) => nodes.forEach((node) => { flat.push(node); walk(node.children); });
-    walk(tree);
-    const fullName = (node) => (node.name.includes('/') ? { ...node, label: node.name } : node);
-    const selected = flat.filter((node) => activeFilters.has(node.name)).map(fullName);
-    const excluded = flat.filter((node) => !activeFilters.has(node.name) && excludedFilters.has(node.name)).map(fullName);
-    const rest = tree.filter((node) => !activeFilters.has(node.name) && !excludedFilters.has(node.name));
-    const treeOpts = { mode: 'filter', items, activeFilters, excludedFilters, groupCounts, verdict };
+    const names = sortTags(groups, { weights, tier });
+    const activeKeys = tagKeySet(activeFilters);
+    const excludedKeys = tagKeySet(excludedFilters);
+    const isOn = (g) => activeKeys.has(Search.tagKey(g));
+    const isOff = (g) => !isOn(g) && excludedKeys.has(Search.tagKey(g));
+    const selected = names.filter(isOn);
+    const excluded = names.filter(isOff);
+    const rest = names.filter((g) => !isOn(g) && !isOff(g));
+    const chipOpts = { activeKeys, excludedKeys, countOf: tagCounter(items, groupCounts), verdict };
     const sep = '<span class="cluster-sep" aria-hidden="true"></span>';
     if (selected.length || excluded.length) {
       html += sep + connToggleHtml('group', Search.dimConnective(Search.parseQuery(query), 'group', options.joins), 'groups')
-        + renderTagTreeMenu(selected, treeOpts) + renderTagTreeMenu(excluded, treeOpts) + (rest.length ? sep : '');
+        + renderGroupChips(selected, chipOpts) + renderGroupChips(excluded, chipOpts) + (rest.length ? sep : '');
     }
-    html += renderTagTreeMenu(rest, treeOpts);
+    html += renderGroupChips(rest, chipOpts);
     return html;
   }
   // An image preview: the picture in a wrapper the size of the picture. Known
@@ -700,15 +650,6 @@
       + '<button class="meta-ghost" type="button" data-action="tag-add" title="Add to group" aria-label="Add to group"><span class="mi">add</span></button>';
     return `${html}<span class="bc-reveal meta-reveal"><span class="bc-reveal-inner">${ghosts}</span></span>`;
   }
-  // The meta line's group names when a row opens its ghosts (# / +, the
-  // reveal at the line's end): a wrapping names box keeps the width it had, so
-  // the + would sit at its far edge with a gap after the last name that still
-  // shows. Instead the names that would not fit beside the open ghosts are
-  // marked .meta-cut (hidden whole only while the reveal is open, CSS) and the
-  // box shrinks to the rest. Worked out from the closed row (the ghosts' open
-  // width is the meta line's height per ghost plus the gaps), one row per
-  // hover, so it costs nothing on the typing path. The first name is never set
-  // aside (alone on the line it ellipsizes).
   // An image row's buttons float at the row's top right; they get their
   // frosted backing (.img-under) only while the picture actually reaches
   // under them (a wide picture, or one zoomed up), so a narrow one leaves them
@@ -723,26 +664,52 @@
     const gap = 4; // --sp-1: closer than that and the picture reads as under the buttons
     row.classList.toggle('img-under', p.width > 0 && p.right > a.left - gap && p.top < b.bottom + gap && p.bottom > a.top - gap);
   }
+  // The width a row's reveal (its buttons, or the meta line's ghosts) takes
+  // once open, worked out while it is still closed or only starting to open:
+  // until then its buttons are squeezed to their glyphs, so their rects and
+  // used widths say nothing. Its buttons are square (as wide as they are
+  // tall), plus their margins (the first one's --reveal-gap) and the gaps.
+  function revealOpenWidth(reveal) {
+    const inner = reveal && reveal.firstElementChild;
+    if (!inner) return 0;
+    const px = (v) => parseFloat(v) || 0;
+    const kids = Array.from(inner.children);
+    let width = Math.max(0, kids.length - 1) * px(getComputedStyle(inner).columnGap);
+    for (const k of kids) {
+      const s = getComputedStyle(k);
+      width += px(s.height) + px(s.marginInlineStart) + px(s.marginInlineEnd);
+    }
+    return width;
+  }
+  // The meta line's group names when a row opens its ghosts (# / +, the
+  // reveal at the line's end): a wrapping names box keeps the width it had, so
+  // the + would sit at its far edge with a gap after the last name that still
+  // shows. Instead the names that would not fit beside the open ghosts are
+  // marked .meta-cut (hidden whole only while the reveal is open, CSS) and the
+  // box shrinks to the rest. Worked out from the row as it is entered, for
+  // the line as it will be once open: a text row's own buttons (.row-actions,
+  // beside .content) slide in at the same time and take their width off the
+  // whole line, and the ghosts take theirs after the names. One row per hover,
+  // so it costs nothing on the typing path. The first name is never set aside
+  // (alone on the line it ellipsizes).
   function fitMetaTags(row) {
     const box = row && row.querySelector ? row.querySelector('.meta-tags') : null;
     if (!box || typeof getComputedStyle !== 'function') return;
     const tags = Array.from(box.children);
     for (const t of tags) t.classList.remove('meta-cut');
     const meta = box.parentElement;
-    const inner = meta && meta.querySelector('.meta-reveal > .bc-reveal-inner');
-    if (!inner || tags.length < 2) return;
-    const ghosts = Array.from(inner.children);
-    const metaStyle = getComputedStyle(meta);
-    const metaRect = meta.getBoundingClientRect();
+    const reveal = meta && meta.querySelector('.meta-reveal');
+    if (!reveal || tags.length < 2) return;
     const px = (v) => parseFloat(v) || 0;
+    // The open row's line is narrower by what is left of its buttons' opening
+    // (none when they are open already: focus, a held row).
+    const actions = row.querySelector('.row-actions');
+    const narrower = actions ? Math.max(0, revealOpenWidth(actions) - actions.getBoundingClientRect().width) : 0;
     // Room the open reveal takes after the names box: its own gap (the line's
     // gap is cancelled by the reveal's negative margin) and the ghosts.
-    const revealStyle = getComputedStyle(inner.parentElement);
-    const ghostGap = px(getComputedStyle(inner).columnGap);
-    const open = px(metaStyle.columnGap) + px(revealStyle.marginLeft) + (ghosts.length ? px(getComputedStyle(ghosts[0]).marginInlineStart) : 0)
-      + ghosts.length * metaRect.height + Math.max(0, ghosts.length - 1) * ghostGap;
+    const open = px(getComputedStyle(meta).columnGap) + px(getComputedStyle(reveal).marginLeft) + revealOpenWidth(reveal);
     const boxStyle = getComputedStyle(box);
-    const limit = metaRect.right - open;
+    const limit = meta.getBoundingClientRect().right - narrower - open;
     const tagMargin = px(getComputedStyle(tags[0]).marginLeft) + px(getComputedStyle(tags[0]).marginRight);
     const nameGap = px(boxStyle.columnGap);
     let x = box.getBoundingClientRect().left + px(boxStyle.paddingLeft);
@@ -810,13 +777,20 @@
       + `</div><div class="content">${primaryHtml}${previewHtml}<div class="meta">${renderClipMeta(item)}</div></div>${actions}</div></div>`;
   }
   // Empty list states, ONE renderer for the app and the demo: what is empty and
-  // why, with the way out. kind (derived from { total, query } when omitted):
+  // why, with the way out. kind (derived from { total, query, groups } when omitted):
   //   'no-clips'    - history is empty
   //   'no-match'    - the search text matches nothing
   //   'filtered'    - the filters (group:/is:/since:/...) exclude everything
   //   'empty-group' - the only filter is one group, and it has no clips
-  // opts.nudgeHtml fills the .empty-nudge slot (renderRelaxNudge);
-  // opts.groups lets it tell an invalid query from a bad spelling.
+  // opts.groups (the tag names) lets it tell an invalid query from a bad
+  // spelling, and a group: value that is no tag (a typo, a retired name like
+  // todo/forge) from an empty tag: that is 'filtered', never "No clips in
+  // todo/forge yet". opts.nudgeHtml fills the .empty-nudge slot (renderRelaxNudge).
+  function emptyGroupName(parsed, groups) {
+    const value = parsed.groups[0] || '';
+    if (!Array.isArray(groups)) return value;
+    return groups.find((g) => Search.sameTag(g, value)) || null;
+  }
   function emptyStateKind(opts) {
     const o = opts || {};
     if (!(Number(o.total) > 0)) return 'no-clips';
@@ -824,14 +798,14 @@
     if (Search.hasSearchTerms(parsed)) return 'no-match';
     const onlyGroup = parsed.groups.length === 1 && !parsed.negGroups.length && !parsed.is.length && !parsed.negIs.length
       && !parsed.nums.length && !parsed.negNums.length && !parsed.since && !parsed.before && !parsed.len && !parsed.lines && !parsed.words && !parsed.id;
-    return onlyGroup ? 'empty-group' : 'filtered';
+    return onlyGroup && emptyGroupName(parsed, o.groups) != null ? 'empty-group' : 'filtered';
   }
   function renderEmptyState(options) {
     const o = options || {};
     const kind = o.kind || emptyStateKind(o);
     const parsed = Search.parseQuery(o.query || '');
     const said = parsed.terms.map((c) => (c.regex ? `/${c.value}/` : c.value)).join(' ').trim();
-    const group = parsed.groups[0] || '';
+    const group = emptyGroupName(parsed, o.groups) || '';
     const states = {
       'no-clips': { icon: 'content_paste', title: 'No clips yet', hint: 'Copy something and it shows up here.' },
       'no-match': { icon: 'search_off', title: said ? `No matches for "${said}"` : 'No matches', hint: 'Check the spelling, or try fewer or different words.', action: 'Clear search' },
@@ -1131,7 +1105,7 @@
     return has === 0 ? 'none' : has === list.length ? 'all' : 'some';
   }
   function similarLabel(n) { return `Select ${n} similar`; }
-  // ONE menu row primitive (.bc-menu-item) for every menu, submenu, group tree
+  // ONE menu row primitive (.bc-menu-item) for every menu, submenu, group list
   // and picker: an icon column (an icon, a membership check, or empty, so labels
   // always line up), the label, then an optional trailing hint or submenu
   // caret. Rows are menu items for keyboard navigation (createMenu): roving
@@ -1155,27 +1129,25 @@
     return `<div class="tag-menu-node has-children" role="none">${parent}<div class="tag-submenu${subClass ? ` ${subClass}` : ''}" role="menu">${innerHtml}</div></div>`;
   }
   const MENU_SEPARATOR = '<div class="bc-menu-sep" role="separator"></div>';
-  // ONE group checklist for every group menu: the tag tree as rows with the
-  // membership glyph in the icon column (state(group) 'all' | 'some' | 'none'
-  // = check / dash / nothing, in the accent; labels stay --text) and a nested
-  // submenu per parent tag. Single-clip pickers toggle with toggle-group, the
-  // multi-select tree with bulk-group. A click on a member removes it.
+  // ONE group checklist for every group menu: one row per tag (sortTags
+  // order) with the membership glyph in the icon column (state(group) 'all' |
+  // 'some' | 'none' = check / dash / nothing, in the accent; labels stay
+  // --text). Single-clip pickers toggle with toggle-group, the multi-select
+  // list with bulk-group. A click on a member removes it.
   const MEMBERSHIP_GLYPH = { all: ['check', 'true'], some: ['remove', 'mixed'], none: ['', 'false'] };
-  function renderGroupChecklist(nodes, state, action) {
-    return (nodes || []).map((node) => {
-      const group = normalizeTagName(node && node.name);
-      if (!group) return '';
+  function renderGroupChecklist(names, state, action) {
+    return (names || []).map((group) => {
       const [icon, checked] = MEMBERSHIP_GLYPH[state(group)] || MEMBERSHIP_GLYPH.none;
-      const row = { icon, check: true, label: node.label || group, cls: 'group-name', role: 'menuitemcheckbox', attrs: { 'data-action': action, 'data-group': group, 'aria-checked': checked, title: group } };
-      return node.children && node.children.length
-        ? submenuNodeHtml(row, renderGroupChecklist(node.children, state, action))
-        : menuRowHtml(row);
+      return menuRowHtml({ icon, check: true, label: group, cls: 'group-name', role: 'menuitemcheckbox', attrs: { 'data-action': action, 'data-group': group, 'aria-checked': checked, title: group } });
     }).join('');
   }
   // "New group..." closes every group checklist: a normal row, after a
-  // separator when there are groups above it.
-  function withNewGroupRow(treeHtml, action) {
-    return treeHtml + (treeHtml ? MENU_SEPARATOR : '') + menuRowHtml({ icon: 'add', label: 'New group...', attrs: { 'data-action': action } });
+  // separator when there are groups above it. The tag rows sit in their own
+  // part (.bc-group-rows), which scrolls when the window cannot hold them all
+  // (createMenu / fitSubmenu cap it), so "New group..." always stays in view.
+  function withNewGroupRow(rowsHtml, action) {
+    return (rowsHtml ? `<div class="bc-group-rows" role="none">${rowsHtml}</div>${MENU_SEPARATOR}` : '')
+      + menuRowHtml({ icon: 'add', label: 'New group...', attrs: { 'data-action': action } });
   }
   // ONE menu-content builder for the per-clip "..." menu. Reuses the exact
   // data-action attributes the controller already dispatches (pin/edit/rename/
@@ -1210,7 +1182,7 @@
     // The editor's "back to the text it opened with" (the window bar keeps
     // only find and the menu).
     if (context === 'editor' && !isImage) html += row('revert', 'Revert to original');
-    html += submenuNodeHtml({ icon: 'sell', label: 'Add to group' }, clipGroupTreeHtml(groups, item, Search.groupWeights(opts.items || [])));
+    html += submenuNodeHtml({ icon: 'sell', label: 'Add to group' }, clipGroupListHtml(groups, item, Search.groupWeights(opts.items || [])));
     html += submenuNodeHtml({ icon: 'tag', label: 'Numpad', hint: numpadOf(item) ? String(numpadOf(item)) : '' }, renderKeypadMenu(item, items, nmap), 'bc-keypad');
     // opts.similarCount: a number (0 = no row) or null while it is being
     // counted (a disabled placeholder the controller fills in); absent = never.
@@ -1226,9 +1198,10 @@
   // Group checklist + "New group..." for ONE clip: the single builder behind
   // the clip menu's "Add to group" submenu AND the title-bar strip's / a row's
   // + popover (openGroupPickerAt). The clip's current groups carry the check.
-  function clipGroupTreeHtml(groups, item, weights) {
-    const itemGroups = new Set(groupsOf(item));
-    return withNewGroupRow(renderTagTreeMenu(buildTagTree([...(groups || []), ...itemGroups], { weights }), { mode: 'picker', itemGroups }), 'add-group');
+  function clipGroupListHtml(groups, item, weights) {
+    const itemGroups = groupsOf(item);
+    const has = tagKeySet(itemGroups);
+    return withNewGroupRow(renderGroupChecklist(sortTags([...(groups || []), ...itemGroups], { weights }), (g) => (has.has(Search.tagKey(g)) ? 'all' : 'none'), 'toggle-group'), 'add-group');
   }
   // ONE menu-content builder for the multi-select bulk menu (shared by the
   // action bar's overflow and the right-click menu on a multi-selection). Bulk
@@ -1245,7 +1218,7 @@
     let html = '<div class="bc-menu-list">';
     html += row('bulk-paste', 'content_paste', `Paste all (${count})`);
     html += row('bulk-copy', CLIP_ACTION_ICONS.copy, `Copy all (${count})`);
-    html += submenuNodeHtml({ icon: 'sell', label: 'Add to group' }, bulkGroupTreeHtml(groups, selItems, Search.groupWeights(opts.items || [])));
+    html += submenuNodeHtml({ icon: 'sell', label: 'Add to group' }, bulkGroupListHtml(groups, selItems, Search.groupWeights(opts.items || [])));
     if (allText) html += row('bulk-unify', 'merge', `Unify (${count})`);
     html += MENU_SEPARATOR + row('bulk-delete', CLIP_ACTION_ICONS.del, `Delete (${count})`, 'danger');
     html += '</div>';
@@ -1256,10 +1229,9 @@
   // Each group shows its membership across the selection (all = check, some =
   // dash, none = empty); a click toggles it for every selected clip (all ->
   // remove from all, else add to all).
-  function bulkGroupTreeHtml(groups, selItems, weights) {
+  function bulkGroupListHtml(groups, selItems, weights) {
     const sel = selItems || [];
-    const treeGroups = [...new Set([...(groups || []), ...sel.flatMap(groupsOf)])];
-    return withNewGroupRow(renderGroupChecklist(buildTagTree(treeGroups, { weights }), (g) => groupMembership(sel, g), 'bulk-group'), 'bulk-add-group');
+    return withNewGroupRow(renderGroupChecklist(sortTags([...(groups || []), ...sel.flatMap(groupsOf)], { weights }), (g) => groupMembership(sel, g), 'bulk-group'), 'bulk-add-group');
   }
   // The contextual bar shown while 2+ clips are selected. It takes the chip
   // bar's place at the same height (the shell stacks both in .chip-row; the
@@ -1539,7 +1511,6 @@
     el.addEventListener('transitionend', fade.refresh);
     el.addEventListener('wheel', (e) => {
       if (e.ctrlKey || e.metaKey || !e.deltaY || Math.abs(e.deltaX) >= Math.abs(e.deltaY)) return;
-      if (e.target && e.target.closest && e.target.closest('.tag-submenu')) return;
       if (el.scrollWidth <= el.clientWidth + 1 || getComputedStyle(el).overflowX === 'visible') return;
       const before = el.scrollLeft;
       el.scrollLeft += e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY;
@@ -1552,8 +1523,7 @@
   // until the search options panel opens (attachSearchBox), then every chip,
   // wrapped. The switch animates both ways (FLIP: each chip glides from where
   // it was to where it lands while the row's height follows), so the line and
-  // the full set read as the same chips. Its group submenus open in the top
-  // layer (installSubmenuAutoflip), out of the strip's clip and mask.
+  // the full set read as the same chips.
   function attachChipStrip(el) {
     if (!el) return { setExpanded() {}, isExpanded: () => false };
     if (el._bcChipStrip) return el._bcChipStrip;
@@ -2527,11 +2497,14 @@
     let onClosed = null;
     let opener = null;
     let anchor = null;
+    let fades = []; // the edge fades of this menu's group lists
     function close() {
       if (!el) return;
       const hadFocus = el.contains(document.activeElement);
       el.remove();
       el = null;
+      for (const fade of fades) fade.detach();
+      fades = [];
       document.removeEventListener('pointerdown', onOutside, true);
       document.removeEventListener('keydown', onKey, true);
       document.removeEventListener('scroll', onScroll, true);
@@ -2549,8 +2522,9 @@
     // that moved away — close instead (scrolls inside the menu are fine).
     function onScroll(e) { if (el && !el.contains(e.target)) close(); }
     // --- Keyboard: one level = the root list or one .tag-submenu; its items
-    // are its own rows (a parent row included) and the keys of its keypad.
-    const ITEMS = ':scope > .bc-menu-item, :scope > .tag-menu-node > .bc-menu-item, :scope > .numpad-picker .np-btn';
+    // are its own rows (a parent row and a group list's tag rows included) and
+    // the keys of its keypad.
+    const ITEMS = ':scope > .bc-menu-item, :scope > .bc-group-rows > .bc-menu-item, :scope > .tag-menu-node > .bc-menu-item, :scope > .numpad-picker .np-btn';
     const rootLevel = () => (el ? el.querySelector(':scope > .bc-menu-list') || el : null);
     const itemsOf = (level) => (level ? [...level.querySelectorAll(ITEMS)] : []);
     const isOff = (item) => !!(item && (item.disabled || item.getAttribute('aria-disabled') === 'true'));
@@ -2564,7 +2538,7 @@
     function focusStep(level, from, key) {
       const items = itemsOf(level);
       const next = menuNavIndex(items.length, from ? items.indexOf(from) : -1, key, (i) => isOff(items[i]));
-      if (next >= 0) focusItem(items[next]);
+      if (next >= 0) { focusItem(items[next]); revealMenuRow(items[next]); }
     }
     function shut(node) {
       for (const n of [node, ...node.querySelectorAll('.tag-menu-node.open')]) {
@@ -2672,10 +2646,14 @@
       mount.appendChild(el);
       const isBody = mount === document.body || mount === document.documentElement;
       const hostRect = mount.getBoundingClientRect();
-      const mw = el.offsetWidth;
-      const mh = el.offsetHeight;
       const vw = isBody ? window.innerWidth : hostRect.width;
       const vh = isBody ? window.innerHeight : hostRect.height;
+      // A group list popover never runs past the window (its submenus are
+      // capped where they open: fitSubmenu); every group list fades its edges.
+      capGroupRows(el, el.querySelector(':scope > .bc-group-list > .bc-group-rows'), vh - 8);
+      for (const rows of el.querySelectorAll('.bc-group-rows')) fades.push(attachScrollFade(rows, 'box'));
+      const mw = el.offsetWidth;
+      const mh = el.offsetHeight;
       let localX = isBody ? o.x : o.x - hostRect.left;
       let localY = isBody ? o.y : o.y - hostRect.top;
       if (o.aboveY != null && localY + mh > vh - 4) {
@@ -2696,8 +2674,36 @@
     }
     return { open, close, isOpen: () => !!el, root: () => el };
   }
+  // A group list never runs out of its window: its tag rows (.bc-group-rows)
+  // get at most the height the window leaves once the surface's other parts
+  // (the separator, "New group...", the padding) are counted, and scroll
+  // under the shared edge fade past that, so "New group..." always stays in
+  // view. room: the height the window gives the whole surface. Measured on the
+  // live layout without taking the cap off first, so a hover re-fit never
+  // resets the list's scroll place.
+  function capGroupRows(surface, rows, room) {
+    if (!surface || !rows || !(room > 0)) return;
+    const others = surface.offsetHeight - rows.offsetHeight;
+    const first = rows.firstElementChild;
+    const cap = Math.max(Math.floor(room - others), first ? first.offsetHeight * 3 : 0);
+    rows.style.maxHeight = rows.scrollHeight > cap ? `${cap}px` : '';
+  }
+  // A keyboard-focused row of a scrolling group list stays in view, clear of
+  // the edge fade (one row of room on the side it moves toward, where the list
+  // is tall enough). The pointer never scrolls it: rows under a resting mouse
+  // would run away.
+  function revealMenuRow(item) {
+    const rows = item && item.parentElement;
+    if (!rows || !rows.classList || !rows.classList.contains('bc-group-rows') || rows.scrollHeight <= rows.clientHeight) return;
+    const r = item.getBoundingClientRect();
+    const b = rows.getBoundingClientRect();
+    const pad = Math.min(r.height, Math.max(0, (b.height - r.height) / 2));
+    if (r.top < b.top + pad) rows.scrollTop -= b.top + pad - r.top;
+    else if (r.bottom > b.bottom - pad) rows.scrollTop += r.bottom - (b.bottom - pad);
+  }
   // Keep a shown submenu inside the window: a right-opening submenu near the
-  // edge opens leftward (flip-x), a tall tree near the bottom shifts up.
+  // edge opens leftward (flip-x), a group list taller than the window scrolls
+  // (capGroupRows), and one near the bottom shifts up.
   // boundsEl: document (the app popup IS the OS window, so the viewport) or
   // the demo's embedded popup box. Hover (installSubmenuAutoflip) and the
   // menu keyboard (createMenu) both place submenus through this.
@@ -2710,6 +2716,7 @@
       ? { left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight }
       : boundsEl.getBoundingClientRect();
     if (bound.right - bound.left < 40) return; // hidden/unmeasurable host
+    capGroupRows(sub, sub.querySelector(':scope > .bc-group-rows'), bound.bottom - bound.top - 8);
     if (r.right > bound.right - 4) {
       const nr = node.getBoundingClientRect();
       if (nr.left - bound.left > bound.right - nr.right) sub.classList.add('flip-x'); // open toward the roomier side
@@ -2725,84 +2732,13 @@
   }
   // Auto-flip/clamp hover submenus so they never overflow the window. The popup
   // window is narrow, so a right-opening submenu near the edge must open leftward
-  // (flip-x) and a tall group tree near the bottom must shift up. One delegated
-  // listener per consumer root covers the filter bar AND the popover menus (the
-  // controller installs it automatically); keyboard-opened submenus are placed
-  // by createMenu through the same fitSubmenu.
-  // A chip's submenu in the top layer (popover="manual", the chip row's): it
-  // escapes the strip's clip and mask, so it is placed by hand under its chip
-  // (left edges aligned, or right edges when that would overflow), clamped to
-  // the bounds, and shown while its chip or the submenu itself is hovered or
-  // holds the focus (it is still the chip node's DOM child, so :hover and
-  // :focus-within reach the node from inside it).
-  function placeTopLayerSubmenu(node, sub, boundsEl) {
-    const bound = (boundsEl === document || boundsEl === document.documentElement)
-      ? { left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight }
-      : boundsEl.getBoundingClientRect();
-    const nr = node.getBoundingClientRect();
-    const r = sub.getBoundingClientRect();
-    let left = nr.left;
-    if (left + r.width > bound.right - 4) left = Math.max(bound.left + 4, nr.right - r.width);
-    let top = nr.bottom;
-    if (top + r.height > bound.bottom - 4) top = Math.max(bound.top + 4, bound.bottom - 4 - r.height);
-    sub.style.left = `${Math.round(left)}px`;
-    sub.style.top = `${Math.round(top)}px`;
-  }
-  function closeTopLayerSubmenus(rootEl) {
-    const root = rootEl || (typeof document !== 'undefined' ? document : null);
-    if (root && typeof root._bcCloseTopLayer === 'function') root._bcCloseTopLayer();
-  }
+  // (flip-x) and a tall group list near the bottom must shift up. One delegated
+  // listener per consumer root covers the popover menus (the controller
+  // installs it automatically); keyboard-opened submenus are placed by
+  // createMenu through the same fitSubmenu.
   function installSubmenuAutoflip(rootEl) {
     if (typeof document === 'undefined' || !rootEl || rootEl._bcAutoflip) return;
     rootEl._bcAutoflip = true;
-    const shownTopLayer = new Set();
-    const openTopLayer = (node, sub) => {
-      if (typeof sub.showPopover !== 'function') return;
-      if (!sub.matches(':popover-open')) { try { sub.showPopover(); } catch { return; } }
-      shownTopLayer.add(sub);
-      placeTopLayerSubmenu(node, sub, rootEl);
-    };
-    // A pointer or the focus leaving a chip (or its submenu): close every
-    // top-layer submenu whose chip no longer has either.
-    const closeStale = () => setTimeout(() => {
-      for (const sub of shownTopLayer) {
-        const node = sub.parentElement;
-        if (sub.isConnected && node && node.matches(':hover, :focus-within')) continue;
-        shownTopLayer.delete(sub);
-        if (sub.isConnected && sub.matches(':popover-open')) { try { sub.hidePopover(); } catch {} }
-      }
-    }, 0);
-    rootEl.addEventListener('mouseout', () => { if (shownTopLayer.size) closeStale(); });
-    rootEl.addEventListener('focusout', () => { if (shownTopLayer.size) closeStale(); });
-    const closeAll = () => {
-      for (const sub of shownTopLayer) {
-        if (sub.isConnected && sub.matches(':popover-open')) { try { sub.hidePopover(); } catch {} }
-      }
-      shownTopLayer.clear();
-    };
-    rootEl._bcCloseTopLayer = closeAll;
-    if (typeof window !== 'undefined') window.addEventListener('blur', closeAll);
-    rootEl.addEventListener('scroll', (event) => {
-      const scroller = event.target;
-      if (!shownTopLayer.size || !scroller || !scroller.contains) return;
-      for (const sub of shownTopLayer) {
-        const node = sub.parentElement;
-        if (!node || !scroller.contains(node)) continue;
-        const nr = node.getBoundingClientRect();
-        const sr = scroller.getBoundingClientRect();
-        if (nr.right < sr.left || nr.left > sr.right) {
-          shownTopLayer.delete(sub);
-          try { sub.hidePopover(); } catch {}
-        } else {
-          placeTopLayerSubmenu(node, sub, rootEl);
-        }
-      }
-    }, true);
-    rootEl.addEventListener('focusin', (event) => {
-      const node = event.target && event.target.closest ? event.target.closest('.tag-menu-node.has-children') : null;
-      const sub = node ? node.querySelector(':scope > .tag-submenu[popover]') : null;
-      if (sub) openTopLayer(node, sub);
-    });
     rootEl.addEventListener('mouseover', (event) => {
       const target = event.target;
       if (!target || !target.closest) return;
@@ -2810,7 +2746,6 @@
       if (!node) return;
       const sub = node.querySelector(':scope > .tag-submenu');
       if (!sub) return;
-      if (sub.hasAttribute('popover')) { openTopLayer(node, sub); return; }
       // setTimeout (not rAF): rAF is throttled to a halt in background tabs.
       // Bounds: the app popup IS the OS window (viewport); the demo popup is a
       // box embedded in the marketing page, so clamp to that box instead.
@@ -2845,16 +2780,22 @@
     }
   }
 
+  // Returns { isShown(), hide() }: shown while the toast still holds THIS
+  // message (another toast replacing it, its timer or its action ends it), so
+  // an action tied to the toast (the controller's Undo) lives exactly as long.
   function showActionToast(toastEl, opts) {
-    if (!toastEl) return;
+    if (!toastEl) return null;
     const o = opts || {};
     toastEl.innerHTML = '';
     const msg = document.createElement('span');
     msg.textContent = o.message || '';
     toastEl.appendChild(msg);
+    const isShown = () => toastEl.classList.contains('show') && msg.parentNode === toastEl;
     // Hiding also drops the action button, so a hidden toast never keeps a
-    // focusable (Enter would undo again) or clickable Undo around.
+    // focusable (Enter would undo again) or clickable Undo around. A toast
+    // another message already replaced is left alone.
     const hide = () => {
+      if (msg.parentNode !== toastEl) return;
       if (toastEl._actionTimer) clearTimeout(toastEl._actionTimer);
       toastEl._actionTimer = null;
       toastEl.classList.remove('show');
@@ -2871,6 +2812,7 @@
     toastEl.classList.add('show');
     if (toastEl._actionTimer) clearTimeout(toastEl._actionTimer);
     toastEl._actionTimer = setTimeout(hide, o.timeout || 5000);
+    return { isShown, hide };
   }
   // Paint the current selection state onto an already-rendered list + drive the
   // slim selection bar. Shared by both consumers so the class names + bar markup
@@ -2973,7 +2915,8 @@
     const general = settingSectionHtml('General',
       switchRowHtml({ id: 'autoLaunch', label: 'Launch on startup' })
       + settingRowHtml({ label: 'Popup shortcut', help: [['shortcutStatus']], control: '<button class="shortcut-btn" id="shortcutRecord" type="button"></button>', reset: settingResetHtml('shortcutReset', 'Reset to the default shortcut') })
-      + settingRowHtml({ label: 'Quick paste shortcut', help: [['quickPasteStatus']], control: '<button class="shortcut-btn" id="quickPasteRecord" type="button"></button>', reset: settingResetHtml('quickPasteReset', 'Reset to the default shortcut') }));
+      + settingRowHtml({ label: 'Quick paste shortcut', help: [['quickPasteStatus']], control: '<button class="shortcut-btn" id="quickPasteRecord" type="button"></button>', reset: settingResetHtml('quickPasteReset', 'Reset to the default shortcut') })
+      + settingRowHtml({ label: 'New note shortcut', help: [['newNoteShortcutStatus']], control: '<button class="shortcut-btn" id="newNoteShortcutRecord" type="button"></button>', reset: settingResetHtml('newNoteShortcutReset', 'Reset to the default shortcut') }));
     const appearance = settingSectionHtml('Appearance',
       settingRowHtml({ label: 'Theme', control: theme })
       + settingRowHtml({ label: 'Accent', help: [['accentHelp']], control: swatches })
@@ -3075,8 +3018,8 @@
   // deleted) }.
   function renderGroupRows(groups, o) {
     const opt = o || {};
-    const countOf = (g) => Number(opt.counts instanceof Map ? opt.counts.get(g) : (opt.counts || {})[g]) || 0;
-    const shared = opt.shared instanceof Set ? opt.shared : new Set(opt.shared || []);
+    const countOf = tagCounter(null, opt.counts || {});
+    const shared = tagKeySet(opt.shared);
     // The switch column says what it is, right above the switches (the rows'
     // own grid, so the label ends on the switches' edge).
     const head = (groups || []).length
@@ -3084,10 +3027,10 @@
       : '';
     return head + (groups || []).map((g) => {
       const count = countOf(g);
-      const isAi = g === opt.aiGroup;
+      const isAi = Search.sameTag(g, opt.aiGroup);
       return renderSettingsItem({
         title: g, meta: `${count} clip${count === 1 ? '' : 's'}`, cls: 'group-row',
-        toggle: { checked: isAi || shared.has(g), disabled: isAi, cls: 'gp-share', label: isAi ? 'The AI group is always shared with AI' : `Share ${g} with AI`, attrs: { 'data-group': g } },
+        toggle: { checked: isAi || shared.has(Search.tagKey(g)), disabled: isAi, cls: 'gp-share', label: isAi ? 'The AI group is always shared with AI' : `Share ${g} with AI`, attrs: { 'data-group': g } },
         actionHtml: isAi ? '' : `<button class="icon-btn gp-del" type="button" data-group="${escapeHtml(g)}" title="Delete group" aria-label="Delete group ${escapeHtml(g)}"><span class="mi">close</span></button>`,
       });
     }).join('');
@@ -3611,9 +3554,14 @@
   //            [self-renders — also called directly by the search-clear button],
   //            focusSearch()
   //   mutate:  pin(id), numpadAssign(id,slot), numpadUnassign(slot),
-  //            toggleGroup(id,group) [add-or-remove], createGroup(name),
-  //            deleteGroup(group), deleteClip(id), clearUnpinned(),
-  //            setGroupSharedAi(group)
+  //            toggleGroup(id,group) [add-or-remove],
+  //            groupAssignMany(ids, text, shouldHave) [text may name several, comma-separated],
+  //            createGroup(text) -> tag names | false [text may name several],
+  //            deleteGroup(group) -> { ok, name, ids, shared } | false,
+  //            restoreGroup(that) [the delete's Undo], deleteClip(id),
+  //            clearUnpinned(), setGroupSharedAi(group, shared) [shared: the switch's new state]
+  //   undo:    offerUndo({ message, undo, count? }) -> the toast's { isShown, hide }
+  //            (Core.showActionToast) [the toast with Undo; the Undo lives while it shows]
   //   actions: activateClip(id), copyClip(id) [the clipboard only, no paste],
   //            copyMany(ids) [Paste all's joined text, no paste], editClip(id,itemEl), openImage(item),
   //            saveImage(item)->feedbackString|null
@@ -4347,15 +4295,48 @@
     const toast = (msg) => { if (a.toast && msg) a.toast(msg); };
     const protectedHas = (group) => {
       const p = a.protectedGroups && a.protectedGroups();
-      return !!(p && typeof p.has === 'function' && p.has(group));
+      return !!(p && [...p].some((g) => Search.sameTag(g, group)));
     };
+    // The Undo of the last delete (clips or a group): live exactly while its
+    // toast shows it, through the toast's own action or Ctrl/Cmd+Z (Settings
+    // included). Once that toast is gone, or another message replaced it, the
+    // Undo is gone too: a later Ctrl/Cmd+Z never puts back something nothing
+    // on screen offers. adapter.offerUndo returns the toast (showActionToast's
+    // { isShown, hide }); one that returns nothing keeps the Undo until it is
+    // used or the next delete replaces it.
+    let lastUndo = null;
+    function offerUndo(opts, run) {
+      const entry = { run, toast: null };
+      lastUndo = entry;
+      entry.toast = a.offerUndo({ ...opts, undo: () => runUndo(entry) }) || null;
+    }
+    function liveUndo() {
+      const t = lastUndo && lastUndo.toast;
+      if (t && typeof t.isShown === 'function' && !t.isShown()) lastUndo = null;
+      return lastUndo;
+    }
+    async function runUndo(entry) {
+      if (!entry || lastUndo !== entry) return;
+      lastUndo = null;
+      if (entry.toast && typeof entry.toast.hide === 'function') entry.toast.hide();
+      await entry.run();
+      refresh();
+    }
 
+    // Delete a group: the confirm says how many clips have it, then it goes at
+    // once with an Undo (the toast's action, or Ctrl/Cmd+Z) that puts it back
+    // on those clips. adapter.deleteGroup(name) returns what the Undo needs
+    // ({ ok, name, ids, shared }) and adapter.restoreGroup(that) puts it back.
     async function deleteGroup(group) {
       if (!group || protectedHas(group)) return;
-      const ok = await dialogs.confirm({ title: `Delete group "${group}"?`, message: 'Items will be ungrouped but not deleted.', okLabel: 'Delete', danger: true });
+      const count = allItems().filter((item) => isInGroup(item, group)).length;
+      const ok = await dialogs.confirm({ title: `Delete group "${group}"?`, message: count ? `It is on ${count} clip${count === 1 ? '' : 's'}. The clips stay.` : '', okLabel: 'Delete', danger: true });
       if (!ok) return;
-      await a.deleteGroup(group);
+      const result = await a.deleteGroup(group);
       refresh();
+      if (result && result.ok && a.restoreGroup && a.offerUndo) {
+        offerUndo({ message: `Deleted group "${result.name || group}"` }, () => a.restoreGroup(result));
+      }
     }
     async function tryAssignNumpad(id, slot) {
       const nmap = a.numpadMap ? a.numpadMap() : {};
@@ -4368,11 +4349,33 @@
       await a.numpadAssign(id, slot);
       refresh();
     }
+    // New group(s): the typed text may name several ("todo, forge");
+    // adapter.createGroup(text) returns the tag names it created or reused
+    // (an existing tag in any case is reused), or false. The clips then GET
+    // them (add-only: a toggle would take off a tag a clip already has).
+    async function createGroups() {
+      const text = await dialogs.prompt({ title: 'New group name', okLabel: 'Create' });
+      if (!text) return null;
+      const names = await a.createGroup(text);
+      return Array.isArray(names) && names.length ? names : null;
+    }
+    async function addTags(ids, names) {
+      if (!ids.length || !names.length) return;
+      // ONE write per clip, every name in the comma-separated text: a second
+      // write would still carry the clip's rev from before the first.
+      if (a.groupAssignMany) { await a.groupAssignMany(ids, names.join(', '), true); return; }
+      if (!a.toggleGroup) return;
+      for (const id of ids) {
+        const it = a.itemById(id);
+        const missing = names.filter((name) => !(it && isInGroup(it, name)));
+        // Only the missing names: a toggle of them all adds them all.
+        if (missing.length) await a.toggleGroup(id, missing.join(', '));
+      }
+    }
     async function addGroup(id) {
-      const name = await dialogs.prompt({ title: 'New group name', okLabel: 'Create' });
-      if (!name) return;
-      await a.createGroup(name);
-      if (id != null && a.toggleGroup) await a.toggleGroup(id, name); // clip is not yet in the new group, so this adds
+      const names = await createGroups();
+      if (!names) return;
+      if (id != null) await addTags([id], names);
       refresh();
     }
     async function clearAll() {
@@ -4398,12 +4401,11 @@
     // menuHostAt(x, y): a host per open (the demo's menus open in the window
     // they were opened from); else every menu mounts in menuHost.
     const menu = createMenu(a.menuHostAt || a.menuHost || a.dialogHost);
-    // Keep hover submenus (filter bar, pickers, popover menus) inside the window.
+    // Keep hover submenus (the clip and bulk menus') inside the window.
     installSubmenuAutoflip(a.menuHost || (typeof document !== 'undefined' ? document : null));
     const selectedIds = new Set();
     let anchorId = null;
     let focusId = null;
-    let lastUndo = null;
     // heldId: the row whose buttons stay out while its menu / popover is open
     // or it is being dragged (painted as .actions-held).
     let heldId = null;
@@ -4694,8 +4696,7 @@
       refresh();
       if (snapshots && snapshots.length && a.restoreClips && a.offerUndo) {
         const snaps = snapshots;
-        lastUndo = async () => { lastUndo = null; await a.restoreClips(snaps); refresh(); };
-        a.offerUndo({ count: snaps.length, undo: () => { if (lastUndo) lastUndo(); } });
+        offerUndo({ count: snaps.length, message: `Deleted ${snaps.length} clip${snaps.length === 1 ? '' : 's'}` }, () => a.restoreClips(snaps));
       } else {
         toast(a.deletedToast);
       }
@@ -4714,10 +4715,11 @@
       refresh();
     }
     async function bulkAddGroup() {
-      const name = await dialogs.prompt({ title: 'New group name', okLabel: 'Create' });
-      if (!name) return;
-      if (a.createGroup) await a.createGroup(name);
-      await bulkGroup(name);
+      const ids = selectionInfo().ids;
+      const names = await createGroups();
+      if (!names) return;
+      await addTags(ids, names);
+      refresh();
     }
     async function unifySelection() {
       const ids = selectionInfo().ids;
@@ -4733,10 +4735,10 @@
       menu.open({ x, y, keyboard, html: renderBulkMenu(info, { groups: groupNames(), selectedItems: selItems, items: allItems() }) });
     }
     // The bar's dedicated Group button: a popover with JUST the tri-state group
-    // tree (no submenu hop). The full bulk menu stays on right-click.
+    // list (no submenu hop). The full bulk menu stays on right-click.
     function openBulkGroupMenu(x, y) {
       const selItems = selectionInfo().ids.map((id) => a.itemById(id)).filter(Boolean);
-      menu.open({ x, y, html: `<div class="bc-menu-list bc-group-list">${bulkGroupTreeHtml(groupNames(), selItems, Search.groupWeights(allItems()))}</div>` });
+      menu.open({ x, y, html: `<div class="bc-menu-list bc-group-list">${bulkGroupListHtml(groupNames(), selItems, Search.groupWeights(allItems()))}</div>` });
     }
     // The popup's single-clip menu: also holds the row's buttons out while it
     // is open and offers "Select N similar" for a text clip (N over all
@@ -4775,13 +4777,13 @@
       menu.open({ id, x, y, html: renderClipMenu(item, { items: allItems(), groups: groupNames(), numpadMap: a.numpadMap ? a.numpadMap() : {}, context: context || a.menuContext }) });
     }
     // The one-clip group picker: the title-bar strip's + and a row's meta +
-    // (same clipGroupTreeHtml checklist as the clip menu's submenu, same
+    // (same clipGroupListHtml checklist as the clip menu's submenu, same
     // toggle-group/add-group dispatch - the menu root carries data-id).
     // Mirrors openBulkGroupMenu.
     function openGroupPickerAt(id, x, y, aboveY) {
       const item = a.itemById(id);
       if (!item) return;
-      menu.open({ id, x, y, aboveY, onClose: releaseOnClose(id), html: `<div class="bc-menu-list bc-group-list">${clipGroupTreeHtml(groupNames(), item, Search.groupWeights(allItems()))}</div>` });
+      menu.open({ id, x, y, aboveY, onClose: releaseOnClose(id), html: `<div class="bc-menu-list bc-group-list">${clipGroupListHtml(groupNames(), item, Search.groupWeights(allItems()))}</div>` });
       hold(id);
     }
     // A row's numpad badge / ghost #: the keypad (the same renderKeypadMenu the
@@ -4803,9 +4805,9 @@
     // row; the popup still blur-hides the moment the user clicks into one of them.
     // Keyboard opens (Ctrl/Alt+Enter) stay a hand-off: focus moves to the editor.
     const KEEP_POPUP = { keepPopup: true };
-    // Filter targets: the chip bar's chips, the group rows in a chip's dropdown
-    // and a row's group names (click includes, right-click excludes).
-    const FILTER_TARGET = '.filter-tag[data-filter], .filter-tag[data-group], .group-filter-row[data-group], .meta-tag[data-group]';
+    // Filter targets: the chip bar's chips and a row's group names (click
+    // includes, right-click excludes).
+    const FILTER_TARGET = '.filter-tag[data-filter], .filter-tag[data-group], .meta-tag[data-group]';
     async function openClipInEditor(event, row) {
       event.preventDefault(); event.stopPropagation();
       const item = a.itemById(row.dataset.id);
@@ -4959,7 +4961,10 @@
       const slotEl = t.closest('.np-slot.has-content');
       if (slotEl && slotEl.dataset.slotId) { event.stopPropagation(); await a.copyClip(slotEl.dataset.slotId); toast('Copied'); return true; }
       const share = t.closest('.gp-share');
-      if (share) { event.stopPropagation(); await a.setGroupSharedAi(share.dataset.group); refresh(); return true; }
+      // The switch has already flipped: its new state IS the choice, so the
+      // direction is the one renderGroupRows drew (by tag, any case), never a
+      // second lookup that could disagree with it.
+      if (share) { event.stopPropagation(); await a.setGroupSharedAi(share.dataset.group, !!share.checked); refresh(); return true; }
       const gpDel = t.closest('.gp-del');
       if (gpDel) { event.stopPropagation(); deleteGroup(gpDel.dataset.group); return true; }
       // A clip's group checklist (clip menu submenu, + / meta popovers): a row
@@ -5106,7 +5111,29 @@
       if (!a.imageZoom) return false;
       return a.imageZoom.onWheel(event);
     }
+    // Quick keys (quickKeyStep): armed by the host each time the popup opens,
+    // ended by the first key that is not one or by any press in the popup (the
+    // search field included), so they never fire mid-search or mid-click.
+    let quickArmed = false;
+    function armQuickKeys() { quickArmed = true; }
+    // Hosts bind it in the capture phase, on the whole popup.
+    function onPointerdown() { quickArmed = false; }
+    function runQuickKey(event) {
+      const step = quickKeyStep(event, {
+        armed: quickArmed,
+        empty: String((a.getQuery && a.getQuery()) || '') === '',
+        blocked: dialogs.isOpen() || menu.isOpen() || !!(a.isSettingsOpen && a.isSettingsOpen()),
+        nmap: a.numpadMap ? a.numpadMap() : {},
+      });
+      quickArmed = step.armed;
+      if (!step.act) return false;
+      event.preventDefault();
+      if (step.act.slot) { if (a.quickPaste) a.quickPaste(step.act.slot); }
+      else if (a.newNote) a.newNote();
+      return true;
+    }
     async function onKeydown(event) {
+      if (runQuickKey(event)) return;
       // Ctrl+= / Ctrl+- / Ctrl+0 size image previews, even under a dialog: the
       // page itself must never zoom.
       if (a.imageZoom && a.imageZoom.onKeydown(event)) return;
@@ -5119,13 +5146,15 @@
         else if (a.hidePopup) a.hidePopup();
         return;
       }
-      if (a.isSettingsOpen && a.isSettingsOpen()) return;
-      if ((event.key === 'Enter' || event.key === ' ' || event.key === 'Spacebar') && !mod && !event.altKey && isActivatableControl(event.target)) return;
       // Ctrl/Cmd+A & +Z: the search box is focused nearly always in the app, so
       // route by whether the field actually has text — with text the chord means
       // the FIELD (native select-all / typing undo); empty, it means the LIST.
       const fieldHasText = isTypingTarget(event.target) && typeof event.target.value === 'string' && event.target.value.length > 0;
-      if (mod && (event.key === 'z' || event.key === 'Z')) { if (!fieldHasText && lastUndo) { event.preventDefault(); lastUndo(); } return; }
+      // Ctrl/Cmd+Z runs a delete's Undo while its toast shows it, Settings
+      // included (a group is deleted there).
+      if (mod && (event.key === 'z' || event.key === 'Z')) { const undo = !fieldHasText && liveUndo(); if (undo) { event.preventDefault(); runUndo(undo); } return; }
+      if (a.isSettingsOpen && a.isSettingsOpen()) return;
+      if ((event.key === 'Enter' || event.key === ' ' || event.key === 'Spacebar') && !mod && !event.altKey && isActivatableControl(event.target)) return;
       if (mod && (event.key === 'a' || event.key === 'A')) { if (!fieldHasText) { event.preventDefault(); selectAll(); } return; }
       // The menu key / Shift+F10 opens the cursor row's menu (the bulk menu on
       // a multi-selection) from the keyboard, its first row focused.
@@ -5178,6 +5207,9 @@
       onAuxclick,
       onContextmenu,
       onKeydown,
+      onPointerdown,
+      armQuickKeys,
+      quickKeysArmed: () => quickArmed,
       onWheel,
       onDragstart,
       onMouseover,
@@ -5191,9 +5223,6 @@
       // re-painting selection classes after a full list rebuild) + exposed for tests.
       selection: selectionInfo,
       focusedId: () => focusId,
-      // An open menu or popover owns the keys (the app's empty-search digit
-      // quick-paste must not fire under it).
-      isMenuOpen: () => menu.isOpen(),
       clearSelection,
       selectAll,
       moveFocus,
@@ -5213,9 +5242,8 @@
       heldId: () => heldId,
       // The popup was hidden: the pointer is no longer over a row (its tint goes).
       forgetPointer: () => { if (hoverId != null) { hoverId = null; refreshSimilar(); } },
-      // Popup hide/reset must not leave a stale popover, nor a chip's
-      // top-layer submenu (popover="manual": nothing else closes it then).
-      closeMenu: () => { menu.close(); closeTopLayerSubmenus(a.menuHost || (typeof document !== 'undefined' ? document : null)); },
+      // Popup hide/reset must not leave a stale popover.
+      closeMenu: () => menu.close(),
     };
   }
   // What a search hands the editor's find bar when a clip opens from it: the
@@ -5698,6 +5726,55 @@
       place: (r) => place(clamp(r)),
       bounds,
     };
+  }
+  // Ctrl+N (Cmd+N on a Mac) in the app's note editor window opens a new note
+  // (editor.html -> the popup's New note action). The platform's own modifier
+  // and nothing else: on a Mac Ctrl+N is the text fields' line-down, and AltGr
+  // (= Ctrl+Alt) types characters. A layout with no Latin letters (Cyrillic,
+  // Greek) matches the N key's position instead, as the OS's own shortcuts do.
+  // The demo binds none: browsers keep Ctrl/Cmd+N for themselves.
+  function newNoteKey(e, mac = isMacPlatform()) {
+    if (!e || e.altKey || e.shiftKey || isCompositionKey(e)) return false;
+    if (mac ? (!e.metaKey || e.ctrlKey) : (!e.ctrlKey || e.metaKey)) return false;
+    return keyIsLetter(e, 'n');
+  }
+  // Is this press the letter's key, for a shortcut? A Latin layout's own
+  // letter (Dvorak's n is wherever Dvorak puts it); a layout with no Latin
+  // letters (Cyrillic, Greek) the key's position, as the OS's own shortcuts do.
+  function keyIsLetter(e, letter) {
+    const key = String(e.key || '').toLowerCase();
+    return /^[a-z]$/.test(key) ? key === letter : e.code === `Key${letter.toUpperCase()}`;
+  }
+  // A key the IME is handling (mid composition, or the press that starts one:
+  // Chromium reports key 'Process' / keyCode 229 for it, with isComposing still
+  // false on Windows and the letter itself on a Mac) types into the
+  // composition: it is never a shortcut, whatever key position it is on.
+  function isCompositionKey(e) {
+    return !!(e && (e.isComposing || e.key === 'Process' || e.keyCode === 229));
+  }
+  // Pressing these alone types nothing: it never counts as the first key.
+  const MODIFIER_KEYS = new Set(['Shift', 'Control', 'Alt', 'AltGraph', 'Meta', 'OS', 'Super', 'Hyper', 'Fn', 'FnLock', 'CapsLock', 'NumLock', 'ScrollLock', 'Symbol', 'SymbolLock']);
+  function isModifierKey(e) { return !!(e && MODIFIER_KEYS.has(e.key)); }
+  // The popup's quick keys, right after it opens with the search empty: 1-9
+  // paste that numpad slot, N opens a new note. What a press means there:
+  // { slot } | { note: true } | null (an ordinary key: it types). The digit is
+  // the one the key types (Shift+& on AZERTY is 1); Shift+N types N. A digit
+  // with no clip on its slot types too, and so does any key an IME takes.
+  function quickKeyFor(e, nmap) {
+    if (!e || e.ctrlKey || e.altKey || e.metaKey || isCompositionKey(e) || e.repeat) return null;
+    const key = String(e.key || '');
+    if (/^[1-9]$/.test(key)) return nmap && Number(key) in nmap ? { slot: Number(key) } : null;
+    return !e.shiftKey && keyIsLetter(e, 'n') ? { note: true } : null;
+  }
+  // One key press against the quick keys' state (pure, for the controller):
+  // ctx { armed, empty (the search), blocked (a menu, dialog or settings is
+  // open), nmap }. Any key but a lone modifier ends them until the next open,
+  // a quick key included (one per open).
+  function quickKeyStep(e, ctx) {
+    const c = ctx || {};
+    if (!c.armed) return { armed: false, act: null };
+    if (isModifierKey(e)) return { armed: true, act: null };
+    return { armed: false, act: c.empty && !c.blocked ? quickKeyFor(e, c.nmap) : null };
   }
   // Shared plain-text editor — ONE implementation mounted by BOTH the desktop
   // app (in its own window) and the website demo (in its clip window).
@@ -6964,17 +7041,19 @@
       return changed ? withPinTimestamp(next, ts, 'number') : next;
     });
   }
+  // Puts the tag on the clip, or takes it off (in whatever spelling the clip
+  // carries it: tags ignore case).
   function toggleGroup(items, id, group, now) {
     const ts = now || Math.floor(Date.now() / 1000);
+    const name = Search.cleanTagName(group);
     return (items || []).map((item) => {
       if (itemId(item) !== id) return item;
       const next = { ...item, pin: item.pin ? { ...item.pin } : {} };
-      const groups = new Set(groupsOf(next));
-      if (groups.has(group)) groups.delete(group);
-      else groups.add(group);
-      if (groups.size) next.pin.groups = [...groups];
+      const had = groupsOf(next);
+      const groups = had.some((g) => Search.sameTag(g, name)) ? had.filter((g) => !Search.sameTag(g, name)) : (name ? [...had, name] : had);
+      if (groups.length) next.pin.groups = groups;
       else delete next.pin.groups;
-      if (typeof next.pin.number !== 'number' && !groups.size) next.pin = null;
+      if (typeof next.pin.number !== 'number' && !groups.length) next.pin = null;
       return withPinTimestamp(next, ts, 'groups');
     });
   }
@@ -7006,14 +7085,9 @@
     builtinFilterCount,
     builtinFilters,
     itemSearchText,
-    normalizeTagName,
-    tagParentPaths,
-    tagMatchesFilter,
-    itemMatchesGroupFilter,
-    groupFilterCount,
     sourceGroupsFromFilters,
-    buildTagTree,
-    renderTagTreeMenu,
+    sortTags,
+    renderGroupChips,
     asFilterSet,
     hasActiveFilters,
     filterItems,
@@ -7045,8 +7119,8 @@
     renderClipActions,
     renderClipMenu,
     renderBulkMenu,
-    bulkGroupTreeHtml,
-    clipGroupTreeHtml,
+    bulkGroupListHtml,
+    clipGroupListHtml,
     renderClipKeys,
     renderSelectionBar,
     attachSearchBox,
@@ -7058,7 +7132,6 @@
     attachScrollFade,
     attachSideScroll,
     attachChipStrip,
-    closeTopLayerSubmenus,
     resolveFadeVars,
     FADE_PRESETS,
     attachResizeHandle,
@@ -7115,6 +7188,9 @@
     editorScrollTopForIndex,
     renderWindowBar,
     attachWindowControls,
+    newNoteKey,
+    quickKeyFor,
+    quickKeyStep,
     createEditor,
     createImageViewer,
     lcsSegments,

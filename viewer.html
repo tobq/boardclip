@@ -38,7 +38,7 @@ if (window.viewerApi.onAppearanceChanged) window.viewerApi.onAppearanceChanged((
 let viewer = null;
 let clipId = null;
 // Light state snapshot backing the shared clip menu (items for numpad previews,
-// groups tree, pin state). Refetched right before the menu opens + after every
+// groups, pin state). Refetched right before the menu opens + after every
 // mutation, so it is always current without a live push channel.
 let state = { item: null, items: [], groups: [], aiGroup: 'AI' };
 async function refreshState() {

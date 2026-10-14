@@ -676,6 +676,28 @@ function effectiveQuickPasteShortcut() {
   return settings.quick_paste_shortcut || defaultQuickPasteShortcut();
 }
 
+// Windows: Win+N, taken by the keyboard hook like Win+V (it is Windows' own
+// notification panel chord, which RegisterHotKey cannot win). Elsewhere none
+// until one is recorded.
+function defaultNewNoteShortcut() {
+  return process.platform === 'win32' ? 'Super+N' : '';
+}
+
+// A stored shortcut of SHORTCUT_OFF = none, even where the default is a chord
+// (Windows: Win+N goes back to Windows' notification panel). '' = the default.
+const SHORTCUT_OFF = 'none';
+
+// The chord the user recorded ('' for the default or off).
+function recordedNewNoteShortcut() {
+  const value = settings.new_note_shortcut || '';
+  return value === SHORTCUT_OFF ? '' : value;
+}
+
+function effectiveNewNoteShortcut() {
+  if (settings.new_note_shortcut === SHORTCUT_OFF) return '';
+  return settings.new_note_shortcut || defaultNewNoteShortcut();
+}
+
 function globalShowShortcut() {
   if (process.platform === 'darwin' && shortcutUsesFn(settings.show_shortcut)) return '';
   return settings.show_shortcut || (process.platform === 'win32' ? '' : DEFAULT_SHOW_SHORTCUT);
@@ -697,6 +719,14 @@ function normalizeShowShortcut(shortcut) {
 function normalizeQuickPasteShortcut(shortcut) {
   const value = String(shortcut || '').trim();
   if (!value || value === defaultQuickPasteShortcut()) return '';
+  return value;
+}
+
+function normalizeNewNoteShortcut(shortcut) {
+  const value = String(shortcut || '').trim();
+  if (!value || value === defaultNewNoteShortcut()) return '';
+  // Off is stored only where the default is a chord (on macOS it IS the default).
+  if (value.toLowerCase() === SHORTCUT_OFF) return defaultNewNoteShortcut() ? SHORTCUT_OFF : '';
   return value;
 }
 
@@ -840,6 +870,12 @@ let history = loadHistory();
 for (const h of history) migrateItemPin(h);
 for (const h of history) ensureItemId(h);
 let conflicts = loadConflicts();
+// Flat tags (14 Oct 2026): ONE pure plan over both files (clipboardModel.planTagState),
+// run first thing in whenReady (a second instance never gets there: no stray copy) and
+// persisted at once, settings then history. No done flag: nothing in the plan is a one-off
+// edit, so a start that dies between the two writes (or an MCP read between them) gets the
+// very same clips from the new settings and the old history.
+let tagMigration = null;
 
 // --- Pin model ---
 // Unified state: item.pin is null/undefined for unpinned items, or an object
@@ -935,7 +971,7 @@ function applyExternalTextEdit({ id, originalText, originalTitle, sourceGroups, 
     originalTitle,
     newText,
     newTitle,
-    sourceGroups,
+    sourceGroups: normalizeTagNames(Array.isArray(sourceGroups) ? sourceGroups : []),
     groupTombstones: settings.group_tombstones,
     supersedes: settings.supersedes,
     now: Date.now(),
@@ -1064,6 +1100,170 @@ function pruneHistory() {
   }
 }
 
+// --- Flat tags ---
+// The cutover (this device's first start of the flat-tags build) keeps a copy of the
+// three files plus an undo record (each changed clip's old tags) in clipboard-RECOVERED/
+// BEFORE anything changes in memory. No copy, no change: the app then runs on the old
+// names until the next start tries again.
+function migrateTagsAtLoad() {
+  let plan;
+  try {
+    plan = clipboardModel.planTagState(history, settings, { aiGroupName: mcpCore.AI_GROUP_NAME });
+  } catch (error) {
+    diagnostics.record('groups.flatten.error', { stage: 'plan', error: error && error.message }, { forceFile: true });
+    return null;
+  }
+  if (!plan.changed) return null;
+  let evidence = '';
+  if (plan.report.cutover && (plan.undo.length || plan.report.retired.length)) {
+    try {
+      evidence = saveFlattenEvidence(plan);
+    } catch (error) {
+      diagnostics.record('groups.flatten.error', { stage: 'evidence', error: error && error.message }, { forceFile: true });
+      return null;
+    }
+  }
+  history.splice(0, history.length, ...plan.history);
+  Object.assign(settings, plan.settings);
+  return { ...plan, evidence };
+}
+
+function saveFlattenEvidence(plan) {
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  // The local data dir, never a provider path.
+  const evidenceDir = path.join(DATA_DIR, 'clipboard-RECOVERED', `flatten-groups-${stamp}`);
+  fs.mkdirSync(evidenceDir, { recursive: true });
+  for (const file of [DB_PATH, SETTINGS_PATH, CONFLICTS_PATH]) {
+    if (fs.existsSync(file)) fs.copyFileSync(file, path.join(evidenceDir, path.basename(file)));
+  }
+  flattenLedgerCache = null;
+  fs.writeFileSync(path.join(evidenceDir, 'undo.json'), JSON.stringify({
+    note: 'Flat-tags cutover: each changed clip with the tags it had before, plus the old tag list and AI share list. Ids do not change, so the old tags can be put back by id.',
+    at: Date.now(),
+    report: plan.report,
+    groups: settings.groups || [],
+    groups_shared_with_ai: settings.groups_shared_with_ai || [],
+    clips: plan.undo,
+  }, null, 2));
+  return evidenceDir;
+}
+
+// whenReady, before any other write.
+function persistTagMigration() {
+  if (!tagMigration) return;
+  saveSettingsFile();
+  writeHistoryStorageFile();
+  const r = tagMigration.report;
+  diagnostics.record('groups.flatten', {
+    cutover: r.cutover, retired: r.retired.length, clips_changed: r.clipsChanged,
+    groups_before: r.groupsBefore, groups_after: r.groupsAfter,
+    shared_before: r.sharedBefore, shared_after: r.sharedAfter,
+    visible_before: r.visibleBefore, visible_after: r.visibleAfter,
+    unshared_to_protect: r.unsharedToProtect.length,
+    copy_path: tagMigration.evidence || '',
+  }, { forceFile: true });
+}
+
+// Every cutover undo ledger this device wrote (normally one; a start that died half way
+// leaves a second), the earliest first: unsplitLiterals reads each clip's first entry.
+let flattenLedgerCache = null;
+function flattenLedger() {
+  if (flattenLedgerCache) return flattenLedgerCache;
+  const entries = [];
+  const recoveredRoot = path.join(DATA_DIR, 'clipboard-RECOVERED');
+  let names = [];
+  try { names = fs.readdirSync(recoveredRoot).filter(n => n.startsWith('flatten-groups-')).sort(); } catch {}
+  for (const name of names) {
+    try {
+      const undo = blobStore.parseJsonText(fs.readFileSync(path.join(recoveredRoot, name, 'undo.json'), 'utf-8'));
+      if (undo && Array.isArray(undo.clips)) entries.push(...undo.clips);
+    } catch {}
+  }
+  flattenLedgerCache = entries;
+  return entries;
+}
+
+// A name another device made with a plain '/' that this device's cutover split goes back
+// on this device's own clips (clipboardModel.unsplitLiterals). Returns the new history,
+// or null when nothing changed.
+function unsplitLiteralTags(list, source) {
+  if (!(Number(settings.groups_flattened_at) > 0) || !(settings.group_literals || []).length) return null;
+  const literalKeys = new Set(clipboardModel.normalizeGroupLiterals(settings.group_literals).map(r => clipSearch.tagKey(r.name)));
+  if (!clipboardModel.normalizeGroupSplits(settings.group_splits).some(r => literalKeys.has(clipSearch.tagKey(r.name)))) return null;
+  const result = clipboardModel.unsplitLiterals(list, flattenLedger(), settings);
+  if (!result.ids.length) return null;
+  diagnostics.record('groups.flatten.unsplit', { source, clips: result.ids.length }, { forceFile: true });
+  return result;
+}
+
+// The tag rule applied to a name list against the current settings (retired names,
+// stored spellings, deleted tags). For every write boundary: typed input, AI tools,
+// new-note tags, unify and fork unions, restored clips.
+function currentTagContext(extraLists = []) {
+  return clipboardModel.tagContext(settings, extraLists);
+}
+function normalizeTagNames(names, ctx = currentTagContext([names])) {
+  return clipboardModel.normalizeTagList((Array.isArray(names) ? names : []).map(String), ctx);
+}
+// Names typed or sent in one go ("todo, forge"), in stored form.
+function tagInputNames(input) {
+  return clipboardModel.tagInputNames(input, settings);
+}
+// Make sure settings.groups lists each tag (one entry per tag); a tag deleted
+// earlier is re-created (its tombstone records the re-create, so sync keeps it).
+function registerTags(names) {
+  if (!settings.groups) settings.groups = [];
+  const listed = new Set(settings.groups.map(clipSearch.tagKey));
+  let changed = false;
+  const now = Date.now();
+  const tombstones = normalizeGroupTombstones(settings.group_tombstones);
+  let restored = false;
+  for (const name of names) {
+    const key = clipSearch.tagKey(name);
+    if (!key) continue;
+    for (const t of tombstones) {
+      if (clipSearch.tagKey(t.name) === key && t.deletedAt > (t.restoredAt || 0)) { t.restoredAt = now; restored = true; }
+    }
+    if (listed.has(key)) continue;
+    listed.add(key);
+    settings.groups.push(name);
+    changed = true;
+  }
+  if (restored) settings.group_tombstones = normalizeGroupTombstones(tombstones);
+  return changed || restored;
+}
+// Tags the user or an AI tool named (typed, picked, sent). A brand-new name with a '/' is
+// a plain tag here: group_literals records it, so a device on its first flat start can
+// never retire it as an old nested name. Never for names that arrive with data (sync,
+// restored clips, unions): an old device's nested name there must stay retirable.
+function registerTypedTags(names) {
+  const listed = new Set((settings.groups || []).map(clipSearch.tagKey));
+  const fresh = names.filter(name => name.includes('/') && !listed.has(clipSearch.tagKey(name)));
+  let literal = false;
+  if (fresh.length) {
+    const before = JSON.stringify(settings.group_literals || []);
+    const at = Date.now();
+    settings.group_literals = clipboardModel.normalizeGroupLiterals([...(settings.group_literals || []), ...fresh.map(name => ({ name, at }))]);
+    literal = JSON.stringify(settings.group_literals) !== before;
+  }
+  return registerTags(names) || literal;
+}
+function itemHasTag(item, name) {
+  const key = clipSearch.tagKey(name);
+  return groupsOf(item).some(g => clipSearch.tagKey(g) === key);
+}
+function setItemTag(item, name, shouldHave) {
+  if (!!shouldHave === itemHasTag(item, name)) return false;
+  const pin = ensurePin(item);
+  const key = clipSearch.tagKey(name);
+  if (shouldHave) pin.groups = [...(pin.groups || []), name];
+  else {
+    pin.groups = (pin.groups || []).filter(g => clipSearch.tagKey(g) !== key);
+    if (!pin.groups.length) delete pin.groups;
+  }
+  return true;
+}
+
 // --- Migration: old settings.numpad_slots -> per-item pin ---
 // Runs once on first launch after upgrading from the Python-era config.
 function migrateNumpad() {
@@ -1098,10 +1298,6 @@ function normalizeSupersedes(list) {
   return clipboardModel.normalizeSupersedes(list);
 }
 
-function groupTombstoneNames(list) {
-  return clipboardModel.groupTombstoneNames(list);
-}
-
 function tombstoneIds(list) {
   return clipboardModel.tombstoneIds(list);
 }
@@ -1129,11 +1325,11 @@ function addSupersede(record) {
   ]);
 }
 
-function addGroupTombstone(name) {
+function addGroupTombstone(name, deletedAt = Date.now()) {
   if (!name) return;
   settings.group_tombstones = normalizeGroupTombstones([
     ...(settings.group_tombstones || []),
-    { name, deletedAt: Date.now() },
+    { name, deletedAt, anyCase: true },
   ]);
 }
 
@@ -1168,11 +1364,20 @@ function mergeItems(localItem, remoteItem) {
 // each event+clip is logged at most once an hour.
 const forensicsLastLogged = new Map();
 const FORENSICS_REPEAT_MS = 60 * 60 * 1000;
+// Ids of LOCAL clips the last merge put in stored tag form (a tag deleted on another
+// device, a spelling twin arriving): applyRemoteEnvelope counts them as touched.
+let lastMergeNormalisedIds = new Set();
 function mergeHistories(local, remote) {
   const report = [];
   const merged = clipboardModel.mergeHistories(local, remote, settings, report);
   const now = Date.now();
+  lastMergeNormalisedIds = new Set(report.filter(e => e.event === 'normalised').map(e => e.id));
+  // A tag deleted or respelled elsewhere is routine; a retired nested name still on a local
+  // clip is not (it should have gone at the cutover).
+  const stragglers = report.filter(e => e.event === 'normalised' && e.split).length;
+  if (stragglers) diagnostics.record('groups.flatten.straggler', { source: 'merge', local_clips: stragglers }, { forceFile: true });
   for (const entry of report) {
+    if (entry.event === 'normalised') continue;
     const key = `${entry.event}:${entry.reason || ''}:${entry.id}`;
     if (now - (forensicsLastLogged.get(key) || 0) < FORENSICS_REPEAT_MS) continue;
     forensicsLastLogged.set(key, now);
@@ -1196,7 +1401,7 @@ function mergeHistories(local, remote) {
 }
 
 function mergeGroups(local, remote) {
-  return clipboardModel.mergeGroups(local, remote, settings.group_tombstones);
+  return clipboardModel.mergeGroups(local, remote, settings.group_tombstones, currentTagContext([local || [], remote || []]));
 }
 
 // Settings the save-settings IPC may write without touching history or sync
@@ -1217,6 +1422,7 @@ function remoteSettingsPayload() {
   delete remoteSave.sync_disabled_paths;
   delete remoteSave.show_shortcut;
   delete remoteSave.quick_paste_shortcut;
+  delete remoteSave.new_note_shortcut;
   delete remoteSave.quick_paste_restore;
   delete remoteSave.capture_rich;
   delete remoteSave.quick_paste_restore_delay_ms;
@@ -1241,8 +1447,12 @@ function remoteSettingsPayload() {
   delete remoteSave.facet_joins;
   delete remoteSave.find_regex;
   delete remoteSave.find_case;
-  // AI Access: per-machine, never synced. (groups_shared_with_ai DOES sync - it
-  // is user curation that should travel between machines.)
+  // When this device cut over to flat tags: per device.
+  delete remoteSave.groups_flattened_at;
+  // The AI share list itself is per device (switch flips travel as ai_share_stamps).
+  delete remoteSave.groups_shared_with_ai;
+  // AI Access: per-machine, never synced. The AI share switches sync per tag through
+  // ai_share_stamps (newest flip wins); the list itself is each device's own.
   delete remoteSave.mcp_secret;
   delete remoteSave.ai_access_enabled;
   delete remoteSave.ai_always_allow;
@@ -1266,6 +1476,40 @@ function mergeSyncedSettings(remoteSettings) {
     ...(settings.supersedes || []),
     ...(remoteSettings.supersedes || []),
   ]);
+  // Retired nested tag names and plain '/' names (both permanent, every device agrees on
+  // the earliest record).
+  const splitsBefore = clipboardModel.splitMapOf(settings);
+  const literalsBefore = (settings.group_literals || []).length;
+  settings.group_splits = clipboardModel.normalizeGroupSplits([
+    ...(settings.group_splits || []),
+    ...(remoteSettings.group_splits || []),
+  ]);
+  settings.group_literals = clipboardModel.normalizeGroupLiterals([
+    ...(settings.group_literals || []),
+    ...(remoteSettings.group_literals || []),
+  ]);
+  if (settings.group_literals.length !== literalsBefore) unsplitPending = true;
+  // A split new here (another device's late cutover) follows the cutover's share rule.
+  const newSplits = [...clipboardModel.splitMapOf(settings)].filter(([key]) => !splitsBefore.has(key)).map(([name, parts]) => ({ name, parts }));
+  if (newSplits.length) {
+    const held = [...(settings.groups || []), ...history.flatMap(h => groupsOf(h))];
+    const result = clipboardModel.shareListAfterNewSplits(settings.groups_shared_with_ai, newSplits, held);
+    if (result.unshared.length) {
+      settings.groups_shared_with_ai = result.shared;
+      diagnostics.record('groups.flatten.late_split', { splits: newSplits.length, unshared: result.unshared.length }, { forceFile: true });
+      notifyAiAccessChangedSoon();
+    }
+  }
+  // AI share switches: a newer flip on another device applies here.
+  const stamps = clipboardModel.mergeShareStamps(settings.ai_share_stamps, remoteSettings.ai_share_stamps);
+  if (JSON.stringify(stamps) !== JSON.stringify(clipboardModel.normalizeShareStamps(settings.ai_share_stamps))) {
+    settings.ai_share_stamps = stamps;
+    const shared = clipboardModel.applyShareStamps(settings.groups_shared_with_ai, stamps, currentTagContext().spellings);
+    if (shared !== settings.groups_shared_with_ai) {
+      settings.groups_shared_with_ai = shared;
+      notifyAiAccessChangedSoon();
+    }
+  }
   const secrets = [settings.p2p_secret, remoteSettings.p2p_secret].filter(Boolean).sort();
   if (secrets.length) settings.p2p_secret = secrets[0];
   if (remoteSettings.p2p_enabled !== undefined && settings.p2p_enabled === undefined) {
@@ -1345,13 +1589,32 @@ function captureTitleConflicts(localHistory, remoteHistory, source) {
   }
 }
 
+// Set when a plain '/' name arrives (mergeSyncedSettings): the next fold puts it back on
+// the clips this device's cutover split, before that fold's merge.
+let unsplitPending = false;
 function foldRemoteState(canonicalHistory, remoteHistory, remoteSettings, remoteConflicts) {
   mergeSyncedSettings(remoteSettings);
   mergeSyncedConflicts(remoteConflicts);
+  let unsplitIds = [];
+  if (unsplitPending) {
+    unsplitPending = false;
+    const result = unsplitLiteralTags(canonicalHistory, 'sync');
+    if (result) { canonicalHistory = result.history; unsplitIds = result.ids; }
+  }
   captureTitleConflicts(canonicalHistory, remoteHistory, 'sync');
   const historyGroups = canonicalHistory.flatMap(h => groupsOf(h));
-  settings.groups = mergeGroups(settings.groups, [...(remoteSettings && remoteSettings.groups || []), ...historyGroups]);
-  return mergeHistories(canonicalHistory, remoteHistory);
+  const remoteGroups = Array.isArray(remoteHistory) ? remoteHistory.flatMap(h => groupsOf(h || {})) : [];
+  const listed = [...(remoteSettings && remoteSettings.groups || []), ...historyGroups];
+  const ctx = currentTagContext([settings.groups || [], listed, remoteGroups]);
+  settings.groups = clipboardModel.mergeGroups(settings.groups, listed, settings.group_tombstones, ctx);
+  if (Array.isArray(settings.groups_shared_with_ai)) {
+    const shared = clipSearch.expandTagNames(settings.groups_shared_with_ai, null, ctx.spellings);
+    if (shared !== settings.groups_shared_with_ai) settings.groups_shared_with_ai = shared;
+  }
+  const merged = mergeHistories(canonicalHistory, remoteHistory);
+  for (const id of unsplitIds) lastMergeNormalisedIds.add(id);
+  if ((settings.group_literals || []).length) settings.groups = clipboardModel.pruneLiteralParts(settings.groups, settings, merged.flatMap(h => groupsOf(h)));
+  return merged;
 }
 
 // ---- Sync change feed (lib/sync-delta): one revision counter + per-entry
@@ -2718,7 +2981,9 @@ async function applyRemoteEnvelope(envelope, { peer = null, reason, source, tran
   const previousConflictsJson = JSON.stringify(conflictModel.normalizeConflictState(conflicts));
   const before = history.slice();
   const canonicalHistory = foldRemoteState(history.slice(), remoteHistory, remoteSettings, conflictModel.normalizeConflictState(remoteConflicts));
-  const localChanged = syncDelta.historyChangedBy(before, canonicalHistory, syncDelta.touchedIds(envelope));
+  const touched = syncDelta.touchedIds(envelope);
+  for (const id of lastMergeNormalisedIds) touched.add(id);
+  const localChanged = syncDelta.historyChangedBy(before, canonicalHistory, touched);
   const { settingsChanged, conflictsChanged } = commitRemoteFold(canonicalHistory, { localChanged, previousSettingsJson, previousConflictsJson, notifyPeers });
   const peerName = peer ? (peer.deviceName || peer.deviceId) : (envelope.deviceName || envelope.deviceId);
   if (localChanged || settingsChanged || conflictsChanged) {
@@ -3663,6 +3928,12 @@ function historyEntryDiagnostics(entry) {
 function addToHistory(entry, matchFn) {
   const startedAt = Date.now();
   ensureItemId(entry);
+  // The same clip is the same id (ids hash the content). A long clip kept as a text
+  // blob holds only a preview in item.text, so a text compare alone missed it and
+  // added a second entry with the SAME id.
+  const entryKey = itemKey(entry);
+  const callerMatch = matchFn;
+  matchFn = (it) => !!it && (itemKey(it) === entryKey || callerMatch(it));
   const beforeTombstones = normalizeTombstones(settings.tombstones);
   settings.tombstones = beforeTombstones.filter(t => t.id !== itemKey(entry));
   const tombstoneRemoved = settings.tombstones.length !== beforeTombstones.length;
@@ -5520,9 +5791,10 @@ function createEditorWindow(session, presentOptions = {}) {
 }
 
 function sourceGroupsForNewNote(options) {
-  return [...new Set((Array.isArray(options && options.sourceGroups) ? options.sourceGroups : [])
-    .map(group => String(group || '').split('/').map(part => part.trim()).filter(Boolean).join('/'))
-    .filter(group => group && !group.startsWith('__')))];
+  const names = (Array.isArray(options && options.sourceGroups) ? options.sourceGroups : [])
+    .map(group => clipSearch.cleanTagName(group))
+    .filter(group => group && !group.startsWith('__'));
+  return normalizeTagNames(names);
 }
 
 // Open the editor for clip `id`, or a blank new-note editor when id is null.
@@ -5607,9 +5879,7 @@ function openEditor(id, options = {}) {
     originalId = itemKey(item);
   } else {
     sourceGroups = sourceGroupsForNewNote(options);
-    for (const group of sourceGroups) {
-      if (!settings.groups || !settings.groups.includes(group)) applyGroupCreate(group);
-    }
+    if (registerTags(sourceGroups)) saveSettingsFile();
   }
   const baseHash = clipboardModel.textHashForText(baseText);
   editSessionSeq += 1;
@@ -5794,8 +6064,7 @@ function foldForkInto(fork, note) {
   const forkId = itemKey(fork);
   const noteId = itemKey(note);
   const forkSlot = numpadSlotOf(fork);
-  const noteGroups = groupsOf(note);
-  const newGroups = groupsOf(fork).filter(group => !noteGroups.includes(group));
+  const newGroups = normalizeTagNames(groupsOf(fork)).filter(group => !itemHasTag(note, group));
   if (newGroups.length) {
     const pin = ensurePin(note);
     pin.groups = [...(pin.groups || []), ...newGroups];
@@ -6062,13 +6331,10 @@ function applyUnify(session) {
     const item = history.find(it => it.type !== 'image' && it.text === mergedText);
     if (item) {
       if (mergedTitle) clipboardModel.setTitleMetadata(item, mergedTitle);
-      for (const group of session.unionGroups) {
-        if (!settings.groups || !settings.groups.includes(group)) applyGroupCreate(group);
-        const pin = ensurePin(item);
-        if (!pin.groups) pin.groups = [];
-        if (!pin.groups.includes(group)) pin.groups.push(group);
-      }
-      if (session.unionGroups.length) touchPinGroups(item);
+      const unionGroups = normalizeTagNames(session.unionGroups);
+      if (registerTags(unionGroups)) saveSettingsFile();
+      for (const group of unionGroups) setItemTag(item, group, true);
+      if (unionGroups.length) touchPinGroups(item);
       if (session.pinned && !item.pin) item.pin = {};
       saveHistory();
       if (session.numberSlot != null) applyNumpadAssign(itemKey(item), session.numberSlot, clipboardModel.clipRevision(item));
@@ -6147,9 +6413,11 @@ const historyFeedSenders = new Set();
 function historyForRenderer() {
   return history.map(item => ({ ...item, rev: clipboardModel.clipRevision(item) }));
 }
+// What an MCP change says about its clip: the id and rev an AI holds for it (the
+// lib/mcp-core boundary: a real id only for a clip it can read, a keyed rev).
 function mcpMutationResult(id, ok) {
   const item = findHistoryItem(id);
-  return { ok: !!ok, id, rev: item ? clipboardModel.clipRevision(item) : null };
+  return { ok: !!ok, id: item ? mcpCore.publicId(item, settings) : null, rev: item ? mcpCore.publicRev(item, settings) : null };
 }
 
 // ---- Reusable mutation primitives (shared by IPC + MCP) ----
@@ -6187,56 +6455,127 @@ function applyNumpadAssign(id, slot, rev) {
   return true;
 }
 
-function applyGroupCreate(name) {
-  if (!name) return false;
-  if (!settings.groups) settings.groups = [];
-  settings.group_tombstones = normalizeGroupTombstones(settings.group_tombstones)
-    .filter(t => t.name !== name);
-  if (!settings.groups.includes(name)) settings.groups.push(name);
+// Create tags from typed input ("todo, forge" = two). A name matching an existing tag
+// in any case reuses it. Returns the tag names, or false for nothing to create.
+function applyGroupCreate(input) {
+  const names = tagInputNames(input);
+  if (!names.length) return false;
+  registerTypedTags(names);
   saveSettingsFile();
-  return true;
+  return names;
 }
 
+// A deleted tag is shared with no one, so re-creating it later starts private on every
+// device: the unshare travels as a share stamp, but only once the Undo window has passed
+// (an Undo must not share or unshare anything on another device).
+const GROUP_DELETE_UNDO_MS = 15000;
+const pendingDeleteStamps = new Map();
+function commitDeleteStamp(key) {
+  const pending = pendingDeleteStamps.get(key);
+  if (!pending) return false;
+  clearTimeout(pending.timer);
+  pendingDeleteStamps.delete(key);
+  if ((settings.groups || []).some(g => clipSearch.tagKey(g) === key)) return false;
+  stampShareSwitch(pending.name, false, pending.at);
+  return true;
+}
+function stampDeletedTagUnshared(name, at) {
+  const key = clipSearch.tagKey(name);
+  cancelDeleteStamp(key);
+  const timer = setTimeout(() => { if (commitDeleteStamp(key)) saveSettingsFile(); }, GROUP_DELETE_UNDO_MS);
+  if (timer.unref) timer.unref();
+  pendingDeleteStamps.set(key, { timer, name, at });
+}
+function cancelDeleteStamp(key) {
+  const pending = pendingDeleteStamps.get(key);
+  if (pending) clearTimeout(pending.timer);
+  pendingDeleteStamps.delete(key);
+}
+// Quitting inside an Undo window: the delete stands, so its unshare goes out now.
+function flushDeleteStamps() {
+  let changed = false;
+  for (const key of [...pendingDeleteStamps.keys()]) if (commitDeleteStamp(key)) changed = true;
+  if (changed) saveSettingsFile();
+}
+
+// Delete ONE tag by its name (any case; never split: this is destructive). Only the
+// clips that had it are touched. The AI tag cannot be deleted. Returns what an Undo needs
+// (applyGroupRestore).
 function applyGroupDelete(name) {
+  const key = clipSearch.tagKey(name);
   const groups = settings.groups || [];
-  const idx = groups.indexOf(name);
-  if (idx < 0) return false;
-  addGroupTombstone(name);
-  groups.splice(idx, 1);
+  const idx = groups.findIndex(g => clipSearch.tagKey(g) === key);
+  if (!key || idx < 0 || clipSearch.sameTag(name, mcpCore.AI_GROUP_NAME)) return false;
+  const stored = groups[idx];
   const now = Date.now();
+  addGroupTombstone(stored, now);
+  groups.splice(idx, 1);
+  const ids = [];
   for (const h of history) {
-    if (h.pin && h.pin.groups) {
-      h.pin.groups = h.pin.groups.filter(g => g !== name);
-      if (h.pin.groups.length === 0) delete h.pin.groups;
-      touchPinGroups(h, now);
-    }
+    if (!setItemTag(h, stored, false)) continue;
+    touchPinGroups(h, now);
+    ids.push(itemKey(h));
   }
-  // Keep the AI-share allowlist consistent when a group is removed.
-  if (Array.isArray(settings.groups_shared_with_ai)) {
-    settings.groups_shared_with_ai = settings.groups_shared_with_ai.filter(g => g !== name);
+  const shared = Array.isArray(settings.groups_shared_with_ai) && settings.groups_shared_with_ai.some(g => clipSearch.tagKey(g) === key);
+  if (shared) {
+    settings.groups_shared_with_ai = settings.groups_shared_with_ai.filter(g => clipSearch.tagKey(g) !== key);
+    stampDeletedTagUnshared(stored, now);
   }
   saveSettingsFile();
   saveHistory();
+  if (shared) notifyAiAccessChanged();
+  return { ok: true, name: stored, ids, shared, index: idx };
+}
+
+// Undo of a tag delete: the tag back where it was in the list (a re-create, which beats
+// the delete in sync), on the clips that had it, and shared with AI here again if it was.
+function applyGroupRestore(payload) {
+  const typed = clipSearch.cleanTagName(payload && payload.name);
+  if (!typed) return false;
+  const key = clipSearch.tagKey(typed);
+  const name = currentTagContext([[typed]]).spellings.get(key) || typed;
+  cancelDeleteStamp(key);
+  if (registerTags([name]) && Number.isInteger(payload.index) && payload.index >= 0) {
+    const groups = settings.groups;
+    const at = groups.findIndex(g => clipSearch.tagKey(g) === key);
+    const index = Math.min(payload.index, groups.length - 1);
+    if (at > index) groups.splice(index, 0, ...groups.splice(at, 1));
+  }
+  const ids = new Set(Array.isArray(payload.ids) ? payload.ids.map(String) : []);
+  const now = Date.now();
+  let changed = false;
+  for (const h of history) {
+    if (!ids.has(itemKey(h)) || !setItemTag(h, name, true)) continue;
+    touchPinGroups(h, now);
+    changed = true;
+  }
+  if (payload.shared) {
+    if (!Array.isArray(settings.groups_shared_with_ai)) settings.groups_shared_with_ai = [];
+    if (!settings.groups_shared_with_ai.some(g => clipSearch.tagKey(g) === key)) settings.groups_shared_with_ai.push(name);
+  }
+  saveSettingsFile();
+  if (changed) saveHistory();
+  if (payload.shared) notifyAiAccessChanged();
   return true;
 }
 
-// Toggle membership in a group. Multi-group: an item can belong to many.
+// The tag toggle (a row's picker, an AI tool's assign_group). Several tags at once
+// ("todo, forge", or a retired name like todo/forge) are ONE decision: the missing ones
+// are added; if the clip already has them all, they are all removed.
+function planTagToggle(item, input) {
+  return clipSearch.tagTogglePlan(groupsOf(item), tagInputNames(input));
+}
+
 function applyGroupAssign(id, group, rev) {
-  if (!group) return false;
   const item = assertClipRevision(id, rev);
-  if (!settings.groups || !settings.groups.includes(group)) applyGroupCreate(group);
-  const pin = ensurePin(item);
-  if (!pin.groups) pin.groups = [];
-  const gIdx = pin.groups.indexOf(group);
-  if (gIdx >= 0) {
-    pin.groups.splice(gIdx, 1);
-    if (pin.groups.length === 0) delete pin.groups;
-  } else {
-    pin.groups.push(group);
-  }
+  const plan = planTagToggle(item, group);
+  if (!plan.add.length && !plan.remove.length) return false;
+  if (registerTypedTags(plan.add)) saveSettingsFile();
+  for (const name of plan.add) setItemTag(item, name, true);
+  for (const name of plan.remove) setItemTag(item, name, false);
   touchPinGroups(item);
   saveHistory();
-  return true;
+  return { ok: true, added: plan.add, removed: plan.remove };
 }
 
 function applyDeleteItem(id, rev) {
@@ -6279,13 +6618,19 @@ function applyDeleteItems(targets) {
 // tombstone so a later sync can't resurrect the deletion.
 function applyRestoreItems(snapshots) {
   let changed = false;
+  const ctx = currentTagContext((Array.isArray(snapshots) ? snapshots : []).map(snap => groupsOf(snap || {})));
   for (const snap of (Array.isArray(snapshots) ? snapshots : [])) {
     if (!snap) continue;
-    const restored = cloneHistoryItem(snap);
+    const restored = clipboardModel.normalizeItemTags(cloneHistoryItem(snap), ctx);
+    if (registerTags(groupsOf(restored))) changed = true;
     ensureItemId(restored);
     const id = itemKey(restored);
     if (findHistoryIndex(id) >= 0) continue;
     settings.tombstones = normalizeTombstones(settings.tombstones).filter(t => t.id !== id);
+    // The delete may already be on a peer or a provider and comes back with their
+    // tombstones: a clock newer than the delete (its time-of-capture clock, so the clip
+    // keeps its place) makes this copy beat it there too, as a re-copy does.
+    restored.tsUpdatedAt = Date.now();
     history.push(restored);
     changed = true;
   }
@@ -6303,27 +6648,22 @@ function applyRestoreItems(snapshots) {
 // Explicit (non-toggle) group membership, mirroring applyGroupAssign's pin
 // bookkeeping. Returns true if it changed the item.
 function setItemGroupMembership(item, group, shouldHave) {
-  const pin = ensurePin(item);
-  if (!pin.groups) pin.groups = [];
-  const idx = pin.groups.indexOf(group);
-  const has = idx >= 0;
-  if (!!shouldHave === has) return false;
-  if (shouldHave) pin.groups.push(group);
-  else { pin.groups.splice(idx, 1); if (pin.groups.length === 0) delete pin.groups; }
+  if (!setItemTag(item, group, shouldHave)) return false;
   touchPinGroups(item);
   return true;
 }
 
-// Bulk add/remove a group across many clips in one save (smart tri-state toggle
-// decided in the shared controller). Reuses the single-item group bookkeeping.
+// Bulk add/remove tags across many clips in one save (smart tri-state toggle
+// decided in the shared controller). "todo, forge" adds or removes both.
 function applyGroupAssignMany(targets, group, shouldHave) {
-  if (!group) return false;
-  // targets: [{ id, rev }]. All-or-nothing: checked before the group is even created.
+  const names = tagInputNames(group);
+  if (!names.length) return false;
+  // targets: [{ id, rev }]. All-or-nothing: checked before any tag is even created.
   const resolved = assertClipRevisions(targets);
-  if (!settings.groups || !settings.groups.includes(group)) applyGroupCreate(group);
+  if (shouldHave && registerTypedTags(names)) saveSettingsFile();
   let changed = false;
   for (const { item } of resolved) {
-    if (setItemGroupMembership(item, group, !!shouldHave)) changed = true;
+    for (const name of names) if (setItemGroupMembership(item, name, !!shouldHave)) changed = true;
   }
   if (changed) saveHistory();
   return changed;
@@ -6342,17 +6682,15 @@ function applyAddText(text, group) {
   const value = String(text || '');
   if (!value) return false;
   addToHistory({ type: 'text', text: value, ts: Date.now() / 1000 }, it => it.type !== 'image' && it.text === value);
-  if (group) {
-    const item = history.find(it => it.type !== 'image' && it.text === value);
+  const names = group ? tagInputNames(group) : [];
+  if (names.length) {
+    const key = itemKey({ type: 'text', text: value });
+    const item = history.find(it => it.type !== 'image' && itemKey(it) === key);
     if (item) {
-      if (!settings.groups || !settings.groups.includes(group)) applyGroupCreate(group);
-      const pin = ensurePin(item);
-      if (!pin.groups) pin.groups = [];
-      if (!pin.groups.includes(group)) {
-        pin.groups.push(group);
-        touchPinGroups(item);
-        saveHistory();
-      }
+      if (registerTypedTags(names)) saveSettingsFile();
+      let changed = false;
+      for (const name of names) if (setItemTag(item, name, true)) changed = true;
+      if (changed) { touchPinGroups(item); saveHistory(); }
     }
   }
   return true;
@@ -6446,28 +6784,44 @@ function mcpUnregisterAll() {
 
 // ---- Allowlist / AI group ----
 function ensureAiGroupShared() {
-  let changed = false;
-  if (!settings.groups) settings.groups = [];
-  if (!settings.groups.includes(mcpCore.AI_GROUP_NAME)) {
-    applyGroupCreate(mcpCore.AI_GROUP_NAME);
-  }
+  let changed = registerTags([mcpCore.AI_GROUP_NAME]);
   if (!Array.isArray(settings.groups_shared_with_ai)) settings.groups_shared_with_ai = [];
-  if (!settings.groups_shared_with_ai.includes(mcpCore.AI_GROUP_NAME)) {
+  if (!settings.groups_shared_with_ai.some(g => clipSearch.sameTag(g, mcpCore.AI_GROUP_NAME))) {
     settings.groups_shared_with_ai.push(mcpCore.AI_GROUP_NAME);
     changed = true;
   }
   if (changed) saveSettingsFile();
 }
 
-function setGroupSharedWithAi(name, shared) {
-  if (!name) return;
+// One flip of a tag's AI share switch: the list here, plus a stamp that carries the
+// flip to the other devices (newest flip per tag wins there).
+function stampShareSwitch(name, shared, at = Date.now()) {
+  const key = clipSearch.tagKey(name);
+  if (!key) return false;
   if (!Array.isArray(settings.groups_shared_with_ai)) settings.groups_shared_with_ai = [];
-  const has = settings.groups_shared_with_ai.includes(name);
-  if (shared && !has) settings.groups_shared_with_ai.push(name);
-  else if (!shared && has) settings.groups_shared_with_ai = settings.groups_shared_with_ai.filter(g => g !== name);
-  else return;
+  const has = settings.groups_shared_with_ai.some(g => clipSearch.tagKey(g) === key);
+  if (shared && !has) settings.groups_shared_with_ai.push(clipSearch.cleanTagName(name));
+  else if (!shared && has) settings.groups_shared_with_ai = settings.groups_shared_with_ai.filter(g => clipSearch.tagKey(g) !== key);
+  settings.ai_share_stamps = clipboardModel.mergeShareStamps(settings.ai_share_stamps, { [key]: { name: clipSearch.cleanTagName(name), shared: !!shared, at } });
+  return shared !== has;
+}
+
+// A share switch takes one existing tag, never typed input: splitting "a, b" here
+// would share two tags at once.
+function setGroupSharedWithAi(name, shared) {
+  const key = clipSearch.tagKey(name);
+  const stored = (settings.groups || []).find(g => clipSearch.tagKey(g) === key) || (clipSearch.sameTag(name, mcpCore.AI_GROUP_NAME) ? mcpCore.AI_GROUP_NAME : '');
+  if (!stored) return;
+  stampShareSwitch(stored, shared);
   saveSettingsFile();
   notifyAiAccessChanged();
+}
+
+let aiAccessNotifyTimer = null;
+function notifyAiAccessChangedSoon() {
+  if (aiAccessNotifyTimer) return;
+  aiAccessNotifyTimer = setTimeout(() => { aiAccessNotifyTimer = null; notifyAiAccessChanged(); }, 50);
+  if (aiAccessNotifyTimer.unref) aiAccessNotifyTimer.unref();
 }
 
 function isItemSharedWithAi(item) {
@@ -6601,6 +6955,36 @@ function requestApproval(request, { signal } = {}) {
   });
 }
 
+// ---- AI tag tools: the planned change, read by both the gate and the prompt ----
+// The clip an add_clip lands on when its text is already in history: the add moves
+// that clip to the top and tags it (applyAddText), it makes no second one.
+function mcpAddTarget(text) {
+  const value = String(text || '');
+  if (!value) return null;
+  return history.find(it => it.type !== 'image' && it.text === value)
+    || findHistoryItem(clipboardModel.itemKey({ type: 'text', text: value }));
+}
+// What an AI tag change does to a clip: assign_group's toggle (planTagToggle) or
+// add_clip's tags (added only). `after` = the clip's tags once it ran.
+function plannedTagChange(item, tool, input) {
+  const before = groupsOf(item);
+  if (tool === 'add_clip') {
+    const add = input ? tagInputNames(input).filter(name => !itemHasTag(item, name)) : [];
+    return { add, remove: [], after: [...before, ...add] };
+  }
+  const plan = planTagToggle(item, input);
+  const after = plan.add.length ? [...before, ...plan.add] : before.filter(g => !plan.remove.some(name => clipSearch.sameTag(name, g)));
+  return { ...plan, after };
+}
+// Would a clip with these tags be readable by AI?
+function tagsVisibleToAi(names) {
+  return mcpCore.isShared({ pin: { groups: names } }, mcpCore.sharedGroupSet(settings));
+}
+// The tag a name refers to (any case), as delete_group and the prompt see it.
+function existingTag(name) {
+  return (settings.groups || []).find(g => clipSearch.sameTag(g, name)) || null;
+}
+
 function buildApprovalRequest(tool, args, targetItem, client) {
   const dangerTools = new Set(['delete_clip', 'edit_clip', 'copy_to_clipboard', 'paste_clip']);
   // The prompt must say, in plain words, WHAT will happen, to WHICH clip, what
@@ -6614,7 +6998,41 @@ function buildApprovalRequest(tool, args, targetItem, client) {
   const shared = item ? isItemSharedWithAi(item) : false;
   const quote = s => `\u201c${String(s || '').replace(/\s+/g, ' ').trim().slice(0, 60)}\u201d`;
   const clipLabel = item ? (titleOf(item) ? quote(titleOf(item)) : (item.type === 'image' ? 'an image clip' : quote(String(item.text || '').split(/\r?\n/).find(l => l.trim()) || ''))) : '';
+  // Group names in a sentence: “a”, “b” and “c”.
+  const nameList = names => {
+    const q = names.map(quote);
+    return q.length < 2 ? (q[0] || '') : `${q.slice(0, -1).join(', ')} and ${q[q.length - 1]}`;
+  };
+  const tagWord = names => (names.length === 1 ? 'group' : 'groups');
+  const tagsText = names => (names.length ? names.join(', ') : 'none');
+  // A retired nested name in the input says what it now means.
+  const splits = clipboardModel.splitMapOf(settings);
+  const retiredNote = input => clipSearch.splitTagInput(input)
+    .filter(name => !existingTag(name) && splits.has(clipSearch.tagKey(name)))
+    .map(name => {
+      const parts = splits.get(clipSearch.tagKey(name));
+      return `${quote(name)} is an old nested name for the ${tagWord(parts)} ${nameList(parts)}.`;
+    })
+    .join(' ');
+  // What the change does to what AI assistants can read.
+  const sharedSet = mcpCore.sharedGroupSet(settings);
+  const sharingNote = (before, after) => {
+    const was = tagsVisibleToAi(before);
+    const will = tagsVisibleToAi(after);
+    if (!was && will) {
+      const via = after.filter(g => sharedSet.has(g));
+      return `AI assistants will then be able to read this clip, because ${nameList(via)} ${via.length === 1 ? 'is' : 'are'} shared with AI.`;
+    }
+    if (was && !will) return 'AI assistants will then no longer be able to read this clip: none of its groups will be shared with AI.';
+    return '';
+  };
+  const sentences = (...parts) => parts.filter(Boolean).join(' ');
   const facts = [];
+  // The Groups fact shows the change: before -> after.
+  const tagFact = (before, after) => {
+    const row = facts.find(f => f[0] === 'Groups');
+    if (row) row[1] = `${tagsText(before)} \u2192 ${tagsText(after)}`;
+  };
   let preview = null;
   if (item) {
     textBlobStore.hydrateTextItem(item, TEXT_DIR);
@@ -6622,25 +7040,37 @@ function buildApprovalRequest(tool, args, targetItem, client) {
     const lines = text ? text.split(/\r?\n/).length : 0;
     facts.push(['Clip', item.type === 'image' ? `image ${item.width || '?'}x${item.height || '?'}` : `${text.length} chars, ${lines} line${lines === 1 ? '' : 's'}`]);
     if (item.ts) facts.push(['Captured', new Date(item.ts * 1000).toLocaleString()]);
-    facts.push(['Groups', groups.length ? groups.join(', ') : 'none']);
+    facts.push(['Groups', tagsText(groups)]);
     if (item.pin && typeof item.pin.number === 'number') facts.push(['Numpad', `slot ${item.pin.number}`]);
     if (item.type !== 'image') preview = { label: 'Clip text', text };
   }
   let title = '';
   let explain = '';
   let why = '';
-  const gatedWhy = 'This action always asks, whatever group the clip is in.';
+  const gatedWhy = 'This action always asks, whatever groups the clip is in.';
+  const privateWhy = 'Asking because this clip is in no group shared with AI.';
   const sharedWhy = shared
     ? 'The clip is in a group shared with AI; asking because you have not allowed this action for the session.'
-    : 'Asking because this clip is not in a group shared with AI.';
+    : privateWhy;
   switch (tool) {
     case 'assign_group': {
-      const name = String(a.group || '');
-      const has = groups.includes(name);
-      title = has ? `Remove clip from group ${quote(name)}` : `Add clip to group ${quote(name)}`;
-      explain = has
-        ? `The clip ${clipLabel} will be taken out of the group ${quote(name)}. Its text is not changed and nothing is deleted.`
-        : `The clip ${clipLabel} will be tagged with the group ${quote(name)}${groups.length ? ` (it is already in ${groups.join(', ')})` : ' (it currently has no group)'}. Its text is not changed and nothing is deleted.`;
+      // main's own toggle rule (planTagToggle): the named tags it lacks are
+      // added; if it has them all, they are all removed.
+      const plan = item ? plannedTagChange(item, tool, a.group) : { add: [], remove: [], after: groups };
+      const already = plan.add.length ? tagInputNames(a.group).filter(name => itemHasTag(item, name)) : [];
+      const unchanged = 'Its text is not changed and nothing is deleted.';
+      if (plan.add.length) {
+        title = `Add clip to ${tagWord(plan.add)} ${nameList(plan.add)}${already.length ? ` (it is already in ${nameList(already)})` : ''}`;
+        explain = sentences(`The clip ${clipLabel} will be added to ${tagWord(plan.add)} ${nameList(plan.add)}.`, unchanged);
+      } else if (plan.remove.length) {
+        title = `Remove clip from ${tagWord(plan.remove)} ${nameList(plan.remove)}`;
+        explain = sentences(`The clip ${clipLabel} will leave the ${tagWord(plan.remove)} ${nameList(plan.remove)}.`, unchanged);
+      } else {
+        title = "Change a clip's groups";
+        explain = 'No group was named, so nothing will change.';
+      }
+      explain = sentences(explain, retiredNote(a.group), sharingNote(groups, plan.after));
+      tagFact(groups, plan.after);
       why = sharedWhy;
       break;
     }
@@ -6679,22 +7109,62 @@ function buildApprovalRequest(tool, args, targetItem, client) {
       why = gatedWhy;
       break;
     }
-    case 'add_clip':
-      title = 'Add a new clip';
-      explain = `A new clip of ${String(a.text || '').length} characters will be added to your history${a.group ? ` in the group ${quote(a.group)}` : ''}. Nothing existing is changed.`;
-      why = 'Asking because you have not allowed clip creation for the session.';
-      preview = { label: 'New clip text', text: String(a.text || '') };
+    case 'add_clip': {
+      const sessionWhy = 'Asking because you have not allowed clip creation for the session.';
+      if (item) {
+        // The text is already a clip: the add moves and tags that clip.
+        const plan = plannedTagChange(item, tool, a.group);
+        title = plan.add.length ? `Add an existing clip to ${tagWord(plan.add)} ${nameList(plan.add)}` : 'Move an existing clip to the top';
+        explain = sentences(
+          `This text is already in your history as the clip ${clipLabel}, so no new clip is made: that clip moves to the top${plan.add.length ? ` and is added to ${tagWord(plan.add)} ${nameList(plan.add)}` : ''}.`,
+          retiredNote(a.group),
+          sharingNote(groups, plan.after),
+        );
+        tagFact(groups, plan.after);
+        if (!tagsVisibleToAi(groups) && tagsVisibleToAi(plan.after)) why = 'Asking because this would let the AI read a clip it cannot read now.';
+        else if (!shared) why = 'Asking because this text is already a clip the AI cannot read.';
+        else why = sessionWhy;
+      } else {
+        const names = a.group ? tagInputNames(a.group) : [];
+        title = 'Add a new clip';
+        explain = sentences(`A new clip of ${String(a.text || '').length} characters will be added to your history${names.length ? `, in the ${tagWord(names)} ${nameList(names)}` : ''}. Nothing existing is changed.`, retiredNote(a.group));
+        why = sessionWhy;
+        preview = { label: 'New clip text', text: String(a.text || '') };
+      }
       break;
-    case 'create_group':
-      title = `Create group ${quote(a.name)}`;
-      explain = `A new, empty group named ${quote(a.name)} will appear in your filters.`;
-      why = 'Asking because you have not allowed group changes for the session.';
+    }
+    case 'create_group': {
+      const names = tagInputNames(a.name);
+      const fresh = names.filter(name => !existingTag(name));
+      const have = names.filter(name => existingTag(name));
+      title = names.length ? `Create ${tagWord(names)} ${nameList(names)}` : 'Create a group';
+      explain = sentences(
+        fresh.length ? `${fresh.length === 1 ? 'A new, empty group' : 'New, empty groups'} ${nameList(fresh)} will appear in your filters.` : '',
+        have.length ? `${nameList(have)} already ${have.length === 1 ? 'exists' : 'exist'}, so nothing changes for ${have.length === 1 ? 'it' : 'them'}.` : '',
+        names.length ? retiredNote(a.name) : 'No group was named, so nothing will change.',
+      );
+      why = 'Asking because you have not allowed creating groups for the session.';
       break;
-    case 'delete_group':
-      title = `Delete group ${quote(a.name)}`;
-      explain = `The group ${quote(a.name)} will be removed. Clips stay in your history; they just lose this tag.`;
-      why = 'Asking because you have not allowed group changes for the session.';
+    }
+    case 'delete_group': {
+      // One group by its full name, any case; never split (this is destructive).
+      const tag = existingTag(a.name);
+      const tagged = tag ? history.filter(h => itemHasTag(h, tag)) : [];
+      const hidden = tag && sharedSet.has(tag)
+        ? tagged.filter(h => !tagsVisibleToAi(groupsOf(h).filter(g => !clipSearch.sameTag(g, tag)))).length
+        : 0;
+      title = `Delete group ${quote(tag || a.name)}`;
+      explain = tag
+        ? sentences(
+          tagged.length
+            ? `The group ${quote(tag)} will be removed from ${tagged.length === 1 ? '1 clip' : `${tagged.length} clips`} and from your filters. ${tagged.length === 1 ? 'The clip stays' : 'The clips stay'} in your history.`
+            : `The group ${quote(tag)} will be removed from your filters. No clip is in it.`,
+          hidden ? `AI assistants will no longer be able to read ${hidden === tagged.length ? (hidden === 1 ? 'it' : 'them') : `${hidden} of them`}.` : '',
+        )
+        : `There is no group named ${quote(a.name)}, so nothing will change.`;
+      why = tag && !sharedSet.has(tag) ? 'Asking because this group is not shared with AI.' : 'Asking because you have not allowed deleting groups for the session.';
       break;
+    }
     case 'copy_to_clipboard':
       title = 'Put text on your clipboard';
       explain = `${a.text != null ? `${String(a.text).length} characters of AI-provided text` : `The clip ${clipLabel}`} will replace whatever is on your system clipboard right now.`;
@@ -6709,11 +7179,11 @@ function buildApprovalRequest(tool, args, targetItem, client) {
     case 'read_clip':
       title = 'Let the AI read a private clip';
       explain = `The full text of the clip ${clipLabel} will be sent to the AI. Nothing in your history changes.`;
-      why = 'Asking because this clip is not in a group shared with AI.';
+      why = privateWhy;
       break;
     case 'search_all':
       title = 'Search all clips, private ones included';
-      explain = `Matching clips (title and a short preview) from your ENTIRE history, including groups not shared with AI, will be sent to the AI. Nothing changes.`;
+      explain = `Matching clips (title and a short preview) from your ENTIRE history, including clips in no group shared with AI, will be sent to the AI. Nothing changes.`;
       why = gatedWhy;
       preview = { label: 'Query', text: String(a.query || '') };
       break;
@@ -6756,32 +7226,97 @@ function previewForItem(item) {
 // like delete_clip rather than being free-on-shared. Users can still grant a
 // per-tool "always allow" from the modal to make repeated edits frictionless.
 const MCP_ALWAYS_GATED = new Set(['delete_clip', 'edit_clip', 'copy_to_clipboard', 'paste_clip', 'read_clip', 'search_all', 'image_path']);
+// Free on what the AI can already read, asked on anything else.
 const MCP_MANAGE_FREE_ON_SHARED = new Set(['pin_clip', 'set_numpad', 'assign_group', 'create_group', 'delete_group', 'add_clip']);
 
-function mcpNeedsApproval(tool, targetItem) {
+function mcpNeedsApproval(tool, targetItem, args = {}) {
   if (mcpSessionAllow.has(tool)) return false;
   if (Array.isArray(settings.ai_always_allow) && settings.ai_always_allow.includes(tool)) return false;
   if (MCP_ALWAYS_GATED.has(tool)) return true;
   if (MCP_MANAGE_FREE_ON_SHARED.has(tool)) {
-    if (!targetItem) return false;          // create/delete group, add_clip with no clip target
+    // Naming a group not shared with AI stays free (agents file into private groups,
+    // e.g. "lawyer notes"): the answer echoes such a name as typed, the same for an
+    // existing private group as for a brand-new one (mcpCore.groupToolView), so a free
+    // answer tells nothing, while a prompt only for existing ones would.
+    // add_clip's target is the clip that already holds its text (mcpAddTarget): the
+    // add moves (and may tag) that clip, so it is free only on a clip the AI can
+    // read, as every other change is. A free add onto a private clip would also
+    // tell the AI whether a guessed text is in the history (no new clip is made).
+    if (tool === 'add_clip') return !!targetItem && !isItemSharedWithAi(targetItem);
+    // A group not shared with AI holds clips the AI cannot read: deleting it asks.
+    if (tool === 'delete_group') {
+      const tag = existingTag(args.name);
+      return !!tag && !mcpCore.sharedGroupSet(settings).has(tag);
+    }
+    if (!targetItem) return false;          // create_group
     return !isItemSharedWithAi(targetItem); // free on shared clips, gated on non-shared
   }
   return true;
 }
 
+// ---- The AI's ids and revs (the lib/mcp-core boundary) ----
+// An AI names a clip it can read by its real id and any other by the opaque handle it
+// was given, and every rev it holds is keyed. mcpResolveArgs turns them into the
+// app's own before anything runs (or any prompt opens), refusing in the AI's own
+// terms an id it may not address or a rev that moved; the apply* primitives then
+// check the real rev again after a (possibly long) approval.
+const MCP_ID_TOOLS = new Set([...MCP_REV_GUARDED_TOOLS, 'read_clip', 'image_path', 'copy_to_clipboard', 'paste_clip']);
+function mcpConflict(code, details) {
+  return new clipRevisionCheck.RevisionConflict(code, details);
+}
+function mcpResolveArgs(tool, args) {
+  if (!MCP_ID_TOOLS.has(tool) || (tool === 'copy_to_clipboard' && args.text != null)) return { args, item: null };
+  const id = String(args.id == null ? '' : args.id);
+  const found = mcpCore.resolvePublicId(history, settings, id);
+  if (MCP_REV_GUARDED_TOOLS.has(tool)) {
+    const rev = typeof args.expected_rev === 'string' ? args.expected_rev.trim() : '';
+    if (!rev) throw mcpConflict('rev_required', { id });
+    if (!found.item) throw found.movedTo ? mcpConflict('superseded', { id, currentId: found.movedTo }) : mcpConflict('not_found', { id });
+    const currentRev = mcpCore.publicRev(found.item, settings);
+    if (rev !== currentRev) throw mcpConflict('stale_revision', { id, expectedRev: rev, currentRev });
+    return { args: { ...args, id: found.realId, expected_rev: clipboardModel.clipRevision(found.item) }, item: found.item };
+  }
+  if (!found.item) throw new Error(found.movedTo ? `Clip ${id} was edited and is now clip ${found.movedTo}.` : `No clip with id "${id}".`);
+  return { args: { ...args, id: found.realId }, item: found.item };
+}
+// A conflict the apply* primitives raised after an approval, in the AI's terms.
+function mcpPublicError(err, publicArgs) {
+  if (!clipRevisionCheck.isRevisionConflict(err)) return err;
+  const d = err.details || {};
+  const id = String(publicArgs.id == null ? '' : publicArgs.id);
+  if (err.code === 'stale_revision') {
+    const item = findHistoryItem(d.id);
+    return mcpConflict('stale_revision', { id, expectedRev: publicArgs.expected_rev, currentRev: item ? mcpCore.publicRev(item, settings) : null });
+  }
+  if (err.code === 'superseded') {
+    const current = findHistoryItem(d.currentId);
+    return current ? mcpConflict('superseded', { id, currentId: mcpCore.publicId(current, settings) }) : mcpConflict('not_found', { id });
+  }
+  return mcpConflict(err.code, { id });
+}
+
 async function mcpHandleRequest(reqPath, payload, ctx = {}) {
-  const { tool, args = {}, client } = payload || {};
+  const { tool, args: publicArgs = {}, client } = payload || {};
   if (!tool) throw new Error('missing_tool');
   if (!settings.ai_access_enabled) throw new Error('ai_access_disabled');
-  const targetId = args.id || null;
-  const targetItem = targetId ? findHistoryItem(targetId) : null;
-  // Refuse a stale/missing rev BEFORE asking the human to approve a change that
-  // would be refused anyway. mcpExecute's primitives check it again after the
-  // (possibly long) approval, since the clip can change while the prompt is open.
-  if (MCP_REV_GUARDED_TOOLS.has(tool)) assertClipRevision(args.id, args.expected_rev);
+  // The AI group is the one every assistant can always read: never deleted (the
+  // app's own UI cannot delete it either), and no prompt asks about it.
+  if (tool === 'delete_group' && clipSearch.sameTag(publicArgs.name, mcpCore.AI_GROUP_NAME)) {
+    diagnostics.record('mcp.tool', { tool, client, decision: 'refused' }, { forceFile: true });
+    return { ok: false, reason: `The "${mcpCore.AI_GROUP_NAME}" group cannot be deleted: it is the group every AI assistant can always read. To take a clip out of it, use assign_group.` };
+  }
+  // Refuse a stale/missing rev (or an id the AI may not name) BEFORE asking the
+  // human to approve a change that would be refused anyway.
+  const { args, item: resolvedItem } = mcpResolveArgs(tool, publicArgs);
+  // The app's own check on the real id and rev, as every caller's (mcpExecute's
+  // primitives repeat it after the approval, since the clip can change meanwhile).
+  if (MCP_REV_GUARDED_TOOLS.has(tool)) {
+    try { assertClipRevision(args.id, args.expected_rev); } catch (err) { throw mcpPublicError(err, publicArgs); }
+  }
+  const targetItem = tool === 'add_clip' ? mcpAddTarget(args.text) : resolvedItem;
 
   let decision = 'auto';
-  if (mcpNeedsApproval(tool, targetItem)) {
+  if (mcpNeedsApproval(tool, targetItem, args)) {
     decision = await requestApproval(buildApprovalRequest(tool, args, targetItem, client), { signal: ctx.signal });
     if (decision === 'deny') throw new Error('denied');
     if (decision === 'timeout') throw new Error('timed_out');
@@ -6797,18 +7332,23 @@ async function mcpHandleRequest(reqPath, payload, ctx = {}) {
   // Re-check after the (possibly long) approval await: if AI access was toggled
   // off while the modal was open, refuse before performing the action.
   if (!settings.ai_access_enabled) throw new Error('ai_access_disabled');
-  return mcpExecute(tool, args, ctx);
+  try {
+    return await mcpExecute(tool, args, ctx, publicArgs);
+  } catch (err) {
+    throw mcpPublicError(err, publicArgs);
+  }
 }
 
-function mcpExecute(tool, args, ctx = {}) {
+// `args` are the app's own (real ids, real revs, mcpResolveArgs); `publicArgs` what
+// the AI sent. Every result goes back in the AI's terms (lib/mcp-core boundary).
+function mcpExecute(tool, args, ctx = {}, publicArgs = args) {
   switch (tool) {
     case 'read_clip': {
       const item = findHistoryItem(args.id);
       if (!item) throw new Error('not_found');
-      const sharedSet = mcpCore.sharedGroupSet(settings);
-      if (item.type === 'image') return mcpCore.clipView(item, { sharedSet });
+      if (item.type === 'image') return mcpCore.clipView(item, { settings });
       textBlobStore.hydrateTextItem(item, TEXT_DIR);
-      return { ...mcpCore.fullTextResult(item, sharedSet), viaApproval: true };
+      return { ...mcpCore.fullTextResult(item, { settings }), viaApproval: true };
     }
     case 'search_all':
       // A /regex/ runs on a worker thread: it must never hang this process.
@@ -6832,20 +7372,46 @@ function mcpExecute(tool, args, ctx = {}) {
         newTitle: args.title != null ? String(args.title) : undefined,
       });
       const saved = result && result.item ? result.item : item;
-      return { ok: !!(result && result.changed), reason: result && result.reason, id: itemKey(saved), rev: clipboardModel.clipRevision(saved) };
+      return { ok: !!(result && result.changed), reason: result && result.reason, id: mcpCore.publicId(saved, settings), rev: mcpCore.publicRev(saved, settings) };
     }
     case 'pin_clip':
       return mcpMutationResult(args.id, applyPinToggle(args.id, args.expected_rev));
     case 'set_numpad':
       return mcpMutationResult(args.id, applyNumpadAssign(args.id, args.slot, args.expected_rev));
-    case 'assign_group':
-      return mcpMutationResult(args.id, applyGroupAssign(args.id, args.group, args.expected_rev));
-    case 'create_group':
-      return { ok: applyGroupCreate(args.name) };
-    case 'delete_group':
-      return { ok: applyGroupDelete(args.name) };
+    case 'assign_group': {
+      // What the AI typed, read before the change (the names it means may be created).
+      // The answer names only groups shared with AI (mcpCore.groupToolView): whether a
+      // private group existed, or was on the clip, is never in it.
+      const tokens = mcpCore.namedGroupTokens(args.group, settings);
+      const result = applyGroupAssign(args.id, args.group, args.expected_rev);
+      const item = findHistoryItem(args.id);
+      const view = mcpCore.groupToolView(tokens, settings, { added: result ? result.added : [], removed: result ? result.removed : [] });
+      const out = {
+        ...mcpMutationResult(args.id, result),
+        added: view.added,
+        removed: view.removed,
+        groups: item ? mcpCore.visibleGroups(item, mcpCore.sharedGroupSet(settings)) : [],
+        ...(view.notShared ? { notShared: view.notShared } : {}),
+      };
+      if (!result) out.reason = 'No group was named, so nothing changed.';
+      return out;
+    }
+    case 'create_group': {
+      const tokens = mcpCore.namedGroupTokens(args.name, settings);
+      const created = applyGroupCreate(args.name);
+      if (!created) return { ok: false, reason: 'No group was named, so nothing changed.' };
+      return { ok: true, ...mcpCore.groupToolView(tokens, settings, { groups: created }) };
+    }
+    case 'delete_group': {
+      // One group by its full name (any case), never split: a comma or a '/' is part of it.
+      const shared = mcpCore.sharedGroupSet(settings).has(args.name);
+      const deleted = applyGroupDelete(args.name);
+      if (!deleted) return { ok: false, reason: `No group is named "${String(args.name || '')}", so nothing changed. delete_group takes one group by its full name.` };
+      // A group not shared with AI: only the name as the AI typed it, nothing about its clips.
+      return shared ? { ok: true, name: deleted.name, clips: deleted.ids.length } : { ok: true, name: clipSearch.cleanTagName(args.name) };
+    }
     case 'delete_clip':
-      return { ok: applyDeleteItem(args.id, args.expected_rev), id: args.id };
+      return { ok: applyDeleteItem(args.id, args.expected_rev), id: String(publicArgs.id) };
     case 'copy_to_clipboard': {
       if (args.text != null) { clipboard.writeText(String(args.text)); return { ok: true }; }
       const item = findHistoryItem(args.id);
@@ -6913,6 +7479,9 @@ function setupIPC() {
       quickPaste: effectiveQuickPasteShortcut(),
       quickPasteCustom: !!settings.quick_paste_shortcut,
       quickPasteDefault: defaultQuickPasteShortcut(),
+      newNote: effectiveNewNoteShortcut(),
+      newNoteCustom: !!settings.new_note_shortcut,
+      newNoteDefault: defaultNewNoteShortcut(),
       windows_hook: process.platform === 'win32',
     },
   }));
@@ -7039,6 +7608,7 @@ function setupIPC() {
 
   ipcMain.handle('set-show-shortcut', (_, shortcut) => setShowShortcut(shortcut));
   ipcMain.handle('set-quick-paste-shortcut', (_, shortcut) => setQuickPasteShortcut(shortcut));
+  ipcMain.handle('set-new-note-shortcut', (_, shortcut) => setNewNoteShortcut(shortcut));
   ipcMain.handle('suspend-shortcuts', () => suspendShortcutsForRecording());
   ipcMain.handle('resume-shortcuts', () => resumeShortcutsAfterRecording());
   ipcMain.handle('resolve-show-shortcut', (_, shortcut) => {
@@ -7049,6 +7619,7 @@ function setupIPC() {
   ipcMain.handle('group-create', (_, name) => applyGroupCreate(name));
 
   ipcMain.handle('group-delete', (_, name) => applyGroupDelete(name));
+  ipcMain.handle('group-restore', (_, payload) => applyGroupRestore(payload));
 
   ipcMain.handle('group-assign', (_, id, group, rev) => applyGroupAssign(id, group, rev));
 
@@ -7372,56 +7943,49 @@ async function handleQuickPaste(slot) {
   await runNumpadSlotAction(slot, { source: 'shortcut' });
 }
 
-function setShowShortcut(shortcut) {
-  const previous = settings.show_shortcut || '';
-  const next = normalizeShowShortcut(shortcut);
-  if (next && shortcutUsesFn(next) && process.platform !== 'darwin') {
-    return { ok: false, error: 'Globe shortcuts are only supported on macOS.' };
+// The global new-note shortcut (Win+N through the hook, or a recorded chord):
+// the popup's New note action, as a hand-off.
+function handleNewNoteShortcut() {
+  diagnostics.record('shortcut.new_note', { popup_open: isPopupOpen() });
+  if (process.platform === 'darwin') app.focus({ steal: true }); // an accessory app is not active
+  openEditor(null, {});
+}
+
+// Why a recorded chord cannot be saved ('' = it can). Only the popup
+// shortcut takes Globe (macOS's own hotkey path); `key` names what follows
+// the modifiers in the hint.
+function recordedShortcutError(shortcut, { globe = false, key = 'a key' } = {}) {
+  if (shortcutUsesFn(shortcut)) {
+    if (!globe) return 'Globe shortcuts are only supported for the popup shortcut.';
+    if (process.platform !== 'darwin') return 'Globe shortcuts are only supported on macOS.';
   }
-  if (next && !shortcutHasKeyAndModifier(next)) {
+  if (!shortcutHasKeyAndModifier(shortcut)) {
     const modifiers = process.platform === 'darwin'
-      ? 'Command, Control, Option, or Globe'
+      ? (globe ? 'Command, Control, Option, or Globe' : 'Command, Control, or Option')
       : 'Command, Control, Alt, or Win';
-    return { ok: false, error: `Use ${modifiers} with a key.` };
+    return `Use ${modifiers} with ${key}.`;
   }
+  return '';
+}
 
-  settings.show_shortcut = next;
-  const result = registerShortcuts();
-  if (!result.showShortcutRegistered) {
-    settings.show_shortcut = previous;
-    registerShortcuts();
-    return { ok: false, error: 'Shortcut is already in use or not supported.' };
-  }
-
-  saveSettingsFile();
+function setShowShortcut(shortcut) {
+  const next = normalizeShowShortcut(shortcut);
+  const invalid = next && recordedShortcutError(next, { globe: true });
+  if (invalid) return { ok: false, error: invalid };
+  const saved = commitShortcutSetting('show_shortcut', next, 'showShortcutRegistered', 'Shortcut is already in use or not supported.');
+  if (!saved.ok) return saved;
   return { ok: true, shortcut: effectiveShowShortcut(), custom: !!settings.show_shortcut };
 }
 
 function setQuickPasteShortcut(shortcut) {
-  const previous = settings.quick_paste_shortcut || '';
   const next = normalizeQuickPasteShortcut(shortcut);
-  if (next && shortcutUsesFn(next)) {
-    return { ok: false, error: 'Globe shortcuts are only supported for the popup shortcut.' };
-  }
-  if (next && !shortcutHasKeyAndModifier(next)) {
-    const modifiers = process.platform === 'darwin'
-      ? 'Command, Control, or Option'
-      : 'Command, Control, Alt, or Win';
-    return { ok: false, error: `Use ${modifiers} with a number.` };
-  }
+  const invalid = next && recordedShortcutError(next, { key: 'a number' });
+  if (invalid) return { ok: false, error: invalid };
   if (next && quickPasteSlotFromShortcut(next) == null) {
     return { ok: false, error: 'Press a shortcut ending in 1-9.' };
   }
-
-  settings.quick_paste_shortcut = next;
-  const result = registerShortcuts();
-  if (!result.quickPasteRegistered) {
-    settings.quick_paste_shortcut = previous;
-    registerShortcuts();
-    return { ok: false, error: 'Quick paste shortcut is already in use or not supported.' };
-  }
-
-  saveSettingsFile();
+  const saved = commitShortcutSetting('quick_paste_shortcut', next, 'quickPasteRegistered', 'Quick paste shortcut is already in use or not supported.');
+  if (!saved.ok) return saved;
   return {
     ok: true,
     shortcut: effectiveQuickPasteShortcut(),
@@ -7429,20 +7993,62 @@ function setQuickPasteShortcut(shortcut) {
   };
 }
 
+// '' = the default (Windows: Win+N through the hook), SHORTCUT_OFF = none
+// (the row's Turn off), else a recorded chord.
+function setNewNoteShortcut(shortcut) {
+  const next = normalizeNewNoteShortcut(shortcut);
+  const invalid = next && next !== SHORTCUT_OFF && recordedShortcutError(next);
+  if (invalid) return { ok: false, error: invalid };
+  const saved = commitShortcutSetting('new_note_shortcut', next, 'newNoteRegistered', 'New note shortcut is already in use or not supported.');
+  if (!saved.ok) return saved;
+  return { ok: true, shortcut: effectiveNewNoteShortcut(), custom: !!settings.new_note_shortcut };
+}
+
+// Save one recorded shortcut: register it, or put the previous one back.
+// Saving ends the recording, so the registration really happens (while
+// suspended, registerShortcuts registers nothing and reports success: a
+// recorded shortcut stayed dead, every other one with it, until a restart).
+function commitShortcutSetting(key, next, registeredFlag, error) {
+  const previous = settings[key] || '';
+  shortcutsSuspended = false;
+  settings[key] = next;
+  if (!registerShortcuts()[registeredFlag]) {
+    settings[key] = previous;
+    registerShortcuts();
+    return { ok: false, error };
+  }
+  saveSettingsFile();
+  return { ok: true };
+}
+
 function registerShortcuts() {
+  // What each shortcut needs: an OS registration (globalShortcut / Carbon), the
+  // Windows hook, or nothing. A recorded new-note chord is an ordinary global
+  // shortcut; Windows' default (Win+N) is the hook's; off is neither.
+  const macosShowKey = process.platform === 'darwin' ? effectiveShowShortcut() : '';
+  const showKey = process.platform === 'darwin' ? '' : globalShowShortcut();
+  const quickPasteKey = globalQuickPasteShortcut();
+  const recordedNewNote = recordedNewNoteShortcut();
+  const newNoteKey = shortcutUsesFn(recordedNewNote) ? '' : recordedNewNote;
+  const newNoteHookKey = process.platform === 'win32' && !settings.new_note_shortcut;
+
   // A throwaway QA instance (BOARDCLIP_ISOLATED=1) never takes the keyboard: its
   // low-level hook would sit in front of the real app's, so Win+V would open the
   // sandbox and an assigned numpad key would paste sandbox text into the user's
   // app through the real clipboard. Windows hook, macOS hotkey and globalShortcut
-  // alike.
+  // alike. A shortcut that needs no OS registration (the hook's, or none) reports
+  // live, as it does for real (it cannot fail), so its row can be saved in QA.
   if (process.env.BOARDCLIP_ISOLATED === '1') {
-    diagnostics.record('shortcut.register', { platform: process.platform, isolated: true, show_registered: false, quick_paste_registered: false });
-    return {
-      showShortcutRegistered: false,
+    const isolated = {
+      showShortcutRegistered: !(macosShowKey || showKey),
       showShortcut: effectiveShowShortcut(),
-      quickPasteRegistered: false,
+      quickPasteRegistered: !quickPasteKey,
       quickPasteShortcut: effectiveQuickPasteShortcut(),
+      newNoteRegistered: !newNoteKey,
+      newNoteShortcut: effectiveNewNoteShortcut(),
     };
+    diagnostics.record('shortcut.register', { platform: process.platform, isolated: true, show_registered: isolated.showShortcutRegistered, quick_paste_registered: isolated.quickPasteRegistered, new_note_registered: isolated.newNoteRegistered });
+    return isolated;
   }
   if (shortcutsSuspended) {
     return {
@@ -7450,15 +8056,15 @@ function registerShortcuts() {
       showShortcut: effectiveShowShortcut(),
       quickPasteRegistered: true,
       quickPasteShortcut: effectiveQuickPasteShortcut(),
+      newNoteRegistered: true,
+      newNoteShortcut: effectiveNewNoteShortcut(),
     };
   }
   globalShortcut.unregisterAll();
 
   let showShortcutRegistered = true;
   let quickPasteRegistered = true;
-  const macosShowKey = process.platform === 'darwin' ? effectiveShowShortcut() : '';
-  const showKey = process.platform === 'darwin' ? '' : globalShowShortcut();
-  const quickPasteKey = globalQuickPasteShortcut();
+  let newNoteRegistered = true;
 
   if (process.platform === 'win32') {
     // Windows Clipboard History owns Win+V and Win+Numpad1-9, so we can't use
@@ -7469,7 +8075,9 @@ function registerShortcuts() {
     windowsHook = install({
       onShowPopup: showPopup,
       onNumpadPaste: handleNumpad,
+      onNewNote: handleNewNoteShortcut,
     });
+    windowsHook.setNewNoteHotkey(newNoteHookKey);
     // Seed the shared state with current history so plain numpad keys
     // immediately intercept for already-assigned slots.
     syncHookState();
@@ -7534,6 +8142,10 @@ function registerShortcuts() {
       }
     }
   }
+  if (newNoteKey) {
+    try { newNoteRegistered = globalShortcut.register(newNoteKey, handleNewNoteShortcut); } catch { newNoteRegistered = false; }
+    if (!newNoteRegistered) logSafe(`Warning: Could not register new note shortcut ${newNoteKey}`);
+  }
   diagnostics.record('shortcut.register', {
     platform: process.platform,
     show_key: macosShowKey || showKey,
@@ -7542,6 +8154,9 @@ function registerShortcuts() {
     quick_paste_key: quickPasteKey,
     quick_paste_registered: quickPasteRegistered,
     quick_paste_registrations: quickPasteRegistrations,
+    new_note_key: newNoteKey || (newNoteHookKey ? defaultNewNoteShortcut() : ''),
+    new_note_registered: newNoteRegistered,
+    new_note_backend: newNoteKey ? 'electron' : (newNoteHookKey ? 'hook' : ''),
   }, { forceFile: true });
 
   return {
@@ -7549,12 +8164,16 @@ function registerShortcuts() {
     showShortcut: effectiveShowShortcut(),
     quickPasteRegistered,
     quickPasteShortcut: effectiveQuickPasteShortcut(),
+    newNoteRegistered,
+    newNoteShortcut: effectiveNewNoteShortcut(),
   };
 }
 
 function suspendShortcutsForRecording() {
   shortcutsSuspended = true;
   globalShortcut.unregisterAll();
+  // The hook's Win+N too: a recording never opens a note (resume re-arms it).
+  if (windowsHook) windowsHook.setNewNoteHotkey(false);
   if (macosHotkey) {
     macosHotkey.clearRuntimeShortcut();
     macosHotkey.clearQuickPasteShortcuts();
@@ -7646,6 +8265,10 @@ app.whenReady().then(() => {
 
   if (process.platform === 'darwin') app.dock.hide();
 
+  tagMigration = migrateTagsAtLoad();
+  persistTagMigration();
+  const unsplit = unsplitLiteralTags(history, 'load');
+  if (unsplit) history.splice(0, history.length, ...unsplit.history);
   migrateNumpad();
   recoverOrphanedEdits();   // restore any external edit orphaned by a prior crash/restart
   writeHistoryStorageFile();
@@ -7687,6 +8310,7 @@ app.whenReady().then(() => {
 // heartbeat is therefore an external kill or a native crash, never a quit.
 app.on('before-quit', () => {
   app.isQuitting = true;
+  try { flushDeleteStamps(); } catch {}
   if (!quitReason) quitReason = 'quit';
   diagnostics.record('app.quit', { reason: quitReason, build: BUILD_INFO.label, uptime_s: Math.round(process.uptime()) }, { forceFile: true });
 });

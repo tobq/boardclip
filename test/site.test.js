@@ -100,4 +100,21 @@ assert.ok(marketing.length > 1000, 'the demo scripts load from relative shared/ 
   assert.ok(!/supercharge|seamless|effortless|blazing|unleash|revolution|game.?chang|next.?level/i.test(marketing), 'site copy uses slop vocabulary');
 }
 
+// 7) Tags are flat (14 Oct 2026): the demo seeds no nested name, the page
+//    never says groups nest, and the demo's tag writes follow the shared tag
+//    rule (one stored spelling whatever the case, "a, b" is two tags), with the
+//    delete returning what its Undo (restoreGroup) puts back, as main's does.
+{
+  const Search = require('../site/shared/clip-search.js');
+  const slots = (siteHtml.match(/const DEMO_TAG_SLOTS = (\[[^\]]*\]);/) || [])[1];
+  assert.ok(slots, 'the demo seeds its tags from DEMO_TAG_SLOTS');
+  const tags = JSON.parse(slots).flatMap((slot) => Search.splitTagInput(slot));
+  assert.ok(tags.length && !tags.some((tag) => tag.includes('/')), `a demo seed tag is nested: ${tags.filter((tag) => tag.includes('/'))}`);
+  assert.ok(!/\bnest(?:s|ed|ing)?\b|sub-?groups?/i.test(marketing), 'the page copy says groups nest');
+  for (const fn of ['toggleGroup', 'createGroup', 'deleteGroup', 'restoreGroup', 'groupAssignMany']) {
+    assert.ok(new RegExp(`\\b${fn}: \\(`).test(siteHtml), `the demo adapter has ${fn}`);
+  }
+  assert.ok(!/labels\.includes\(|Core\.isInGroup\(clip, group\) !==/.test(siteHtml), 'the demo matches a tag by its exact spelling (use the shared rule, Core.search.sameTag)');
+}
+
 console.log('site.test.js: all assertions passed');

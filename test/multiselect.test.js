@@ -22,6 +22,9 @@ const read = (rel) => fs.readFileSync(path.join(__dirname, '..', rel), 'utf8');
   assert.strictEqual(ui.groupMembership([A, B, C], 'x'), 'some');
   assert.strictEqual(ui.groupMembership([C], 'x'), 'none');
   assert.strictEqual(ui.groupMembership([], 'x'), 'none');
+  // Tags are case-insensitive: "X" is the tag x.
+  assert.strictEqual(ui.groupMembership([A, B], 'X'), 'all');
+  assert.strictEqual(ui.groupMembership([A, B], 'Y'), 'some');
 }
 
 // 2) Controller selection state: toggle, shift-range (over visibleIds), image
@@ -497,6 +500,97 @@ const read = (rel) => fs.readFileSync(path.join(__dirname, '..', rel), 'utf8');
     throwOn = false;
     const again = await new Promise((resolve) => c.whenSimilar('a', resolve));
     assert.strictEqual(again, got, 'the answer is cached: no stuck scan, no retry storm');
+  }
+
+  // 9) "New group...": the typed text goes to createGroup, which answers with
+  //    the tag names; the clip GETS them in one add-only write (a toggle would
+  //    take off a tag it already has). Delete group: the confirm counts the
+  //    clips, the delete answers what its Undo needs, and the Undo (the
+  //    toast's, or Ctrl/Cmd+Z's lastUndo) hands it back to restoreGroup.
+  {
+    const item = { id: 'a', type: 'text', text: 'a', pin: { groups: ['todo'] } };
+    const other = { id: 'b', type: 'text', text: 'b', pin: { groups: ['Todo'] } };
+    const byId = { a: item, b: other };
+    const calls = [];
+    let confirmed = null;
+    let undo = null;
+    const base = {
+      itemById: (id) => byId[id], visibleIds: () => ['a', 'b'], allItems: () => [item, other], renderSelection: () => {}, render() {}, refresh() {},
+      dialogs: { prompt: async () => 'todo, forge', confirm: async (o) => { confirmed = o; return true; }, isOpen: () => false, dismiss() {} },
+      createGroup: async (text) => { calls.push(['create', text]); return ['todo', 'forge']; },
+    };
+    const c = ui.createClipController({ ...base, groupAssignMany: async (ids, text, shouldHave) => { calls.push(['assignMany', ids, text, shouldHave]); return true; } });
+    await c.addGroup('a');
+    assert.deepStrictEqual(calls, [['create', 'todo, forge'], ['assignMany', ['a'], 'todo, forge', true]], 'New group: create from the typed text, then ADD every name in one write');
+    calls.length = 0;
+    const t = ui.createClipController({ ...base, toggleGroup: async (id, text) => { calls.push(['toggle', id, text]); } });
+    await t.addGroup('a');
+    assert.deepStrictEqual(calls, [['create', 'todo, forge'], ['toggle', 'a', 'forge']], 'without groupAssignMany only the missing names are toggled (todo is already on the clip)');
+    calls.length = 0;
+    const result = { ok: true, name: 'todo', ids: ['a', 'b'], shared: false };
+    const d = ui.createClipController({
+      ...base,
+      protectedGroups: () => new Set(['AI']),
+      deleteGroup: async (name) => { calls.push(['delete', name]); return result; },
+      restoreGroup: async (r) => { calls.push(['restore', r]); },
+      offerUndo: (o) => { undo = o; },
+    });
+    await d.deleteGroup('TODO');
+    assert.ok(confirmed && /It is on 2 clips\./.test(confirmed.message) && confirmed.danger, `the confirm counts the clips whatever the case: ${confirmed && confirmed.message}`);
+    assert.deepStrictEqual(calls, [['delete', 'TODO']]);
+    assert.ok(undo && undo.message === 'Deleted group "todo"' && typeof undo.undo === 'function', 'the delete offers an Undo, named after the stored tag');
+    await undo.undo();
+    assert.deepStrictEqual(calls[1], ['restore', result], 'the Undo hands the delete result back to restoreGroup');
+    calls.length = 0;
+    await d.deleteGroup('ai');
+    assert.deepStrictEqual(calls, [], 'the AI group is protected whatever the case');
+  }
+
+  // 12) A delete's Undo lives exactly while its toast shows it: Ctrl/Cmd+Z
+  //     runs it in Settings too (a group is deleted there, so the chord the
+  //     toast promises must work there), and once the toast is gone (its timer,
+  //     its own action, another message) a later Ctrl/Cmd+Z puts nothing back.
+  {
+    const item = { id: 'a', type: 'text', text: 'a', pin: { groups: ['todo'] } };
+    const calls = [];
+    let shown = false;
+    let hides = 0;
+    let settingsOpen = true;
+    const result = { ok: true, name: 'todo', ids: ['a'], shared: false };
+    const c = ui.createClipController({
+      itemById: (id) => (id === 'a' ? item : null), visibleIds: () => ['a'], allItems: () => [item], renderSelection: () => {}, render() {}, refresh() {},
+      dialogs: { confirm: async () => true, prompt: async () => null, isOpen: () => false, dismiss() {} },
+      isSettingsOpen: () => settingsOpen,
+      deleteGroup: async () => result,
+      restoreGroup: async (r) => { calls.push(['restore', r.name]); },
+      deleteClips: async (ids) => ids.map((id) => ({ id })),
+      restoreClips: async (snaps) => { calls.push(['restoreClips', snaps.length]); },
+      offerUndo: () => { shown = true; return { isShown: () => shown, hide: () => { hides += 1; shown = false; } }; },
+    });
+    const ctrlZ = async () => {
+      const e = { key: 'z', ctrlKey: true, metaKey: false, shiftKey: false, altKey: false, target: null, prevented: false, preventDefault() { this.prevented = true; } };
+      await c.onKeydown(e);
+      await new Promise((r) => setTimeout(r, 0));
+      return e;
+    };
+    await c.deleteGroup('todo');
+    const z1 = await ctrlZ();
+    assert.ok(z1.prevented && calls.length === 1 && calls[0][0] === 'restore', `Ctrl/Cmd+Z in Settings runs the group's Undo while its toast shows: ${JSON.stringify(calls)}`);
+    assert.strictEqual(hides, 1, 'running the Undo from the keys hides its toast');
+    const z2 = await ctrlZ();
+    assert.ok(!z2.prevented && calls.length === 1, 'an Undo runs once');
+    calls.length = 0;
+    await c.deleteGroup('todo');
+    shown = false; // the toast timed out (or another message replaced it)
+    settingsOpen = false;
+    const z3 = await ctrlZ();
+    assert.ok(!z3.prevented && calls.length === 0, 'once its toast is gone, Ctrl/Cmd+Z puts nothing back');
+    // Clip deletes ride the same Undo.
+    c.toggle('a');
+    await c.onKeydown({ key: 'Delete', ctrlKey: false, metaKey: false, shiftKey: false, altKey: false, target: null, preventDefault() {} });
+    await new Promise((r) => setTimeout(r, 0));
+    const z4 = await ctrlZ();
+    assert.ok(z4.prevented && calls.length === 1 && calls[0][0] === 'restoreClips', `a clip delete's Undo runs from the keys while its toast shows: ${JSON.stringify(calls)}`);
   }
 
   console.log('multiselect.test.js: all multi-select guards passed');

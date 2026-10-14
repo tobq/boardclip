@@ -10,6 +10,7 @@
 //     close by itself: decision client_gone, nothing executed
 'use strict';
 const qa = require('./lib/qa-sandbox');
+const mcpCore = require('../lib/mcp-core');
 
 const item = { id: qa.txtId('hover pause proof clip\nsecond line'), type: 'text', text: 'hover pause proof clip\nsecond line', ts: 1788000000, pin: null };
 const state = (page) => page.eval(`({ label: document.getElementById('countLabel').textContent, num: document.getElementById('countNum').textContent })`);
@@ -26,7 +27,10 @@ const state = (page) => page.eval(`({ label: document.getElementById('countLabel
     });
     const clip = (await sb.historyState()).find((i) => i.id === item.id);
     if (!clip || !clip.rev) throw new Error('seeded clip or its rev missing');
-    const args = { id: clip.id, expected_rev: clip.rev };
+    // The id and rev an AI client holds for it (lib/mcp-core boundary: the clip is
+    // private, so an opaque handle; a rev keyed with the sandbox app's secret).
+    const boundary = { mcp_secret: (await sb.discovery()).secret, groups_shared_with_ai: sb.settings.groups_shared_with_ai };
+    const args = { id: mcpCore.publicId(clip, boundary), expected_rev: mcpCore.publicRev(clip, boundary) };
     const focusCalls = async () => (await sb.events()).filter((e) => /focus_blocked/.test(e.type)).length;
     const focus0 = await focusCalls();
     const modalGone = (id) => qa.waitFor(async () => !(await sb.targets()).some((x) => x.id === id), 'modal closed', 10000).catch(() => false);

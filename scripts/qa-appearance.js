@@ -318,10 +318,11 @@ const SETUP = `(() => {
 
     // ---- approval modal: same payload, follows the broadcast ----
     const clip = (await sb.historyState()).find((i) => i.id === item.id);
+    const clipRef = await sb.aiRef(clip);
     await sb.mainEval('__reset()');
     let req = null;
     const modal = await sb.newPage(/mcp-approval\.html/, () => {
-      req = sb.mcp('delete_clip', { id: clip.id, expected_rev: clip.rev }, { client: 'appearance proof', timeoutMs: 30000 }).then(() => 'unexpected success', (e) => e.message);
+      req = sb.mcp('delete_clip', clipRef, { client: 'appearance proof', timeoutMs: 30000 }).then(() => 'unexpected success', (e) => e.message);
     }, { label: 'approval modal', timeoutMs: 15000 });
     await qa.waitFor(async () => (await rec()).sends.some((x) => x.ch === 'approval-settings'), 'approval-settings', 15000);
     r = await rec();

@@ -95,10 +95,12 @@
     create_group:'new_label', delete_group:'label_off', read_clip:'visibility',
     search_all:'search', image_path:'image',
   };
+  // What "Always allow" / "Allow for this session" grant: ONE tool each (main keeps
+  // grants per tool), so each label names its own action.
   const KIND = {
     delete_clip:'deleting clips', edit_clip:'editing clip text', copy_to_clipboard:'writing your clipboard', paste_clip:'pasting into apps',
-    add_clip:'adding clips', pin_clip:'pinning', set_numpad:'numpad slots', assign_group:'group changes',
-    create_group:'group changes', delete_group:'group changes', read_clip:'reading private clips',
+    add_clip:'adding clips', pin_clip:'pinning', set_numpad:'numpad slots', assign_group:"changing clips' groups",
+    create_group:'creating groups', delete_group:'deleting groups', read_clip:'reading private clips',
     search_all:'searching private clips', image_path:'revealing image paths',
   };
   // The prompt never takes focus (main shows it inactive) and never allows by

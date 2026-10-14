@@ -38,7 +38,7 @@ let groups = [];
 // as tokens inside `query`; the chip bar's active/excluded state is DERIVED from it. No
 // separate filter Sets (that dual-model was the drift Forge killed).
 function parsedQuery() { return Core.search.parseQuery(query); }
-function facetState() { return Core.search.facetState(parsedQuery()); }
+function facetState() { return Core.search.facetState(parsedQuery(), groups); }
 function activeFilterSet() { return facetState().active; }
 // Ranking override for the Best/Recent toggle: null = default (relevance while searching,
 // history order when idle), 'best' | 'new' when the user has flipped it for this query.
@@ -51,9 +51,11 @@ let diagnosticsEnabled = false;
 let searchDocs = [], searchTextLower = [];
 let itemLookup = new Map(), groupCounts = new Map(), builtinCounts = {}, numpadIdMap = {};
 
-document.getElementById('newNoteBtn').addEventListener('click', () => {
+// New note: the header button and the popup's N quick key.
+function newNote() {
   window.api.newNote({ sourceGroups: Core.sourceGroupsFromFilters(activeFilterSet()) });
-});
+}
+document.getElementById('newNoteBtn').addEventListener('click', newNote);
 
 // Renderer exceptions used to vanish (a tray popup has no DevTools open): a thrown
 // handler left the UI half-updated with nothing in the log. Route window errors +
@@ -384,7 +386,10 @@ const revGuard = (run, fallback) => Core.guardRevision(run, { toast: showToast, 
 const appAdapter = {
   itemById: (id) => itemById(id),
   numpadMap: () => numpadMap(),
-  protectedGroups: () => new Set([aiGroupName]),
+  // The popup's quick keys (controller.armQuickKeys): 1-9 and N right after it opens.
+  quickPaste: (slot) => window.api.numpadPasteAndHide(slot),
+  newNote: () => newNote(),
+  protectedGroups:() => new Set([aiGroupName]),
   // The query TEXT is the source of truth: a chip click rewrites it through the
   // controller (Search.applyFacet with the remembered or / and).
   getQuery: () => query,
@@ -404,17 +409,20 @@ const appAdapter = {
   numpadAssign: (id, slot) => revGuard(() => window.api.numpadAssign(id, slot, clipRevOf(id)), false),
   numpadUnassign: (slot) => window.api.numpadUnassign(slot),
   toggleGroup: (id, group) => revGuard(() => window.api.groupAssign(id, group, clipRevOf(id)), false), // applyGroupAssign toggles
-  createGroup: async (name) => { await window.api.groupCreate(name); await refreshGroups({ render: false }); },
+  // "todo, forge" creates (or reuses) both: main answers with the tag names.
+  createGroup: async (text) => { const names = await window.api.groupCreate(text); await refreshGroups({ render: false }); return names; },
   deleteGroup: async (group) => {
     // Drop every group: / -group: token of the deleted group from the query.
     query = Core.search.stripFacet(query, { kind: 'group', value: group });
     if (typeof searchBox !== 'undefined' && searchBox) searchBox.setQuery(query);
-    await window.api.groupDelete(group);
+    const result = await window.api.groupDelete(group); // { ok, name, ids, shared }: what its Undo puts back
     await refreshGroups({ render: false });
+    return result;
   },
+  restoreGroup: async (result) => { await window.api.groupRestore(result); await refreshGroups({ render: false }); },
   deleteClip: (id) => revGuard(() => window.api.deleteItem(id, clipRevOf(id)), false),
   clearUnpinned: () => window.api.deleteAll(),
-  setGroupSharedAi: (group) => window.api.setGroupSharedAi(group, !aiSharedGroups.has(group)),
+  setGroupSharedAi: (group, shared) => window.api.setGroupSharedAi(group, shared), // shared: the switch's new state
   // Always the id-based path: window.api.copy() only takes a string, so it
   // would silently drop the clip's html/rtf. paste(id) puts every captured
   // format on the clipboard for both text and image clips.
@@ -447,11 +455,7 @@ const appAdapter = {
   groupAssignMany: (ids, group, shouldHave) => revGuard(() => window.api.groupAssignMany(Core.revisionTargets(ids, clipRevOf), group, shouldHave), false),
   pasteMany: (ids) => window.api.pasteMany(ids),
   startUnify: (ids) => window.api.startUnify(ids),
-  offerUndo: ({ count, undo }) => Core.showActionToast(toast, {
-    message: `Deleted ${count} clip${count === 1 ? '' : 's'}`,
-    actionLabel: 'Undo',
-    onAction: undo,
-  }),
+  offerUndo: ({ message, undo }) => Core.showActionToast(toast, { message, actionLabel: 'Undo', onAction: undo }),
   toast: (msg) => showToast(msg),
   render: () => rerenderList(), // view-only re-render (expand/filter): no IPC
   refresh: async () => { await refresh({ force: true }); if (document.getElementById('settingsView').classList.contains('show')) openSettings(); }, // after a mutation: re-fetch history THEN re-render settings if open (await so the settings panel reads rebuilt indexes, not stale ones)
@@ -486,9 +490,12 @@ document.addEventListener('wheel', (e) => controller.onWheel(e), { passive: fals
 document.addEventListener('dragstart', (e) => controller.onDragstart(e));
 document.addEventListener('mouseover', (e) => controller.onMouseover(e));
 document.addEventListener('mouseout', (e) => controller.onMouseout(e));
+// Any press in the popup, the search field included, ends the quick keys.
+document.addEventListener('pointerdown', (e) => controller.onPointerdown(e), true);
 
-// Popup reset (called by the main process when the window is shown).
+// Popup reset (called by the main process when the window is shown and hidden).
 window.resetPopupState = function() {
+  controller.armQuickKeys(); // 1-9 and N act until the first click or other key
   appDialogs.dismiss();
   controller.closeMenu(); // a popover left open at blur-hide would eat keys on re-show
   controller.clearSelection({ paint: false });
@@ -498,6 +505,7 @@ window.resetPopupState = function() {
   document.getElementById('mainView')?.classList.remove('hidden');
   document.body.style.pointerEvents = '';
   searchBox.closeOptions({ instant: true }); // every open starts with the options panel shut
+  cancelShortcutRecording(); // Settings closed above: a recording never outlives its row
   window.focusSearch();
 };
 
@@ -524,20 +532,6 @@ document.getElementById('copyDiagnostics').addEventListener('click', async () =>
 });
 
 // --- Search ---
-searchEl.addEventListener('keydown', e => {
-  // A digit typed while a menu or popover is open belongs to it, never a
-  // quick-paste (typing "1ndex" with the + picker open pasted slot 1).
-  if (controller.isMenuOpen()) return;
-  if (query === '' && !e.altKey && !e.ctrlKey && !e.metaKey && e.key >= '1' && e.key <= '9') {
-    const n = +e.key;
-    const nmap = numpadMap();
-    if (n in nmap) {
-      e.preventDefault();
-      window.api.numpadPasteAndHide(n);
-      return;
-    }
-  }
-});
 const searchClear = document.getElementById('searchClear');
 // Shared query-state change path (typed input AND autocomplete-applied tokens).
 function onQueryChanged(v) {
@@ -748,44 +742,89 @@ function shortcutLabel(accelerator) {
     .replace(/\+/g, ' + ');
 }
 
+// The recordable shortcuts: their Settings rows (the shared settings body)
+// and the main-process setter each recording is saved through. canTurnOff:
+// the shortcut may be none even though its default is a chord (the setter
+// takes SHORTCUT_OFF; Windows' Win+N then stays Windows').
+const SHORTCUT_OFF = 'none';
+const SHORTCUT_KINDS = {
+  show: { status: 'shortcutStatus', record: 'shortcutRecord', reset: 'shortcutReset', set: (s) => window.api.setShowShortcut(s) },
+  quickPaste: { status: 'quickPasteStatus', record: 'quickPasteRecord', reset: 'quickPasteReset', set: (s) => window.api.setQuickPasteShortcut(s) },
+  newNote: { status: 'newNoteShortcutStatus', record: 'newNoteShortcutRecord', reset: 'newNoteShortcutReset', set: (s) => window.api.setNewNoteShortcut(s),
+    canTurnOff: (info) => !!info.newNoteDefault },
+};
+
 function shortcutStatusEl(kind) {
-  return document.getElementById(kind === 'quickPaste' ? 'quickPasteStatus' : 'shortcutStatus');
+  return document.getElementById(SHORTCUT_KINDS[kind].status);
 }
 
 function shortcutRecordEl(kind) {
-  return document.getElementById(kind === 'quickPaste' ? 'quickPasteRecord' : 'shortcutRecord');
+  return document.getElementById(SHORTCUT_KINDS[kind].record);
 }
 
 function shortcutResetEl(kind) {
-  return document.getElementById(kind === 'quickPaste' ? 'quickPasteReset' : 'shortcutReset');
+  return document.getElementById(SHORTCUT_KINDS[kind].reset);
+}
+
+// The row's reset slot holds the one action its state has: back to the
+// default once changed (restart_alt), Turn off at a default chord that can be
+// off (close), else nothing, the slot kept so the row never shifts.
+function renderShortcutReset(kind, info, custom) {
+  const button = shortcutResetEl(kind);
+  if (!button.dataset.resetTitle) button.dataset.resetTitle = button.title;
+  const canTurnOff = SHORTCUT_KINDS[kind].canTurnOff;
+  const off = !custom && !!(canTurnOff && canTurnOff(info));
+  const title = off ? 'Turn off' : button.dataset.resetTitle;
+  button.dataset.apply = off ? SHORTCUT_OFF : '';
+  button.title = title;
+  button.setAttribute('aria-label', title);
+  button.querySelector('.mi').textContent = off ? 'close' : 'restart_alt';
+  button.style.visibility = custom || off ? 'visible' : 'hidden';
 }
 
 function setShortcutStatus(kind, message, isError = false) {
   Core.setSettingHelp(shortcutStatusEl(kind), message, isError ? 'error' : '');
 }
 
+// A start waits for main to suspend the shortcuts; a stop in that wait ends
+// the start there (the generation moved) and still resumes them.
+let shortcutRecordStarting = false;
+let shortcutRecordGen = 0;
 function stopShortcutRecording({ resume = true } = {}) {
   const kind = shortcutRecording;
+  const starting = shortcutRecordStarting;
   shortcutRecording = null;
-  for (const button of [shortcutRecordEl('show'), shortcutRecordEl('quickPaste')]) {
+  shortcutRecordStarting = false;
+  shortcutRecordGen += 1;
+  for (const button of Object.keys(SHORTCUT_KINDS).map(shortcutRecordEl)) {
     if (button) button.classList.remove('recording');
   }
-  if (resume && kind && window.api.resumeShortcuts) {
+  if (resume && (kind || starting) && window.api.resumeShortcuts) {
     window.api.resumeShortcuts().catch(() => {});
   }
   return kind;
 }
 
+// A recording lives only while its row is on screen: Esc, the popup hiding or
+// showing (resetPopupState) and Settings closing all cancel it the same way,
+// which resumes the shortcuts main suspended for it and puts the row's label
+// back. (Left running, the recorder ate every key the search got and saved the
+// next chord as a global shortcut.)
+async function cancelShortcutRecording() {
+  if (!shortcutRecording && !shortcutRecordStarting) return;
+  stopShortcutRecording();
+  const settings = await window.api.getSettings().catch(() => null);
+  if (settings) renderShortcutSettings(settings);
+}
+
 function renderShortcutSettings(settings, { clearStatus = true } = {}) {
   const info = settings.shortcut_info || { show: 'CommandOrControl+Shift+V', custom: false };
   const record = shortcutRecordEl('show');
-  const reset = shortcutResetEl('show');
   record.textContent = shortcutLabel(info.show);
   record.title = info.show;
   record.classList.remove('recording');
-  reset.style.visibility = info.custom ? 'visible' : 'hidden';
+  renderShortcutReset('show', info, info.custom);
   const quickRecord = shortcutRecordEl('quickPaste');
-  const quickReset = shortcutResetEl('quickPaste');
   const quickShortcut = info.quickPaste || '';
   if (quickShortcut) {
     quickRecord.textContent = `${shortcutLabel(quickShortcut).replace(/\s\+\s[1-9]$/, '')} + 1-9`;
@@ -796,10 +835,16 @@ function renderShortcutSettings(settings, { clearStatus = true } = {}) {
   }
   quickRecord.classList.toggle('unset', !quickShortcut);
   quickRecord.classList.remove('recording');
-  quickReset.style.visibility = info.quickPasteCustom ? 'visible' : 'hidden';
+  renderShortcutReset('quickPaste', info, info.quickPasteCustom);
+  const noteRecord = shortcutRecordEl('newNote');
+  const noteShortcut = info.newNote || '';
+  noteRecord.textContent = noteShortcut ? shortcutLabel(noteShortcut) : 'Not set';
+  noteRecord.title = noteShortcut || 'Record new note shortcut';
+  noteRecord.classList.toggle('unset', !noteShortcut);
+  noteRecord.classList.remove('recording');
+  renderShortcutReset('newNote', info, info.newNoteCustom);
   if (clearStatus) {
-    setShortcutStatus('show', '');
-    setShortcutStatus('quickPaste', '');
+    for (const kind of Object.keys(SHORTCUT_KINDS)) setShortcutStatus(kind, '');
   }
 }
 
@@ -868,9 +913,7 @@ function shortcutFromEvent(e) {
 
 async function applyShortcut(kind, shortcut) {
   stopShortcutRecording({ resume: false });
-  const result = kind === 'quickPaste'
-    ? await window.api.setQuickPasteShortcut(shortcut)
-    : await window.api.setShowShortcut(shortcut);
+  const result = await SHORTCUT_KINDS[kind].set(shortcut);
   if (!result || !result.ok) {
     const settings = await window.api.getSettings().catch(() => null);
     if (settings) renderShortcutSettings(settings, { clearStatus: false });
@@ -883,9 +926,13 @@ async function applyShortcut(kind, shortcut) {
 
 async function startShortcutRecording(kind) {
   stopShortcutRecording();
+  const gen = shortcutRecordGen;
+  shortcutRecordStarting = true;
   if (window.api.suspendShortcuts) {
     await window.api.suspendShortcuts().catch(() => {});
   }
+  if (gen !== shortcutRecordGen) return; // cancelled while main suspended them (that stop resumed them)
+  shortcutRecordStarting = false;
   shortcutRecording = kind;
   const record = shortcutRecordEl(kind);
   record.classList.add('recording');
@@ -893,10 +940,10 @@ async function startShortcutRecording(kind) {
   setShortcutStatus(kind, '');
 }
 
-document.getElementById('shortcutRecord').addEventListener('click', () => startShortcutRecording('show'));
-document.getElementById('quickPasteRecord').addEventListener('click', () => startShortcutRecording('quickPaste'));
-document.getElementById('shortcutReset').addEventListener('click', () => applyShortcut('show', ''));
-document.getElementById('quickPasteReset').addEventListener('click', () => applyShortcut('quickPaste', ''));
+for (const kind of Object.keys(SHORTCUT_KINDS)) {
+  shortcutRecordEl(kind).addEventListener('click', () => startShortcutRecording(kind));
+  shortcutResetEl(kind).addEventListener('click', (e) => applyShortcut(kind, e.currentTarget.dataset.apply || ''));
+}
 
 document.addEventListener('keydown', async (e) => {
   if (!shortcutRecording) return;
@@ -904,9 +951,7 @@ document.addEventListener('keydown', async (e) => {
   e.preventDefault();
   e.stopPropagation();
   if (e.key === 'Escape') {
-    stopShortcutRecording();
-    const settings = await window.api.getSettings().catch(() => null);
-    if (settings) renderShortcutSettings(settings);
+    await cancelShortcutRecording();
     return;
   }
   const shortcut = shortcutFromEvent(e);
@@ -1186,6 +1231,7 @@ async function renderConflicts() {
 }
 
 function closeSettings() {
+  cancelShortcutRecording();
   document.getElementById('settingsView').classList.remove('show');
   document.getElementById('mainView').classList.remove('hidden');
   searchEl.focus();

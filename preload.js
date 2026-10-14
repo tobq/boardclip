@@ -31,11 +31,13 @@ contextBridge.exposeInMainWorld('api', {
   saveSettings: (settings) => ipcRenderer.invoke('save-settings', settings),
   setShowShortcut: (shortcut) => ipcRenderer.invoke('set-show-shortcut', shortcut),
   setQuickPasteShortcut: (shortcut) => ipcRenderer.invoke('set-quick-paste-shortcut', shortcut),
+  setNewNoteShortcut: (shortcut) => ipcRenderer.invoke('set-new-note-shortcut', shortcut),
   suspendShortcuts: () => ipcRenderer.invoke('suspend-shortcuts'),
   resumeShortcuts: () => ipcRenderer.invoke('resume-shortcuts'),
   resolveShowShortcut: (shortcut) => ipcRenderer.invoke('resolve-show-shortcut', shortcut),
-  groupCreate: (name) => ipcRenderer.invoke('group-create', name),
-  groupDelete: (name) => ipcRenderer.invoke('group-delete', name),
+  groupCreate: (text) => ipcRenderer.invoke('group-create', text), // -> the tag names ("a, b" = two), or false
+  groupDelete: (name) => ipcRenderer.invoke('group-delete', name), // -> { ok, name, ids, shared }, or false
+  groupRestore: (payload) => ipcRenderer.invoke('group-restore', payload), // the delete's Undo
   groupAssign: (id, group, rev) => ipcRenderer.invoke('group-assign', id, group, rev),
   copyImagePath: (id) => ipcRenderer.invoke('copy-image-path', id),
   openEditor: (id, options) => ipcRenderer.invoke('open-editor', id, options || {}),

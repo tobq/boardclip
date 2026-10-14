@@ -19,8 +19,59 @@
 - **History item ids**: text items use a sha256 content key (`txt:{hash}`); image items use their content-addressed image filename (`img:{file}`).
 - **`pin` field** on history items: `null`/absent means unpinned; an object means pinned. Shape is `{ number?: 1-9, groups?: string[], updatedAt?: number }`.
 - **Legacy migration**: `lib/clipboard-model.js` migrates old `pinned`/`group` fields into the unified `pin` object before merging or rendering.
-- **Groups**: group names live in `settings.groups`; item membership lives in `item.pin.groups`.
+- **Groups (tags) are FLAT and case-insensitive (14 Oct 2026, owner)**: names live in `settings.groups`
+  (one stored spelling per tag), membership in `item.pin.groups`. ONE tag rule in
+  `site/shared/clip-search.js` (top section: `tagKey`, `splitTagInput`, `expandTagNames`,
+  `tagSpellings`...), required by the model, main, mcp-core, the UI and the demo. A '/' in a NEW name is a
+  plain character; a comma separates several tags typed or sent in one go ("todo, forge"); a typed name
+  reuses an existing tag's spelling; two spellings meeting in a sync keep the one with the fewest capitals,
+  then code-point order. Nesting is gone everywhere (no tree, no families, no parent roll-up).
+- **Flat-tags cutover** (`clipboardModel.planTagState`, pure): on a device's first start of the flat build
+  (`groups_flattened_at` unset, per device) every '/' name is retired into its parts in
+  `settings.group_splits` (synced, PERMANENT), so an old device, a stale provider, an old backup or an
+  agent still writing "todo/forge" lands as todo + forge forever. main's `migrateTagsAtLoad` (first thing
+  in whenReady, so a rejected second instance never copies anything) copies history + settings +
+  conflicts and an undo record (each changed clip's old tags; ids never change) into
+  `clipboard-RECOVERED/flatten-groups-<ISO>/` BEFORE changing anything (no copy = no change), applies the
+  plan, and `persistTagMigration` writes settings, then history. No done flag and NO one-off edits: every
+  step is a rule each later read re-derives (a torn start, an MCP read between the writes, a stale copy all
+  land on the same clips). AI share list at the cutover: a tag is shared only if EVERY name it came from
+  was shared; a split part is never the AI tag ('AI/drafts' = drafts) and an old private 'ai'/'Ai' tag
+  becomes "ai (old)" (`renameAiTwins`; typed 'ai' IS the AI tag), so no clip can become AI-visible
+  through AI; one made visible through another shared tag unshares it. A split reaching a device after its
+  own cutover follows the same rule (`shareListAfterNewSplits`, only unshares).
+  **Plain '/' names vs a late cutover**: a NEW name with a '/' typed or sent on a flat device
+  (`registerTypedTags`, never names arriving with data) goes into synced, permanent
+  `settings.group_literals`, which overrules any split of it (`splitMapOf` = the split map every
+  consumer uses). A device on its first flat start cannot know it (an old build drops the key) and splits
+  it, moving no clock. So in a merge two copies of a clip with the SAME tags clock, one holding the name
+  and the other its parts instead, are one list seen two ways: `rejoinLiterals` joins the parts back
+  before they merge, on whichever device meets them first (a ledger-based un-split on the late device
+  alone was tried and failed the legacy-peer QA: it pushed its split copies before it pulled the record,
+  and the equal-clock union kept both). Owner's PC, 14 Oct: 343 clips, tags 31 -> 28, AI-visible 469 -> 469.
+  **History rules (verified by experiment, do not regress):** the flatten never moves a clock (a now-stamp
+  revived clips deleted on the Mac and re-pinned unpinned ones; even clock+1 dropped a tag edit still in
+  transit), never writes a group tombstone for a nested name (it stripped memberships on old copies), and
+  `normalizeItemTags` returns a COPY (a merge gets the live history objects; an in-place change hides
+  from syncMerge's JSON compare and historyChangedBy). `mergeHistories` normalises BOTH sides and keeps
+  each copy's raw rev, so a delete recorded against the nested form still matches (`tombstoneSuppresses`
+  rawRev); local clips it changes come back as `normalised` report events (main counts them as touched and
+  logs `groups.flatten.straggler`). The MCP helper reads both files through the same plan (`readState`).
+  Proofs: `test/flat-tags.test.js`, `node scripts/qa-flat-tags.js` (first start, restart, torn write,
+  input after the cutover, delete + Undo).
 - **Tombstones**: deleted items and groups are retained for 30 days in settings so sync cannot resurrect removals from stale providers.
+  Group tombstones `{ name, deletedAt, restoredAt?, anyCase? }`: this build writes `anyCase` (any
+  spelling, one record per tag); a record without it came from a build before 14 Oct, when Work and work
+  were two tags, and deletes that exact spelling only, on the RAW name before respelling (`rawTagNames`),
+  so a live twin survives. A delete not re-created takes the tag off EVERY copy (no clock exceptions: a
+  "kept" membership would point at a tag missing from the list); re-creating (`registerTags` stamps
+  `restoredAt` on every record of the tag, the old "re-created within 30 days, deleted again at the next
+  sync" bug) keeps the tag, but a copy last tagged at or before the delete still loses it (a stale copy
+  cannot bring old memberships back). `applyGroupDelete` stamps ONLY the deleted tag's clips (it used to
+  stamp every tagged clip: 470 at once on 11 Oct), refuses the AI tag and returns { name, ids, shared,
+  index } for the Undo (`group-restore` IPC, back at its place). A deleted shared tag's unshare stamp goes
+  out only after the 15 s Undo window (or at quit), so an Undo shares or unshares nothing elsewhere. A
+  clip delete's Undo stamps `tsUpdatedAt`, so the restored copy beats the delete a peer already has.
 - **Version-guarded delete tombstones (2026-07-14)**: because ids are content hashes, a bare tombstone would clobber a *legitimate re-copy/edit of the same content after a delete* (the cross-device "surprise" — you delete, re-copy the same text, next sync drops your fresh copy because the tombstone still syncs from the other device). `mergeHistories` now uses `tombstoneMap` (id → `deletedAt`) not a plain id-Set, and drops an item **only if `itemMutationClock(item) <= deletedAt`**. A copy touched AFTER the delete (newer capture `ts`/`updatedAt`, pin, title, or `tsUpdatedAt`) beats the tombstone and survives; a stale pre-delete copy on a lagging provider still stays deleted (resurrection guard intact). Convergent + idempotent — the tombstone stays in settings and ages out at 30 days without re-dropping the live item. Guard is on the **plain-delete branch only** (`!targetKey`); the supersede/edit-lineage branch is untouched. Tests in `test/clipboard-model.test.js` (re-add-after-delete survives, stale copy stays deleted, pin-touch-after-delete survives).
 - **Edit-lineage cycles + broken chains (found 2026-10-03, fixed in `liveSupersedeLinks`/`deletedAfterEdit`)**:
   typing a change and taking it back inside one editor session (A->B->A, each step an idle commit)
@@ -56,9 +107,43 @@
   adapter `copyClip(id)` (also the settings numpad slot's copy) over the `copy-clip` IPC (formerly the
   misnamed `paste` IPC: setClipboardToItem, no paste; the poller then sees it like any copy, so the clip
   moves to the top as a paste does) + `copyMany(ids)` over `copy-many` (`joinedClipText` shared with
-  pasteMany, `lastText` set so the join is never captured). The empty-search digit quick-paste stands
-  down while a menu is open (`controller.isMenuOpen()`): typing "1ndex" into the + picker pasted slot 1.
+  pasteMany, `lastText` set so the join is never captured). The popup's quick keys never fire under
+  an open menu (typing "1ndex" into the + picker once pasted slot 1): see "Popup quick keys".
   QA: `qa-ui-shots --only popup-copy` (fails with the guard removed).
+- **Popup quick keys (14 Oct 2026, owner: "a quick paste shortcut sort of feel")**: right after the
+  popup opens with the search empty, 1-9 paste a slot and N opens a new note (the demo: copy the slot /
+  its note window). ONE implementation in the shared controller (`quickKeyStep`, `armQuickKeys`,
+  `onPointerdown`), armed in `resetPopupState` (it runs on show AND hide) and the demo's openPopup.
+  Any mouse press in the popup (capture phase, the search field included) or any key but a lone modifier
+  ends them until the next open; never under a menu, dialog or Settings; one quick key per open; Shift+N
+  types N; a digit is the character the key types (AZERTY Shift+&), N follows Core.newNoteKey's layout
+  rule (the Latin letter, else the KeyN position). A key an IME takes (`isCompositionKey`: key 'Process'
+  / keyCode 229, which Windows Chrome sends with isComposing still false, or isComposing) is never one and
+  ends them, in the popup and the editor's Ctrl/Cmd+N alike. The demo arms only in openPopup, never at
+  page load (its popup starts unfocused and the click that focuses it would end them). The app's own
+  empty-search digit handler on the search field is gone. QA: `node scripts/qa-quick-keys.js`.
+- **Win+N = new note from any app**: `new_note_shortcut` (per device, never synced). Windows default
+  Super+N through the LL hook (`WIN_CHORDS` beside Win+V: one fire per press, keyup swallowed, the
+  Start-menu suppression tap; off while a shortcut is being recorded, so Win+N itself cannot be
+  recorded, the same limit Win+V has); Windows 11's own Win+N (notification panel) is taken over. A
+  recorded chord goes through globalShortcut; macOS has none by default. Settings row "New note
+  shortcut" beside Quick paste shortcut (one `SHORTCUT_KINDS` table in index.html, one recorder).
+  Every shortcut save goes through `commitShortcutSetting`, which ends the recording suspension first
+  (until 14 Oct a recorded shortcut stayed unregistered until a restart). A recording lives only while
+  its row shows: `cancelShortcutRecording` (Esc, `resetPopupState`, `closeSettings`) resumes the
+  shortcuts and restores the label; a cancel during the suspend IPC ends that start too (left running,
+  the capture-phase recorder ate the search's keys and saved the next chord, e.g. Ctrl+V, globally). Off = `new_note_shortcut:
+  'none'` (`SHORTCUT_OFF`, Windows; on a Mac off is the unset default), shown as "Not set"; the row's
+  reserved reset slot holds the one action for the state (`renderShortcutReset`: Turn off at the
+  default, Reset otherwise). The action is openEditor(null) as a hand-off. ONE claim rule for the hook
+  (`lib/windows-hook-policy.js` `createHookClaimer`, unit-tested in `test/windows-hook.test.js`, shared
+  byte layout `STATE`): exact modifiers (Win+Ctrl/Shift/Alt+V or +N, e.g. Narrator settings, pass to
+  Windows untouched; Ctrl/Shift/Alt+Numpad no longer pastes, so Alt codes work), one verdict per press
+  (repeats and the keyup follow the keydown), every claimed Win chord taps the Start-menu suppression
+  key. The live hook cannot run in the QA sandbox (it never registers shortcuts): check Win+N by hand
+  after an install. A native-DLL hook rewrite is waiting unpushed in another checkout
+  ([Keyboard hook must never slow typing](https://forge.fast/#/c/forge/6ad9fc4e-202f-44aa-919e-e39099431b4d)):
+  it must take over this claim rule, Win+N included, and merge into the one windows-hook-policy.js.
 - **The UI is moving to React + Tailwind on @twoshot/ui-kit (ticket 2026-10-11)**: ONE migration, with
   Forge's menu/selection family lifted into the kit:
   [BoardClip on React + shared ui-kit menus](https://forge.fast/#/c/forge/017929b2-9222-44fc-87c0-feca12cb1d7d),
@@ -293,12 +378,9 @@ Otherwise the key passes through so normal numpad typing works. Main thread call
   under the sideways fade (`attachSideScroll` = `attachScrollFade(el, preset, {axis:'x'})` + a
   plain wheel scrolls it) and shows every chip, wrapped, while the options panel is open (the
   chips glide through the ONE `Core.flipChildren`, the strip's height is its own WAAPI glide;
-  instant under reduced motion or a hidden page). Its top-level group submenus
-  are `popover="manual"` shown in the TOP LAYER by `installSubmenuAutoflip`
-  (`placeTopLayerSubmenu`): a scrolling, masked strip would clip a nested absolute submenu, and a
-  mask clips every descendant, fixed ones included. They follow their chip when the strip scrolls
-  (closed once it leaves view) and close on window blur and `controller.closeMenu()` (popup reset;
-  `Core.closeTopLayerSubmenus`): `popover="manual"` has no light dismiss. The strip fade is
+  instant under reduced motion or a hidden page). Chips have no dropdowns (tags are flat), so the
+  strip needs no top-layer submenus; never put an absolute submenu inside it (the scroll and the
+  mask clip every descendant, fixed ones included). The strip fade is
   'panel' (36 px) so it always overlaps the last visible chip; a wheel is taken only when the strip
   actually moves (at an end the page scrolls). A toggle mid-glide reverses from the drawn rects.
   QA: `qa-ui-shots --only popup-chips-many`. macOS needs
@@ -445,6 +527,13 @@ build could re-trigger the race.
   (`placedBounds`): only a user move/resize sets the saved spot, else untouched cascades drifted
   the next start. QA: `node scripts/qa-window-spawn.js` (it counts `popup.hide` diagnostics: a
   parked popup stays isVisible()).
+- **Ctrl+N / Cmd+N in the note editor = New note**: editor.html's document keydown saves the open
+  note, then calls `editorApi.newNote()` = the popup button's own `new-note` IPC -> `openEditor(null)`
+  (a keyboard open, so a hand-off); a key repeat opens nothing, the merge view none. The chord test is
+  `Core.newNoteKey`: the platform's OWN modifier only. On a Mac Ctrl+letter is text navigation (Ctrl+N =
+  line down), so a new chord never accepts `ctrlKey || metaKey` there; Shift/Alt held = another chord
+  (AltGr = Ctrl+Alt types characters); non-Latin layouts match `code`. Browsers keep Ctrl/Cmd+N, so
+  the demo binds none.
 - **Settings auto-save** — max age/size save on input change, no Save button
 - **`saveSettingsFile({ localOnly: true })`** for per-machine keys (popup/editor/viewer geometry, and a
   `save-settings` body made only of `LOCAL_ONLY_SETTING_KEYS`, e.g. `image_preview_height`): writes the
@@ -500,14 +589,15 @@ build could re-trigger the race.
 
 - **Shape:** `mcp/boardclip-mcp.js` is a stdio MCP server (`@modelcontextprotocol/sdk` v1.x) spawned by AI clients. It reads shared clips straight from the JSON files (works app-closed); anything beyond the allowlist / any mutation / clipboard-write forwards to the running app over a **named pipe / Unix socket** control channel (`lib/control-server.js` in main.js, `lib/control-client.js` in the helper). NOT HTTP, no port. The helper never writes data files -> no races.
 - **Allowlist by curation (fully opt-in):** a clip is AI-visible iff it's in a group listed in `settings.groups_shared_with_ai` (the auto-created **"AI"** group is always shared). Non-shared = metadata only. `lib/mcp-core.js` is the PURE boundary (whitelist + shaping), reused by both helper and app. There is deliberately NO "looks like a secret" auto-withholding — group sharing is the single opt-in gate, so a clip the user put in a shared group is shared as-is. (A `secret-guard` heuristic layer existed and was removed as redundant/annoying; don't reintroduce it.)
-- **Gating:** `mcpNeedsApproval` -> delete/edit/clipboard-write/paste + beyond-allowlist reads ALWAYS prompt; pin/group/numpad/add are free on *shared* clips. Approval modal = a native frameless BrowserWindow (`mcp-approval.html`, NOT a browser) with once/session/always-per-tool + deny-by-default countdown; `ai_always_allow` persists grants. Modal auto-sizes via the `approval-resize` IPC.
+- **Gating:** `mcpNeedsApproval` -> delete/edit/clipboard-write/paste + beyond-allowlist reads ALWAYS prompt; pin/group/numpad/add are free on *shared* clips. add_clip asks when its text is already a clip the AI cannot read (before 14 Oct it re-tagged such a clip silently); delete_group asks for a group not shared with AI (it could strip private groups) and refuses the AI group. Group params take "a, b" and a retired nested name (its parts), through the model's `tagInputNames` (main and mcp-core share it); assign_group is ONE decision for several groups (`planTagToggle`: add the missing, else remove all) and returns added/removed; list_clips' group = clips with ALL those groups among their shared ones; search docs carry only shared group names; search_clips rewrites a retired `group:a/b` token whose parts are all shared and returns `rewrittenQuery`. Approval modal = a native frameless BrowserWindow (`mcp-approval.html`, NOT a browser) with once/session/always-per-tool + deny-by-default countdown; `ai_always_allow` persists grants. Modal auto-sizes via the `approval-resize` IPC.
   **The modal must explain the ACTION, not show the clip (2026-09-03, owner: "I never understand
   what is actually happening")**: `buildApprovalRequest` returns `title` (verb + object, e.g. "Add
-  clip to group X" / "Remove clip from group X" - assign_group is a TOGGLE, so membership is
-  checked), `explain` (one plain sentence: what changes and what does not, e.g. "tagged ..., its
+  clip to group X" / "Remove clip from groups X and Y", built from main's `planTagToggle`, with a
+  sentence for a retired nested name and one when the change makes a clip readable or unreadable by
+  AI), `explain` (one plain sentence: what changes and what does not, e.g. "tagged ..., its
   text is not changed and nothing is deleted" / "removed from your history on every device, text
   stays in the local backups"), `why` (why it is asking: always-gated vs not-in-a-shared-group),
-  `facts` ([Clip size, Captured, Groups, Numpad]) and a LABELLED `preview` ("Clip text" / "New
+  `facts` ([Clip size, Captured, Groups (before -> after), Numpad]) and a LABELLED `preview` ("Clip text" / "New
   text" / "Text to append" / "Query"). The modal also states that Always/Session apply to that
   kind of action only. Sandbox proof: `node scripts/qa-approval-shot.js` (isolated instance
   with `ai_access_enabled`, `BOARDCLIP_MCP_DISCOVERY` + `BOARDCLIP_MCP_PIPE_TAG` overrides and a
@@ -532,10 +622,23 @@ build could re-trigger the race.
   timeout held past 8 s, resume, client_gone).
 - **Discovery:** app writes `~/.boardclip/mcp.json` `{dataDir,pipePath,secret,command,args,env,pid}` on launch when enabled; helper reads it (falls back to default userData for read-only). Registered command is **electron-as-node** (`process.execPath` + `ELECTRON_RUN_AS_NODE=1` + entry path) - works for source + packaged.
 - **`edit_clip` tool (replace/append clip text):** because text ids are content-addressed (`txt:{sha256}`), there is NO in-place text mutation - editing changes the id, which is why an "edit" was previously an add+delete dance. The tool REUSES `applyExternalTextEdit` (the same metadata-preserving core the built-in editor + conflict/unify flows use): when `originalText` matches the current item, `clipboardModel.applyTextEdit` mutates the item in place, re-derives its content-key id, keeps pin/groups/numpad, and tombstones the old id - so all metadata survives automatically. Returns the NEW id. `append:true` newline-joins onto existing text (done app-side, so it works on non-shared clips too); else it replaces. In `MCP_ALWAYS_GATED` (lossy overwrite -> prompts like delete, NOT free-on-shared; users can "always allow" per-tool). Images can't be edited. Don't hand-roll add+delete for an edit.
-- **Reuse, don't duplicate:** the `apply*` functions in main.js (applyPinToggle/applyGroupAssign/applyDeleteItem/...) are the SINGLE mutation path for BOTH the IPC handlers and the MCP dispatch. HMAC auth is `lib/hmac-auth.js`, shared by P2P + the control channel. DEFAULT_SETTINGS adds `ai_access_enabled/groups_shared_with_ai/ai_always_allow/ai_approval_timeout_sec/mcp_secret` (mcp_secret + the 3 ai_* prefs are excluded from sync in `remoteSettingsPayload`; groups_shared_with_ai DOES sync).
+- **Reuse, don't duplicate:** the `apply*` functions in main.js (applyPinToggle/applyGroupAssign/applyDeleteItem/...) are the SINGLE mutation path for BOTH the IPC handlers and the MCP dispatch. HMAC auth is `lib/hmac-auth.js`, shared by P2P + the control channel. DEFAULT_SETTINGS adds `ai_access_enabled/groups_shared_with_ai/ai_always_allow/ai_approval_timeout_sec/mcp_secret` (mcp_secret + the 3 ai_* prefs are excluded from sync in `remoteSettingsPayload`). The share LIST is per device and never written to remote (until 14 Oct it was written but never read back); explicit switch flips sync per tag through `ai_share_stamps` ({ tagKey: { name, shared, at } }, newest flip wins, a tie never shares, `mergeShareStamps` / `applyShareStamps`); nothing stamps at the cutover, so an update shares or unshares nothing. A sync keeps the list in the tags' stored spellings (`foldRemoteState`). Sharing is case-insensitive: `sharedGroupSet().has(name)` takes any spelling.
 - **Installers:** `lib/mcp-installers.js` - one shared JSON-map adapter factory covers most clients; Codex (TOML), VS Code (`servers`+type), Zed (nested command) are variants. Idempotent + non-clobbering. Settings shows detected-only + a "More" expander.
 - **Testability seams:** `BOARDCLIP_DATA_DIR` overrides the data dir; `BOARDCLIP_MCP_DISCOVERY` overrides the discovery-file path. Use a fake HOME (+ USERPROFILE/APPDATA/XDG_CONFIG_HOME) to test the registrar without touching real client configs. `ensureAiGroupShared()` must run on BOTH enable and launch (idempotent) so a pre-enabled restart still has the AI group.
 - **Boundary invariants (don't regress):** (1) only SHARED group names are ever exposed (clipView/buildContext filter to `groups_shared_with_ai`); private group names never leave the boundary. (2) `mcpHandleRequest` re-checks `ai_access_enabled` AFTER the approval await, not just before.
+  (3) **No free answer may work as an oracle on private data (review, 14 Oct 2026):** the rev an AI holds is
+  `mcpCore.publicRev` (an HMAC of clipRevision keyed with `mcp_secret`; the plain rev hashes every group, so a
+  shared clip's private group names were brute-forceable); a clip not shared with AI has an opaque id
+  (`publicId` = `private:` + HMAC, `resolvePublicId` maps it back), so its real id (sha256 of the text, short
+  secrets recoverable offline) names nothing; `mcpResolveArgs` turns the AI's id + rev into the app's before
+  anything runs or any prompt opens (the renderer's id/rev are refused: QA sends `sb.aiRef(item)`); search_clips
+  never searches private clips and returns `nonSharedTotal` (the same for every query), never a match count;
+  list_context lists only shared groups and no private-group count; the group tools answer with shared names as
+  stored and every other name as typed (`notShared`, `groupToolView`), the same whether a private group of that
+  name exists or not, so naming a private group stays FREE (agents file into "lawyer notes"; a prompt only for
+  existing private names would itself be the oracle); rewrittenQuery only for retired names whose parts are all
+  shared; add_clip of text that is already a private clip asks (a free one would confirm a guessed text);
+  delete_group refuses the AI group. Residual, visible to the user only: a prompt vs a free answer.
 - **Per-user control channel:** the pipe (`\\.\pipe\boardclip-mcp-<user>`) / socket is per-user. Production is safe because the single-instance lock allows one BoardClip per user. BUT test instances launched with distinct `--user-data-dir` bypass that lock and will collide on EADDRINUSE + pile up as zombies (npx/electron children don't die from `timeout`/killing the wrapper PID) - always kill leftover `electron.exe` whose commandline contains your temp data-dir, and never kill the ones under `%APPDATA%/BoardClip` (the user's real app).
 - **Continue is intentionally NOT installed** - it uses a YAML `mcpServers:` list, not the shared JSON-map adapter. Add a dedicated YAML adapter to support it for real.
 
@@ -628,7 +731,8 @@ clear-all). All popup CSS + theme variables live in `site/shared/clipboard-popup
 - **Grammar** (colon-uniform, quote-aware, `-` negates): free text (ALWAYS literal) · `/re/`
   (one regex term, also `title:/re/` `text:/re/`) · `a OR b` (binds TIGHTER than side by side,
   Gmail's rule: `x a OR b` = x AND (a OR b)) · `( )` at any depth, `-( )` · `title:` · `text:`/
-  `body:` · `group:` · `is:pinned|image|text|numpad` · `num:1-9` · `since:`/`before:`
+  `body:` · `group:` (a tag: flat, any case, a '/' is part of the name; several side by side =
+  AND) · `is:pinned|image|text|numpad` · `num:1-9` · `since:`/`before:`
   (`7d`/`24h`/`30d`) · `len:>N` · `id:` · `sort:new|best`. `item.ts` is Unix SECONDS.
   Unknown `word:val` → stripped to `val` as free text + recorded in `parsed.unknown` for a
   hint. URL/Windows-path values (`http://`, `C:\`) are left verbatim. A quoted token is literal
@@ -661,11 +765,13 @@ clear-all). All popup CSS + theme variables live in `site/shared/clipboard-popup
   key unwraps `/group/` to `group:`, typing over a selection and IME/dead-key compositions go
   through the same edit, and every edit is undoable (`insertText`, one Ctrl/Cmd+Z per wrap).
   **Chip row = [builtins] | [or/and][selected][excluded] | [usable by use][greyed]**
-  (`renderFilterBar`): the cluster holds EXACTLY the values in the query (a sub-group is its own
-  chip there under its full name, work/api; its parent stays with the rest), between `.cluster-sep`
-  hairlines (keyed, so they fade too), led by a `.conn-toggle` once two or more of the dimension are
-  joined, or ONE under a remembered "and" (`Search.dimConnective(parsed, dim, joins)`: the visible
-  way back to "or"; a click =
+  (`renderFilterBar`): the cluster holds EXACTLY the values in the query (matched by tag key, so
+  `group:Forge` lights the forge chip; consumers pass the stored tags to `facetState`), between
+  `.cluster-sep` hairlines (keyed, so they fade too), led by a `.conn-toggle` once two or more of the
+  dimension are joined, or ONE under "and" (a tag by default: "and" greys what it would empty, so the
+  toggle is the only chip route to "or") or under a remembered non-default "or" (the way back)
+  (`Search.dimConnective(parsed, dim, joins)`; a lone kind of clip under the default "or" shows
+  nothing); a click =
   `setDimConnective`, written `group:A OR group:B` vs side by side); the options panel's Type row
   leads with the same `connToggleHtml`. Chips glide on every repaint (`Core.flipChildren`, FLIP via
   `element.animate`, keyed by data-group / data-filter / data-dim; a new one fades in, one that left
@@ -675,17 +781,19 @@ clear-all). All popup CSS + theme variables live in `site/shared/clipboard-popup
   controller's `filterIntent` reads the chip's own data-filter / data-group; adapters pass
   `applyFacet`/`setConnective` through, no per-consumer chip code). A second chip
   of a kind joins the first the way the user LAST flipped that kind's or/and (`facet_joins`
-  {group, type}, per device; numpad keys never "and": a clip has one key); an existing OR / AND
-  keeps the join it is written with. The census is keyed on it (`createCensusCache({ joins })`,
-  `openDims`): under a remembered "and" a lone value is a plain filter, so a chip "and" would
-  empty is greyed, never a click that returns nothing (seed QA groups that OVERLAP). Kinds of clip
-  picked under the default "or" never block each other structurally (`structuralReason` reads the
-  census's `open` dims: is:text then the Images chip = "text or image"). One choice
-  per group FAMILY (`group:Work` already holds `Work/Clients`): a picked group replaces its
-  selected parents and sub-groups (last click wins: a parent widens, a sub-group drills down,
-  the join kept), excluding a parent drops its selected sub-groups, an excluded sub-group under
-  an included parent stays ("Work except Clients"). A click on a value in an OR takes it out;
-  right-click excludes. Key / "Since..."
+  {group, type}, per device; numpad keys never "and": a clip has one key); with nothing remembered,
+  TAGS JOIN WITH AND (14 Oct 2026, owner: todo + forge = what todo/forge showed) and kinds of clip
+  with OR (`Search.DEFAULT_JOINS`, `dimJoin`; `normalizeJoins` stores only non-defaults, so an old
+  device's remembered tag join was reset once). An existing OR / AND keeps the join it is written
+  with. The census is keyed on it (`createCensusCache({ joins })`, `openDims`): under AND a lone tag
+  is a plain filter, so a chip AND would empty is greyed, never a click that returns nothing (seed QA
+  tags that OVERLAP). Kinds of clip picked under the default "or" never block each other
+  structurally (`structuralReason` reads the census's `open` dims: is:text then the Images chip =
+  "text or image"). There are no tag families (a picked tag never absorbs another). A typed
+  `group:todo/forge` whose parts are tags (and which is not itself a tag) gets the
+  `nested-group` problem with an exact fix, `group:todo group:forge` (`-( )` negated, `( )` in an
+  OR; `Search.flatGroupTokens`, also used by MCP's `flattenRetiredGroupTokens`). A click on a value
+  in an OR takes it out; right-click excludes. Key / "Since..."
   chips write their prefix into the field (the autocomplete offers values; `FIELD_EXAMPLE` is the
   tooltip example). Settings: `regex_search`, `facet_joins`, `find_regex`, `find_case` are
   LOCAL-ONLY (never synced); the hour-old `search_mode: 'regex'` migrates to `regex_search: true`
@@ -697,13 +805,13 @@ clear-all). All popup CSS + theme variables live in `site/shared/clipboard-popup
   several terms = one regex alternation). MCP `search_clips` takes the whole language; legacy
   `regex: true` = `legacyRegexQuery` (the free words as ONE /regex/). QA: `qa-popup-header`
   (regex typing, Alt+R wrap/unwrap, the cluster + or/and + exclude + glide + fade-out ghost, the
-  remembered join, the group family, the Type row),
+  remembered join, the AND default, case-insensitive chips, the Type row),
   `qa-ui-shots` `popup-chips-cluster` / `popup-search-regex-typing` / `popup-search-or-groups` /
   `editor-find-regex`.
 - **Group usage = ONE decayed score (2026-10-08, owner)**: `Search.groupWeights(list)` = each
-  group's clips weighted by `decayWeight(age, 14 d)` (ts moves on every use; parents count their
-  sub-groups; kept per list + hour). It orders the chip row (`buildTagTree(groups, {weights,
-  tier})`: usable chips first, then greyed, then structural, each by use), the group pickers and
+  tag's clips weighted by `decayWeight(age, 14 d)` (ts moves on every use; keyed by `tagKey`, no
+  roll-up; kept per list + hour). It orders the chip row (`Core.sortTags(groups, {weights,
+  tier})`, one flat list: usable chips first, then greyed, then structural, each by use), the group pickers and
   the group autocomplete, and nudges Best match (`GROUP_USE_WEIGHT` 8 for a clip of the most-used
   group). The ranking's recency term uses the same `decayWeight` (3-day scale). No per-clip use
   counter exists (a new primitive was not worth it): ts is the usage signal.
@@ -833,7 +941,7 @@ clear-all). All popup CSS + theme variables live in `site/shared/clipboard-popup
   on the reveal, open while the bar is hovered / focused); `updateTagStrip` (setTags) paints
   both and puts the clip's id on each. In a window a group name opens the picker (no list to
   filter; the picker's check removes it). The strip scrolls sideways under the same fade as the
-  chip row. `openGroupPickerAt` reuses `clipGroupTreeHtml` and the controller's mutations -
+  chip row. `openGroupPickerAt` reuses `clipGroupListHtml` and the controller's mutations -
   never duplicate a picker or mutation path. New notes supply `ensureClipId`: pin, # and + all
   commit first, re-query the id, then act; measure the anchor rect *before* awaiting (the commit
   refresh replaces the button). The old chip strip with an x (`renderClipTagChips`, `.gtag-x`,
@@ -893,15 +1001,20 @@ clear-all). All popup CSS + theme variables live in `site/shared/clipboard-popup
   in a row's #/+ popover AND the detached menu). `createMenu(host)` = the shared click
   popover; app host = `document.body` (tokens on `:root`), demo host = `demoWindowEl`
   (tokens on `.bc-popup`).
-- **ONE menu row primitive (phase 4)**: every menu, submenu, group tree and picker row is
+- **ONE menu row primitive (phase 4)**: every menu, submenu, group list and picker row is
   `menuRowHtml` (`.bc-menu-item`: icon column, label, hint / caret, `--ctl-md`, no gaps);
-  `submenuNodeHtml` = a row + its `.tag-submenu`; `renderGroupChecklist` = the group tree
+  `submenuNodeHtml` = a row + its `.tag-submenu`; `renderGroupChecklist` = the flat group list
   (membership = accent check glyph in the icon column, dash + `aria-checked="mixed"` for
   "some of the selection", labels stay `--text`; dispatch `toggle-group` / `bulk-group`,
   "New group..." = an add row, `add-group` / `bulk-add-group`); `renderKeypadMenu` = the
-  Numpad submenu AND the row # popover. The chip bar's group dropdown rows are the same
-  row (`.group-filter-row`, in the controller's FILTER_TARGET). `.gp-btn` is GONE (ui-parity
+  Numpad submenu AND the row # popover. `.gp-btn` is GONE (ui-parity
   #16 fails if it returns). Bulk Group is tri-state via `groupMembership` (all -> remove).
+  A group list's tag rows are their own part (`.bc-group-rows`, "New group..." below it): flat tags
+  (the owner has 28) ran a 29-row list off the 520 px popup, so `capGroupRows` caps the rows to the
+  window (popover in createMenu.open, submenu in fitSubmenu, measured without taking the cap off, so a
+  hover re-fit keeps the scroll place), they scroll under the shared 'box' edge fade, and the menu
+  keys walk them (`ITEMS`) with `revealMenuRow` keeping the focused one in view (keys only: the pointer
+  never scrolls). QA: `qa-ui-shots --only popup-group-lists-many` (30 tags, every list surface).
 - **Menu keyboard (`createMenu`)**: Up/Down/Home/End skip disabled rows, Right/Enter open a
   submenu, Left/Esc close one level, Enter/Space activate, 1-9 press the visible keypad,
   arrows move in 2-D on the keypad, Tab closes; focus returns to the opener. A menu opened
@@ -917,7 +1030,10 @@ clear-all). All popup CSS + theme variables live in `site/shared/clipboard-popup
   way cannot allow). `mcp-approval.html` must bind `const Core = window.BoardClipCore`: an
   error in one ipcRenderer listener stops the listeners after it from running.
 - **Delete = instant + Undo toast**, no confirm dialog. `Core.showActionToast`
-  reuses the `.toast` element; Ctrl/Cmd+Z re-invokes the undo. `applyDeleteItems`
+  reuses the `.toast` element and returns `{ isShown, hide }`; the controller's ONE Undo
+  (`offerUndo`/`liveUndo`/`runUndo`, clips and groups alike) lives exactly while its toast shows it:
+  the toast's action or Ctrl/Cmd+Z, Settings included (a group is deleted there), and once the toast
+  is gone or replaced a later Ctrl/Cmd+Z puts nothing back. `applyDeleteItems`
   RETAINS the text/image blobs (no `removeItemImage`/blob prune) so restore always
   has content; `applyRestoreItems` clears the item tombstone so sync can't resurrect
   the deletion. Single delete (from the menu) routes through the SAME `deleteIds`
@@ -1021,7 +1137,7 @@ clear-all). All popup CSS + theme variables live in `site/shared/clipboard-popup
   (rAF halts in background tabs); `.flip-x` class opens side-submenus leftward.
   `.list .item` is `user-select:none` (shift-click was smearing text selection).
 - **Selection bar**: Group is its OWN button (`bulk-group-open` → group-only
-  tri-state popover via `bulkGroupTreeHtml`, shared with the bulk menu submenu).
+  tri-state popover via `bulkGroupListHtml`, shared with the bulk menu submenu).
   Never fuse it with a "more" menu; the full bulk menu lives on right-click.
 - **ONE floating-surface rule** (`.numpad-picker, .tag-submenu, .bc-menu { ... }`
   in clipboard-popup.css, same shadow as `.dialog`) defines every popup panel's
@@ -1062,7 +1178,7 @@ clear-all). All popup CSS + theme variables live in `site/shared/clipboard-popup
   merge note; `.btn.discard` = red on hover), `.icon-btn` (hovers `--text` + `--hover`, `.danger`
   = red + `--red-bg`; accent is never a hover colour), `.bc-menu-item` (every menu / submenu /
   picker / suggest row), `.filter-tag` chip (idle group chips in `--accent-text`, as is EVERY group name: meta line, window bar,
-  pickers, chip dropdown rows, Settings > Groups, one rule; owner 2026-10-13 "blue tags should be consistent everywhere"; a picked chip a solid
+  pickers, Settings > Groups, one rule; owner 2026-10-13 "blue tags should be consistent everywhere"; a picked chip a solid
   `--accent` fill with `--active-fg`: owner 2026-10-09, dim grey chips were "too hard to see"), `.overline` (uppercase SECTION heading) vs `.bc-label`
   (sentence-case label for a control group / pane: options rows, settings list titles, merge
   heads), `.bc-bar` window bar (every clip window + the approval prompt), one scrollbar, one

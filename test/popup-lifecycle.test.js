@@ -153,4 +153,20 @@ assert.ok(between(mainJs, 'function relaunchAfterUpdate() {', 'function develope
     'an isolated QA instance never starts the auto-updater (it would git pull the dev checkout)');
 }
 
+{
+  // Saving a recorded shortcut ends the recording. While suspended,
+  // registerShortcuts registers nothing and reports success, so a save made
+  // during the suspension left the new shortcut (and every other one) dead
+  // until a restart. The three setters share the one commit path.
+  const commit = between(mainJs, 'function commitShortcutSetting(key, next, registeredFlag, error) {', 'saveSettingsFile();');
+  assert.ok(/shortcutsSuspended = false;[\s\S]*registerShortcuts\(\)/.test(commit), 'a shortcut save ends the suspension before it registers');
+  for (const [fn, key] of [['setShowShortcut', 'show_shortcut'], ['setQuickPasteShortcut', 'quick_paste_shortcut'], ['setNewNoteShortcut', 'new_note_shortcut']]) {
+    const body = between(mainJs, `function ${fn}(shortcut) {`, '\n}\n');
+    assert.ok(body.includes(`commitShortcutSetting('${key}', next,`), `${fn} saves through commitShortcutSetting`);
+  }
+  // A recording never opens a note: the hook's Win+N is off while suspended.
+  const suspend = between(mainJs, 'function suspendShortcutsForRecording() {', '\n}\n');
+  assert.ok(suspend.includes('windowsHook.setNewNoteHotkey(false)'), 'suspending shortcuts turns off the Win+N the hook takes');
+}
+
 console.log('popup lifecycle tests passed');

@@ -142,11 +142,11 @@
   (repeats and the keyup follow the keydown), every claimed Win chord taps the Start-menu suppression
   key. The live hook cannot run in the QA sandbox (it never registers shortcuts): check Win+N by hand
   after an install. A native-DLL hook rewrite is waiting unpushed in another checkout
-  ([Keyboard hook must never slow typing](https://forge.fast/#/c/forge/6ad9fc4e-202f-44aa-919e-e39099431b4d)):
+  ([Keyboard hook must never slow typing](https://forge.team/#/c/forge/6ad9fc4e-202f-44aa-919e-e39099431b4d)):
   it must take over this claim rule, Win+N included, and merge into the one windows-hook-policy.js.
 - **The UI is moving to React + Tailwind on @twoshot/ui-kit (ticket 2026-10-11)**: ONE migration, with
   Forge's menu/selection family lifted into the kit:
-  [BoardClip on React + shared ui-kit menus](https://forge.fast/#/c/forge/017929b2-9222-44fc-87c0-feca12cb1d7d),
+  [BoardClip on React + shared ui-kit menus](https://forge.team/#/c/forge/017929b2-9222-44fc-87c0-feca12cb1d7d),
   spec `REACT-MIGRATION-PLAN.md`. Group-picker type-to-filter (decided behaviour in the spec) lands
   there; do not add vanilla UI the migration would delete.
 - **Editor clipboard follow (`lib/clipboard-follow.js`, 2026-10-07)**: while the clipboard holds an open

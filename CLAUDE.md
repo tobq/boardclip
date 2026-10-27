@@ -122,11 +122,23 @@
   ends them, in the popup and the editor's Ctrl/Cmd+N alike. The demo arms only in openPopup, never at
   page load (its popup starts unfocused and the click that focuses it would end them). The app's own
   empty-search digit handler on the search field is gone. QA: `node scripts/qa-quick-keys.js`.
+- **On Windows EVERY Win chord is the LL hook's (27 Oct 2026, owner: recording Win+1-9 closed the
+  popup)**: the shell holds most of them at the RegisterHotKey layer (Win+V, Win+N, Win+1-9 the
+  taskbar), so a globalShortcut silently loses and, while recording, Windows acted first (Win+1
+  switched apps, the popup blur-hid, nothing saved). `registerShortcuts` routes by
+  `hookPolicy.isWinChord`: the defaults Win+V / Win+N and any recorded Win chord (popup, quick paste
+  1-9, new note) go into the hook's CHORD TABLE (`setChords`, exact modifiers, first come first served,
+  a shared chord fails like a taken globalShortcut); every other chord is a globalShortcut. A custom
+  popup shortcut therefore gives Win+V back to Windows, as a custom new-note chord gives back Win+N.
+  While a row records (`suspendShortcutsForRecording` -> `setRecording(true)`, popup open), the hook
+  takes EVERY Win/Ctrl/Alt press and main sends `shortcut-recorded` ({shortcut, key} from
+  `recordedChord`, the page recorder's own key names, test #12 checks them against index.html) to the
+  one `recordShortcut`; bare and Shift-only keys still reach the page (Esc, hints). A recorded numpad
+  digit stays one for every slot (`quickPasteShortcutForSlot` kept 'num' off until then).
 - **Win+N = new note from any app**: `new_note_shortcut` (per device, never synced). Windows default
-  Super+N through the LL hook (`WIN_CHORDS` beside Win+V: one fire per press, keyup swallowed, the
-  Start-menu suppression tap; off while a shortcut is being recorded, so Win+N itself cannot be
-  recorded, the same limit Win+V has); Windows 11's own Win+N (notification panel) is taken over. A
-  recorded chord goes through globalShortcut; macOS has none by default. Settings row "New note
+  Super+N, a hook chord like Win+V (one fire per press, keyup swallowed, the Start-menu suppression
+  tap); Windows 11's own Win+N (notification panel) is taken over. A
+  recorded non-Win chord goes through globalShortcut; macOS has none by default. Settings row "New note
   shortcut" beside Quick paste shortcut (one `SHORTCUT_KINDS` table in index.html, one recorder).
   Every shortcut save goes through `commitShortcutSetting`, which ends the recording suspension first
   (until 14 Oct a recorded shortcut stayed unregistered until a restart). A recording lives only while
@@ -140,10 +152,13 @@
   byte layout `STATE`): exact modifiers (Win+Ctrl/Shift/Alt+V or +N, e.g. Narrator settings, pass to
   Windows untouched; Ctrl/Shift/Alt+Numpad no longer pastes, so Alt codes work), one verdict per press
   (repeats and the keyup follow the keydown), every claimed Win chord taps the Start-menu suppression
-  key. The live hook cannot run in the QA sandbox (it never registers shortcuts): check Win+N by hand
-  after an install. A native-DLL hook rewrite is waiting unpushed in another checkout
+  key. The QA sandbox installs no hook; `node scripts/qa-hook-live.js` drives the REAL one (injected
+  F13 + Ctrl/Shift/Win, an observer hook installed before it sees what got through: recording, the
+  table, the Start-menu tap; Node's process.exit hangs on a worker parked in GetMessageW, so it ends
+  with TerminateProcess). A native-DLL hook rewrite is waiting unpushed in `C:\Users\Tobi\code\boardclip`
   ([Keyboard hook must never slow typing](https://forge.team/#/c/forge/6ad9fc4e-202f-44aa-919e-e39099431b4d)):
-  it must take over this claim rule, Win+N included, and merge into the one windows-hook-policy.js.
+  it hardcodes V + numpad in C and must take over this claim rule (the chord table, recording, Win+N)
+  and merge into the one windows-hook-policy.js.
 - **The UI is moving to React + Tailwind on @twoshot/ui-kit (ticket 2026-10-11)**: ONE migration, with
   Forge's menu/selection family lifted into the kit:
   [BoardClip on React + shared ui-kit menus](https://forge.team/#/c/forge/017929b2-9222-44fc-87c0-feca12cb1d7d),
@@ -226,7 +241,7 @@ the target reads AFTER the restore → pastes the old clip. Proven + measured in
 
 **Worker thread, not main thread.** The hook must be installed on a thread that runs a GetMessage loop — Windows delivers LL hook calls via messages posted to the installing thread's queue. Running it on Electron's main thread works for Win+V but risks hitting `LowLevelHooksTimeout` (default 300ms) whenever JS blocks the main thread, at which point Windows silently unregisters the hook. A dedicated worker with a tight GetMessage loop avoids that entirely.
 
-**SharedArrayBuffer for state.** The worker is synchronously blocked inside `GetMessageW`, so it can't process messages from the main thread via `parentPort.on('message')`. For decisions that need real-time state (is the popup open? is slot N assigned?), main thread writes to a `SharedArrayBuffer` and the worker reads it from inside the hook callback. Layout: `[popupVisible, slot1..slot9, reserved]` as `Uint8Array`.
+**SharedArrayBuffer for state.** The worker is synchronously blocked inside `GetMessageW`, so it can't process messages from the main thread via `parentPort.on('message')`. For decisions that need real-time state (is the popup open? is slot N assigned?), main thread writes to a `SharedArrayBuffer` and the worker reads it from inside the hook callback. Layout = `STATE` in `lib/windows-hook-policy.js` (popup open, slots 1-9, recording, the chord table; `writeChords` drops the count to 0 while it rewrites), never a literal index.
 
 **Numpad UX.** Plain Num1-9 (no Win) is intercepted only if:
 - The popup is open (→ assign current item to slot), OR

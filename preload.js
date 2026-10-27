@@ -35,6 +35,13 @@ contextBridge.exposeInMainWorld('api', {
   suspendShortcuts: () => ipcRenderer.invoke('suspend-shortcuts'),
   resumeShortcuts: () => ipcRenderer.invoke('resume-shortcuts'),
   resolveShowShortcut: (shortcut) => ipcRenderer.invoke('resolve-show-shortcut', shortcut),
+  // Windows: the chord the keyboard hook took while a row records ({ shortcut, key },
+  // what the page recorder makes of a keydown); the page never sees those keys.
+  onShortcutRecorded: (callback) => {
+    const listener = (_, chord) => callback(chord);
+    ipcRenderer.on('shortcut-recorded', listener);
+    return () => ipcRenderer.removeListener('shortcut-recorded', listener);
+  },
   groupCreate: (text) => ipcRenderer.invoke('group-create', text), // -> the tag names ("a, b" = two), or false
   groupDelete: (name) => ipcRenderer.invoke('group-delete', name), // -> { ok, name, ids, shared }, or false
   groupRestore: (payload) => ipcRenderer.invoke('group-restore', payload), // the delete's Undo

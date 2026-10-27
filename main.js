@@ -50,6 +50,7 @@ const conflictModel = require('./lib/conflict-model');
 const { ControlServer } = require('./lib/control-server');
 const windowsConsole = require('./lib/windows-console');
 const windowsDwm = require('./lib/windows-dwm');
+const hookPolicy = require('./lib/windows-hook-policy');
 const appearance = require('./lib/appearance');
 const { createNotifier } = require('./lib/notifications');
 
@@ -676,9 +677,9 @@ function effectiveQuickPasteShortcut() {
   return settings.quick_paste_shortcut || defaultQuickPasteShortcut();
 }
 
-// Windows: Win+N, taken by the keyboard hook like Win+V (it is Windows' own
-// notification panel chord, which RegisterHotKey cannot win). Elsewhere none
-// until one is recorded.
+// Windows: Win+N, taken by the keyboard hook like every Win chord (it is
+// Windows' own notification panel chord, which RegisterHotKey cannot win).
+// Elsewhere none until one is recorded.
 function defaultNewNoteShortcut() {
   return process.platform === 'win32' ? 'Super+N' : '';
 }
@@ -687,20 +688,9 @@ function defaultNewNoteShortcut() {
 // (Windows: Win+N goes back to Windows' notification panel). '' = the default.
 const SHORTCUT_OFF = 'none';
 
-// The chord the user recorded ('' for the default or off).
-function recordedNewNoteShortcut() {
-  const value = settings.new_note_shortcut || '';
-  return value === SHORTCUT_OFF ? '' : value;
-}
-
 function effectiveNewNoteShortcut() {
   if (settings.new_note_shortcut === SHORTCUT_OFF) return '';
   return settings.new_note_shortcut || defaultNewNoteShortcut();
-}
-
-function globalShowShortcut() {
-  if (process.platform === 'darwin' && shortcutUsesFn(settings.show_shortcut)) return '';
-  return settings.show_shortcut || (process.platform === 'win32' ? '' : DEFAULT_SHOW_SHORTCUT);
 }
 
 function globalQuickPasteShortcut() {
@@ -761,7 +751,8 @@ function quickPasteShortcutForSlot(shortcut, slot) {
   if (!parts.length) return '';
   const keyIndex = parts.length - 1;
   if (quickPasteSlotFromShortcut(parts[keyIndex]) == null) return '';
-  parts[keyIndex] = String(slot);
+  // A numpad digit stays a numpad digit (Ctrl+Alt+num1 is Ctrl+Alt+num1..num9).
+  parts[keyIndex] = (/^num/i.test(parts[keyIndex]) ? 'num' : '') + slot;
   return parts.join('+');
 }
 
@@ -8022,15 +8013,45 @@ function commitShortcutSetting(key, next, registeredFlag, error) {
 }
 
 function registerShortcuts() {
-  // What each shortcut needs: an OS registration (globalShortcut / Carbon), the
-  // Windows hook, or nothing. A recorded new-note chord is an ordinary global
-  // shortcut; Windows' default (Win+N) is the hook's; off is neither.
-  const macosShowKey = process.platform === 'darwin' ? effectiveShowShortcut() : '';
-  const showKey = process.platform === 'darwin' ? '' : globalShowShortcut();
-  const quickPasteKey = globalQuickPasteShortcut();
-  const recordedNewNote = recordedNewNoteShortcut();
-  const newNoteKey = shortcutUsesFn(recordedNewNote) ? '' : recordedNewNote;
-  const newNoteHookKey = process.platform === 'win32' && !settings.new_note_shortcut;
+  // Where each shortcut lives: macOS's popup hotkey (Carbon, Globe-capable),
+  // the Windows keyboard hook, a globalShortcut, or nowhere (off). On Windows
+  // EVERY Win chord is the hook's (hookPolicy.isWinChord: the shell holds most
+  // of them, Win+V / Win+N / Win+1-9 included, where a globalShortcut silently
+  // loses); the defaults Win+V and Win+N are Win chords like a recorded one.
+  const viaHook = (shortcut) => process.platform === 'win32' && hookPolicy.isWinChord(shortcut);
+  const showShortcut = effectiveShowShortcut();
+  const macosShowKey = process.platform === 'darwin' ? showShortcut : '';
+  const showHook = viaHook(showShortcut);
+  const showKey = macosShowKey || showHook ? '' : showShortcut;
+  const quickPasteShortcut = globalQuickPasteShortcut();
+  const quickPasteHook = viaHook(quickPasteShortcut);
+  const quickPasteKey = quickPasteHook ? '' : quickPasteShortcut;
+  const newNoteShortcut = shortcutUsesFn(effectiveNewNoteShortcut()) ? '' : effectiveNewNoteShortcut();
+  const newNoteHook = viaHook(newNoteShortcut);
+  const newNoteKey = newNoteHook ? '' : newNoteShortcut;
+
+  // The hook's chord table, first come first served like globalShortcut: a
+  // chord two shortcuts share, or a key the hook has no code for, fails the
+  // later one the way an already-registered globalShortcut does.
+  const hookChords = [];
+  const addHookChord = (shortcut, type, slot) => {
+    const chord = hookPolicy.chordFromAccelerator(shortcut);
+    if (!chord || hookChords.some(c => c.vk === chord.vk && c.mods === chord.mods)) return false;
+    hookChords.push({ ...chord, type, slot });
+    return true;
+  };
+  const showHookOk = !showHook || addHookChord(showShortcut, 'show');
+  const quickPasteRegistrations = [];
+  let quickPasteHookOk = true;
+  if (quickPasteHook) {
+    for (let n = 1; n <= 9; n++) {
+      const key = quickPasteShortcutForSlot(quickPasteShortcut, n);
+      const registered = !!key && addHookChord(key, 'quick-paste', n);
+      quickPasteRegistrations.push({ slot: n, key, registered, backend: 'hook' });
+      if (!registered) quickPasteHookOk = false;
+    }
+  }
+  const newNoteHookOk = !newNoteHook || addHookChord(newNoteShortcut, 'new-note');
 
   // A throwaway QA instance (BOARDCLIP_ISOLATED=1) never takes the keyboard: its
   // low-level hook would sit in front of the real app's, so Win+V would open the
@@ -8040,11 +8061,11 @@ function registerShortcuts() {
   // live, as it does for real (it cannot fail), so its row can be saved in QA.
   if (process.env.BOARDCLIP_ISOLATED === '1') {
     const isolated = {
-      showShortcutRegistered: !(macosShowKey || showKey),
+      showShortcutRegistered: showHookOk && !(macosShowKey || showKey),
       showShortcut: effectiveShowShortcut(),
-      quickPasteRegistered: !quickPasteKey,
+      quickPasteRegistered: quickPasteHookOk && !quickPasteKey,
       quickPasteShortcut: effectiveQuickPasteShortcut(),
-      newNoteRegistered: !newNoteKey,
+      newNoteRegistered: newNoteHookOk && !newNoteKey,
       newNoteShortcut: effectiveNewNoteShortcut(),
     };
     diagnostics.record('shortcut.register', { platform: process.platform, isolated: true, show_registered: isolated.showShortcutRegistered, quick_paste_registered: isolated.quickPasteRegistered, new_note_registered: isolated.newNoteRegistered });
@@ -8062,22 +8083,26 @@ function registerShortcuts() {
   }
   globalShortcut.unregisterAll();
 
-  let showShortcutRegistered = true;
-  let quickPasteRegistered = true;
-  let newNoteRegistered = true;
+  let showShortcutRegistered = showHookOk;
+  let quickPasteRegistered = quickPasteHookOk;
+  let newNoteRegistered = newNoteHookOk;
 
   if (process.platform === 'win32') {
-    // Windows Clipboard History owns Win+V and Win+Numpad1-9, so we can't use
-    // Electron's globalShortcut (RegisterHotKey) here — it silently fails.
-    // Instead, install a WH_KEYBOARD_LL hook on a dedicated worker thread that
-    // intercepts these keys *before* Windows Clipboard History sees them.
+    // The WH_KEYBOARD_LL hook on its own worker thread (lib/windows-hook.js):
+    // it takes the chord table, the numpad slot keys and a recording before
+    // Windows' own handlers see them.
     const { install } = require('./lib/windows-hook');
     windowsHook = install({
       onShowPopup: showPopup,
       onNumpadPaste: handleNumpad,
+      onQuickPaste: (slot) => handleQuickPaste(slot).catch(error => {
+        diagnostics.record('shortcut.quick_paste_error', { slot, source: 'hook', error: error && error.message }, { forceFile: true });
+      }),
       onNewNote: handleNewNoteShortcut,
+      onRecordKey: handleHookRecordedKey,
     });
-    windowsHook.setNewNoteHotkey(newNoteHookKey);
+    windowsHook.setRecording(false);
+    windowsHook.setChords(hookChords);
     // Seed the shared state with current history so plain numpad keys
     // immediately intercept for already-assigned slots.
     syncHookState();
@@ -8099,7 +8124,6 @@ function registerShortcuts() {
     if (!showShortcutRegistered) logSafe(`Warning: Could not register popup shortcut ${showKey}`);
   }
 
-  const quickPasteRegistrations = [];
   if (quickPasteKey) {
     if (process.platform === 'darwin') {
       const hook = getMacosHotkey();
@@ -8148,15 +8172,15 @@ function registerShortcuts() {
   }
   diagnostics.record('shortcut.register', {
     platform: process.platform,
-    show_key: macosShowKey || showKey,
+    show_key: showShortcut,
     show_registered: showShortcutRegistered,
-    show_backend: macosShowKey ? 'carbon' : (showKey ? 'electron' : ''),
-    quick_paste_key: quickPasteKey,
+    show_backend: macosShowKey ? 'carbon' : (showHook ? 'hook' : 'electron'),
+    quick_paste_key: quickPasteShortcut,
     quick_paste_registered: quickPasteRegistered,
     quick_paste_registrations: quickPasteRegistrations,
-    new_note_key: newNoteKey || (newNoteHookKey ? defaultNewNoteShortcut() : ''),
+    new_note_key: newNoteShortcut,
     new_note_registered: newNoteRegistered,
-    new_note_backend: newNoteKey ? 'electron' : (newNoteHookKey ? 'hook' : ''),
+    new_note_backend: newNoteHook ? 'hook' : (newNoteKey ? 'electron' : ''),
   }, { forceFile: true });
 
   return {
@@ -8172,14 +8196,29 @@ function registerShortcuts() {
 function suspendShortcutsForRecording() {
   shortcutsSuspended = true;
   globalShortcut.unregisterAll();
-  // The hook's Win+N too: a recording never opens a note (resume re-arms it).
-  if (windowsHook) windowsHook.setNewNoteHotkey(false);
+  // The hook's chords too, and every Win/Ctrl/Alt press now goes to the
+  // recorder instead of its app (resume re-arms them). Without this Windows
+  // acted on a Win chord first: Win+1 switched to a taskbar app, the popup
+  // lost focus and hid mid-recording, nothing was saved.
+  if (windowsHook) {
+    windowsHook.setChords([]);
+    windowsHook.setRecording(true);
+  }
   if (macosHotkey) {
     macosHotkey.clearRuntimeShortcut();
     macosHotkey.clearQuickPasteShortcuts();
   }
   diagnostics.record('shortcut.suspend_for_recording', {}, { forceFile: diagnostics.isEnabled() });
   return { ok: true };
+}
+
+// A chord the hook took while a Settings row records (Windows): handed to the
+// popup's recorder as the chord its own keydown would have been.
+function handleHookRecordedKey(vk, mods) {
+  if (!shortcutsSuspended || !win || win.isDestroyed()) return;
+  const chord = hookPolicy.recordedChord(vk, mods);
+  diagnostics.record('shortcut.record_key', { vk, mods, shortcut: chord.shortcut }, { forceFile: diagnostics.isEnabled() });
+  win.webContents.send('shortcut-recorded', chord);
 }
 
 function resumeShortcutsAfterRecording() {

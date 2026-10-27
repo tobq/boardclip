@@ -202,6 +202,34 @@ async function main() {
     check('after a cancelled recording, keys type into the search again', s.value === 'h', J(s));
     await popup.eval(`(appAdapter.setQuery(''), true)`);
 
+    // Windows: a Win chord pressed while a row records never reaches the page
+    // (the keyboard hook takes it before Windows switches to a taskbar app);
+    // it arrives as 'shortcut-recorded', the payload main's handleHookRecordedKey
+    // sends (hookPolicy.recordedChord), and saves like a keydown. The sandbox
+    // installs no hook (scripts/qa-hook-live.js drives the real one), so main
+    // sends that payload here.
+    if (process.platform === 'win32') {
+      const { recordedChord, MOD } = require('../lib/windows-hook-policy');
+      const recordVia = async (vk, mods) => {
+        await popup.eval(`(async () => { await openSettings(); await startShortcutRecording('quickPaste'); return true; })()`);
+        await sb.mainEval(`(__qa.electron.BrowserWindow.getAllWindows().find((w) => /index\\.html/.test(w.webContents.getURL()))
+          .webContents.send('shortcut-recorded', ${J(recordedChord(vk, mods))}), true)`);
+        await sleep(400);
+        return popup.eval(`(async () => { const el = document.getElementById('quickPasteRecord');
+          const info = (await window.api.getSettings()).shortcut_info;
+          return { label: el.textContent, recording: shortcutRecording, saved: info.quickPaste, error: document.getElementById('quickPasteStatus').textContent }; })()`);
+      };
+      let q = await recordVia(0x31, MOD.WIN);
+      check('Windows: Win+1 recorded through the hook saves quick paste as Win + 1-9',
+        q.saved === 'Super+1' && q.label === 'Win + 1-9' && q.recording === null && !q.error, J(q));
+      q = await recordVia(0x61, MOD.WIN);
+      check('Windows: Win+Numpad1 saves as Win + Num 1-9', q.saved === 'Super+num1' && q.label === 'Win + Num 1-9' && !q.error, J(q));
+      q = await recordVia(0x31, MOD.SHIFT);
+      check('Windows: a Shift-only chord from the hook gets the row\'s modifier hint, nothing saved',
+        q.saved === 'Super+num1' && /Add a shortcut modifier/.test(q.error) && q.recording === 'quickPaste', J(q));
+      await popup.eval(`(async () => { await cancelShortcutRecording(); await window.api.setQuickPasteShortcut(''); closeSettings(); return true; })()`);
+    }
+
     // --- the demo: the same controller --------------------------------------
     const site = await qa.startStaticServer(path.join(qa.ROOT, 'site'));
     try {

@@ -827,7 +827,8 @@ function renderShortcutSettings(settings, { clearStatus = true } = {}) {
   const quickRecord = shortcutRecordEl('quickPaste');
   const quickShortcut = info.quickPaste || '';
   if (quickShortcut) {
-    quickRecord.textContent = `${shortcutLabel(quickShortcut).replace(/\s\+\s[1-9]$/, '')} + 1-9`;
+    const numpad = /\+num[1-9]$/i.test(quickShortcut);
+    quickRecord.textContent = `${shortcutLabel(quickShortcut.replace(/\+(?:num)?[1-9]$/i, ''))} + ${numpad ? 'Num ' : ''}1-9`;
     quickRecord.title = `${quickShortcut.replace(/[1-9]$/, '1')} ... ${quickShortcut.replace(/[1-9]$/, '9')}`;
   } else {
     quickRecord.textContent = 'Not set';
@@ -945,25 +946,35 @@ for (const kind of Object.keys(SHORTCUT_KINDS)) {
   shortcutResetEl(kind).addEventListener('click', (e) => applyShortcut(kind, e.currentTarget.dataset.apply || ''));
 }
 
-document.addEventListener('keydown', async (e) => {
-  if (!shortcutRecording) return;
+// The recording row takes one chord: shortcut = its accelerator ('' = not a
+// shortcut), key = its non-modifier key's name ('' = none or no name).
+async function recordShortcut(shortcut, key) {
   const kind = shortcutRecording;
-  e.preventDefault();
-  e.stopPropagation();
-  if (e.key === 'Escape') {
-    await cancelShortcutRecording();
-    return;
-  }
-  const shortcut = shortcutFromEvent(e);
+  if (!kind) return;
   if (!shortcut) {
-    setShortcutStatus(kind, shortcutKeyFromEvent(e) ? 'Add a shortcut modifier.' : 'Press a non-modifier key.', true);
+    setShortcutStatus(kind, key ? 'Add a shortcut modifier.' : 'Press a non-modifier key.', true);
     return;
   }
   const resolved = kind === 'show' && window.api.resolveShowShortcut
     ? await window.api.resolveShowShortcut(shortcut)
     : shortcut;
   await applyShortcut(kind, resolved);
+}
+
+document.addEventListener('keydown', async (e) => {
+  if (!shortcutRecording) return;
+  e.preventDefault();
+  e.stopPropagation();
+  if (e.key === 'Escape') {
+    await cancelShortcutRecording();
+    return;
+  }
+  await recordShortcut(shortcutFromEvent(e), shortcutKeyFromEvent(e));
 }, true);
+// Windows: every Win/Ctrl/Alt chord pressed while recording is taken by the
+// keyboard hook before Windows acts on it (Win+1 would switch to a taskbar
+// app and hide the popup) and arrives here instead of as a keydown.
+if (window.api.onShortcutRecorded) window.api.onShortcutRecorded((chord) => recordShortcut(chord.shortcut, chord.key));
 
 document.getElementById('addGroupBtn').addEventListener('click', () => controller.addGroup(null));
 document.getElementById('syncAccounts').addEventListener('change', async (e) => {

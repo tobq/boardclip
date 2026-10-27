@@ -164,9 +164,17 @@ assert.ok(between(mainJs, 'function relaunchAfterUpdate() {', 'function develope
     const body = between(mainJs, `function ${fn}(shortcut) {`, '\n}\n');
     assert.ok(body.includes(`commitShortcutSetting('${key}', next,`), `${fn} saves through commitShortcutSetting`);
   }
-  // A recording never opens a note: the hook's Win+N is off while suspended.
+  // A recording fires nothing: the hook's chords (Win+V, Win+N, any recorded
+  // Win chord) are off while suspended, and the hook hands the recorder every
+  // Win/Ctrl/Alt press instead (Windows acted on Win+1 first and the popup hid).
   const suspend = between(mainJs, 'function suspendShortcutsForRecording() {', '\n}\n');
-  assert.ok(suspend.includes('windowsHook.setNewNoteHotkey(false)'), 'suspending shortcuts turns off the Win+N the hook takes');
+  assert.ok(suspend.includes('windowsHook.setChords([])') && suspend.includes('windowsHook.setRecording(true)'),
+    'suspending shortcuts empties the hook\'s chord table and starts its recording');
+  assert.ok(/onRecordKey: handleHookRecordedKey/.test(mainJs) && /webContents\.send\('shortcut-recorded', chord\)/.test(mainJs), 'a chord the hook records reaches the popup');
+  const readSrc = (p) => fs.readFileSync(path.join(__dirname, '..', p), 'utf8');
+  assert.ok(readSrc('preload.js').includes("ipcRenderer.on('shortcut-recorded', listener)"));
+  assert.ok(readSrc('index.html').includes('window.api.onShortcutRecorded((chord) => recordShortcut(chord.shortcut, chord.key))'),
+    'the recorder takes a hook chord through the same recordShortcut as a keydown');
 }
 
 console.log('popup lifecycle tests passed');

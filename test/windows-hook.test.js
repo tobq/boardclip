@@ -341,7 +341,7 @@ for (const vk of [VK.V, VK.N]) {
     const globalShortcut = { unregisterAll() {}, register: (key) => { out.electron.push(key); return true; } };
     const macos = { clearRuntimeShortcut() {}, clearQuickPasteShortcuts() {},
       install: ({ shortcut }) => { out.carbon.push(shortcut); return { ok: true }; },
-      installQuickPaste: ({ shortcut }) => { out.carbon.push(shortcut); return { ok: true }; } };
+      installQuickPaste: ({ shortcuts }) => { out.carbon.push(...shortcuts); return { ok: true }; } };
     const result = new Function('process', 'settings', 'DEFAULT_SHOW_SHORTCUT', 'hookPolicy', 'globalShortcut', 'require',
       'diagnostics', 'shortcutsSuspended', 'getMacosHotkey', 'logSafe', 'syncHookState',
       'showPopup', 'handleNumpad', 'handleQuickPaste', 'handleNewNoteShortcut', 'handleHookRecordedKey',
@@ -378,8 +378,11 @@ for (const vk of [VK.V, VK.N]) {
   assert.strictEqual(suspended.chords, null, 'while suspended nothing is (re)armed');
   const mac = run('darwin', { quick_paste_shortcut: 'Command+Option+1' });
   assert.strictEqual(mac.chords, null, 'macOS never installs the hook');
-  assert.deepStrictEqual(mac.carbon, ['CommandOrControl+Shift+V', 'Command+Option+1'], 'macOS: popup + quick paste through Carbon');
+  assert.deepStrictEqual(mac.carbon, ['CommandOrControl+Shift+V', ...Array.from({ length: 9 }, (_, i) => `Command+Option+${i + 1}`)],
+    'macOS: popup + quick paste 1-9 through Carbon');
   assert.deepStrictEqual(mac.electron, []);
+  const macNum = run('darwin', { quick_paste_shortcut: 'Control+num1' });
+  assert.strictEqual(macNum.carbon[9], 'Control+num9', 'macOS: a numpad digit stays a numpad digit (Carbon got top-row 1-9 before)');
   const macNote = run('darwin', { new_note_shortcut: 'Command+Shift+N' });
   assert.deepStrictEqual(macNote.electron, ['Command+Shift+N'], 'macOS: a recorded new-note chord is a globalShortcut');
   assert.deepStrictEqual(run('darwin').electron, [], 'macOS default: no new-note shortcut');

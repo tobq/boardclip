@@ -8127,8 +8127,9 @@ function registerShortcuts() {
   if (quickPasteKey) {
     if (process.platform === 'darwin') {
       const hook = getMacosHotkey();
+      const slotKeys = Array.from({ length: 9 }, (_, i) => quickPasteShortcutForSlot(quickPasteKey, i + 1));
       const result = hook.installQuickPaste({
-        shortcut: quickPasteKey,
+        shortcuts: slotKeys,
         onSlot: slot => {
           handleQuickPaste(slot).catch(error => {
             diagnostics.record('shortcut.quick_paste_error', { slot, error: error && error.message }, { forceFile: true });
@@ -8139,7 +8140,7 @@ function registerShortcuts() {
       for (let n = 1; n <= 9; n++) {
         quickPasteRegistrations.push({
           slot: n,
-          key: quickPasteShortcutForSlot(quickPasteKey, n),
+          key: slotKeys[n - 1],
           registered: quickPasteRegistered,
           backend: 'carbon',
         });

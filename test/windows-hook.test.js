@@ -339,8 +339,8 @@ for (const vk of [VK.V, VK.N]) {
       setChords: (chords) => { out.chords = chords.map(c => `${c.type}${c.slot ? c.slot : ''}:${c.vk.toString(16)}/${c.mods}`); return true; },
     };
     const globalShortcut = { unregisterAll() {}, register: (key) => { out.electron.push(key); return true; } };
-    const macos = { clearRuntimeShortcut() {}, clearQuickPasteShortcuts() {},
-      install: ({ shortcut }) => { out.carbon.push(shortcut); return { ok: true }; },
+    const macos = { clear() {},
+      install: ({ shortcut, namespace }) => { out.carbon.push(namespace === 'newNote' ? `note:${shortcut}` : shortcut); return { ok: true }; },
       installQuickPaste: ({ shortcuts }) => { out.carbon.push(...shortcuts); return { ok: true }; } };
     const result = new Function('process', 'settings', 'DEFAULT_SHOW_SHORTCUT', 'hookPolicy', 'globalShortcut', 'require',
       'diagnostics', 'shortcutsSuspended', 'getMacosHotkey', 'logSafe', 'syncHookState',
@@ -384,8 +384,32 @@ for (const vk of [VK.V, VK.N]) {
   const macNum = run('darwin', { quick_paste_shortcut: 'Control+num1' });
   assert.strictEqual(macNum.carbon[9], 'Control+num9', 'macOS: a numpad digit stays a numpad digit (Carbon got top-row 1-9 before)');
   const macNote = run('darwin', { new_note_shortcut: 'Command+Shift+N' });
-  assert.deepStrictEqual(macNote.electron, ['Command+Shift+N'], 'macOS: a recorded new-note chord is a globalShortcut');
+  assert.ok(macNote.carbon.includes('note:Command+Shift+N') && macNote.result.newNoteRegistered, 'macOS: a recorded new-note chord is a Carbon hotkey');
   assert.deepStrictEqual(run('darwin').electron, [], 'macOS default: no new-note shortcut');
+  // macOS never registers a globalShortcut, whatever is set: Chromium's listener
+  // takes every Carbon hotkey event as its own and crashed on ours (NOTREACHED,
+  // the 28 Oct Mac crashes: quick paste Cmd+1 beside a new-note globalShortcut).
+  for (const stored of [{}, { show_shortcut: 'Alt+V', quick_paste_shortcut: 'Command+1', new_note_shortcut: 'Alt+N' },
+    { show_shortcut: 'Fn+V', quick_paste_shortcut: 'Control+num1', new_note_shortcut: 'Command+Shift+N' }]) {
+    const r = run('darwin', stored);
+    assert.deepStrictEqual(r.electron, [], `macOS: nothing through globalShortcut for ${JSON.stringify(stored)}`);
+    assert.ok(r.result.showShortcutRegistered && r.result.quickPasteRegistered && r.result.newNoteRegistered, `macOS: all registered for ${JSON.stringify(stored)}`);
+  }
+  const owner = run('darwin', { show_shortcut: 'Alt+V', quick_paste_shortcut: 'Command+1', new_note_shortcut: 'Alt+N' });
+  assert.deepStrictEqual(owner.carbon, ['Alt+V', ...Array.from({ length: 9 }, (_, i) => `Command+${i + 1}`), 'note:Alt+N'], "the owner's Mac settings: all eleven through Carbon");
+}
+
+// 15b) The macOS hotkey module claims only its own events: handlers are keyed by
+//      signature + id (Chromium numbers its hotkeys from 1 too), and any other
+//      event goes on to the next handler (eventNotHandledErr), never swallowed.
+{
+  const src = read('lib/macos-hotkey.js');
+  assert.ok(src.includes('handlers.get(hotKeyKey(hotKeyID.signature, hotKeyID.id))'), 'the callback matches signature + id');
+  assert.ok(src.includes('return handler ? 0 : EVENT_NOT_HANDLED;') && src.includes('const EVENT_NOT_HANDLED = -9874;'), 'a foreign hotkey event is passed on');
+  assert.ok(!/handlers\.(get|set)\(id\b/.test(src), 'no handler keyed by id alone');
+  const mod = require('../lib/macos-hotkey');
+  assert.deepStrictEqual(Object.keys(mod).sort(), ['clear', 'currentModifierParts', 'install', 'installQuickPaste', 'parseShortcut', 'resolveShortcutFromCurrentModifiers', 'uninstall', 'usesFn'].sort());
+  assert.deepStrictEqual(mod.install({ shortcut: 'Alt+N', onPressed() {}, namespace: 'newNote' }).ok, false, 'off macOS install refuses (no Carbon)');
 }
 
 // 16) main's new-note shortcut values on both platforms: '' = the default

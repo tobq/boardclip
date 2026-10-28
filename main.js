@@ -8165,10 +8165,12 @@ function registerShortcuts() {
     syncHookState();
   }
 
+  // macOS: every global shortcut goes through Carbon (lib/macos-hotkey.js),
+  // never globalShortcut: Chromium's listener crashes on a Carbon hotkey that
+  // is not its own (NOTREACHED, the 28 Oct Mac crashes).
   if (process.platform === 'darwin') {
     const hook = getMacosHotkey();
-    hook.clearRuntimeShortcut();
-    hook.clearQuickPasteShortcuts();
+    hook.clear();
     if (macosShowKey) {
       const result = hook.install({ shortcut: macosShowKey, onPressed: showPopup });
       showShortcutRegistered = !!result.ok;
@@ -8224,7 +8226,11 @@ function registerShortcuts() {
       }
     }
   }
-  if (newNoteKey) {
+  if (newNoteKey && process.platform === 'darwin') {
+    const result = getMacosHotkey().install({ shortcut: newNoteKey, onPressed: handleNewNoteShortcut, namespace: 'newNote' });
+    newNoteRegistered = !!result.ok;
+    if (!result.ok) logSafe(`Warning: ${result.error}`);
+  } else if (newNoteKey) {
     try { newNoteRegistered = globalShortcut.register(newNoteKey, handleNewNoteShortcut); } catch { newNoteRegistered = false; }
     if (!newNoteRegistered) logSafe(`Warning: Could not register new note shortcut ${newNoteKey}`);
   }
@@ -8238,7 +8244,7 @@ function registerShortcuts() {
     quick_paste_registrations: quickPasteRegistrations,
     new_note_key: newNoteShortcut,
     new_note_registered: newNoteRegistered,
-    new_note_backend: newNoteHook ? 'hook' : (newNoteKey ? 'electron' : ''),
+    new_note_backend: newNoteHook ? 'hook' : (newNoteKey ? (process.platform === 'darwin' ? 'carbon' : 'electron') : ''),
   }, { forceFile: true });
 
   return {
@@ -8262,10 +8268,7 @@ function suspendShortcutsForRecording() {
     windowsHook.setChords([]);
     windowsHook.setRecording(true);
   }
-  if (macosHotkey) {
-    macosHotkey.clearRuntimeShortcut();
-    macosHotkey.clearQuickPasteShortcuts();
-  }
+  if (macosHotkey) macosHotkey.clear();
   diagnostics.record('shortcut.suspend_for_recording', {}, { forceFile: diagnostics.isEnabled() });
   return { ok: true };
 }

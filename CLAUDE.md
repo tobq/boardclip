@@ -138,7 +138,8 @@
 - **Win+N = new note from any app**: `new_note_shortcut` (per device, never synced). Windows default
   Super+N, a hook chord like Win+V (one fire per press, keyup swallowed, the Start-menu suppression
   tap); Windows 11's own Win+N (notification panel) is taken over. A
-  recorded non-Win chord goes through globalShortcut; macOS has none by default. Settings row "New note
+  recorded non-Win chord goes through globalShortcut (Windows) or Carbon (macOS, which has none by
+  default; see "macOS Specifics"). Settings row "New note
   shortcut" beside Quick paste shortcut (one `SHORTCUT_KINDS` table in index.html, one recorder).
   Every shortcut save goes through `commitShortcutSetting`, which ends the recording suspension first
   (until 14 Oct a recorded shortcut stayed unregistered until a restart). A recording lives only while
@@ -255,6 +256,20 @@ Otherwise the key passes through so normal numpad typing works. Main thread call
 
 ## macOS Specifics
 
+- **EVERY macOS global shortcut is a Carbon hotkey (`lib/macos-hotkey.js`), NEVER Electron's
+  globalShortcut beside one (28 Oct 2026, the Mac "won't stay open")**: Chromium's
+  GlobalShortcutListenerMac installs its own Carbon handler on the application target and takes every
+  hotkey event as its own. With a new-note globalShortcut (Alt+N) registered after our Carbon
+  hotkeys, quick paste Cmd+1-9 (our ids 101-109) reached it, missed its id map and hit NOTREACHED in
+  `GlobalShortcutListener::NotifyKeyPressed` (fatal: EXC_BREAKPOINT, all 5 Crashpad dumps at
+  Electron Framework+0x7200804), and Alt+V (our id 1 = its first id) fired its new note instead.
+  Popup (namespace 'default', id 1), new note ('newNote', id 2), quick paste ('BCqp', 101-109) all go
+  through `install` / `installQuickPaste`; our callback matches signature + id and returns
+  eventNotHandledErr for anything else. Guarded in `test/windows-hook.test.js` #15 / #15b.
+- **Reading a native crash (either platform)**: `python3 scripts/minidump-info.py <dumps>` (stdlib only,
+  so a Mac runs it with the system python, even piped in as `python3 - <<'PYEOF'`) prints ptype,
+  exception and module+offset per dump; then find the FUNC covering the offset in the release's
+  breakpad symbols (`electron-v<ver>-darwin-arm64-symbols.zip`, ~100 MB; the 1.9 GB dSYM is not needed).
 - **No click-away-to-close**: `app.dock.hide()` makes blur events unreliable on macOS. Close button (×) shown in header instead. Windows uses blur-to-hide normally.
 - **`app.dock.hide()`** hides dock icon — tray-only app
 - **Template tray icon**: `trayIcon.setTemplateImage(true)` for menu bar dark/light mode.

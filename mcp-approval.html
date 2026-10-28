@@ -58,11 +58,12 @@
   .countdown { font-size:var(--fs-meta); color:var(--text-dim); display:flex; justify-content:space-between; margin-top:var(--sp-3); }
   .later { display:flex; flex-wrap:wrap; gap:var(--sp-2); margin:0 calc(-1 * var(--sp-3)); }
   .acts { display:flex; justify-content:flex-end; gap:var(--sp-4); }
-  /* An edit's diff: the shared merge view in its compact embed. It opens at a
-     fixed height (the fit measures it), then takes whatever room the window
-     has once fitted (dragged bigger, or the full review, where the request's
-     explanation gives way to it). */
-  .review { flex:1 1 280px; height:280px; min-height:160px; display:flex; flex-direction:column;
+  /* An edit's diff: the shared merge view in its compact embed. It opens at its
+     diff's height (fitWithReview, at least min-height), then takes whatever room
+     the window has once fitted (dragged bigger, or the full review, where the
+     request's explanation gives way to it). */
+  .review[hidden] { display:none; }
+  .review { flex:1 1 280px; height:280px; min-height:120px; display:flex; flex-direction:column;
             background:var(--surface); border-radius:var(--r-panel); overflow:hidden; }
   body.fitted .wrap { flex:1 1 auto; min-height:0; }
   body.expanded #explain, body.expanded #facts, body.expanded #whyRow { display:none !important; }
@@ -152,6 +153,32 @@
     // Fitted: from now on the request takes the window's room (a drag or the expand).
     document.body.classList.add('fitted');
   }
+  // A review's box takes its diff's height (a short edit leaves no empty room;
+  // the CSS min-height is the floor), up to REVIEW_MAX: past that it scrolls, and
+  // a drag or the expand gives it more. The prompt fits once, after the diff has
+  // drawn, so the window never resizes twice.
+  const REVIEW_MAX = 360;
+  let reviewFitted = false;
+  function fitWithReview() {
+    if (reviewFitted) return;
+    reviewFitted = true;
+    const box = $('review');
+    // The view was built before it joined the page: re-measure its lines and
+    // blocks first, or the height comes out short and the diff scrolls.
+    reviewView.refresh();
+    const panes = [...box.querySelectorAll('.CodeMirror-merge-pane')].filter((p) => p.getBoundingClientRect().width > 0);
+    const cms = panes.map((p) => p.querySelector('.CodeMirror')).filter((el) => el && el.CodeMirror);
+    if (cms.length) {
+      // The document's own height, widgets included (getScrollInfo().height is
+      // never less than the visible height, so it cannot tell a short diff).
+      const content = Math.max(...cms.map((el) => el.CodeMirror.heightAtLine(el.CodeMirror.lineCount(), 'local') + 8));
+      const chrome = box.getBoundingClientRect().height - Math.max(...panes.map((p) => p.getBoundingClientRect().height));
+      const h = Math.round(Math.min(REVIEW_MAX, chrome + content));
+      box.style.height = box.style.flexBasis = h + 'px';
+      reviewView.refresh();
+    }
+    fit();
+  }
   function setEdited(next) {
     if (edited === next) return;
     edited = next;
@@ -235,7 +262,10 @@
         embed: true,
         layout: 'unified',
         ignoreWhitespace: false,
-        onChange: (value) => setEdited(value.text !== proposed),
+        onChange: (value) => {
+          setEdited(value.text !== proposed);
+          if (!reviewFitted) requestAnimationFrame(fitWithReview);
+        },
         onExpand: (expanded) => {
           document.body.classList.toggle('expanded', expanded);
           window.approval.expand(expanded);
@@ -249,7 +279,9 @@
     for (const b of allowButtons()) b.disabled = true;
     armedAt = Date.now() + ARM_MS;
     setTimeout(() => { if (!decided) for (const b of allowButtons()) b.disabled = false; }, ARM_MS);
-    requestAnimationFrame(fit);
+    // A review fits once its diff has drawn (its first onChange), with a backstop.
+    if (reviewView) setTimeout(fitWithReview, 700);
+    else requestAnimationFrame(fit);
     // Opened under a resting cursor: no mouseenter fires, so ask directly.
     requestAnimationFrame(() => { if (document.documentElement.matches(':hover')) setPaused(true); });
   });

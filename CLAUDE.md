@@ -632,6 +632,16 @@ build could re-trigger the race.
   its bounds). In the editor Enter is a new line and Esc leaves it (stopPropagation first:
   CodeMirror re-focuses itself at the end of its own key handling); Ctrl/Cmd+Enter still allows.
   QA: `node scripts/qa-approval-review.js` (15 checks + dark / light shots).
+  The diff box takes its diff's height (`fitWithReview`: CSS min-height is the floor, 360 px the cap,
+  then it scrolls) and the prompt fits once, after the diff has drawn. Two traps shipped and were
+  caught by the owner (28 Oct): `.review { display:flex }` beat its `hidden` attribute, so EVERY
+  prompt showed an empty box (an author display rule always needs `X[hidden] { display:none }`);
+  and CodeMirror's `getScrollInfo().height` is never less than the visible height, so it cannot
+  size a short diff (use `heightAtLine(lineCount(), 'local')`, after a `refresh()`: the view is
+  built before it joins the page). `qa-ui-shots --only approval-modal` sweeps every prompt kind
+  (17 + a long edit) in both themes and fails on a painted empty box, unused room, cut text, a
+  diff box off an edit, or a diff box with empty room or cut short; each check was proven
+  against the broken version.
   **Hover pauses the countdown (2026-09-03, owner: "pause the timer while mouse over")**: the
   modal stops ticking on `mouseenter` of `<html>` (label "Paused while your mouse is over this",
   resumes from the same second on `mouseleave`; a resting cursor is caught via `:hover` after

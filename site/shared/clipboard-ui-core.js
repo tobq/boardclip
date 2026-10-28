@@ -6872,7 +6872,8 @@
       const keepTip = threeWay ? 'Keep the result as it is' : `Keep ${names.left.toLowerCase()} (Alt+Left)`;
       const node = document.createElement('div');
       node.className = `bc-u-block${state ? ` bc-u-${state}` : ''}`;
-      node.innerHTML = `<div class="bc-u-acts"><span class="bc-u-side">${escapeHtml(label)}</span>`
+      // An empty block's row already names its side ("Not in current").
+      node.innerHTML = `<div class="bc-u-acts">${empty ? '' : `<span class="bc-u-side">${escapeHtml(label)}</span>`}`
         + (state === 'conflict' ? '<button type="button" class="btn quiet sm" data-u="both" title="Keep both (Alt+B)">Both</button>' : '')
         + `<button type="button" class="icon-btn" data-u="take" title="${escapeHtml(takeTip)}" aria-label="${escapeHtml(takeTip)}"><span class="mi sm">arrow_downward</span></button>`
         + `<button type="button" class="icon-btn" data-u="keep" title="${escapeHtml(keepTip)}" aria-label="${escapeHtml(keepTip)}"><span class="mi sm">close</span></button>`

@@ -1082,23 +1082,121 @@ const STEPS = [
     await c.shot(cf, 'conflict-520');
     await cf.send('Emulation.clearDeviceMetricsOverride');
   } },
+  // Every prompt an AI can raise (one per kind of request; create_group and a
+  // brand-new add_clip never ask), each shot and denied. Each is audited for a
+  // painted box with nothing in it (an author display rule once beat the diff
+  // box's hidden attribute and every prompt showed it empty), room the fit left
+  // unused, text cut off, and the diff box on edits only. What the review does:
+  // scripts/qa-approval-review.js.
   { name: 'approval-modal', run: async (c) => {
-    // (an edit's review prompt: scripts/qa-approval-review.js)
-    const sql = c.items.find((i) => i.title === 'SQL: active users');
-    const sqlRef = await c.sb.aiRef(sql);
-    let req = null;
-    const ap = await c.sb.newPage(/mcp-approval\.html/, () => {
-      req = c.sb.mcp('delete_clip', sqlRef, { client: 'Claude (UI audit)' }).then(() => 'unexpected success', (e) => e.message);
-    }, { label: 'approval' });
-    await ap.waitFor(`document.getElementById('explain').textContent.length > 0`, 'approval rendered');
-    await ap.fontsReady();
-    // The allow buttons arm a moment after the prompt appears.
-    await ap.waitFor(`!document.getElementById('allowOnce').disabled`, 'allow buttons armed', 5000);
-    await qa.sleep(200);
-    await c.shot(ap, 'approval-modal');
-    await ap.eval(`(document.getElementById('deny').click(), true)`);
-    const result = await req;
-    if (!/denied/.test(result)) throw new Error(`approval request ended with ${result}`);
+    const by = (pred, label) => { const it = c.items.find(pred); if (!it) throw new Error(`seed has no ${label}`); return it; };
+    const plan = by((i) => i.title === 'Launch plan', 'Launch plan');
+    const sql = by((i) => i.title === 'SQL: active users', 'SQL clip');
+    const hello = by((i) => i.text === 'hello@example.com', 'email clip');
+    const groceries = by((i) => /^Groceries/.test(i.text || ''), 'groceries clip');
+    const image = by((i) => i.type === 'image' && i.title === 'Dashboard screenshot', 'image clip');
+    const ref = (item) => c.sb.aiRef(item);
+    const id = async (item) => ({ id: (await ref(item)).id });
+    const KINDS = [
+      ['group-add', 'assign_group', async () => ({ ...await ref(plan), group: 'Ideas' })],
+      ['group-remove', 'assign_group', async () => ({ ...await ref(plan), group: 'Work' })],
+      ['pin', 'pin_clip', () => ref(hello)],
+      ['unpin', 'pin_clip', () => ref(plan)],
+      ['numpad-set', 'set_numpad', async () => ({ ...await ref(hello), slot: 3 })],
+      ['numpad-clear', 'set_numpad', async () => ({ ...await ref(plan), slot: 0 })],
+      ['delete-clip', 'delete_clip', () => ref(sql)],
+      ['edit-replace', 'edit_clip', async () => ({ ...await ref(sql), text: sql.text.replace('7 days', '30 days').replace('ORDER BY last_seen DESC', 'ORDER BY email') })],
+      ['edit-append', 'edit_clip', async () => ({ ...await ref(groceries), text: 'tomatoes, basil', append: true })],
+      // Longer than the box's cap: it stops growing and scrolls.
+      ['edit-long', 'edit_clip', async () => ({ ...await ref(plan), text: plan.text.split('\n').map((l) => (l ? `${l} (revised)` : l)).join('\n') })],
+      ['add-existing', 'add_clip', async () => ({ text: hello.text, group: 'AI' })],
+      ['delete-group', 'delete_group', async () => ({ name: 'Ideas' })],
+      ['copy-text', 'copy_to_clipboard', async () => ({ text: 'a line the AI wants on your clipboard' })],
+      ['copy-clip', 'copy_to_clipboard', () => id(sql)],
+      ['paste', 'paste_clip', () => id(sql)],
+      ['read-private', 'read_clip', () => id(sql)],
+      ['search-all', 'search_all', async () => ({ query: 'roex OR tonn OR automix OR "mix-final" OR barry', limit: 20 })],
+      ['image-path', 'image_path', () => id(image)],
+    ];
+    const problems = [];
+    const audits = {};
+    for (const [kind, tool, argsFor] of KINDS) {
+      const args = await argsFor();
+      let req = null;
+      const ap = await c.sb.newPage(/mcp-approval\.html/, () => {
+        req = c.sb.mcp(tool, args, { client: 'Claude (UI audit)' }).then(() => 'unexpected success', (e) => e.message);
+      }, { label: `approval: ${kind}` });
+      await ap.waitFor(`document.getElementById('explain').textContent.length > 0`, `approval rendered: ${kind}`);
+      await ap.fontsReady();
+      // The allow buttons arm a moment after the prompt appears; the fit runs on render.
+      await ap.waitFor(`!document.getElementById('allowOnce').disabled`, 'allow buttons armed', 5000);
+      await qa.sleep(250);
+      const a = await ap.eval(`(() => {
+        const shown = (el) => { const r = el.getBoundingClientRect(); const cs = getComputedStyle(el); return r.width > 0 && r.height > 0 && cs.visibility !== 'hidden'; };
+        const painted = (el) => { const cs = getComputedStyle(el); return (cs.backgroundColor !== 'rgba(0, 0, 0, 0)' && cs.backgroundColor !== 'transparent') || parseFloat(cs.borderTopWidth) > 0 || parseFloat(cs.borderBottomWidth) > 0; };
+        const filled = (el) => (el.innerText || '').trim().length > 0 || !!el.querySelector('img, svg, canvas, .CodeMirror, input, textarea');
+        const name = (el) => (el.id ? '#' + el.id : el.tagName.toLowerCase()) + [...el.classList].map((k) => '.' + k).join('');
+        const wrap = document.getElementById('wrap');
+        // (CodeMirror's own line-background layers are painted and empty by design.)
+        const emptyBoxes = [...wrap.querySelectorAll('*')].filter((el) => !el.closest('.CodeMirror-merge-pane, .CodeMirror-merge-gap') && shown(el) && painted(el) && el.getBoundingClientRect().height > 20 && !filled(el)).map((el) => name(el) + ' ' + Math.round(el.getBoundingClientRect().height) + 'px');
+        const kids = [...wrap.children].filter(shown);
+        const contentBottom = Math.max(...kids.map((el) => el.getBoundingClientRect().bottom));
+        const unused = Math.round(wrap.getBoundingClientRect().bottom - contentBottom - parseFloat(getComputedStyle(wrap).paddingBottom));
+        const cut = [...document.querySelectorAll('#title, #explain, #why, #who, #facts dd, #facts dt, #detailLabel, .acts button, #countLabel')].filter((el) => shown(el) && (el.scrollWidth > el.clientWidth + 1 || el.scrollHeight > el.clientHeight + 1)).map(name);
+        const review = document.getElementById('review');
+        // The diff box's empty room: from where the shown editor's content ends (its
+        // visible part, when it scrolls) to the box's bottom edge.
+        const cmEl = [...review.querySelectorAll('.CodeMirror-merge-pane')].filter(shown).map((p) => p.querySelector('.CodeMirror')).find((el) => el && el.CodeMirror);
+        const info = cmEl ? cmEl.CodeMirror.getScrollInfo() : null;
+        return {
+          // (the document's own height: getScrollInfo().height is never less than the visible height)
+          reviewSlack: info ? Math.round(review.getBoundingClientRect().bottom - (cmEl.getBoundingClientRect().top + Math.min(cmEl.CodeMirror.heightAtLine(cmEl.CodeMirror.lineCount(), 'local'), info.clientHeight))) : null,
+          reviewHeight: Math.round(review.getBoundingClientRect().height),
+          reviewFloor: Math.round(parseFloat(getComputedStyle(review).minHeight) || 0),
+          // Content past the visible part: the diff scrolls although the box could grow.
+          reviewCut: info ? Math.round(cmEl.CodeMirror.heightAtLine(cmEl.CodeMirror.lineCount(), 'local') - info.clientHeight) : null,
+          reviewParts: cmEl ? {
+            lines: cmEl.CodeMirror.lineCount(), docBottom: Math.round(cmEl.CodeMirror.heightAtLine(cmEl.CodeMirror.lineCount(), 'local')),
+            cmTop: Math.round(cmEl.getBoundingClientRect().top - review.getBoundingClientRect().top), cmHeight: Math.round(cmEl.getBoundingClientRect().height),
+            widgets: [...review.querySelectorAll('.bc-u-block')].map((b) => Math.round(b.getBoundingClientRect().height)),
+            lastLineBottom: Math.round([...cmEl.querySelectorAll('.CodeMirror-line')].reduce((m, l) => Math.max(m, l.getBoundingClientRect().bottom), 0) - review.getBoundingClientRect().top),
+          } : null,
+          title: document.getElementById('title').textContent,
+          emptyBoxes, unused, cut,
+          overflowsWindow: document.documentElement.scrollHeight > innerHeight + 1,
+          wrapScrolls: wrap.scrollHeight > wrap.clientHeight + 1,
+          review: review.getBoundingClientRect().height > 0,
+          detail: document.getElementById('detailCard').getBoundingClientRect().height > 0,
+          height: innerHeight,
+        };
+      })()`);
+      audits[kind] = a;
+      const isEdit = tool === 'edit_clip';
+      if (a.emptyBoxes.length) problems.push(`${kind}: empty box ${a.emptyBoxes.join(', ')}`);
+      if (a.review !== isEdit) problems.push(`${kind}: diff box ${a.review ? 'shown' : 'missing'}`);
+      if (a.unused > 8) problems.push(`${kind}: ${a.unused}px of unused room under the content`);
+      // The box takes its diff's height (never less than its CSS min-height).
+      if (isEdit && a.reviewSlack > 20 && a.reviewHeight > a.reviewFloor + 1) problems.push(`${kind}: ${a.reviewSlack}px of empty room in the diff box`);
+      // (the fit caps the box at 360 px, the prompt's REVIEW_MAX; past that it scrolls by design)
+      if (isEdit && a.reviewCut > 2 && a.reviewHeight < 359) problems.push(`${kind}: the diff is cut off (${a.reviewCut}px scroll in a ${a.reviewHeight}px box)`);
+      if (a.cut.length) problems.push(`${kind}: text cut off in ${a.cut.join(', ')}`);
+      if (a.overflowsWindow || a.wrapScrolls) problems.push(`${kind}: content does not fit (${a.height}px window)`);
+      await c.shot(ap, `approval-${kind}`);
+      // Deny closes the window, so the page can be gone before CDP answers: the
+      // decision itself is checked through the request.
+      await ap.eval(`(setTimeout(() => document.getElementById('deny').click(), 50), true)`).catch((e) => {
+        if (!/socket closed/i.test(String(e && e.message))) throw e;
+      });
+      const result = await req;
+      if (!/denied/.test(result)) problems.push(`${kind}: request ended with ${result}`);
+      ap.close();
+      await qa.sleep(300);
+    }
+    c.note('approval-audit', audits);
+    if (problems.length) {
+      for (const p of problems) console.error(`[${c.theme}] approval: ${p}`);
+      throw new Error(`approval prompts: ${problems.join('; ')}`);
+    }
   } },
   // The demo's windows (Core.attachWebWindow): the popup and its clip window
   // are windows on the page. Real mouse input (CDP) drags the popup by its

@@ -121,6 +121,7 @@ const tagsOf = (item) => (item && item.pin && Array.isArray(item.pin.groups) ? i
         facts: [...document.querySelectorAll('#facts dt, #facts dd')].map((e) => e.textContent), label: document.getElementById('detailLabel').textContent,
         always: document.getElementById('allowAlways').textContent, allowOnce: document.getElementById('allowOnce').className,
         armed: !document.getElementById('allowOnce').disabled, buttons: [...document.querySelectorAll('.acts button')].map((b) => b.textContent),
+        review: document.getElementById('review').getBoundingClientRect().height > 0,
       })`);
       step.file = path.join(OUT, `approval-${out.shots.length + 1}-${tool}.png`);
       await modal.screenshot(step.file);
@@ -202,6 +203,9 @@ const tagsOf = (item) => (item && item.pin && Array.isArray(item.pin.groups) ? i
       deleteTagAsks: delTag.state.title === 'Delete group “claude-proxy”' && has(delTag, 'explain', 'removed from 1 clip and from your filters. The clip stays in your history.')
         && has(delTag, 'why', 'not shared with AI') && /denied/i.test(String(delTag.result)) && delTag.tagsAfter.includes('claude-proxy'),
       // One word for the app's term in every prompt: group, never tag.
+      // The edit's diff box takes space on an edit prompt only (an author display rule
+      // once beat its hidden attribute and every other prompt showed it empty).
+      reviewOnlyOnEdit: out.shots.every((s) => s.state.review === (s.tool === 'edit_clip')),
       groupWords: out.shots.every((s) => !/\btags?\b/i.test(`${s.state.title} ${s.state.explain} ${s.state.why} ${s.state.always}`)),
       // Grants are per tool, so each Always button names its own action.
       grantLabels: addFlat.state.always === "Always allow changing clips' groups" && delTag.state.always === 'Always allow deleting groups',

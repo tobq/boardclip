@@ -3,6 +3,13 @@
 <script>
   document.documentElement.dataset.theme = matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
 </script>
+<!-- Vendored CodeMirror 5 merge view: an edit's diff is the shared
+     reconciliation view (the merge window's), embedded. Load before the core. -->
+<link rel="stylesheet" href="site/shared/vendor/cm5/codemirror.css">
+<link rel="stylesheet" href="site/shared/vendor/cm5/merge.css">
+<script src="site/shared/vendor/cm5/codemirror.js"></script>
+<script src="site/shared/vendor/cm5/diff-match-patch.js"></script>
+<script src="site/shared/vendor/cm5/merge.js"></script>
 <link rel="stylesheet" href="site/shared/clipboard-popup.css">
 <link rel="stylesheet" href="site/shared/clipboard-window.css">
 <!-- The shared core: its applyTheme / applyAppearance render the appearance
@@ -51,6 +58,14 @@
   .countdown { font-size:var(--fs-meta); color:var(--text-dim); display:flex; justify-content:space-between; margin-top:var(--sp-3); }
   .later { display:flex; flex-wrap:wrap; gap:var(--sp-2); margin:0 calc(-1 * var(--sp-3)); }
   .acts { display:flex; justify-content:flex-end; gap:var(--sp-4); }
+  /* An edit's diff: the shared merge view in its compact embed. It opens at a
+     fixed height (the fit measures it), then takes whatever room the window
+     has once fitted (dragged bigger, or the full review, where the request's
+     explanation gives way to it). */
+  .review { flex:1 1 280px; height:280px; min-height:160px; display:flex; flex-direction:column;
+            background:var(--surface); border-radius:var(--r-panel); overflow:hidden; }
+  body.fitted .wrap { flex:1 1 auto; min-height:0; }
+  body.expanded #explain, body.expanded #facts, body.expanded #whyRow { display:none !important; }
 </style></head>
 <body>
   <div class="bc-bar"><span class="bc-bar-title">AI action</span></div>
@@ -67,6 +82,7 @@
       <div class="label overline" id="detailLabel">Clip text</div>
       <div class="detail" id="detail"></div>
     </div>
+    <div class="review" id="review" hidden></div>
   </div>
   <div class="foot" id="foot">
     <div>
@@ -87,6 +103,10 @@
   const Core = window.BoardClipCore;
   const $ = id => document.getElementById(id);
   let current = null, remaining = 60, timer = null, decided = false, paused = false, armedAt = Infinity;
+  // A review: the embedded merge view, the proposal it opened with, and whether
+  // the person has changed it (then Allow writes their version).
+  let reviewView = null, proposed = '', edited = false;
+  const toLF = t => String(t == null ? '' : t).replace(/\r\n?/g, '\n');
   // Glyphs match the ones the app uses for the same action (star = pin, sell =
   // group, edit_note = edit).
   const ICONS = {
@@ -129,13 +149,25 @@
     // only takes up slack, so it never feeds back into the measure).
     const h = ['.bc-bar', '#wrap', '#foot'].reduce((sum, sel) => { const el = document.querySelector(sel); return sum + (el ? el.getBoundingClientRect().height : 0); }, 0);
     if (window.approval && window.approval.resize) window.approval.resize(Math.ceil(h));
+    // Fitted: from now on the request takes the window's room (a drag or the expand).
+    document.body.classList.add('fitted');
+  }
+  function setEdited(next) {
+    if (edited === next) return;
+    edited = next;
+    $('allowOnce').textContent = edited ? 'Allow edited' : 'Allow once';
+    $('allowOnce').title = edited ? `Allow your edited version once (${MOD}+Enter). Enter and Esc deny.` : `Allow once (${MOD}+Enter). Enter and Esc deny.`;
+    // An edited review never times out under the person: it stays paused.
+    if (edited) { setPaused(true); paintPause(); }
   }
   function decide(choice) {
     if (decided || !current) return;
     if (choice !== 'deny' && choice !== 'timeout' && !armed()) return;
     decided = true;
     if (timer) clearInterval(timer);
-    window.approval.decide(current.id, choice);
+    // Allowed after changing the proposal: the person's version is the edit.
+    const answer = edited && reviewView && choice !== 'deny' && choice !== 'timeout' ? { text: reviewView.getValue().text } : undefined;
+    window.approval.decide(current.id, choice, answer);
   }
   // The countdown stops while the mouse is over the prompt so it can be read
   // at leisure; main is told so its safety timer (and the waiting helper's
@@ -143,13 +175,16 @@
   function setPaused(next) {
     if (decided || !current || paused === next) return;
     paused = next;
-    $('countLabel').textContent = paused ? 'Paused while your mouse is over this' : "Denies automatically if you don't respond";
-    $('countNum').textContent = paused ? 'paused' : remaining + 's';
-    $('meter').classList.toggle('paused', paused);
+    paintPause();
     if (window.approval.hold) window.approval.hold(current.id, paused, remaining);
   }
+  function paintPause() {
+    $('countLabel').textContent = !paused ? "Denies automatically if you don't respond" : edited ? 'Paused while you review your changes' : 'Paused while your mouse is over this';
+    $('countNum').textContent = paused ? 'paused' : remaining + 's';
+    $('meter').classList.toggle('paused', paused);
+  }
   document.documentElement.addEventListener('mouseenter', () => setPaused(true));
-  document.documentElement.addEventListener('mouseleave', () => setPaused(false));
+  document.documentElement.addEventListener('mouseleave', () => { if (!edited) setPaused(false); });
   function tick() {
     if (paused) return;
     remaining -= 1;
@@ -187,6 +222,28 @@
     const preview = req.preview && req.preview.text ? req.preview : (req.detail ? { label: 'Clip text', text: req.detail } : null);
     if (preview) { $('detailLabel').textContent = preview.label || 'Clip text'; $('detail').textContent = preview.text.trim(); $('detailCard').style.display = ''; }
     else { $('detailCard').style.display = 'none'; }
+    // An edit: its diff, not the bare new text. The shared merge view, unified
+    // (the compact prompt's room), the proposal editable: a change taken back
+    // keeps the clip's current text there.
+    const review = req.review && Core.createReconciliationView ? req.review : null;
+    $('review').hidden = !review;
+    if (review) {
+      $('detailCard').style.display = 'none';
+      proposed = toLF(review.after);
+      reviewView = Core.createReconciliationView({
+        record: { id: req.id, review: true, labels: { left: 'Proposed', right: 'Current' }, left: { text: review.after }, right: { text: review.before } },
+        embed: true,
+        layout: 'unified',
+        ignoreWhitespace: false,
+        onChange: (value) => setEdited(value.text !== proposed),
+        onExpand: (expanded) => {
+          document.body.classList.toggle('expanded', expanded);
+          window.approval.expand(expanded);
+          setTimeout(() => { if (reviewView) reviewView.refresh(); }, 80);
+        },
+      });
+      $('review').append(reviewView.el);
+    }
     $('countNum').textContent = remaining + 's';
     timer = setInterval(tick, 1000);
     for (const b of allowButtons()) b.disabled = true;
@@ -204,6 +261,14 @@
   // Capture phase, so a focused button never gets the key first: Enter on a
   // focused Allow still denies, and Space cannot press an allow button.
   window.addEventListener('keydown', e => {
+    // Typing in a review's editor is editing, never an answer: Enter makes a
+    // new line and Esc leaves the editor; Ctrl/Cmd+Enter still allows.
+    const inEditor = e.target && e.target.closest && e.target.closest('.CodeMirror');
+    if (inEditor && !(e.key === 'Enter' && (e.ctrlKey || e.metaKey))) {
+      // CodeMirror would focus itself again at the end of its own Esc handling.
+      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); e.target.blur(); }
+      return;
+    }
     if (e.key === 'Escape') { e.preventDefault(); decide('deny'); return; }
     if (e.key === 'Enter') {
       e.preventDefault();

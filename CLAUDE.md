@@ -619,6 +619,19 @@ build could re-trigger the race.
   fake HOME/APPDATA so the registrar never touches real client configs; screenshot each modal
   over CDP). `BOARDCLIP_MCP_PIPE_TAG` is the test seam that lets a sandbox run its own control
   channel beside the live app instead of colliding on the per-user pipe.
+  **An edit is reviewed as a diff (28 Oct 2026, owner: "the replace text mcp shit should have a diff
+  its super fucking disorientating")**: `buildApprovalRequest` gives edit_clip `review: {before,
+  after}` (append = mcpExecute's own `${before}\n${next}` join) and the modal embeds the shared
+  merge view (`createReconciliationView({ embed, layout: 'unified', record.review, labels:
+  Proposed / Current })`: a tools row with count, nav, the layout switch and expand; no bar, footer,
+  accepts or conflicts). Result = the proposal, editable; a change taken back keeps the clip's
+  text; "N changes, M rejected". Changed = "Allow edited", the countdown stays paused, and allowing
+  sends `{ text }` (`approval-decide`'s answer): main writes THAT as a replace and the AI gets
+  `editedByUser` (+ `text` only if the clip is shared with AI: `mcpReviewedNote`). The window is
+  resizable (480 wide) and expands to the full review (`approval-expand`, 860x680 centred, back to
+  its bounds). In the editor Enter is a new line and Esc leaves it (stopPropagation first:
+  CodeMirror re-focuses itself at the end of its own key handling); Ctrl/Cmd+Enter still allows.
+  QA: `node scripts/qa-approval-review.js` (15 checks + dark / light shots).
   **Hover pauses the countdown (2026-09-03, owner: "pause the timer while mouse over")**: the
   modal stops ticking on `mouseenter` of `<html>` (label "Paused while your mouse is over this",
   resumes from the same second on `mouseleave`; a resting cursor is caught via `:hover` after
@@ -1126,6 +1139,19 @@ clear-all). All popup CSS + theme variables live in `site/shared/clipboard-popup
   position drifts (marks ended a character early). Conflict chunks: red wash on every
   pane, red word marks (`bc-conflict-line` wrap class), red connector (`chunkState`
   'conflict'). Patch list: `site/shared/vendor/cm5/README.md`.
+- **Unified layout (28 Oct 2026, owner: "does our diffing stuff have a unified mode (with the same
+  capabilities of manual edits, accept/reject hunks)")**: a LAYOUT of the one view, never a second
+  diff (`o.layout` 'split'|'unified', the bar's `.seg` `data-x="layout"`; a flip rebuilds nothing).
+  The other panes and gap are hidden; `renderUnified` puts each open chunk's other version
+  (`otherRows`: its lines + `bcWordDiff` marks) as a CM line widget above its Result lines, with the
+  split view's own operations always shown, floated at the block's top right: take
+  (`applyChunk`), keep (`declineChunk`), Both on a conflict (`appendChunk`). An EOF chunk's range
+  starts on the line before (`chunkRanges`), so strip a LEADING newline there, not a trailing one.
+  Heads: equal shares, Result's first (each head is an inline-size container, so `flex: none`
+  collapses it to nothing). Remembered per device: `merge_layout` (local-only), sent to the
+  conflict / Unify windows as `mergeLayout`, saved by `onLayoutChange`; the demo keeps
+  `boardclip-demo-merge-layout`. QA: `qa-ui-shots --only unify,conflict` (`unify-unified`,
+  `conflict-unified`).
 - **Collapse of identical sections (ignore-whitespace)**: the wrapper's `wsNormText`
   normalizes blank-line RUNS + trailing whitespace for the merge view when the WS
   toggle is on, so regions that differ only in blank spacing become truly identical

@@ -827,6 +827,9 @@
     }
     return dv.bcMarkDiffCache;
   }
+  // BOARDCLIP PATCH: the same word diff for the wrapper's unified layout, which marks
+  // each change's other version with it (clipboard-ui-core createReconciliationView).
+  CodeMirror.bcWordDiff = bcWordDiff;
 
   function getChunks(diff) {
     var chunks = [];

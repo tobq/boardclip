@@ -117,7 +117,10 @@ async function openClipMenu(x, y) {
   menuController.openClipMenu(menuClipId, x, y);
 }
 
+// The merge view's remembered layout (conflict and Unify windows' init).
+let mergeLayout = 'split';
 window.editorApi.onInit((init) => {
+  if (init.mergeLayout) mergeLayout = init.mergeLayout;
   themeMode = (init.themeMode === 'light' || init.themeMode === 'dark') ? init.themeMode : 'system';
   refreshTheme();
   // The appearance payload (this window's surface, the accent colour, density,
@@ -203,6 +206,8 @@ if (window.editorApi.onConflict) {
     editor = null;
     reconcileView = Core.createReconciliationView({
       record,
+      layout: mergeLayout,
+      onLayoutChange: (next) => { mergeLayout = next; if (window.editorApi.saveMergeLayout) window.editorApi.saveMergeLayout(next); },
       windowDrag: window.editorApi.windowDrag,
       onResolve: async (resolution) => {
         if (record.unify && window.editorApi.unifyStep) {

@@ -210,7 +210,7 @@ const siteCss = read('site/styles.css');
   for (const patched of ['chunkState', 'bcDecline', 'bcRedraw']) {
     assert.ok(vendoredMerge.includes(patched), `vendored merge.js missing the ${patched} patch`);
   }
-  for (const [name, html] of [['editor.html', editorHtml], ['site/index.html', siteHtml]]) {
+  for (const [name, html] of [['editor.html', editorHtml], ['site/index.html', siteHtml], ['mcp-approval.html', read('mcp-approval.html')]]) {
     for (const asset of ['vendor/cm5/codemirror.js', 'vendor/cm5/diff-match-patch.js', 'vendor/cm5/merge.js', 'vendor/cm5/codemirror.css', 'vendor/cm5/merge.css']) {
       assert.ok(html.includes(asset), `${name} must load ${asset} for the shared merge view`);
     }
@@ -1267,6 +1267,38 @@ const siteCss = read('site/styles.css');
   assert.ok(/offerUndo: \(\{ message, undo \}\)/.test(appHtml), 'the app toast shows the message the controller wrote');
   assert.ok(preloadSrc.includes("groupRestore: (payload) => ipcRenderer.invoke('group-restore', payload)"), 'preload: groupRestore');
   assert.ok(/ipcMain\.handle\('group-restore'/.test(read('main.js')), 'main: group-restore');
+}
+
+// 35) Unified diff + the AI edit review (28 Oct 2026). Unified is a LAYOUT of the
+// one merge view, never a second diff: the same MergeView chunks, each change's
+// other version drawn as a line widget in the Result with the split view's own
+// take / keep (+ Both on a conflict). The layout is remembered per device. An
+// AI's edit_clip prompt embeds that view (unified first), a review has no
+// conflicts, and the person's version goes back to the AI only when the clip is
+// shared with it.
+{
+  const coreSrc = read('site/shared/clipboard-ui-core.js');
+  const unified = coreSrc.slice(coreSrc.indexOf('function renderUnified('), coreSrc.indexOf('function setLayout('));
+  const has = (src, ...parts) => parts.every((part) => src.includes(part));
+  assert.ok(has(unified, 'mv.leftChunks()', 'mv.rightChunks()', 'ed.addLineWidget('), "unified reads the merge view's own chunks and draws in the Result");
+  assert.ok(!/diffLineHunks|lcsSegments|diff_main/.test(unified), 'unified runs no diff of its own');
+  const block = coreSrc.slice(coreSrc.indexOf('function unifiedBlock('), coreSrc.indexOf('function renderUnified('));
+  assert.ok(has(block, 'applyChunk(side, chunk)', 'declineChunk(dv, chunk)', 'appendChunk(side, chunk)'), "a block takes, keeps and keeps both through the split view's own chunk operations");
+  assert.ok(has(coreSrc, 'if (!threeWay && !review) {'), 'a review marks no conflicts');
+  assert.ok(has(coreSrc, 'data-layout="unified"', 'data-layout="split"'), 'one layout switch in the view');
+  const mainSrc = read('main.js');
+  const localKeys = mainSrc.slice(mainSrc.indexOf('const LOCAL_ONLY_SETTING_KEYS = new Set('), mainSrc.indexOf('const LOCAL_ONLY_SETTING_KEYS = new Set(') + 400);
+  assert.ok(localKeys.includes("'merge_layout'") && has(mainSrc, 'delete remoteSave.merge_layout;'), 'merge_layout is per device, never synced');
+  assert.ok(has(mainSrc, "mergeLayout: settings.merge_layout === 'unified'"), 'the merge windows open in the remembered layout');
+  assert.ok(has(mainSrc, 'review = { before, after: a.append && before ? `${before}\\n${next}` : next };'), "edit_clip's request carries the diff to review (append: mcpExecute's join)");
+  const note = mainSrc.slice(mainSrc.indexOf('function mcpReviewedNote('), mainSrc.indexOf('function mcpReviewedNote(') + 900);
+  assert.ok(has(note, 'isItemSharedWithAi(item)', 'editedByUser: true, text', 'editedByUser: true, note'), 'the reviewed text goes back only for a clip shared with AI');
+  const approval = read('mcp-approval.html');
+  assert.ok(has(approval, 'Core.createReconciliationView({', 'embed: true', "layout: 'unified'"), 'the edit prompt embeds the shared merge view, unified first');
+  assert.ok(has(approval, 'e.stopPropagation(); e.target.blur();'), 'Esc in the review editor leaves it (CodeMirror never sees it, or it focuses itself again)');
+  for (const name of ['editor.html', 'site/index.html']) {
+    assert.ok(read(name).includes('onLayoutChange:'), `${name}: the merge view's layout flip is remembered`);
+  }
 }
 
 console.log('ui-parity.test.js: all parity guards passed');

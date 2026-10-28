@@ -1398,7 +1398,7 @@ function mergeGroups(local, remote) {
 // Settings the save-settings IPC may write without touching history or sync
 // (per-machine display knobs; the window surface reaches the windows through
 // its own broadcast).
-const LOCAL_ONLY_SETTING_KEYS = new Set(['image_preview_height', 'options_panel_height', 'surface_style', 'glass_scope', 'regex_search', 'facet_joins', 'find_regex', 'find_case']);
+const LOCAL_ONLY_SETTING_KEYS = new Set(['image_preview_height', 'options_panel_height', 'surface_style', 'glass_scope', 'regex_search', 'facet_joins', 'find_regex', 'find_case', 'merge_layout']);
 
 function remoteSettingsPayload() {
   const remoteSave = {
@@ -1438,6 +1438,7 @@ function remoteSettingsPayload() {
   delete remoteSave.facet_joins;
   delete remoteSave.find_regex;
   delete remoteSave.find_case;
+  delete remoteSave.merge_layout;
   // When this device cut over to flat tags: per device.
   delete remoteSave.groups_flattened_at;
   // The AI share list itself is per device (switch flips travel as ai_share_stamps).
@@ -6151,6 +6152,7 @@ function openConflictWindow(conflictId) {
         text: '',
         noteTitle: '',
         title: 'Resolve conflict',
+        mergeLayout: settings.merge_layout === 'unified' ? 'unified' : 'split',
         windowControls: windowControlsInfo(),
         themeMode: settings.theme_mode || 'system',
         ...windowAppearance(conflictWin),
@@ -6268,6 +6270,7 @@ function openUnifyWindow(session) {
         text: '',
         noteTitle: '',
         title: 'Unify clips',
+        mergeLayout: settings.merge_layout === 'unified' ? 'unified' : 'split',
         windowControls: windowControlsInfo(),
         themeMode: settings.theme_mode || 'system',
         ...windowAppearance(unifyWin),
@@ -6854,10 +6857,15 @@ function notifyAiAccessChanged() {
 }
 
 // ---- Approval modal ----
+// Resolves { decision, text }: text is the person's own version of a reviewed
+// edit (request.review), set only when they allowed it after changing it.
+// Each expanded review prompt's compact bounds, to go back to.
+const approvalCompactBounds = new WeakMap();
+
 function requestApproval(request, { signal } = {}) {
   return new Promise(resolve => {
     // The caller (MCP helper) already gave up: never open a prompt for nobody.
-    if (signal && signal.aborted) return resolve('client_gone');
+    if (signal && signal.aborted) return resolve({ decision: 'client_gone', text: null });
     const id = `appr-${++approvalSeq}`;
     const timeoutSec = clampApprovalTimeout(settings.ai_approval_timeout_sec);
     const payload = { ...request, id, timeoutSec };
@@ -6865,16 +6873,18 @@ function requestApproval(request, { signal } = {}) {
     let timer = null;
     let holdCeiling = null;
     const onAbort = () => finish('client_gone');
-    const finish = decision => {
+    const finish = (decision, answer) => {
       if (settled) return;
       settled = true;
+      const allowed = decision === 'once' || decision === 'session' || decision === 'always';
+      const text = allowed && request.review && answer && typeof answer.text === 'string' ? answer.text : null;
       clearTimeout(timer);
       clearTimeout(holdCeiling);
       if (signal) signal.removeEventListener('abort', onAbort);
       pendingApprovals.delete(id);
       try { if (modal && !modal.isDestroyed()) modal.close(); } catch {}
-      diagnostics.record('mcp.approval', { tool: request.tool, client: request.client, decision }, { forceFile: true });
-      resolve(decision);
+      diagnostics.record('mcp.approval', { tool: request.tool, client: request.client, decision, reviewed: text != null }, { forceFile: true });
+      resolve({ decision, text });
     };
     // The renderer owns the visible countdown; this timer is only the safety
     // net for a hung or blank modal, so it runs 3 s behind it. While the mouse
@@ -6898,12 +6908,16 @@ function requestApproval(request, { signal } = {}) {
     // action later for nobody.
     if (signal) signal.addEventListener('abort', onAbort, { once: true });
 
+    // A review (an edit's diff) can be dragged bigger, or expanded to the full
+    // review (approval-expand); every other prompt keeps its fitted size.
+    const reviewing = !!request.review;
     const modal = new BrowserWindow({
-      width: 440,
+      width: reviewing ? 480 : 440,
       height: 360,
       useContentSize: true,
       frame: false,
-      resizable: false,
+      resizable: reviewing,
+      ...(reviewing ? { minWidth: 380, minHeight: 320 } : {}),
       maximizable: false,
       fullscreenable: false,
       alwaysOnTop: true,
@@ -7038,6 +7052,7 @@ function buildApprovalRequest(tool, args, targetItem, client) {
   let title = '';
   let explain = '';
   let why = '';
+  let review = null;
   const gatedWhy = 'This action always asks, whatever groups the clip is in.';
   const privateWhy = 'Asking because this clip is in no group shared with AI.';
   const sharedWhy = shared
@@ -7087,6 +7102,9 @@ function buildApprovalRequest(tool, args, targetItem, client) {
     case 'edit_clip': {
       const before = item && item.type !== 'image' ? String(item.text || '') : '';
       const next = String(a.text || '');
+      // The clip as it is and the text it would become (mcpExecute's own append
+      // join): the prompt shows them as a diff the person can take parts back from.
+      review = { before, after: a.append && before ? `${before}\n${next}` : next };
       if (a.append) {
         title = 'Append text to a clip';
         explain = `${next.length} characters will be added to the END of the clip ${clipLabel}. Nothing already in it is removed.`;
@@ -7198,6 +7216,7 @@ function buildApprovalRequest(tool, args, targetItem, client) {
     why,
     facts,
     preview: preview && preview.text ? { label: preview.label, text: clip(preview.text) } : null,
+    ...(review ? { review } : {}),
     // Kept for older modal builds still open when the app restarts.
     detail: preview && preview.text ? clip(preview.text) : '',
     danger: dangerTools.has(tool),
@@ -7307,8 +7326,11 @@ async function mcpHandleRequest(reqPath, payload, ctx = {}) {
   const targetItem = tool === 'add_clip' ? mcpAddTarget(args.text) : resolvedItem;
 
   let decision = 'auto';
+  let reviewedText = null;
   if (mcpNeedsApproval(tool, targetItem, args)) {
-    decision = await requestApproval(buildApprovalRequest(tool, args, targetItem, client), { signal: ctx.signal });
+    const answer = await requestApproval(buildApprovalRequest(tool, args, targetItem, client), { signal: ctx.signal });
+    decision = answer.decision;
+    reviewedText = answer.text;
     if (decision === 'deny') throw new Error('denied');
     if (decision === 'timeout') throw new Error('timed_out');
     if (decision === 'client_gone') throw new Error('client_gone');
@@ -7323,11 +7345,26 @@ async function mcpHandleRequest(reqPath, payload, ctx = {}) {
   // Re-check after the (possibly long) approval await: if AI access was toggled
   // off while the modal was open, refuse before performing the action.
   if (!settings.ai_access_enabled) throw new Error('ai_access_disabled');
+  // The person changed the proposal in the prompt's diff (took parts back,
+  // edited it): their version is what the edit writes, as a replace.
+  const reviewed = reviewedText != null && tool === 'edit_clip';
+  const runArgs = reviewed ? { ...args, text: reviewedText, append: false } : args;
   try {
-    return await mcpExecute(tool, args, ctx, publicArgs);
+    const result = await mcpExecute(tool, runArgs, ctx, publicArgs);
+    return reviewed && result && typeof result === 'object' ? { ...result, ...mcpReviewedNote(resolvedItem, reviewedText) } : result;
   } catch (err) {
     throw mcpPublicError(err, publicArgs);
   }
+}
+
+// What the AI is told when the person changed its edit before allowing it. The
+// final text only goes back when the AI may read the clip: on a private clip it
+// would carry the parts of the old text the person kept.
+function mcpReviewedNote(item, text) {
+  if (item && isItemSharedWithAi(item)) {
+    return { editedByUser: true, text, note: 'The person changed your proposed text in the approval prompt before allowing it; text is what the clip now says.' };
+  }
+  return { editedByUser: true, note: 'The person changed your proposed text before allowing it. The clip is in no group shared with AI, so its final text is not returned.' };
 }
 
 // `args` are the app's own (real ids, real revs, mcpResolveArgs); `publicArgs` what
@@ -7564,6 +7601,7 @@ function setupIPC() {
     if (body.facet_joins !== undefined) settings.facet_joins = clipSearch.normalizeJoins(body.facet_joins);
     if (body.find_regex !== undefined) settings.find_regex = !!body.find_regex;
     if (body.find_case !== undefined) settings.find_case = !!body.find_case;
+    if (body.merge_layout !== undefined) settings.merge_layout = body.merge_layout === 'unified' ? 'unified' : 'split';
     if (body.diagnostics_enabled !== undefined) settings.diagnostics_enabled = !!body.diagnostics_enabled;
     if (body.quick_paste_restore !== undefined) settings.quick_paste_restore = !!body.quick_paste_restore;
     if (body.quick_paste_restore_delay_ms !== undefined) {
@@ -7886,9 +7924,27 @@ function setupIPC() {
   });
 
   // Approval modal -> main bridge.
-  ipcMain.on('approval-decide', (_, id, choice) => {
+  ipcMain.on('approval-decide', (_, id, choice, answer) => {
     const pending = pendingApprovals.get(id);
-    if (pending) pending.finish(choice);
+    if (pending) pending.finish(choice, answer);
+  });
+  // A review prompt's expand: the full review (the merge window's size, centred
+  // on its display), then back to the bounds it had.
+  ipcMain.on('approval-expand', (event, expanded) => {
+    const w = BrowserWindow.fromWebContents(event.sender);
+    if (!w || w.isDestroyed()) return;
+    try {
+      if (expanded) {
+        approvalCompactBounds.set(w, w.getBounds());
+        const wa = screen.getDisplayMatching(w.getBounds()).workArea;
+        const width = Math.min(860, wa.width - 80);
+        const height = Math.min(680, wa.height - 80);
+        w.setBounds({ x: Math.round(wa.x + (wa.width - width) / 2), y: Math.round(wa.y + (wa.height - height) / 2), width, height });
+      } else if (approvalCompactBounds.has(w)) {
+        w.setBounds(approvalCompactBounds.get(w));
+        approvalCompactBounds.delete(w);
+      }
+    } catch {}
   });
   // The modal reports the mouse entering (hold) or leaving it (resume, with the
   // seconds it still shows) so main's safety timer follows the visible one.
@@ -7900,7 +7956,8 @@ function setupIPC() {
   ipcMain.on('approval-resize', (event, height) => {
     const w = BrowserWindow.fromWebContents(event.sender);
     if (!w || w.isDestroyed()) return;
-    const h = Math.max(180, Math.min(560, Math.round(Number(height) || 360)));
+    const wa = screen.getDisplayMatching(w.getBounds()).workArea;
+    const h = Math.max(180, Math.min(w.isResizable() ? wa.height - 80 : 560, Math.round(Number(height) || 360)));
     try {
       const [width] = w.getContentSize();
       w.setContentSize(width, h);

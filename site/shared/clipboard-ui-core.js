@@ -6540,10 +6540,24 @@
     // Result seed: the true base for a 3-way merge, else Current (pull Incoming
     // hunks in via the connectors; the save guard catches unhandled ones).
     const seed = threeWay ? toLF(record.base.text) : leftText;
-    let ignoreWs = true;
+    let ignoreWs = o.ignoreWhitespace !== false;
+    // Two layouts of the SAME MergeView: side by side (the addon's panes) or
+    // unified (one column, the Result editor, each change's other version drawn
+    // above its lines as a read-only block with its take / keep controls).
+    // Taking, keeping, conflicts, the counter and the keys stay one
+    // implementation, and a flip never rebuilds the view.
+    let layout = o.layout === 'unified' ? 'unified' : 'split';
+    // embed: the diff alone (count, nav, layout, expand), inside a host that
+    // owns its title and its decision (the AI edit approval prompt).
+    const embed = !!o.embed;
+    // review: an AI edit under approval. The Result is the proposal and the
+    // other pane the clip as it is: taking a change back rejects it, a change
+    // left alone is accepted.
+    const review = !!record.review;
+    const names = { left: (record.labels && record.labels.left) || 'Current', right: (record.labels && record.labels.right) || 'Incoming' };
 
     const root = document.createElement('div');
-    root.className = 'bc-reconcile';
+    root.className = embed ? 'bc-reconcile bc-embed' : 'bc-reconcile';
     const lTitle = titleOf(left);
     const rTitle = titleOf(right);
     // The result's title is the bar's title field (shown once). When the two
@@ -6561,38 +6575,48 @@
       + (accept ? `<button type="button" class="btn quiet sm accent bc-head-accept" data-x="${side}" title="${escapeHtml(`${accept.label}: ${accept.tip}`)}" aria-label="${escapeHtml(accept.label)}"><span class="mi sm">done_all</span><span class="bc-accept-label">Accept</span></button>` : '')
       + '</div>';
     const gap = '<span class="bc-merge-heads-gap"></span>';
-    const takeCurrent = { label: 'Accept current', tip: 'finish with the current text as it is, without the incoming changes' };
-    const takeIncoming = { label: 'Accept incoming', tip: 'finish with the incoming text as it is' };
+    const takeCurrent = embed ? null : { label: 'Accept current', tip: 'finish with the current text as it is, without the incoming changes' };
+    const takeIncoming = embed ? null : { label: 'Accept incoming', tip: 'finish with the incoming text as it is' };
     // A multi-step Unify says where it is in the footer (never truncated
     // there; the bar's context label gives way first in a narrow window).
     const step = record.step && Number(record.step.of) > 1 ? record.step : null;
     const headsHtml = threeWay
-      ? headCell('Current', 'left', lTitle, takeCurrent) + gap + headCell('Result', '', '', null) + gap + headCell('Incoming', 'right', rTitle, takeIncoming)
-      : headCell('Current', 'left', lTitle, takeCurrent, 'Edit this pane: it is the result') + gap + headCell('Incoming', 'right', rTitle, takeIncoming);
-    root.innerHTML = `
-      ${renderWindowBar({
-        title: barTitleField('title', 'Title of the merged clip'),
-        context: record.title || o.title || 'Sync conflict',
-        webControls: !o.nativeControls,
-        actions: `<span class="bc-chg-count" data-x="chgcount"></span>
+      ? headCell(names.left, 'left', lTitle, takeCurrent) + gap + headCell('Result', '', '', null) + gap + headCell(names.right, 'right', rTitle, takeIncoming)
+      : headCell(names.left, 'left', lTitle, takeCurrent, 'Edit this pane: it is the result') + gap + headCell(names.right, 'right', rTitle, takeIncoming);
+    const navHtml = `<span class="bc-chg-count" data-x="chgcount"></span>
           <button class="icon-btn" type="button" data-x="prevchg" title="Previous change (Alt+Up)" aria-label="Previous change"><span class="mi">keyboard_arrow_up</span></button>
-          <button class="icon-btn" type="button" data-x="nextchg" title="Next change (Alt+Down)" aria-label="Next change"><span class="mi">keyboard_arrow_down</span></button>
+          <button class="icon-btn" type="button" data-x="nextchg" title="Next change (Alt+Down)" aria-label="Next change"><span class="mi">keyboard_arrow_down</span></button>`;
+    const layoutSeg = '<div class="seg sm" role="group" aria-label="Diff layout" data-x="layout">'
+      + '<button type="button" class="seg-btn" data-layout="unified">Unified</button>'
+      + '<button type="button" class="seg-btn" data-layout="split">Side by side</button></div>';
+    root.dataset.layout = layout;
+    root.innerHTML = `
+      ${embed
+    ? `<div class="bc-merge-tools">${navHtml}<span class="bc-merge-tools-fill"></span>${layoutSeg}${o.onExpand ? '<button class="icon-btn" type="button" data-x="expand"><span class="mi"></span></button>' : ''}</div>`
+    : renderWindowBar({
+      title: barTitleField('title', 'Title of the merged clip'),
+      context: record.title || o.title || 'Sync conflict',
+      webControls: !o.nativeControls,
+      actions: `${navHtml}
           <button class="icon-btn" type="button" data-x="mergeall" title="Merge all non-conflicting" aria-label="Merge all non-conflicting"><span class="mi">call_merge</span></button>
-          <button class="icon-btn" type="button" data-x="ws" title="Ignore whitespace differences" aria-label="Ignore whitespace differences"><span class="mi">space_bar</span></button>`,
-      })}
+          <button class="icon-btn" type="button" data-x="ws" title="Ignore whitespace differences" aria-label="Ignore whitespace differences"><span class="mi">space_bar</span></button>
+          ${layoutSeg}`,
+    })}
       <div class="bc-merge-heads ${threeWay ? 'bc-heads-3' : 'bc-heads-2'}">${headsHtml}</div>
       <div class="bc-merge-note" data-x="note" hidden></div>
       <div class="bc-merge-host" data-x="host"></div>
-      <div class="bc-reconcile-actions" data-x="actions">
+      ${embed ? '' : `<div class="bc-reconcile-actions" data-x="actions">
         ${step ? `<span class="bc-step" data-x="step">Step ${Number(step.at)} of ${Number(step.of)}</span>` : ''}
         <button type="button" class="btn" data-x="both" title="Keep both sides of every change">Keep both</button>
         ${record.unify ? '' : '<button type="button" class="btn discard" data-x="remove" title="Dismiss this conflict and leave the clip as it is">Remove conflict</button>'}
         <button type="button" class="btn primary" data-x="save">${escapeHtml(record.saveLabel || 'Save merged')}</button>
-      </div>`;
+      </div>`}`;
     const q = (name) => root.querySelector(`[data-x="${name}"]`);
     const dialogs = createDialogs(root);
-    const titleInput = q('title');
-    if (o.windowDrag) attachWindowDrag(titleInput, { field: 'idle', move: o.windowDrag });
+    // embed has no title field (its host shows the clip): a stand-in keeps the
+    // one title path (value(), the accepts, the picks) as it is.
+    const titleInput = q('title') || { value: '', placeholder: '', addEventListener() {} };
+    if (o.windowDrag && q('title')) attachWindowDrag(titleInput, { field: 'idle', move: o.windowDrag });
     const host = q('host');
     const initial = record.result || {};
     titleInput.value = cleanTitle(initial.title != null ? initial.title : (rTitle || lTitle));
@@ -6675,7 +6699,8 @@
           out.activeBySide[dv.type].push(chunk);
           if (isDeclined(dv, chunk)) { out.declined += 1; continue; }
           const p = { side: dv.type, dv, chunk };
-          if (!threeWay) {
+          // A review has no conflicts: each change is the proposal's, kept or taken back.
+          if (!threeWay && !review) {
             const r = chunkRanges(dv, chunk);
             const smart = smartMergeChunk(dv.edit.getRange(r.editStart, r.editEnd), dv.orig.getRange(r.origStart, r.origEnd));
             p.verdict = smart.verdict;
@@ -6740,9 +6765,13 @@
       const total = Math.max(changeTotal, info.changes);
       lastChangeCount = info.changes;
       const open = info.pending.length;
+      // review: a change stays in unless it is taken back, so the count says how
+      // many there are and how many were rejected.
+      const rejected = Math.max(0, total - info.changes);
       let html = !total ? 'No differences'
-        : open ? `<button type="button" class="bc-chg-progress" data-x="pendjump" title="Next open change (Alt+Down)">${total - open} of ${total} resolved</button>`
-          : `All ${total} resolved`;
+        : review ? `<button type="button" class="bc-chg-progress" data-x="pendjump" title="Next change (Alt+Down)">${total} change${total === 1 ? '' : 's'}${rejected ? `, ${rejected} rejected` : ''}</button>`
+          : open ? `<button type="button" class="bc-chg-progress" data-x="pendjump" title="Next open change (Alt+Down)">${total - open} of ${total} resolved</button>`
+            : `All ${total} resolved`;
       if (info.conflicts.length) html += ` <button type="button" class="bc-conflict-chip" data-x="confjump" title="Jump to the first conflict">${info.conflicts.length} conflict${info.conflicts.length === 1 ? '' : 's'}</button>`;
       q('chgcount').innerHTML = html;
       const pj = q('pendjump');
@@ -6765,7 +6794,8 @@
       note.hidden = !wsHidden;
       if (wsHidden) {
         note.innerHTML = 'Same text on both sides: the only differences are whitespace, hidden while Ignore whitespace is on. <button type="button" class="btn quiet sm accent" data-x="showws">Show them</button>';
-        q('showws').onclick = () => q('ws').click();
+        const wsBtn = q('ws');
+        if (wsBtn) q('showws').onclick = () => wsBtn.click();
       }
       // Line paint: quiet chunks lose the green chunk background on both panes;
       // declined chunks dim their text; conflict regions tint red on every pane
@@ -6790,8 +6820,104 @@
           addLineClasses(span.cm, span.from, span.to, 'wrap', 'bc-conflict-line');
         }
       }
+      renderUnified();
+      if (o.onChange) o.onChange(value());
     }
     function scheduleStatus() { clearTimeout(statusTimer); statusTimer = setTimeout(updateStatus, 120); }
+
+    // ---- Unified layout: each change's other version, inside the Result ----
+    let unifiedWidgets = [];
+    function clearUnified() {
+      for (const w of unifiedWidgets) { try { w.clear(); } catch {} }
+      unifiedWidgets = [];
+    }
+    // The other pane's lines for a chunk as rows of [text, marked] runs, its
+    // changed words marked by the panes' own word diff (vendored bcWordDiff,
+    // which also leaves a whole-line or whitespace-only edit unmarked).
+    function otherRows(dv, chunk) {
+      const r = chunkRanges(dv, chunk);
+      // A chunk at the end of a text starts on the line before it (chunkRanges),
+      // so its range leads with that line's newline instead of ending in one.
+      const lines = (cm, from, to, start, end) => {
+        const text = cm.getRange(start, end);
+        return to > cm.lastLine() && from > 0 ? text.replace(/^\n/, '') : text.replace(/\n$/, '');
+      };
+      const other = lines(dv.orig, chunk.origFrom, chunk.origTo, r.origStart, r.origEnd);
+      const mine = lines(dv.edit, chunk.editFrom, chunk.editTo, r.editStart, r.editEnd);
+      const parts = CM.bcWordDiff && typeof diff_match_patch === 'function'
+        ? CM.bcWordDiff(new diff_match_patch().diff_main(other, mine), ignoreWs)
+        : [[0, other]];
+      const rows = [[]];
+      for (const part of parts) {
+        if (part[0] === 1) continue; // only in the Result: drawn by the editor itself
+        const marked = part[0] === -1 && !part[2] && !part[3];
+        part[1].split('\n').forEach((piece, i) => {
+          if (i) rows.push([]);
+          if (piece) rows[rows.length - 1].push([piece, marked]);
+        });
+      }
+      return rows;
+    }
+    // One change's block: the other version (or "Not in ..." when it has no
+    // lines there), with take (pull it into the Result), keep (dismiss it) and,
+    // on a conflict, both: the split view's gutter controls, always shown. The
+    // controls float at the block's top right, so its first row wraps around them.
+    function unifiedBlock(dv, chunk, state) {
+      const side = dv.type;
+      const label = names[side];
+      const rows = otherRows(dv, chunk);
+      const empty = rows.length === 1 && !rows[0].length;
+      const takeKey = threeWay ? (side === 'left' ? ' (Alt+Left)' : ' (Alt+Right)') : ' (Alt+Right)';
+      const takeTip = review ? `Reject this change: use the ${label.toLowerCase()} text` : `Use ${label.toLowerCase()} here${takeKey}`;
+      const keepTip = threeWay ? 'Keep the result as it is' : `Keep ${names.left.toLowerCase()} (Alt+Left)`;
+      const node = document.createElement('div');
+      node.className = `bc-u-block${state ? ` bc-u-${state}` : ''}`;
+      node.innerHTML = `<div class="bc-u-acts"><span class="bc-u-side">${escapeHtml(label)}</span>`
+        + (state === 'conflict' ? '<button type="button" class="btn quiet sm" data-u="both" title="Keep both (Alt+B)">Both</button>' : '')
+        + `<button type="button" class="icon-btn" data-u="take" title="${escapeHtml(takeTip)}" aria-label="${escapeHtml(takeTip)}"><span class="mi sm">arrow_downward</span></button>`
+        + `<button type="button" class="icon-btn" data-u="keep" title="${escapeHtml(keepTip)}" aria-label="${escapeHtml(keepTip)}"><span class="mi sm">close</span></button>`
+        + '</div>'
+        + (empty
+          ? `<div class="bc-u-row bc-u-empty">Not in ${escapeHtml(label.toLowerCase())}</div>`
+          : rows.map((runs) => `<div class="bc-u-row">${runs.map(([text, marked]) => (marked ? `<span class="bc-u-mark">${escapeHtml(text)}</span>` : escapeHtml(text))).join('')}</div>`).join(''));
+      node.querySelector('[data-u="take"]').onclick = () => { applyChunk(side, chunk); forceRecompute(); updateStatus(); };
+      const keep = node.querySelector('[data-u="keep"]');
+      if (keep) keep.onclick = () => declineChunk(dv, chunk);
+      const both = node.querySelector('[data-u="both"]');
+      if (both) both.onclick = () => { appendChunk(side, chunk); forceRecompute(); updateStatus(); };
+      return node;
+    }
+    function renderUnified() {
+      clearUnified();
+      if (layout !== 'unified' || !mv) return;
+      const ed = mv.editor();
+      for (const dv of [mv.left, mv.right]) {
+        if (!dv) continue;
+        const chunks = (dv.type === 'left' ? mv.leftChunks() : mv.rightChunks()) || [];
+        for (const chunk of chunks) {
+          const state = chunkState(dv, chunk);
+          if (state === 'quiet') continue;
+          // Above its first Result line; a change past the last line sits below it.
+          const last = ed.lastLine();
+          const below = chunk.editFrom > last;
+          unifiedWidgets.push(ed.addLineWidget(below ? last : chunk.editFrom, unifiedBlock(dv, chunk, state), { above: !below, handleMouseEvents: true }));
+        }
+      }
+    }
+    function setLayout(next, { save } = {}) {
+      layout = next === 'unified' ? 'unified' : 'split';
+      root.dataset.layout = layout;
+      host.classList.toggle('bc-unified', layout === 'unified');
+      const seg = q('layout');
+      if (seg) for (const btn of seg.querySelectorAll('[data-layout]')) btn.classList.toggle('active', btn.dataset.layout === layout);
+      if (mv) {
+        clearUnified();
+        for (const cm of [mv.editor(), mv.leftOriginal(), mv.rightOriginal()]) if (cm) cm.refresh();
+        for (const dv of [mv.left, mv.right]) if (dv && dv.bcRedraw) dv.bcRedraw();
+        updateStatus();
+      }
+      if (save && o.onLayoutChange) o.onLayoutChange(layout);
+    }
     // Force the addon to recompute the diff NOW (it otherwise debounces ~250ms),
     // so the counter/nav reflect a programmatic bulk change immediately instead
     // of racing the debounce.
@@ -6893,6 +7019,7 @@
       host.innerHTML = '';
       navIdx = -1;
       lineClassHandles = [];
+      unifiedWidgets = [];
       const cmOpts = {
         value: wsNormText(centerText),
         origRight: wsNormText(rightText),
@@ -6930,6 +7057,7 @@
         mv.editor().focus();
       }, 0);
     }
+    host.classList.toggle('bc-unified', layout === 'unified');
     if (CM) buildMergeView(seed);
     else {
       // Vendored CodeMirror missing: degrade to an editable textarea seeded with
@@ -6945,13 +7073,14 @@
     const resolve = (action, extra) => {
       if (o.onResolve) o.onResolve({ id: record.id, action, ...value(), ...(extra || {}) });
     };
+    // Controls only some hosts have (embed: no accepts, footer or bar toggles).
+    const on = (name, handler) => { const el = q(name); if (el) el.onclick = handler; };
     // Accept actions resolve with the RAW side text (verbatim — no LF rewrite).
-    q('left').onclick = () => { titleInput.value = lTitle; resolve('accept_left', { text: rawLeft }); };
-    q('right').onclick = () => { titleInput.value = rTitle; resolve('accept_right', { text: rawRight }); };
-    q('both').onclick = () => resolve('keep_both', { text: unionMergeText(leftText, rightText) });
-    const removeBtn = q('remove');
-    if (removeBtn) removeBtn.onclick = () => resolve('remove');
-    q('save').onclick = async () => {
+    on('left', () => { titleInput.value = lTitle; resolve('accept_left', { text: rawLeft }); });
+    on('right', () => { titleInput.value = rTitle; resolve('accept_right', { text: rawRight }); });
+    on('both', () => resolve('keep_both', { text: unionMergeText(leftText, rightText) }));
+    on('remove', () => resolve('remove'));
+    on('save', async () => {
       if (record.unify && mv) {
         // Nothing but (hidden) whitespace differs: keep the newer clip verbatim
         // rather than the whitespace-normalized Result.
@@ -6977,12 +7106,12 @@
         if (!ok) return;
       }
       resolve('save');
-    };
-    q('prevchg').onclick = () => jumpChange(-1);
-    q('nextchg').onclick = () => jumpChange(1);
-    q('mergeall').onclick = () => autoMergeNonConflicting();
-    q('ws').classList.toggle('active', ignoreWs);
-    q('ws').onclick = () => {
+    });
+    on('prevchg', () => jumpChange(-1));
+    on('nextchg', () => jumpChange(1));
+    on('mergeall', () => autoMergeNonConflicting());
+    if (q('ws')) q('ws').classList.toggle('active', ignoreWs);
+    on('ws', () => {
       if (!mv) return;
       ignoreWs = !ignoreWs;
       q('ws').classList.toggle('active', ignoreWs);
@@ -6991,13 +7120,37 @@
       if (changeTotal != null) takenBeforeRebuild = Math.max(0, Math.max(changeTotal, lastChangeCount) - lastChangeCount);
       changeTotal = null;
       buildMergeView(currentText()); // rebuild with the same Result text
-    };
+    });
+    const segEl = q('layout');
+    if (segEl) segEl.addEventListener('click', (event) => {
+      const btn = event.target.closest('[data-layout]');
+      if (btn && btn.dataset.layout !== layout) setLayout(btn.dataset.layout, { save: true });
+    });
+    setLayout(layout);
+    // The host grows the view to its full review and back (the approval prompt).
+    let expanded = !!o.expanded;
+    function paintExpand() {
+      const btn = q('expand');
+      if (!btn) return;
+      const label = expanded ? 'Back to the compact prompt' : 'Open the full review';
+      btn.title = label;
+      btn.setAttribute('aria-label', label);
+      btn.querySelector('.mi').textContent = expanded ? 'close_fullscreen' : 'open_in_full';
+    }
+    paintExpand();
+    on('expand', () => { expanded = !expanded; paintExpand(); o.onExpand(expanded); });
     const closeBtn = q('close');
     if (closeBtn) closeBtn.onclick = () => { if (o.onClose) o.onClose(); };
     root.addEventListener('keydown', (event) => {
       if (event.key === 'Escape' && !dialogs.isOpen()) { event.preventDefault(); if (o.onClose) o.onClose(); }
     });
-    return { el: root, getValue: value };
+    return {
+      el: root,
+      getValue: value,
+      setLayout: (next) => setLayout(next),
+      setExpanded: (next) => { expanded = !!next; paintExpand(); },
+      refresh: () => { if (mv) for (const cm of [mv.editor(), mv.leftOriginal(), mv.rightOriginal()]) if (cm) cm.refresh(); },
+    };
   }
   function sortItems(items) {
     return [...(items || [])].sort((a, b) => (b.ts || 0) - (a.ts || 0));

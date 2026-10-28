@@ -50,3 +50,5 @@ Re-apply these when re-vendoring a newer codemirror.
     second time 160 ms after a window resize, once CodeMirror (100 ms debounce)
     has re-measured its lines; the first, immediate redraw used the old line
     positions, so an arrow sat beside a different line than its chunk.
+12. `CodeMirror.bcWordDiff`: exports `bcWordDiff` so the wrapper's unified layout marks each
+    change's other version with the same word diff as the panes.

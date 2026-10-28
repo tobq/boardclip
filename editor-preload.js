@@ -35,6 +35,8 @@ contextBridge.exposeInMainWorld('editorApi', {
   newNote: (options) => ipcRenderer.invoke('new-note', options || {}),
   // The find bar's mode + match case, remembered per device.
   saveFindPrefs: (prefs) => ipcRenderer.invoke('save-settings', { find_regex: !!(prefs && prefs.regex), find_case: !!(prefs && prefs.caseSensitive) }),
+  // The merge view's layout ('split' | 'unified'), remembered per device.
+  saveMergeLayout: (layout) => ipcRenderer.invoke('save-settings', { merge_layout: layout }),
   // A drag on the idle title moves this window (main's window-drag, sender only).
   windowDrag: (phase, dx, dy) => ipcRenderer.send('window-drag', phase, dx, dy),
   // The bar's height + resolved colours, for the native window controls.

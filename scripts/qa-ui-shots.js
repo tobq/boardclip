@@ -160,6 +160,22 @@ const focused = (page) => page.eval(`(() => {
 })()`);
 
 // Each step: { name, popup (reset the popup first), run(c) }.
+// A merge window flipped to unified: one block per open change inside the
+// result, the layout remembered per device (merge_layout), then flipped back.
+async function unifiedShot(c, page, name) {
+  await page.click('[data-layout="unified"]');
+  await qa.sleep(400);
+  const st = await page.eval(`({ layout: document.querySelector('.bc-reconcile').dataset.layout, blocks: document.querySelectorAll('.bc-u-block').length,
+    panes: [...document.querySelectorAll('.CodeMirror-merge-pane')].filter((p) => getComputedStyle(p).display !== 'none').length })`);
+  c.note(name, st);
+  if (st.layout !== 'unified' || !st.blocks || st.panes !== 1) throw new Error(`${name}: not unified: ${J(st)}`);
+  const saved = await c.sb.mainEval('JSON.parse(__qa.require("fs").readFileSync(__qa.require("path").join(process.env.BOARDCLIP_DATA_DIR, "clipboard-settings.json"), "utf8")).merge_layout');
+  if (saved !== 'unified') throw new Error(`${name}: layout not remembered (${saved})`);
+  await c.shot(page, name);
+  await page.click('[data-layout="split"]');
+  await qa.sleep(300);
+}
+
 const STEPS = [
   { name: 'popup-list', popup: true, run: (c) => c.shot(c.popup, 'popup-list') },
   { name: 'popup-row-hover', popup: true, run: async (c) => { await c.popup.hover(`${row(c.ids.json)} .content`); await c.shot(c.popup, 'popup-row-hover'); } },
@@ -1040,6 +1056,7 @@ const STEPS = [
     c.note('unify-bar', await un.eval(`(() => { const w = (s) => { const e = document.querySelector(s); return e ? [Math.round(e.getBoundingClientRect().width), e.scrollWidth] : null; };
       return { title: w('.bc-bar-title'), context: w('.bc-bar-context'), spacer: w('.bc-bar-spacer'), actions: w('.bc-bar-actions'), bar: w('.bc-bar') }; })()`));
     await c.shot(un, 'unify');
+    await unifiedShot(c, un, 'unify-unified');
   } },
   { name: 'conflict', run: async (c) => {
     const cf = await c.sb.newPage(/editor\.html/, () => c.popup.eval(`window.api.openConflict('conf:editor:qa1')`), { label: 'conflict', focus: true });
@@ -1049,6 +1066,7 @@ const STEPS = [
     // The word-level marks each pane shows (whole words, never letter fragments).
     c.note('conflict-marks', await cf.eval(`[...document.querySelectorAll('.CodeMirror-merge-pane')].map((p) => [...p.querySelectorAll('[class*="-inserted"], [class*="-deleted"]')].map((m) => m.textContent))`));
     await c.shot(cf, 'conflict');
+    await unifiedShot(c, cf, 'conflict-unified');
     // The heads at the window's size and at its 520 px minimum: a differing
     // title stays readable (the accept drops to its glyph first).
     const heads = () => cf.eval(`(() => [...document.querySelectorAll('.bc-merge-head')].map((h) => { const t = h.querySelector('.bc-head-title'); const l = h.querySelector('.bc-accept-label'); return { w: Math.round(h.getBoundingClientRect().width), pick: t ? [Math.round(t.getBoundingClientRect().width), t.scrollWidth, t.textContent] : null, acceptLabel: l ? getComputedStyle(l).display !== 'none' : null }; }))()`);
@@ -1065,6 +1083,7 @@ const STEPS = [
     await cf.send('Emulation.clearDeviceMetricsOverride');
   } },
   { name: 'approval-modal', run: async (c) => {
+    // (an edit's review prompt: scripts/qa-approval-review.js)
     const sql = c.items.find((i) => i.title === 'SQL: active users');
     const sqlRef = await c.sb.aiRef(sql);
     let req = null;

@@ -16,7 +16,10 @@ contextBridge.exposeInMainWorld('approval', {
     ipcRenderer.on('appearance-changed', listener);
     return () => ipcRenderer.removeListener('appearance-changed', listener);
   },
-  decide: (id, choice) => ipcRenderer.send('approval-decide', id, choice),
+  // answer: { text } = the person's own version of a reviewed edit (only when changed).
+  decide: (id, choice, answer) => ipcRenderer.send('approval-decide', id, choice, answer),
+  // A review's expand: the full review, or back to the compact prompt.
+  expand: (expanded) => ipcRenderer.send('approval-expand', !!expanded),
   hold: (id, held, remainingSec) => ipcRenderer.send('approval-hold', id, held, remainingSec),
   resize: (height) => ipcRenderer.send('approval-resize', height),
 });

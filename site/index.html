@@ -1093,6 +1093,7 @@
     const DEMO_REGEX_KEY = "boardclip-demo-regex";
     const DEMO_JOINS_KEY = "boardclip-demo-joins-2";
     const DEMO_FIND_PREFS_KEY = "boardclip-demo-find";
+    const DEMO_MERGE_LAYOUT_KEY = "boardclip-demo-merge-layout";
     let demoOptionsHeight = 0;
     let demoRegex = false;
     let demoJoins = null;
@@ -1431,7 +1432,11 @@
       }
       function mountStep() {
         const right = clipSnapshot(sources[step + 1]);
+        let mergeLayout = "split";
+        try { if (localStorage.getItem(DEMO_MERGE_LAYOUT_KEY) === "unified") mergeLayout = "unified"; } catch {}
         const view = Core.createReconciliationView({
+          layout: mergeLayout,
+          onLayoutChange: (next) => { try { localStorage.setItem(DEMO_MERGE_LAYOUT_KEY, next); } catch {} },
           record: {
             id: `demo-unify-${step}`,
             unify: true,

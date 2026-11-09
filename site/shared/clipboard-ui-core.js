@@ -6177,6 +6177,17 @@
       if (!findBar.hidden) { recomputeMatches(); }
     });
     area.addEventListener('scroll', syncHlScroll);
+    // A cut of the WHOLE note is Copy all (owner, 9 Nov 2026): the note is
+    // already a clip, so cutting it out would only empty the editor. The text
+    // stays, the clipboard gets it, and the editor follows it ("On clipboard").
+    // Every route to a cut lands here (Ctrl/Cmd+X, Shift+Delete, the menu); a
+    // partial selection cuts as usual.
+    area.addEventListener('cut', (e) => {
+      const whole = area.value.length > 0 && area.selectionStart === 0 && area.selectionEnd === area.value.length;
+      if (!whole || !e.clipboardData) return;
+      e.preventDefault();
+      e.clipboardData.setData('text/plain', area.value);
+    });
     titleInput.addEventListener('input', () => { emitInput(); scheduleCommit(); });
     area.addEventListener('keydown', (e) => {
       if (e.key === 'Tab') { e.preventDefault(); insertAtCursor('\t'); }

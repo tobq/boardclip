@@ -26,6 +26,9 @@
 //      text is not "followed" (the clipboard keeps what the user copied).
 //  15. A clean editor left on a unified-away clip: opening the merged clip shows
 //      the merged text (the stale editor is replaced, not brought forward).
+//  16. Cut with the whole note selected = Copy all: the text stays, the clipboard
+//      gets it, and once the clipboard holds it the editor says "On clipboard";
+//      a partial cut still cuts.
 //  10. An edit made on ANOTHER device (second sandbox, shared cloud folder) ->
 //      this device's clipboard follows once the edit syncs.
 //  11. The website demo: Unify and an edit of the clip the page copied write the
@@ -59,6 +62,7 @@ const T = {
   w: 'qa crlf note\nsecond line', wEdited: 'qa crlf note\nsecond line\nthird line',
   r: 'qa reborn text', rEdited: 'qa reborn text, edited',
   v1: 'qa clean source', v2: 'qa clean partner', vMerged: 'qa clean source + partner',
+  cut: 'qa cut all note\nsecond line',
 };
 const editorWindowCount = `__qa.electron.BrowserWindow.getAllWindows().filter((w) => !w.isDestroyed() && /editor\\.html/.test(w.webContents.getURL())).length`;
 
@@ -96,7 +100,7 @@ async function appScenarios() {
     // A wide quick-paste restore window, so scenario 12 lands inside it.
     settings: { groups: ['AI'], diagnostics_enabled: true, max_age_days: 30, max_size_gb: 1, surface_style: 'solid', quick_paste_restore_delay_ms: 1500 },
     history: [
-      txt(T.v2, 790), txt(T.v1, 800), txt(T.r, 810), txt(T.w, 820),
+      txt(T.cut, 780), txt(T.v2, 790), txt(T.v1, 800), txt(T.r, 810), txt(T.w, 820),
       txt(T.macro, 830, { number: 5 }), txt(T.q2, 840), txt(T.q1, 850),
       txt(T.ai, 860, { groups: ['AI'] }),
       txt(T.kBase, 870), txt(T.cBase, 880),
@@ -287,6 +291,34 @@ async function appScenarios() {
     const editorsLeft = await qa.waitFor(async () => ((await sb.mainEval(editorWindowCount)) === 1 ? 1 : null), 'stale editor closed', 8000).catch(() => sb.mainEval(editorWindowCount));
     check('15. opening the merged clip while a clean editor shows a source: one editor, showing the merged text', shows === T.vMerged && editorsLeft === 1, JSON.stringify({ shows, editorsLeft }));
     if (fresh) await fresh.eval('(window.editorApi.close(), true)').catch(() => {});
+
+    // --- 16. Cut all = Copy all ---------------------------------------------
+    // The sandbox page cannot reach the OS clipboard, so the cut is dispatched
+    // with its own DataTransfer (what Ctrl/Cmd+X, Shift+Delete and the menu fire).
+    await h.copyAs('qa something unrelated before the cut');
+    const cutEd = await openEditor(qa.txtId(T.cut));
+    await editorReady(cutEd);
+    const cutAll = await cutEd.eval(`(() => {
+      const ta = document.querySelector('.bc-editor textarea');
+      ta.focus(); ta.select();
+      const dt = new DataTransfer();
+      const ev = new ClipboardEvent('cut', { clipboardData: dt, bubbles: true, cancelable: true });
+      ta.dispatchEvent(ev);
+      return { prevented: ev.defaultPrevented, data: dt.getData('text/plain'), text: ta.value };
+    })()`);
+    const cutPart = await cutEd.eval(`(() => {
+      const ta = document.querySelector('.bc-editor textarea');
+      ta.setSelectionRange(0, 4);
+      const ev = new ClipboardEvent('cut', { clipboardData: new DataTransfer(), bubbles: true, cancelable: true });
+      ta.dispatchEvent(ev);
+      return { prevented: ev.defaultPrevented };
+    })()`);
+    await h.copyAs(cutAll.data || 'missing');
+    const cutOn = await qa.waitFor(() => footerOn(cutEd), 'footer on after cut all', 5000).then(() => true, () => false);
+    check('16. cut with the whole note selected = Copy all: text kept, clipboard gets it, editor on clipboard; a partial cut still cuts',
+      cutAll.prevented && cutAll.data === T.cut && cutAll.text === T.cut && !cutPart.prevented && cutOn,
+      JSON.stringify({ cutAll, cutPart, cutOn }));
+    await cutEd.eval('(window.editorApi.close(), true)').catch(() => {});
 
     const followErrors = sb.diagnostics().filter((e) => e.event === 'clipboard.follow_error');
     check('no clipboard.follow_error logged', followErrors.length === 0, JSON.stringify(followErrors[0]));

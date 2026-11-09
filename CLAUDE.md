@@ -192,7 +192,10 @@
   the clipboard READS BACK, a blocked write returns false (no gate timer: it reopened pollGate mid quick
   paste). The editor's footer ("On clipboard - edits update it" / Copy) is `editorOnClipboard` on the same
   rule's `shownText` (no per-editor follower: the old `lib/clipboard-follow.js` was deleted); its Copy is
-  the popup's `copyClipToClipboard` (copy + an immediate poll). An editor left open on a unified-away
+  the popup's `copyClipToClipboard` (copy + an immediate poll). A cut of the WHOLE note is Copy all
+  (owner, 9 Nov 2026: the note is already a clip, so cutting it out only emptied the editor): the
+  textarea's `cut` handler in `createEditor` keeps the text and sets the clipboard data, every route
+  (Ctrl/Cmd+X, Shift+Delete, the menu), app and demo; a partial cut still cuts. An editor left open on a unified-away
   clip follows "Stale editor saves become a merge" (never a silent duplicate). QA:
   `node scripts/qa-clipboard-follow.js` (27 checks on the sandbox's in-memory clipboard,
   incl. two sandboxes syncing through a shared cloud folder, a Unify during a quick paste, a CRLF editor

@@ -496,7 +496,7 @@ async function atomicWriteFileAsync(filePath, data) {
 }
 
 // Cloud writes go IN PLACE, never tmp+rename (DriveFS forks a rename-over-existing).
-const { writeInPlace } = blobStore;
+const { writeInPlace, runWithConcurrency } = blobStore;
 
 // Settings keys dropped by removed features. Stripped on load so a file written by an
 // older build cannot keep dead state alive (the in-app AI search keys included a
@@ -2848,17 +2848,6 @@ async function p2pFetchMissingAsset(peer, kind, name) {
   return true;
 }
 
-async function runWithConcurrency(items, limit, worker) {
-  const list = Array.isArray(items) ? items : [];
-  const workerCount = Math.min(Math.max(1, limit || 1), list.length);
-  let nextIndex = 0;
-  await Promise.all(Array.from({ length: workerCount }, async () => {
-    while (nextIndex < list.length) {
-      const item = list[nextIndex++];
-      await worker(item);
-    }
-  }));
-}
 
 async function p2pApplyState(state, { peerName, reason, fetchedAssets = 0, notifyPeers = true } = {}) {
   const startedAt = Date.now();

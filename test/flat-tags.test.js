@@ -9,7 +9,10 @@ const Tags = require('../site/shared/clip-search');
 const M = require('../lib/clipboard-model');
 const mcpCore = require('../lib/mcp-core');
 
-const T0 = 1791000000000;
+// A day before now, not a fixed date: merges prune tombstones older than 30
+// days against the real clock, so a fixed T0 (3 Oct) expired the delete records
+// these cases build and the suite failed from 2 Nov on.
+const T0 = Date.now() - 24 * 60 * 60 * 1000;
 const text = (id, groups, extra = {}) => ({
   id: `txt:${id}`, type: 'text', text: id, ts: T0 / 1000, updatedAt: T0,
   pin: groups ? { groups, groupsUpdatedAt: T0, updatedAt: T0 } : null,

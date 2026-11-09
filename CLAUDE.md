@@ -353,7 +353,8 @@ Otherwise the key passes through so normal numpad typing works. Main thread call
   WHOLE, so the old `clipboard-history.json` monolith (21 MB) rewritten every 5 min of activity,
   plus a 3.3 MB `boardclip-diagnostics/<host>-<device>.json` written on EVERY 30 s pass, saturated
   the owner's 10 Mbit/s upload (DriveFS 0.71 Mbit/s, measured 9 Nov). Now a snapshot writes only
-  segments whose content changed (~80 KB each, in place) and logs `sync.snapshot.write
+  segments whose clips changed (~80 KB each, in place; compared by clip content, never by the
+  bytes: the Mac and PC order fields differently, so a byte compare ping-pongs) and logs `sync.snapshot.write
   {segments_written, history_bytes}`; diagnostics are local only (jsonl + 1 s heartbeat). The
   legacy monolith + its forks/tmps are converted by `migrateLegacy` on read (`healSyncFolder`,
   own adaptive budget, single-flight): exact split, read back (count + content hashes), local

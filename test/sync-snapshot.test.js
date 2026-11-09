@@ -75,6 +75,13 @@ const listSeg = dir => fs.readdirSync(segDir(dir)).sort();
     assert.deepStrictEqual(same.written, [], 'nothing changed: no segment written');
     assert.strictEqual(same.indexBytes, 0, 'nothing changed: index untouched');
 
+    // Another device serialises the same clips with other field and list order:
+    // no upload, and no ping-pong back to this device's order.
+    const otherDevice = [...added].reverse().map(item => Object.fromEntries(Object.entries(item).reverse()));
+    const foreign = await snapshot.writeSegments(dir, otherDevice, current, {});
+    assert.deepStrictEqual(foreign.written, [], 'the same clips in another order write nothing');
+    assert.deepStrictEqual(snapshot.fingerprint(otherDevice), snapshot.fingerprint(added), 'the fingerprint ignores field and list order');
+
     // A pin on an existing clip touches its segment only; a bucket that empties is written as [].
     const pinned = added.map((item, i) => (i === 10 ? { ...item, pin: { number: 2 } } : item));
     current = await snapshot.readSegments(dir);

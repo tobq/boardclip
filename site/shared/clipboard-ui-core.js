@@ -3571,6 +3571,67 @@
   //            expand/filter], refresh() [re-fetch + re-render after a data
   //            mutation; falls back to render() if absent], toast(msg),
   //            deletedToast (string|null)
+  // ---- The clipboard follows its clip (app + demo) ---------------------------
+  //
+  // ONE rule: the clipboard holds a clip; when that clip is replaced (an edit, a
+  // Unify, a conflict resolved, an AI edit, an edit synced from another device),
+  // its newest version goes onto the clipboard, unless the clipboard already
+  // shows that text. A paste then always matches what the history shows. It
+  // only writes over the clip it saw there: a clipboard that changed since (a
+  // copy the host has not seen yet) is left alone, and a clip deleted with no
+  // newer version leaves the clipboard as it is. Line endings are ignored
+  // (Windows apps hand back CRLF for text BoardClip keeps as LF). Pure +
+  // injected; the host says which clip the clipboard holds (hold) and what a
+  // clip's newest version is:
+  //   newestOf(id, heldText) -> { id, text } of the clip's newest LIVE version
+  //       (the clip itself while unchanged), or null when it is gone. heldText
+  //       is the clipboard's text: a content-addressed host returns it as-is for
+  //       a clip still live under its id (its text cannot differ).
+  //   writeText(text) -> false when the write cannot happen now (run check()
+  //       again later; nothing is lost).
+  //   readText() (optional) -> the clipboard's text right now, read before a
+  //       write.
+  function normalizeEol(text) { return String(text == null ? '' : text).replace(/\r\n?/g, '\n'); }
+  function sameText(a, b) { return normalizeEol(a) === normalizeEol(b); }
+  function createClipboardFollow(opts) {
+    const o = opts || {};
+    let held = { id: null, text: '' };
+    function newest() {
+      if (held.id == null || !held.text.trim()) return null;
+      let next = null;
+      try { next = o.newestOf(held.id, held.text); } catch { next = null; }
+      if (!next || next.id == null) return null;
+      const text = String(next.text == null ? '' : next.text);
+      return text.trim() ? { id: next.id, text } : null;
+    }
+    return {
+      // The clipboard now holds `text`, the text of clip `id` (null: no live clip).
+      hold(id, text) { held = { id: id == null ? null : id, text: String(text == null ? '' : text) }; },
+      held() { return { id: held.id, text: held.text }; },
+      // What the clipboard shows once the rule has run: the held clip's newest
+      // version, else what it holds now.
+      shownText() { const next = newest(); return next ? next.text : held.text; },
+      // Runs the rule: 'idle' (no clip held) | 'gone' (deleted, nothing newer) |
+      // 'same' | 'changed' (the clipboard moved on) | 'write_failed' | 'written'.
+      check() {
+        if (held.id == null || !held.text.trim()) return 'idle';
+        const next = newest();
+        if (!next) return 'gone';
+        if (sameText(next.text, held.text)) { held = { id: next.id, text: held.text }; return 'same'; }
+        if (typeof o.readText === 'function') {
+          let now = null;
+          try { now = o.readText(); } catch { now = null; }
+          if (now == null || !sameText(now, held.text)) return 'changed';
+        }
+        let wrote = false;
+        try { wrote = o.writeText(next.text) !== false; } catch { wrote = false; }
+        if (!wrote) return 'write_failed';
+        held = { id: next.id, text: next.text };
+        return 'written';
+      },
+    };
+  }
+
   // ---- Keep-your-place clip list (app popup + demo) --------------------------
   //
   // resolveListAnchor is the PURE policy for where a rebuilt list sits. It runs
@@ -7324,6 +7385,9 @@
     createVariantSwitcher,
     setActiveVariantSeg,
     createDialogs,
+    normalizeEol,
+    sameText,
+    createClipboardFollow,
     resolveListAnchor,
     createClipList,
     IMAGE_ZOOM,

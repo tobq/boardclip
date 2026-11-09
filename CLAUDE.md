@@ -105,8 +105,9 @@
 - **Copy without pasting (2026-10-11)**: "Copy" leads the clip menu, a Copy button leads every row's
   reveal (text + image), "Copy all (n)" sits beside "Paste all" (bulk menu + selection bar). ONE
   adapter `copyClip(id)` (also the settings numpad slot's copy) over the `copy-clip` IPC (formerly the
-  misnamed `paste` IPC: setClipboardToItem, no paste; the poller then sees it like any copy, so the clip
-  moves to the top as a paste does) + `copyMany(ids)` over `copy-many` (`joinedClipText` shared with
+  misnamed `paste` IPC: main's `copyClipToClipboard` = setClipboardToItem + an immediate poll, no paste;
+  the poller sees it like any copy, so the clip moves to the top as a paste does and the clipboard holds
+  it for "The clipboard follows its clip"; the editor's Copy uses it too) + `copyMany(ids)` over `copy-many` (`joinedClipText` shared with
   pasteMany, `lastText` set so the join is never captured). The popup's quick keys never fire under
   an open menu (typing "1ndex" into the + picker once pasted slot 1): see "Popup quick keys".
   QA: `qa-ui-shots --only popup-copy` (fails with the guard removed).
@@ -165,18 +166,29 @@
   [BoardClip on React + shared ui-kit menus](https://forge.team/#/c/forge/017929b2-9222-44fc-87c0-feca12cb1d7d),
   spec `REACT-MIGRATION-PLAN.md`. Group-picker type-to-filter (decided behaviour in the spec) lands
   there; do not add vanilla UI the migration would delete.
-- **Editor clipboard follow (`lib/clipboard-follow.js`, 2026-10-07)**: while the clipboard holds an open
-  editor's note (exact text, line endings ignored, either the live draft or the last save), every save of
-  that note also goes onto the clipboard, so nobody re-copies from the editor. It is re-checked on editor
-  open, editor focus (`editor-focus` IPC), every poller capture (`observeEditorsClipboard`, '' for an image)
-  and every save (`followEditorSave` in `commitEditSession`). Before writing it checks the clipboard still
-  holds what it last saw; anything else copied meanwhile stops it ("Clipboard changed elsewhere"). The
-  footer of the shared `createEditor` (opt-in `clipboard` option) shows "On clipboard - edits update it" or
-  a Copy button (`editor-copy` IPC = save + adopt). Saves also fire when the editor window loses focus.
-  `applyExternalTextEdit` NEVER writes the clipboard any more (the old copy-on-close `writeClipboard: final`
-  is gone); writes go through `writeEditedTextToClipboard` (pollGate + lastText = no re-capture). Live
-  clipboard QA is deliberately NOT automated: the live app polls the same system clipboard and would
-  capture QA text into real, synced history.
+- **The clipboard follows its clip: ONE rule for every replace (9 Nov 2026, owner: Unify left the old
+  text on the clipboard; "the editor fix is a manifestation of the exact same rule")**: the clipboard
+  holds a clip (the poller's `lastText`, while it is a LIVE clip); when a change replaces that clip, its
+  newest version goes onto the clipboard unless it already shows that text (line endings ignored).
+  Replaces = editor saves, Unify, conflict resolve (Keep both too), an approved AI `edit_clip`, and edits
+  SYNCED from another device (owner: following those too is the consistent choice; a paste must match the
+  history). Every replace records lineage old id -> new id (`settings.supersedes`; Unify and a conflict
+  saved as a new clip via `addReplacementLinks`, which links only clips that are gone with nothing newer:
+  a link out of a live clip would fold it away on sync). Pure core `Core.createClipboardFollow` (hold /
+  check / shownText) in clipboard-ui-core.js, adapters: main's `checkClipboardFollow` (runs at the end of
+  `saveHistory`, after every poller capture and `writeJoinedText`; `newestClipVersion` follows the lineage;
+  a closed `pollGate` defers it to the next open poll, after a quick paste's restore) and the demo's
+  (`demoClipboardFollow`: stable ids, the clip the page copied, Unify recorded in `demoUnified`). Held only
+  while live, so an old version that is not a clip never gets "followed"; it re-reads the OS clipboard
+  before writing, so a copy the poller has not seen yet always wins; a plain delete leaves it alone. Writes
+  go through `writeFollowedText` (pollGate + lastText = no re-capture). The editor's footer ("On clipboard
+  - edits update it" / Copy) is `editorOnClipboard` on the same rule's `shownText` (no per-editor
+  follower: the old `lib/clipboard-follow.js` was deleted); its Copy is the popup's `copyClipToClipboard`
+  (copy + an immediate poll). An editor left open on a unified-away source gets the merge view on its
+  next save (the lineage), never a silent duplicate. QA: `node scripts/qa-clipboard-follow.js` (23 checks
+  on the sandbox's in-memory clipboard, incl. two sandboxes syncing through a shared cloud folder and the
+  demo; Unify's checks fail with its lineage removed), unit `test/clipboard-follow.test.js`. Never QA this
+  against the LIVE clipboard: the live app polls it and would capture QA text into real, synced history.
 
 ## Paste Simulation
 
@@ -1113,8 +1125,9 @@ clear-all). All popup CSS + theme variables live in `site/shared/clipboard-popup
   touched until the final step confirms, so closing any step aborts with zero
   changes (`editor-close` handles the `unify:` sessionId prefix like `conflict:`).
   The view takes `record.title`/`saveLabel`/`unify` (hides "Remove conflict").
-  Merged clip carries the UNION of sources' groups + pin + numpad slot. Text-only:
-  Unify is hidden when any image is selected.
+  Merged clip carries the UNION of sources' groups + pin + numpad slot, and each source
+  -> merged is lineage (`addReplacementLinks`; see "The clipboard follows its clip").
+  Text-only: Unify is hidden when any image is selected.
 - **Reconciliation view = vendored CodeMirror 5 MergeView** (user asked for
   IntelliJ-style EXPLICITLY in Codex session 019f0e67 2026-06-28; two hand-rolled
   attempts fell short — don't hand-roll a third): Current (read-only) | **Result

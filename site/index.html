@@ -769,9 +769,34 @@
       return ok;
     }
 
+    // The clipboard follows its clip (Core.createClipboardFollow, the app's one
+    // rule): the page knows which clip it copied, and when that clip is replaced
+    // (an edit, a Unify) the visitor's clipboard gets its newest version.
+    const demoUnified = new Map(); // a unified-away clip's id -> the merged clip's id
+    const demoClipboardFollow = Core.createClipboardFollow({
+      newestOf: (id) => {
+        let at = id;
+        const seen = new Set();
+        while (at != null && !seen.has(at)) {
+          const clip = clips.find((c) => Core.itemId(c) === at);
+          if (clip) return clip.type === "image" ? null : { id: at, text: clip.text || "" };
+          seen.add(at);
+          at = demoUnified.get(at);
+        }
+        return null;
+      },
+      writeText: (text) => { writeBrowserClipboard(text).catch(() => {}); return true; },
+    });
+    function holdDemoClip(clip) {
+      const text = clip && clip.type !== "image" ? clip.text || "" : "";
+      demoClipboardFollow.hold(text ? Core.itemId(clip) : null, text);
+    }
+
     function addCopiedText(text) {
       const before = clips.length;
       clips = Core.addClipboardText(clips, text);
+      const value = String(text || "").trim();
+      holdDemoClip(clips.find((c) => c.type === "text" && c.text === value));
       if (clips.length !== before || clips[0]?.text === text) renderClips();
     }
 
@@ -948,6 +973,7 @@
       copyClip: async (id) => {
         const clip = demoAdapter.itemById(id);
         if (!clip) return;
+        holdDemoClip(clip);
         if (clip.type === "image") { const ok = await writeImageClipboard(clip).catch(() => false); if (!ok) await writeBrowserClipboard(clip.text || ""); }
         else await writeBrowserClipboard(clip.text || "");
         clips = Core.touchItem(clips, id);
@@ -956,7 +982,9 @@
       // Copy all: the app's Paste all text (text clips, one per line).
       copyMany: async (ids) => {
         const text = ids.map((id) => demoAdapter.itemById(id)).filter((clip) => clip && clip.type !== "image").map((clip) => clip.text || "").join("\n");
-        if (text) await writeBrowserClipboard(text);
+        if (!text) return;
+        demoClipboardFollow.hold(null, text);
+        await writeBrowserClipboard(text);
       },
       activateClip: async (id) => {
         await demoAdapter.copyClip(id);
@@ -1382,6 +1410,7 @@
           currentText = nextText;
           currentTitle = nextTitle;
           demoEditorClipId = currentId;
+          demoClipboardFollow.check(); // the visitor's clipboard held this clip -> the edit
           refreshDemoEditorTags();
           renderClips();
         },
@@ -1425,7 +1454,10 @@
           created.titleUpdatedAt = Date.now();
           registerDemoTags(unionGroups);
           for (const g of unionGroups) setDemoTag(Core.itemId(created), g, true);
+          // Each source became the merged clip: a source on the clipboard follows.
+          for (const id of srcIds) if (id !== Core.itemId(created)) demoUnified.set(id, Core.itemId(created));
         }
+        demoClipboardFollow.check();
         abort();
         renderClips();
         showToast(`Unified ${sources.length} clips`);

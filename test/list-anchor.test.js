@@ -165,9 +165,13 @@ const tsAt = (list) => (i) => ts[list[i]];
   const main = fs.readFileSync(path.join(__dirname, '../main.js'), 'utf8');
   assert.ok(main.includes('delete remoteSave.image_preview_height;'), 'image_preview_height must stay out of synced settings');
   assert.ok(/body\.image_preview_height[\s\S]{0,200}Math\.min\(600, Math\.max\(40, px\)\)/.test(main), 'save-settings clamps image_preview_height to 40-600');
-  assert.ok(!/writeClipboard/.test(main), 'edits never write the clipboard directly (the follower decides)');
-  assert.ok(/function commitEditSession\([\s\S]{0,1200}followEditorSave\(session, prevText, next\.text\)/.test(main), 'every editor save goes through the clipboard follower');
-  assert.ok((main.match(/observeEditorsClipboard\(/g) || []).length >= 4, 'the poller re-checks open editors on every text/image capture');
+  assert.ok(!/writeClipboard/.test(main), 'edits never write the clipboard directly (the follow rule decides)');
+  // ONE rule for every replace (editor save, Unify, conflict resolve, AI edit,
+  // synced edit): it runs after every history save and every capture.
+  assert.ok(/function saveHistory\(\) \{[\s\S]{0,700}checkClipboardFollow\(\);\n\}/.test(main), 'every history save runs the clipboard-follow rule');
+  assert.ok((main.match(/checkClipboardFollow\(\);/g) || []).length >= 6, 'the poller runs it on every text/image capture (+ the deferred retry)');
+  assert.ok(/BoardClipCore\.createClipboardFollow\(/.test(main) && !/createClipboardFollower|followEditorSave/.test(main), 'the shared core, no editor-only follower beside it');
+  assert.ok(/function applyUnify\([\s\S]{0,900}addReplacementLinks\(session\.sourceIds/.test(main), 'Unify records its sources -> the merged clip as lineage');
   assert.ok(main.includes("ipcMain.on('editor-focus'") && main.includes("ipcMain.handle('editor-copy'"), 'focus re-check + Copy button IPC');
   // macOS AND Windows: the zoom chords are claimed in main before the app menu
   // (macOS key equivalents fire before the page) and routed to the shared zoom.

@@ -299,7 +299,7 @@ Otherwise the key passes through so normal numpad typing works. Main thread call
 - **Merge algorithm**: shared pure helpers in `lib/clipboard-model.js` merge histories by stable item id/content key, merge pin/group metadata, preserve tombstones, and dedupe numpad slots.
 - **`syncMerge()`** runs on startup + every 30s + debounced 500ms after local changes.
 - **`insideSync` flag** prevents overlapping sync passes and prevents `saveHistory()`/`saveSettingsFile()` from re-triggering sync while a merge is already running.
-- **Only writes if changed** — compares JSON strings of remote files before atomic writes to skip no-op churn.
+- **Only writes if changed** — compares JSON strings of remote files (per snapshot segment) before in-place writes to skip no-op churn.
 - **Images synced bidirectionally** — content-addressed filenames mean no conflicts.
 - **Remote settings exclusions**: `sync_path`, `sync_disabled_paths`, and legacy `numpad_slots` are excluded from remote settings writes.
 - **Cloud account discovery** lives in `lib/cloud-accounts.js`.
@@ -342,10 +342,24 @@ Otherwise the key passes through so normal numpad typing works. Main thread call
   `sync/<deviceId>/<revision16>.json` (tmp + rename to a fresh name, never rename-over: DriveFS
   forks) per provider; readers apply other devices' files newer than their per-device cursor
   (`journalCursors[folderId].read`), a `since` past the cursor = gap -> snapshot re-read. The
-  monolith is now a SNAPSHOT rewritten every 5 min / 50 journal writes (content-compared) and
-  own journal files it covers are pruned after 1 h. `fs.watch` on each provider's `sync/` tree
+  SNAPSHOT is written every 5 min / 50 journal writes and own journal files it covers are
+  pruned after 1 h. `fs.watch` on each provider's `sync/` tree
   (recursive, own device dir ignored) applies a peer's file within ~300 ms; the 30 s poll stays
-  as the floor. Providers dedupe by a `.boardclip-folder-id` marker (G:/H: = one folder).
+  as the floor. Providers dedupe by a `.boardclip-folder-id` marker (two mount paths of ONE
+  folder = one provider; the owner's G: and H: are two Drive accounts, so both are written).
+- **Snapshot = 256 segments, never a monolith (`lib/sync-snapshot.js`, 9 Nov 2026)**:
+  `<provider>/clipboard-history/<xx>.json` (xx = first byte of sha256(item id)) + `index.json`
+  (rewritten after any segment change; the readers' signature). Drive uploads a changed file
+  WHOLE, so the old `clipboard-history.json` monolith (21 MB) rewritten every 5 min of activity,
+  plus a 3.3 MB `boardclip-diagnostics/<host>-<device>.json` written on EVERY 30 s pass, saturated
+  the owner's 10 Mbit/s upload (DriveFS 0.71 Mbit/s, measured 9 Nov). Now a snapshot writes only
+  segments whose content changed (~80 KB each, in place) and logs `sync.snapshot.write
+  {segments_written, history_bytes}`; diagnostics are local only (jsonl + 1 s heartbeat). The
+  legacy monolith + its forks/tmps are converted by `migrateLegacy` on read (`healSyncFolder`,
+  own adaptive budget, single-flight): exact split, read back (count + content hashes), local
+  backup in `clipboard-RECOVERED/cloud-history-monolith/<sha16>.json`, delete only if unchanged
+  since read. A device on an old build re-creates the monolith when dirty; the next read converts
+  it again (union, ~1 segment written). Segment forks fold back in `healSegmentForks`.
   Watchdogs are adaptive (base + 2 s/MB) and a late completion logs `sync.timeout.late`, not an
   error. Telemetry: `sync.latency {source, transport, peer, ms}` (originClock -> applied),
   `sync.delta_apply`, `sync.journal.write/read`, `p2p.peer.seen/lost`; tray tooltip shows

@@ -162,10 +162,14 @@ const approvalHtml = read('mcp-approval.html');
   assert.ok(/replace\(\/\^\\uFEFF\/, ''\)/.test(blobStoreSrc), 'parseJsonText must strip a leading UTF-8 BOM');
   const storeReads = mainJs.match(/JSON\.parse\((?:await )?fs\.(?:promises\.)?read[Ff]ile(?:Sync)?\(/g) || [];
   assert.strictEqual(storeReads.length, 0, `main.js must not JSON.parse a file read directly (found ${storeReads.length}); use blobStore.parseJsonText`);
-  for (const reader of ['SETTINGS_PATH', 'DB_PATH', 'CONFLICTS_PATH', 'remoteDbPath', 'remoteSettingsPath', 'remoteConflictsPath']) {
+  for (const reader of ['SETTINGS_PATH', 'DB_PATH', 'CONFLICTS_PATH', 'remoteSettingsPath', 'remoteConflictsPath']) {
     assert.ok(mainJs.includes(`blobStore.parseJsonText(`) && mainJs.includes(reader),
       `${reader} must be read through blobStore.parseJsonText`);
   }
+  // The cloud history snapshot's segments and legacy monolith are read in lib/sync-snapshot.
+  const snapshotSrc = read('lib/sync-snapshot.js');
+  assert.ok(snapshotSrc.includes('blobStore.parseJsonText(raw)'), 'lib/sync-snapshot must parse every segment through blobStore.parseJsonText');
+  assert.ok(!snapshotSrc.includes('JSON.parse('), 'lib/sync-snapshot must not JSON.parse a store read directly');
   const blobStore = require('../lib/blob-store');
   assert.deepStrictEqual(blobStore.parseJsonText('\uFEFF[{"id":"txt:a"}]'), [{ id: 'txt:a' }], 'BOM-prefixed JSON must parse');
   assert.deepStrictEqual(blobStore.parseJsonText('{"a":1}'), { a: 1 }, 'plain JSON must still parse');

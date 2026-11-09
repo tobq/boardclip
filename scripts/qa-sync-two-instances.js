@@ -180,7 +180,11 @@ async function runScenario(name, { bP2P }) {
       }
     } catch {}
     out.journal_files = journalFiles;
-    out.snapshot_bytes = (() => { try { return fs.statSync(path.join(cloudDir, 'clipboard-history.json')).size; } catch { return 0; } })();
+    // The snapshot is segments (lib/sync-snapshot); no monolith and no synced diagnostics copy.
+    const segDir = path.join(cloudDir, 'clipboard-history');
+    out.snapshot_segments = (() => { try { return fs.readdirSync(segDir).filter(n => /^[0-9a-f]{2}\.json$/.test(n)).length; } catch { return 0; } })();
+    out.snapshot_bytes = (() => { try { return fs.readdirSync(segDir).reduce((n, f) => n + fs.statSync(path.join(segDir, f)).size, 0); } catch { return 0; } })();
+    out.retired_files = ['clipboard-history.json', 'boardclip-diagnostics'].filter(n => fs.existsSync(path.join(cloudDir, n)));
     out.errors = [...da, ...db].filter(e => /error/.test(e.event)).map(e => `${da.includes(e) ? 'A' : 'B'} ${e.event}: ${e.error || ''}`).slice(0, 8);
     const stderrTail = (a.stderr() + b.stderr()).split('\n').filter(l => /Error|error/.test(l)).slice(-5);
     if (stderrTail.length) out.stderr = stderrTail;
@@ -191,7 +195,7 @@ async function runScenario(name, { bP2P }) {
         && out.latencies.some(l => /^p2p/.test(l.source)) && out.journal_writes.length > 0 && !out.errors.length);
     } else {
       out.ok = !!(converged && live && out.journal_reads.length > 0 && out.latencies.some(l => l.source === 'cloud')
-        && journalFiles.length > 0 && !out.errors.length);
+        && journalFiles.length > 0 && out.snapshot_segments > 0 && !out.retired_files.length && !out.errors.length);
     }
   } catch (error) {
     out.error = error && error.message;
@@ -431,7 +435,7 @@ async function runLegacyScenario() {
     await sleep(5000);
     const q1 = await watchQuiet('A(new) + B(old)', {
       A_history: path.join(A.dataDir, 'clipboard-history.json'), B_history: path.join(B.dataDir, 'clipboard-history.json'),
-      cloud_snapshot: path.join(cloudDir, 'clipboard-history.json'),
+      cloud_snapshot: path.join(cloudDir, 'clipboard-history', 'index.json'),
       A_settings: path.join(A.dataDir, 'clipboard-settings.json'), B_settings: path.join(B.dataDir, 'clipboard-settings.json'),
     }, [['A', A], ['B', B]], 62000);
     out.quiet_phase2 = q1;
@@ -513,7 +517,7 @@ async function runLegacyScenario() {
     check('phase 3: numpad key 3 kept on both', !!n3A && n3A.number === 3 && !!n3B && n3B.number === 3, `A ${n3A && n3A.number}, B ${n3B && n3B.number}`);
     const q2 = await watchQuiet('A(new) + B(new)', {
       A_history: path.join(A.dataDir, 'clipboard-history.json'), B_history: path.join(B2.dataDir, 'clipboard-history.json'),
-      cloud_snapshot: path.join(cloudDir, 'clipboard-history.json'),
+      cloud_snapshot: path.join(cloudDir, 'clipboard-history', 'index.json'),
     }, [['A', A], ['B', B2]], 62000);
     out.quiet_phase3 = q2;
     check('phase 3: history files stop changing (A, B, cloud snapshot; 62 s)', q2.files.A_history.content_changes === 0 && q2.files.B_history.content_changes === 0 && q2.files.cloud_snapshot.content_changes === 0,

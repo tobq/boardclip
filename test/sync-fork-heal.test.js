@@ -2,8 +2,9 @@
 // Verifies the durable fixes for the Google-Drive object-fork sync split:
 //  1. writeInPlace overwrites the SAME file (never a cross-name rename that
 //     DriveFS forks into a duplicate object).
-//  2. healForkedSyncFiles folds forked/tmp copies back into the canonical file,
-//     recovering every clip, converging the P2P secret, and deleting the strays.
+//  2. Forked/tmp copies fold back and the strays go: history ones (the legacy
+//     monolith's) through lib/sync-snapshot's real conversion into segments,
+//     recovering every clip; settings ones converging the P2P secret.
 //  3. The fork-name matcher (single-sourced in lib/fork-names.js) recognises
 //     EVERY Drive naming variant — parenthesized (mac/web) AND space-numbered
 //     (Windows Drive File Stream) — so no device is ever left silently split.
@@ -12,7 +13,7 @@ const os = require('os');
 const path = require('path');
 const assert = require('assert');
 
-const clipboardModel = require('../lib/clipboard-model');
+const syncSnapshot = require('../lib/sync-snapshot');
 const {
   FORK_HISTORY_RE, FORK_SETTINGS_RE, LEAKED_HISTORY_TMP_RE,
   isHistoryFork, isSettingsFork,
@@ -74,25 +75,15 @@ async function testWriteInPlace() {
   console.log('ok  writeInPlace: same object, content replaced, zero strays');
 }
 
-// --- healForkedSyncFiles: fold forks+tmps, recover clips, converge secret ----
-// Re-implemented against injected deps, but using the SAME single-sourced
-// matcher the app uses (so the test can't pass with a matcher that has drifted).
-async function healForkedSyncFiles(syncPath) {
+// --- settings fork heal: converge secret ----------------------------------
+// Re-implemented against injected deps (main.js healForkedSettingsFiles), but
+// using the SAME single-sourced matcher the app uses (so the test can't pass
+// with a matcher that has drifted). History forks run the real lib code.
+async function healForkedSettingsFiles(syncPath) {
   const names = await fs.promises.readdir(syncPath);
-  const historyForks = names.filter(isHistoryFork);
   const settingsForks = names.filter(isSettingsFork);
   const readJson = async (p) => { try { return JSON.parse(await fs.promises.readFile(p, 'utf-8')); } catch { return null; } };
-  const writeInPlace = async (p, d) => { const fh = await fs.promises.open(p, 'w'); try { await fh.writeFile(d); } finally { await fh.close(); } };
-
-  if (historyForks.length) {
-    let merged = (await readJson(path.join(syncPath, 'clipboard-history.json'))) || [];
-    for (const n of historyForks) {
-      const fork = await readJson(path.join(syncPath, n));
-      if (Array.isArray(fork) && fork.length) merged = clipboardModel.mergeHistories(merged, fork, {});
-    }
-    await writeInPlace(path.join(syncPath, 'clipboard-history.json'), JSON.stringify(merged));
-    for (const n of historyForks) await fs.promises.unlink(path.join(syncPath, n));
-  }
+  const writeInPlace = require('../lib/blob-store').writeInPlace;
   if (settingsForks.length) {
     const canon = (await readJson(path.join(syncPath, 'clipboard-settings.json'))) || {};
     for (const n of settingsForks) {
@@ -124,19 +115,21 @@ async function testHeal() {
   fs.writeFileSync(path.join(dir, 'clipboard-settings 2.json'),
     JSON.stringify({ p2p_secret: '0000', tombstones: [] }));
 
-  await healForkedSyncFiles(dir);
+  await healForkedSettingsFiles(dir);
+  const migration = await syncSnapshot.migrateLegacy(dir, {});
+  assert.ok(migration && migration.ok, 'the legacy monolith and its forks converted to segments');
 
   const files = fs.readdirSync(dir).sort();
-  assert.deepStrictEqual(files, ['clipboard-history.json', 'clipboard-settings.json'],
-    'all forks + tmps collapsed to the two canonical files');
-  const hist = JSON.parse(fs.readFileSync(path.join(dir, 'clipboard-history.json'), 'utf-8'));
+  assert.deepStrictEqual(files, ['clipboard-history', 'clipboard-settings.json'],
+    'all forks + tmps collapsed: the segment folder and the settings file');
+  const hist = (await syncSnapshot.readSegments(dir)).items;
   const ids = hist.map(x => x.id).sort();
   assert.deepStrictEqual(ids, ['A', 'B', 'C', 'D', 'E'],
     'every clip recovered incl. the Windows space-number fork (A,B,C,D,E)');
   const settings = JSON.parse(fs.readFileSync(path.join(dir, 'clipboard-settings.json'), 'utf-8'));
   assert.strictEqual(settings.p2p_secret, '0000', 'P2P secret converged to the deterministic min');
   fs.rmSync(dir, { recursive: true, force: true });
-  console.log('ok  healForkedSyncFiles: paren+space-number+tmp folded, 5/5 clips recovered, secret converged, strays gone');
+  console.log('ok  fork heal: paren+space-number+tmp history forks converted, 5/5 clips recovered, secret converged, strays gone');
 }
 
 (async () => {

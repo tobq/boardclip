@@ -39,6 +39,7 @@ const p2pDiscovery = require('./lib/p2p-discovery');
 const p2pCrypto = require('./lib/p2p-crypto');
 const syncDelta = require('./lib/sync-delta');
 const syncJournal = require('./lib/sync-journal');
+const syncSnapshot = require('./lib/sync-snapshot');
 const fsProbe = require('./lib/fs-probe');
 const tailscale = require('./lib/tailscale');
 const mcpCore = require('./lib/mcp-core');
@@ -494,25 +495,8 @@ async function atomicWriteFileAsync(filePath, data) {
   await fs.promises.rename(tmpPath, filePath);
 }
 
-// Overwrite an existing file IN PLACE (open-truncate-write), never via a
-// cross-name rename. Google Drive File Stream implements rename-over-existing
-// by orphaning the old Drive object and creating a NEW one, so tmp+rename in a
-// Drive folder silently forks `clipboard-history.json` into two same-named
-// objects that different devices then bind to permanently (the sync split).
-// In place, DriveFS updates the SAME object. A crash mid-write is self-healing:
-// the local authoritative copy re-writes the remote on the next sync, and a
-// concurrent reader that sees a torn file just fails JSON.parse and treats the
-// remote as empty (union-with-local loses nothing). Used for cloud writes only;
-// local (real-FS) writes keep atomic tmp+rename.
-async function writeInPlace(filePath, data) {
-  const fh = await fs.promises.open(filePath, 'w');
-  try {
-    await fh.writeFile(data);
-    try { await fh.sync(); } catch {}
-  } finally {
-    await fh.close();
-  }
-}
+// Cloud writes go IN PLACE, never tmp+rename (DriveFS forks a rename-over-existing).
+const { writeInPlace } = blobStore;
 
 // Settings keys dropped by removed features. Stripped on load so a file written by an
 // older build cannot keep dead state alive (the in-app AI search keys included a
@@ -1973,15 +1957,20 @@ async function directorySignature(dirPath) {
   }
 }
 
+// `snapshot` is the segment index (rewritten whenever a segment changes);
+// `legacy` is the old monolith, which only a device on an old build still
+// writes: its appearance triggers a read, and the read converts it.
 async function syncProviderSignature(syncPath) {
-  const [history, settingsFile, conflictsFile, images] = await Promise.all([
-    fileSignature(path.join(syncPath, 'clipboard-history.json')),
+  const [snapshot, legacy, settingsFile, conflictsFile, images] = await Promise.all([
+    fileSignature(syncSnapshot.indexPath(syncPath)),
+    fileSignature(path.join(syncPath, syncSnapshot.LEGACY_FILE)),
     fileSignature(path.join(syncPath, 'clipboard-settings.json')),
     fileSignature(path.join(syncPath, 'clipboard-conflicts.json')),
     directorySignature(path.join(syncPath, 'clipboard-images')),
   ]);
   return {
-    history,
+    snapshot,
+    legacy,
     settings: settingsFile,
     conflicts: conflictsFile,
     images,
@@ -2013,95 +2002,133 @@ async function updateSyncProviderCache(syncPath) {
 }
 
 // Google Drive File Stream can leave a sync folder with FORKED same-name objects
-// (`clipboard-history (1).json`, `clipboard-settings (2).json`) and orphaned
-// `<name>.<pid>.<ts>.tmp` files from interrupted renames. Different devices then
-// bind to different forks and never see each other's writes (the sync split this
-// codebase was built to survive). Before every remote read, fold any fork/tmp
-// content back into the canonical file and delete the strays, so a folder that
-// duplicated once self-heals to a single object on the next sync. No-op (one
-// readdir) when the folder is clean, which is the overwhelmingly common case.
+// (`clipboard-settings (2).json`) and orphaned `<name>.<pid>.<ts>.tmp` files from
+// interrupted renames. Different devices then bind to different forks and never
+// see each other's writes (the sync split this codebase was built to survive).
+// Before every remote read, fold any fork/tmp content back into the canonical
+// file and delete the strays, so a folder that duplicated once self-heals to a
+// single object on the next sync. No-op (one readdir) when the folder is clean.
 // Fork-name matching (paren + Windows space-number variants + leaked tmps) is
 // single-sourced in lib/fork-names.js so main.js and the tests share ONE matcher
-// and it can never silently drift narrow again.
-const {
-  FORK_HISTORY_RE, FORK_SETTINGS_RE, LEAKED_HISTORY_TMP_RE, LEAKED_SETTINGS_TMP_RE,
-} = require('./lib/fork-names');
+// and it can never silently drift narrow again. History forks are lib/sync-snapshot's:
+// the legacy monolith's are converted with it, the segments' are folded on read.
+const { FORK_SETTINGS_RE, LEAKED_SETTINGS_TMP_RE } = require('./lib/fork-names');
 
-async function healForkedSyncFiles(syncPath) {
+async function healForkedSettingsFiles(syncPath) {
   let names;
   try { names = await fs.promises.readdir(syncPath); } catch { return; }
-  const historyForks = names.filter(n => FORK_HISTORY_RE.test(n) || LEAKED_HISTORY_TMP_RE.test(n));
   const settingsForks = names.filter(n => FORK_SETTINGS_RE.test(n) || LEAKED_SETTINGS_TMP_RE.test(n));
-  if (!historyForks.length && !settingsForks.length) return;
+  if (!settingsForks.length) return;
 
-  const canonHistoryPath = path.join(syncPath, 'clipboard-history.json');
   const canonSettingsPath = path.join(syncPath, 'clipboard-settings.json');
   const readJson = async (p) => { try { return blobStore.parseJsonText(await fs.promises.readFile(p, 'utf-8')); } catch { return null; } };
   const unlink = async (n) => { try { await fs.promises.unlink(path.join(syncPath, n)); } catch {} };
-  const healed = { path: syncPath, historyForks: historyForks.length, settingsForks: settingsForks.length, itemsRecovered: 0 };
-
-  if (historyForks.length) {
-    let merged = Array.isArray(await readJson(canonHistoryPath)) ? await readJson(canonHistoryPath) : [];
-    const before = merged.length;
-    for (const n of historyForks) {
-      const forkItems = await readJson(path.join(syncPath, n));
-      // Pure structural union (no tombstones): a heal must NEVER drop a clip.
-      // Tombstone-based deletion is applied afterward by the normal conflict-
-      // aware syncMerge, not here.
-      if (Array.isArray(forkItems) && forkItems.length) merged = clipboardModel.mergeHistories(merged, forkItems, {});
-    }
-    healed.itemsRecovered = merged.length - before;
-    await writeInPlace(canonHistoryPath, JSON.stringify(merged));
-    for (const n of historyForks) await unlink(n);
+  const canon = (await readJson(canonSettingsPath)) || {};
+  for (const n of settingsForks) {
+    const fork = await readJson(path.join(syncPath, n));
+    if (!fork || typeof fork !== 'object') continue;
+    canon.tombstones = normalizeTombstones([...(canon.tombstones || []), ...(fork.tombstones || [])]);
+    canon.group_tombstones = normalizeGroupTombstones([...(canon.group_tombstones || []), ...(fork.group_tombstones || [])]);
+    canon.supersedes = normalizeSupersedes([...(canon.supersedes || []), ...(fork.supersedes || [])]);
+    // Deterministically converge the shared P2P secret (min wins) so a fork
+    // that carried a different secret can't leave the two devices unable to
+    // pair over LAN — the exact failure that made this split unrecoverable.
+    const secrets = [canon.p2p_secret, fork.p2p_secret].filter(Boolean).sort();
+    if (secrets.length) canon.p2p_secret = secrets[0];
   }
+  await writeInPlace(canonSettingsPath, JSON.stringify(canon, null, 2));
+  for (const n of settingsForks) await unlink(n);
+  diagnostics.record('sync.heal_forks', { path: syncPath, settingsForks: settingsForks.length }, { forceFile: true });
+}
 
-  if (settingsForks.length) {
-    const canon = (await readJson(canonSettingsPath)) || {};
-    for (const n of settingsForks) {
-      const fork = await readJson(path.join(syncPath, n));
-      if (!fork || typeof fork !== 'object') continue;
-      canon.tombstones = normalizeTombstones([...(canon.tombstones || []), ...(fork.tombstones || [])]);
-      canon.group_tombstones = normalizeGroupTombstones([...(canon.group_tombstones || []), ...(fork.group_tombstones || [])]);
-      canon.supersedes = normalizeSupersedes([...(canon.supersedes || []), ...(fork.supersedes || [])]);
-      // Deterministically converge the shared P2P secret (min wins) so a fork
-      // that carried a different secret can't leave the two devices unable to
-      // pair over LAN — the exact failure that made this split unrecoverable.
-      const secrets = [canon.p2p_secret, fork.p2p_secret].filter(Boolean).sort();
-      if (secrets.length) canon.p2p_secret = secrets[0];
-    }
-    await writeInPlace(canonSettingsPath, JSON.stringify(canon, null, 2));
-    for (const n of settingsForks) await unlink(n);
+// Retired 9 Nov 2026: every sync pass (every ~30 s) wrote a ~3 MB copy of this
+// device's diagnostics into <provider>/boardclip-diagnostics/, which Drive
+// uploaded to every account. Diagnostics are local only now
+// (boardclip-diagnostics.jsonl + the 1 s heartbeat); this removes the copy this
+// device left (and its leaked tmps), then the folder once nothing else is in it.
+// Another device's copy is that device's to remove.
+function retiredDiagnosticsFileName() {
+  const device = String(settings.p2p_device_id || os.hostname() || 'device').replace(/[^a-z0-9_-]+/ig, '-').slice(0, 48);
+  const host = String(os.hostname() || process.platform).replace(/[^a-z0-9_-]+/ig, '-').slice(0, 48);
+  return `${host}-${device}.json`;
+}
+
+async function removeRetiredDiagnosticsCopy(syncPath) {
+  const dir = path.join(syncPath, 'boardclip-diagnostics');
+  let names;
+  try { names = await fs.promises.readdir(dir); } catch { return; }
+  const own = retiredDiagnosticsFileName();
+  let removed = 0;
+  for (const name of names) {
+    if (name !== own && !name.startsWith(`${own}.`)) continue;
+    try { await fs.promises.unlink(path.join(dir, name)); removed++; } catch {}
   }
+  if (removed === names.length) { try { await fs.promises.rmdir(dir); } catch {} }
+  if (removed) diagnostics.record('sync.diagnostics_copy.removed', { path: syncPath, files: removed, left: names.length - removed }, { forceFile: true });
+}
 
-  diagnostics.record('sync.heal_forks', healed, { forceFile: true });
+// The legacy monolith's local backup before lib/sync-snapshot deletes it from
+// the cloud folder: content-addressed, so the same file in several providers is
+// kept once. Kept until the owner clears clipboard-RECOVERED.
+async function backupLegacySnapshotFile(syncPath, file) {
+  const dir = path.join(DATA_DIR, 'clipboard-RECOVERED', 'cloud-history-monolith');
+  await fs.promises.mkdir(dir, { recursive: true });
+  const target = path.join(dir, `${file.sha256.slice(0, 16)}.json`);
+  let size = -1;
+  try { size = (await fs.promises.stat(target)).size; } catch {}
+  if (size !== file.bytes) {
+    await atomicWriteFileAsync(target, file.raw);
+    size = (await fs.promises.stat(target)).size;
+  }
+  if (size !== file.bytes) throw new Error(`backup of ${file.name} is ${size} bytes, not ${file.bytes}`);
+  return target;
+}
+
+function snapshotIndexMeta() {
+  return { device: settings.p2p_device_id || '', revision: syncState ? syncState.tracker.revision : 0 };
+}
+
+// Folder housekeeping before a read: settings forks fold back, this device's
+// retired diagnostics copy goes, and a legacy history monolith becomes segments.
+// Single-flight per folder: a heal that outlives its budget keeps running, and
+// the next pass joins it instead of converting the same files twice.
+const syncFolderHeals = new Map();
+function healSyncFolder(syncPath) {
+  if (!syncFolderHeals.has(syncPath)) {
+    syncFolderHeals.set(syncPath, (async () => {
+      await healForkedSettingsFiles(syncPath);
+      await removeRetiredDiagnosticsCopy(syncPath);
+      // A conversion that fails (a backup that cannot be written) keeps the
+      // monolith and is retried on the next read; the read itself goes ahead.
+      try {
+        const migration = await syncSnapshot.migrateLegacy(syncPath, {
+          backup: file => backupLegacySnapshotFile(syncPath, file),
+          meta: snapshotIndexMeta(),
+        });
+        if (migration) {
+          diagnostics.record(migration.ok ? 'sync.snapshot.migrated' : 'sync.snapshot.migrate_pending', { path: syncPath, ...migration }, { forceFile: true });
+        }
+      } catch (error) {
+        diagnostics.record('sync.snapshot.migrate_error', { path: syncPath, error: error && error.message }, { forceFile: true });
+      }
+    })().finally(() => syncFolderHeals.delete(syncPath)));
+  }
+  return syncFolderHeals.get(syncPath);
 }
 
 async function readRemoteState(syncPath) {
-  await healForkedSyncFiles(syncPath);
-  const remoteDbPath = path.join(syncPath, 'clipboard-history.json');
   const remoteSettingsPath = path.join(syncPath, 'clipboard-settings.json');
   const remoteConflictsPath = path.join(syncPath, 'clipboard-conflicts.json');
-  let remoteHistory = [];
+  await syncSnapshot.healSegmentForks(syncPath);
+  const snapshot = await syncSnapshot.readSegments(syncPath);
   // A torn/mid-write remote read is DANGEROUS to treat as truth: an in-place
-  // cloud write caught halfway parses as garbage (or []), the merge then thinks
-  // those items don't exist, and downstream "recovery" (orphan images) can
-  // resurrect them with wrong timestamps (the 2026-07-10 image-ts clobber).
-  // Flag it so syncMerge can skip inference passes for this cycle.
-  let suspectRead = false;
-  try {
-    const loaded = blobStore.parseJsonText(await fs.promises.readFile(remoteDbPath, 'utf-8'));
-    if (Array.isArray(loaded)) {
-      if (!loaded.length) {
-        try { suspectRead = (await fs.promises.stat(remoteDbPath)).size > 2; } catch {}
-      }
-      await syncRemoteAssets(syncPath, { pullHistory: loaded });
-      remoteHistory = clipBlobStore.hydrateHistory(loaded, BLOB_DIRS);
-    } else {
-      suspectRead = true;
-    }
-  } catch {
-    try { suspectRead = (await fs.promises.stat(remoteDbPath)).size > 0; } catch {}
-  }
+  // cloud write caught halfway parses as garbage, the merge then thinks those
+  // items don't exist, and downstream "recovery" (orphan images) can resurrect
+  // them with wrong timestamps (the 2026-07-10 image-ts clobber). Flag it so
+  // syncMerge can skip inference passes for this cycle.
+  const suspectRead = snapshot.torn.length > 0;
+  await syncRemoteAssets(syncPath, { pullHistory: snapshot.items });
+  const remoteHistory = clipBlobStore.hydrateHistory(snapshot.items, BLOB_DIRS);
   let remoteSettings = {};
   try { remoteSettings = blobStore.parseJsonText(await fs.promises.readFile(remoteSettingsPath, 'utf-8')); } catch {}
   let remoteConflicts = {};
@@ -2131,28 +2158,58 @@ function groupCountsFromHistory(items) {
   return Object.fromEntries([...counts.entries()].sort((a, b) => a[0].localeCompare(b[0])));
 }
 
+function summarizeState(basePath, { remoteSettings, remoteHistory, remoteConflicts, files }) {
+  const conflictsState = conflictModel.normalizeConflictState(remoteConflicts || {});
+  const settingsState = remoteSettings && typeof remoteSettings === 'object' ? remoteSettings : {};
+  return {
+    base_path: basePath,
+    ...files,
+    item_count: Array.isArray(remoteHistory) ? remoteHistory.length : null,
+    conflict_count: conflictsState.records.length,
+    settings_groups: Array.isArray(settingsState.groups) ? settingsState.groups : [],
+    history_group_counts: groupCountsFromHistory(remoteHistory),
+    group_tombstones: normalizeGroupTombstones(settingsState.group_tombstones),
+    supersedes: normalizeSupersedes(settingsState.supersedes),
+  };
+}
+
 function stateSummary(basePath) {
   const settingsPath = path.join(basePath, 'clipboard-settings.json');
   const historyPath = path.join(basePath, 'clipboard-history.json');
   const conflictsPath = path.join(basePath, 'clipboard-conflicts.json');
-  const remoteSettings = safeReadJson(settingsPath, {});
-  const remoteHistory = safeReadJson(historyPath, []);
-  const remoteConflicts = conflictModel.normalizeConflictState(safeReadJson(conflictsPath, {}));
-  return {
-    base_path: basePath,
-    settings_file: fileSummary(settingsPath),
-    history_file: fileSummary(historyPath),
-    conflicts_file: fileSummary(conflictsPath),
-    text_dir: fileSummary(path.join(basePath, clipBlobStore.TEXT_BLOB_DIRNAME)),
-    html_dir: fileSummary(path.join(basePath, clipBlobStore.HTML_BLOB_DIRNAME)),
-    rtf_dir: fileSummary(path.join(basePath, clipBlobStore.RTF_BLOB_DIRNAME)),
-    item_count: Array.isArray(remoteHistory) ? remoteHistory.length : null,
-    conflict_count: remoteConflicts.records.length,
-    settings_groups: Array.isArray(remoteSettings.groups) ? remoteSettings.groups : [],
-    history_group_counts: groupCountsFromHistory(remoteHistory),
-    group_tombstones: normalizeGroupTombstones(remoteSettings.group_tombstones),
-    supersedes: normalizeSupersedes(remoteSettings.supersedes),
-  };
+  return summarizeState(basePath, {
+    remoteSettings: safeReadJson(settingsPath, {}),
+    remoteHistory: safeReadJson(historyPath, []),
+    remoteConflicts: safeReadJson(conflictsPath, {}),
+    files: {
+      settings_file: fileSummary(settingsPath),
+      history_file: fileSummary(historyPath),
+      conflicts_file: fileSummary(conflictsPath),
+      text_dir: fileSummary(path.join(basePath, clipBlobStore.TEXT_BLOB_DIRNAME)),
+      html_dir: fileSummary(path.join(basePath, clipBlobStore.HTML_BLOB_DIRNAME)),
+      rtf_dir: fileSummary(path.join(basePath, clipBlobStore.RTF_BLOB_DIRNAME)),
+    },
+  });
+}
+
+// A cloud folder's state, async only (a provider path is never touched with a
+// synchronous fs call: a wedged mount would hang the main thread).
+async function providerStateSummary(syncPath) {
+  const settingsPath = path.join(syncPath, 'clipboard-settings.json');
+  const conflictsPath = path.join(syncPath, 'clipboard-conflicts.json');
+  const readJson = async (p, fallback) => { try { return blobStore.parseJsonText(await fs.promises.readFile(p, 'utf-8')); } catch { return fallback; } };
+  const snapshot = await syncSnapshot.readSegments(syncPath);
+  return summarizeState(syncPath, {
+    remoteSettings: await readJson(settingsPath, {}),
+    remoteHistory: snapshot.items,
+    remoteConflicts: await readJson(conflictsPath, {}),
+    files: {
+      settings_file: await fileSignature(settingsPath),
+      snapshot: { segments: snapshot.segments.size, torn: snapshot.torn.length, index: await fileSignature(syncSnapshot.indexPath(syncPath)) },
+      legacy_history_file: await fileSignature(path.join(syncPath, syncSnapshot.LEGACY_FILE)),
+      conflicts_file: await fileSignature(conflictsPath),
+    },
+  });
 }
 
 async function syncDiagnostics() {
@@ -2172,110 +2229,68 @@ async function syncDiagnostics() {
     sync_disabled_paths: settings.sync_disabled_paths || [],
     legacy_sync_path: settings.sync_path || '',
     custom_sync_paths: settings.sync_custom_paths || [],
-    accounts: accounts.map(acc => ({
+    accounts: await Promise.all(accounts.map(async acc => ({
       provider: acc.provider,
       label: acc.label,
       email: acc.email,
       enabled: !!acc.enabled,
       path: acc.path,
-      state: stateSummary(acc.path),
-    })),
+      state: syncPathHealth.usable(normalizeSyncPath(acc.path))
+        ? await withTimeout(providerStateSummary(acc.path), SYNC_PROVIDER_READ_TIMEOUT_MS, `summary ${acc.path}`).catch(error => ({ error: error && error.message }))
+        : null,
+    }))),
   };
-}
-
-function diagnosticsDeviceFileName() {
-  const device = String(settings.p2p_device_id || os.hostname() || 'device').replace(/[^a-z0-9_-]+/ig, '-').slice(0, 48);
-  const host = String(os.hostname() || process.platform).replace(/[^a-z0-9_-]+/ig, '-').slice(0, 48);
-  return `${host}-${device}.json`;
-}
-
-async function writeSyncedDiagnostics(syncPaths, lastResult) {
-  if (!diagnostics.isEnabled() || !Array.isArray(syncPaths) || !syncPaths.length) return;
-  const payload = JSON.stringify({
-    generated_at: new Date().toISOString(),
-    device: {
-      id: settings.p2p_device_id || '',
-      name: p2pDeviceName(),
-      hostname: os.hostname(),
-      platform: process.platform,
-    },
-    build: BUILD_INFO,
-    runtime: runtimeDiagnosticSnapshot(),
-    p2p: p2pStatus(),
-    local: stateSummary(DATA_DIR),
-    last_sync_result: lastResult || lastSyncResult,
-    diagnostics: diagnostics.snapshot({
-      log_tail: diagnostics.fileTail(96 * 1024),
-    }),
-  }, null, 2);
-  const fileName = diagnosticsDeviceFileName();
-  await Promise.all(syncPaths.map(async syncPath => {
-    try {
-      const dir = path.join(syncPath, 'boardclip-diagnostics');
-      await fs.promises.mkdir(dir, { recursive: true });
-      await atomicWriteFileAsync(path.join(dir, fileName), payload);
-    } catch {}
-  }));
-}
-
-function scheduleSyncedDiagnostics(syncPaths, lastResult) {
-  if (!diagnostics.isEnabled()) return;
-  const timer = setTimeout(() => {
-    writeSyncedDiagnostics(syncPaths, lastResult).catch(() => {});
-  }, 0);
-  if (timer.unref) timer.unref();
 }
 
 async function readFileUtf8IfExists(filePath) {
   try { return await fs.promises.readFile(filePath, 'utf-8'); } catch { return null; }
 }
 
+// One snapshot write: the history as segments (only the changed ones go out,
+// lib/sync-snapshot), settings and conflicts content-compared as before.
 async function writeRemoteState(syncPath, canonicalHistory, canonicalSettings) {
   const startedAt = Date.now();
   try { await fs.promises.mkdir(syncPath, { recursive: true }); } catch {}
-  const remoteDbPath = path.join(syncPath, 'clipboard-history.json');
   const remoteSettingsPath = path.join(syncPath, 'clipboard-settings.json');
   const remoteConflictsPath = path.join(syncPath, 'clipboard-conflicts.json');
   const storedHistory = clipBlobStore.prepareHistoryForStorage(canonicalHistory, BLOB_DIRS);
-  const nextHistoryJson = JSON.stringify(storedHistory);
   const nextSettingsJson = JSON.stringify(canonicalSettings, null, 2);
   const nextConflictsJson = JSON.stringify(conflictModel.normalizeConflictState(conflicts), null, 2);
-  const [currentHistoryJson, currentSettingsJson, currentConflictsJson] = await Promise.all([
-    readFileUtf8IfExists(remoteDbPath),
+  await syncSnapshot.healSegmentForks(syncPath);
+  const current = await syncSnapshot.readSegments(syncPath);
+  const [currentSettingsJson, currentConflictsJson] = await Promise.all([
     readFileUtf8IfExists(remoteSettingsPath),
     readFileUtf8IfExists(remoteConflictsPath),
   ]);
-  let currentStoredHistory = null;
-  try {
-    const parsed = currentHistoryJson ? JSON.parse(currentHistoryJson) : null;
-    if (Array.isArray(parsed)) currentStoredHistory = parsed;
-  } catch {}
-  const pushHistory = historyAssetDelta(storedHistory, currentStoredHistory);
-  const wroteHistory = currentHistoryJson !== nextHistoryJson;
+  const pushHistory = historyAssetDelta(storedHistory, current.exists ? current.items : null);
   const wroteSettings = currentSettingsJson !== nextSettingsJson;
   const wroteConflicts = currentConflictsJson !== nextConflictsJson;
-  await Promise.all([
-    wroteHistory ? writeInPlace(remoteDbPath, nextHistoryJson) : Promise.resolve(),
+  // Assets first, so a reader never meets a clip whose blob is not there yet.
+  await syncRemoteAssets(syncPath, { pushHistory });
+  const [snapshot] = await Promise.all([
+    syncSnapshot.writeSegments(syncPath, storedHistory, current, snapshotIndexMeta()),
     wroteSettings ? writeInPlace(remoteSettingsPath, nextSettingsJson) : Promise.resolve(),
     wroteConflicts ? writeInPlace(remoteConflictsPath, nextConflictsJson) : Promise.resolve(),
-    syncRemoteAssets(syncPath, { pushHistory }),
   ]);
   await updateSyncProviderCache(syncPath);
-  diagnostics.slow('sync.write_remote.slow', Date.now() - startedAt, {
+  // Every snapshot write, with the bytes it handed the cloud client: the upload
+  // a snapshot costs is readable straight from the log.
+  diagnostics.record('sync.snapshot.write', {
     path: syncPath,
-    items: canonicalHistory.length,
-    history_bytes: Buffer.byteLength(nextHistoryJson),
-    settings_bytes: Buffer.byteLength(nextSettingsJson),
-    conflicts_bytes: Buffer.byteLength(nextConflictsJson),
+    items: storedHistory.length,
+    segments: snapshot.segments,
+    segments_written: snapshot.written.length,
+    history_bytes: snapshot.bytes + snapshot.indexBytes,
+    settings_bytes: wroteSettings ? Buffer.byteLength(nextSettingsJson) : 0,
+    conflicts_bytes: wroteConflicts ? Buffer.byteLength(nextConflictsJson) : 0,
     assets_to_push: pushHistory.length,
-    wrote_history: wroteHistory,
-    wrote_settings: wroteSettings,
-    wrote_conflicts: wroteConflicts,
-  }, 150);
+    ms: Date.now() - startedAt,
+  });
 }
 
 // ---- Cloud journals (lib/sync-journal): one small NEW file per change, the
-// monolith rewritten as a periodic snapshot, own files pruned once covered.
+// segmented snapshot (lib/sync-snapshot) written periodically, own files
+// pruned once covered.
 async function writeRemoteJournalOrSnapshot(syncPath, canonicalSettings, { fullSync = false, dirty = false } = {}) {
   const folderId = await providerIdentity(syncPath);
   const cursors = journalCursorsFor(folderId);
@@ -2310,9 +2325,10 @@ async function writeRemoteJournalOrSnapshot(syncPath, canonicalSettings, { fullS
       }
     }
   }
-  // Snapshot compaction: rewrite the monolith (content-compared, so a no-op
-  // when nothing changed) every full-sync interval or after N journal writes,
-  // then drop our own journal files it covers once every reader had an hour.
+  // Snapshot compaction: write the snapshot segments (content-compared per
+  // segment, so only the segments whose clips changed go out, and nothing when
+  // nothing changed) every full-sync interval or after N journal writes, then
+  // drop our own journal files it covers once every reader had an hour.
   const writes = cursors.writes || 0;
   const snapshotDue = (writes > 0 || dirty) && (firstWrite || fullSync || writes >= SYNC_JOURNAL_COMPACT_EVERY || !cursors.snapshotAt || Date.now() - cursors.snapshotAt > SYNC_FULL_INTERVAL_MS);
   if (!snapshotDue) return;
@@ -2333,7 +2349,7 @@ async function writeRemoteJournalOrSnapshot(syncPath, canonicalSettings, { fullS
       if (pruned) diagnostics.record('sync.journal.prune', { path: syncPath, pruned });
     }
   } catch (error) {
-    diagnostics.record('sync.write_remote.error', { path: syncPath, error: error && error.message }, { forceFile: true });
+    diagnostics.record('sync.snapshot.write.error', { path: syncPath, error: error && error.message }, { forceFile: true });
   }
 }
 
@@ -3602,8 +3618,8 @@ async function syncMerge(options = {}) {
       providerIndex++;
       emitSyncProgress({ phase: 'read', index: providerIndex, total: syncPaths.length, path: syncPath });
       try {
-        const providerResult = await withTimeout((async () => {
-          const signature = await syncProviderSignature(syncPath);
+        const providerResult = await (async () => {
+          const signature = await withTimeout(syncProviderSignature(syncPath), SYNC_PROVIDER_READ_TIMEOUT_MS, `read ${syncPath}`);
           const signatureKey = syncProviderSignatureKey(signature);
           const cached = syncProviderCache.get(syncPath);
           const remoteChanged = !cached || cached.signatureKey !== signatureKey;
@@ -3629,8 +3645,14 @@ async function syncMerge(options = {}) {
             };
           }
 
-          const { remoteHistory, remoteSettings, remoteConflicts, suspectRead } = await readRemoteState(syncPath);
-          await updateSyncProviderCache(syncPath);
+          // Converting a legacy monolith writes and reads back every segment: a
+          // budget scaled by its size, apart from the read's.
+          await withTimeout(healSyncFolder(syncPath), adaptiveTimeoutMs(SYNC_REMOTE_WRITE_TIMEOUT_MS, signature.legacy.size, 2000), `heal ${syncPath}`);
+          const { remoteHistory, remoteSettings, remoteConflicts, suspectRead } = await withTimeout((async () => {
+            const state = await readRemoteState(syncPath);
+            await updateSyncProviderCache(syncPath);
+            return state;
+          })(), SYNC_PROVIDER_READ_TIMEOUT_MS, `read ${syncPath}`);
           return {
             path: syncPath,
             skipped: false,
@@ -3644,7 +3666,7 @@ async function syncMerge(options = {}) {
             remote_conflicts_state: remoteConflicts,
             ms: Date.now() - providerStartedAt,
           };
-        })(), SYNC_PROVIDER_READ_TIMEOUT_MS, `read ${syncPath}`);
+        })();
 
         if (!providerResult.skipped) {
           canonicalHistory = foldRemoteState(canonicalHistory, providerResult.remote_history, providerResult.remote_settings, providerResult.remote_conflicts_state);
@@ -3819,7 +3841,6 @@ async function syncMerge(options = {}) {
     } else {
       resolveSyncIdle(result);
     }
-    scheduleSyncedDiagnostics(syncPaths, result);
   }
 }
 

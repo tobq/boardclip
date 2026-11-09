@@ -791,6 +791,10 @@
       const text = clip && clip.type !== "image" ? clip.text || "" : "";
       demoClipboardFollow.hold(text ? Core.itemId(clip) : null, text);
     }
+    // A page cannot read the clipboard, so it cannot tell whether the visitor
+    // copied something in another app: coming back lets the hold go, so an edit
+    // never overwrites that copy. (An edit saved as they leave still follows.)
+    window.addEventListener("focus", () => demoClipboardFollow.hold(null, ""));
 
     function addCopiedText(text) {
       const before = clips.length;
@@ -1059,6 +1063,7 @@
           .map((id) => clips.find((item) => Core.itemId(item) === id))
           .filter((clip) => clip && clip.type !== "image")
           .map((clip) => clip.text || "");
+        demoClipboardFollow.hold(null, texts.join("\n"));
         try { await writeBrowserClipboard(texts.join("\n")); } catch {}
         showToast(`Pasted ${texts.length}`);
       },

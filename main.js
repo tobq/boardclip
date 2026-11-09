@@ -912,25 +912,31 @@ function clonePin(pin) {
   };
 }
 
-// The clipboard-follow write (checkClipboardFollow): lastText is set, so the
-// poller never captures it as a new clip. False while a paste sequence holds
-// the clipboard (pollGate); the check runs again at the next open poll.
-function writeFollowedText(text) {
-  if (!pollGate) return false;
-  pollGate = false;
+// Text onto the clipboard that the poller must not capture as a new clip (a
+// clipboard-follow write, a "Copy all" / "Paste all" join). lastText becomes
+// what the clipboard reads back, so a platform that rewrites line endings can
+// never cause a re-capture, and a write another app blocked reports false
+// (lastText untouched: the poller keeps seeing what is really there).
+function writeUncapturedText(text) {
+  const value = String(text == null ? '' : text);
   try {
-    clipboard.writeText(String(text || ''));
-    lastText = String(text || '');
+    clipboard.writeText(value);
+    const back = clipboard.readText();
+    if (!BoardClipCore.sameText(back, value)) return false;
+    lastText = back;
     lastImgHash = '';
     lastCapturedImageToken = '';
     return true;
   } catch (error) {
-    diagnostics.record('clipboard.follow_error', { error: error && error.message }, { forceFile: true });
+    diagnostics.record('clipboard.write_error', { error: error && error.message }, { forceFile: true });
     return false;
-  } finally {
-    const timer = setTimeout(() => { pollGate = true; }, 150);
-    if (timer.unref) timer.unref();
   }
+}
+// The clipboard-follow write (checkClipboardFollow). False while a paste
+// sequence holds the clipboard (pollGate); the check runs again at the next
+// open poll.
+function writeFollowedText(text) {
+  return pollGate ? writeUncapturedText(text) : false;
 }
 
 // Never touches the clipboard itself: the edit's lineage link (old id -> new
@@ -1812,14 +1818,18 @@ async function copyNamedFilesAsync(fromDir, toDir, names, filter = () => true) {
 }
 
 async function syncRemoteAssets(syncPath, { pullHistory = [], pushHistory = [] } = {}) {
-  const jobs = [];
+  const pulls = [];
+  const pushes = [];
   for (const kind of ASSET_KINDS) {
     const remoteDir = path.join(syncPath, kind.dirname);
     const filter = name => !!kind.safeName(name);
-    jobs.push(copyNamedFilesAsync(remoteDir, kind.localDir, kind.namesOf(pullHistory), filter));
-    jobs.push(copyNamedFilesAsync(kind.localDir, remoteDir, kind.namesOf(pushHistory), filter));
+    pulls.push(copyNamedFilesAsync(remoteDir, kind.localDir, kind.namesOf(pullHistory), filter));
+    pushes.push(copyNamedFilesAsync(kind.localDir, remoteDir, kind.namesOf(pushHistory), filter));
   }
-  await Promise.all(jobs);
+  const [pulled] = await Promise.all([Promise.all(pulls), Promise.all(pushes)]);
+  // A synced note's text file may land after the note: a clipboard follow
+  // waiting for it ('pending') can run now.
+  if (pulled.some(n => n > 0)) checkClipboardFollow();
 }
 
 function pngSizeFromBuffer(buf) {
@@ -5206,9 +5216,7 @@ function joinedClipText(ids) {
 }
 // The joined text onto the clipboard, never captured back as a new clip.
 function writeJoinedText(text) {
-  clipboard.writeText(text);
-  lastText = text;
-  lastImgHash = '';
+  writeUncapturedText(text);
   checkClipboardFollow(); // the clipboard no longer holds the clip it held
 }
 async function pasteMany(ids) {
@@ -5468,45 +5476,58 @@ function notifyEditOutcome(result) {
 }
 
 // --- The clipboard follows its clip (Core.createClipboardFollow) ---
-// The clipboard holds a clip: the poller's last text, when that text is a live
-// clip (it was captured, or written here). Every change that replaces a clip
-// records old id -> new id in the edit lineage (settings.supersedes): an editor
-// save, Unify, a conflict resolved, an AI edit_clip, and edits synced from
-// another device (their links ride sync). After every history save and every
-// clipboard change the poller sees, the rule runs: the held clip replaced ->
-// its newest version onto the clipboard, unless it already shows that text.
-// Held only while live, so an old version copied from elsewhere is never
-// "followed". A paste sequence holding the clipboard (pollGate) defers the
-// check to the next open poll, where a quick paste's restore is already done.
+// The clipboard holds the clips of its text: the poller's last text, in any
+// line-ending form, while such a clip is live (it was captured, or written
+// here). Every change that replaces a clip records old id -> new id in the edit
+// lineage (settings.supersedes): an editor save, Unify, a conflict resolved, an
+// AI edit_clip, and edits synced from another device (their links ride sync).
+// After every history save and every clipboard change the poller sees, the
+// rule runs: a held clip replaced -> its newest version onto the clipboard,
+// unless it already shows that text. A link older than the held copy of the
+// text is not followed (rebornAfterLink), a long note whose text file has not
+// arrived waits for it (re-checked when synced files land), and a paste
+// sequence holding the clipboard (pollGate) defers the check to the next open
+// poll, where a quick paste's restore is already done.
 let clipboardFollowRetry = false;
-let textKeyMemo = { text: null, key: '' };
-function textClipKey(text) {
-  // The id a clip of exactly this text has (content-addressed); memoised, since
-  // the clipboard can hold a 30 MB clip and the check runs on every save.
-  if (textKeyMemo.text !== text) textKeyMemo = { text, key: `txt:${clipboardModel.textHashForText(text)}` };
-  return textKeyMemo.key;
+// The ids a clip of this text has, as is and in LF / CRLF form
+// (content-addressed: the model's own key). Kept for the current text only: the
+// clipboard can hold a 30 MB clip and this runs on every save.
+let clipboardIdsMemo = { text: null, ids: [] };
+const textClipId = (text) => clipboardModel.legacyContentKey({ type: 'text', text: String(text || '') });
+function clipboardTextIds(text) {
+  if (clipboardIdsMemo.text !== text) {
+    const lf = BoardClipCore.normalizeEol(text);
+    clipboardIdsMemo = { text, ids: [...new Set([text, lf, lf.replace(/\n/g, '\r\n')])].map(textClipId) };
+  }
+  return clipboardIdsMemo.ids;
 }
-function liveTextClipId(text) {
-  if (!String(text || '').trim()) return null;
-  const id = textClipKey(text);
-  const item = findHistoryItem(id);
-  return item && item.type !== 'image' ? id : null;
+// The live clips the clipboard holds, each with its own clock (for the reborn rule).
+function heldClipsFor(text) {
+  if (!String(text || '').trim()) return [];
+  return clipboardTextIds(text).map(findHistoryItem)
+    .filter((item) => item && item.type !== 'image')
+    .map((item) => ({ id: itemKey(item), since: clipboardModel.itemMutationClock(item) }));
 }
-// supersedeMap over ~1.4k links is ~4.5 ms; the ledger array is replaced on
-// every change (addSupersede, a sync merge), so its identity keys the cache.
-let lineageMemo = { list: null, map: null };
-function lineageMap() {
-  if (lineageMemo.list !== settings.supersedes) lineageMemo = { list: settings.supersedes, map: clipboardModel.supersedeMap(settings.supersedes) };
-  return lineageMemo.map;
+// The lineage over ~1.4k links costs ~4.5 ms to build; the ledger array is
+// replaced on every change (addSupersede, a sync merge), so its identity keys it.
+let lineageMemo = { list: null, links: null, map: null };
+function lineage() {
+  if (lineageMemo.list !== settings.supersedes) {
+    lineageMemo = { list: settings.supersedes, links: clipboardModel.liveSupersedeLinks(settings.supersedes), map: clipboardModel.supersedeMap(settings.supersedes) };
+  }
+  return lineageMemo;
 }
-function newestClipVersion(id, heldText) {
+function newestClipVersion(id, heldText, since) {
   const own = findHistoryItem(id);
-  if (own) return own.type === 'image' ? null : { id, text: heldText }; // same id = same text
-  const headId = lineageMap().get(id);
-  const head = headId ? findHistoryItem(headId) : null;
+  if (own) return own.type === 'image' ? null : { id, text: heldText, since }; // live under its id: its text is the held text
+  const { links, map } = lineage();
+  const link = links.get(id);
+  if (!link || clipboardModel.rebornAfterLink(since, link)) return null; // nothing newer, or the link predates this copy
+  const head = findHistoryItem(map.get(id));
   if (!head || head.type === 'image') return null;
   textBlobStore.hydrateTextItem(head, TEXT_DIR);
-  return { id: itemKey(head), text: String(head.text || '') };
+  if (!clipboardModel.itemHasVerifiedFullText(head)) return { pending: true }; // only its preview is here so far
+  return { id: itemKey(head), text: String(head.text || ''), since: clipboardModel.itemMutationClock(head) };
 }
 const clipboardFollow = BoardClipCore.createClipboardFollow({
   newestOf: newestClipVersion,
@@ -5518,15 +5539,15 @@ function checkClipboardFollow() {
   clipboardFollowRetry = false;
   try {
     const held = clipboardFollow.held();
-    if (lastText !== held.text || (held.id == null && lastText)) clipboardFollow.hold(liveTextClipId(lastText), lastText);
-    const from = clipboardFollow.held().id;
+    if (lastText !== held.text || (!held.ids.length && lastText)) clipboardFollow.hold(heldClipsFor(lastText), lastText);
+    const from = clipboardFollow.held().ids[0];
     const event = clipboardFollow.check();
     if (event === 'write_failed') clipboardFollowRetry = true;
-    if (event === 'written' || event === 'write_failed' || event === 'changed') {
+    if (event !== 'idle' && event !== 'same' && event !== 'gone') {
       diagnostics.record('clipboard.follow', {
         event,
         from: String(from || '').slice(0, 20),
-        to: String(clipboardFollow.held().id || '').slice(0, 20),
+        to: String(clipboardFollow.held().ids[0] || '').slice(0, 20),
         text_len: lastText.length,
       }, { forceFile: diagnostics.isEnabled() || event !== 'written' });
     }
@@ -5572,16 +5593,16 @@ function copyClipToClipboard(id) {
 }
 
 // Clips a change replaced, as edit lineage (old id -> new id), so the clipboard,
-// a stale copy and an editor still open on one all follow to the result. Only a
-// clip that is gone and has no newer version gets a link: a link out of a live
-// clip would fold it away on the next sync.
+// a stale copy and an editor still open on one all follow to the result. A
+// clip still live is never linked (the link would fold it away on the next
+// sync); a newer link replaces an older one from the same clip (the ledger keeps
+// the newest per clip), which is right for clips that were live until now.
 function addReplacementLinks(fromIds, toId) {
   if (!toId) return 0;
-  const lineage = clipboardModel.supersedeMap(settings.supersedes);
   const now = Date.now();
   let added = 0;
   for (const from of new Set((fromIds || []).map(String))) {
-    if (!from || from === toId || findHistoryIndex(from) >= 0 || lineage.has(from)) continue;
+    if (!from || from === toId || findHistoryIndex(from) >= 0) continue;
     addSupersede({ from, to: toId, updatedAt: now });
     added += 1;
   }
@@ -5869,8 +5890,8 @@ function createEditorWindow(session, presentOptions = {}) {
     // re-recovered, and prune. suppressCommit = the clip was deliberately deleted
     // from this window's menu; committing would resurrect it from the draft.
     const draftPayload = (session.inConflict || session.suppressCommit) ? null : readDraftFile(session, { text: session.draftText, title: session.draftTitle });
-    // The follower (not the close) decides whether this last save reaches the
-    // clipboard: only when the clipboard still holds this note.
+    // The clipboard-follow rule (not the close) decides whether this last save
+    // reaches the clipboard: only when the clipboard still holds this note.
     if (draftPayload != null) commitEditSession(session, draftPayload);
     try {
       const done = path.join(path.dirname(session.draftPath), `done-${path.basename(session.draftPath)}`);
@@ -5943,7 +5964,18 @@ function showConflict(conflictId) {
 
 function openEditor(id, options = {}) {
   if (id != null) {
-    const s = findEditSessionForClip(id);
+    let s = findEditSessionForClip(id);
+    // An editor still showing a version replaced elsewhere (a Unify, a synced or
+    // AI edit) with nothing unsaved is just stale: reopen it on the newest
+    // version. With unsaved text it stays, and its next save opens the merge view.
+    if (s && !s.inConflict && !findHistoryItem(s.currentId)
+      && s.draftText === s.lastCommitted && s.draftTitle === s.lastCommittedTitle) {
+      const newest = liveTextClip(s.currentId);
+      s.suppressCommit = true; // nothing to save; its close must not write the old text
+      try { s.win.close(); } catch {}
+      s = null;
+      if (newest) id = itemKey(newest);
+    }
     if (s) {
       try {
         presentSecondaryWindow(s.win, options);
@@ -6187,10 +6219,11 @@ function applyConflictResolution(resolution) {
       const written = applyTextEditToItem(target, { newText: text, newTitle: title });
       if (fork) foldForkInto(fork.fork, (written && written.item) || fork.note);
     } else if (text.trim()) {
-      // The clip(s) this resolves are gone: the result is their newest version
-      // (links only for sides with nothing newer; see addReplacementLinks).
-      const sides = [targetId, record.left && record.left.id, record.right && record.right.id, snapshot && snapshot.id];
-      if (addReplacementLinks(sides, textClipKey(text))) saveSettingsFile();
+      // The clip(s) this resolves are gone: the result is their newest version.
+      // A side edited since (it has a live newer version) keeps its own lineage.
+      const sides = [targetId, record.left && record.left.id, record.right && record.right.id, snapshot && snapshot.id]
+        .filter((id) => id && !liveTextClip(id));
+      if (addReplacementLinks(sides, textClipId(text))) saveSettingsFile();
       applyExternalTextEdit({
         id: '',
         originalText: '',
@@ -6420,7 +6453,7 @@ function applyUnify(session) {
   // Each source BECAME the merged clip: lineage, as an edit records it, before
   // the merged clip lands, so the clipboard follows a source it held and an
   // editor still open on one merges into the result instead of reviving it.
-  if (mergedText.trim()) addReplacementLinks(session.sourceIds, textClipKey(mergedText));
+  if (mergedText.trim()) addReplacementLinks(session.sourceIds, textClipId(mergedText));
   // Persist the source tombstones deleteHistoryIndex just added — without this
   // a crash before the next unrelated settings save lets sync resurrect the
   // merged-away sources (mirrors applyDeleteItems).
@@ -7811,7 +7844,6 @@ function setupIPC() {
     writeDraftFile(session);
     commitEditSession(session, next);
     const copied = !!(session.currentId && String(session.lastCommitted || '').trim() && copyClipToClipboard(session.currentId));
-    if (copied) checkClipboardFollow();
     diagnostics.record('editor.clipboard_follow', { event: copied ? 'adopted' : 'copy_skipped', session: session.id }, { forceFile: diagnostics.isEnabled() });
     return { following: !!session.onClipboard, event: copied ? 'adopted' : 'idle' };
   });

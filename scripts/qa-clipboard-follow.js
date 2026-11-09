@@ -17,6 +17,15 @@
 //   8. An editor still open on a Unify source: typing there gives the merge view
 //      against the merged clip (a conflict record), not a silent duplicate.
 //   9. An AI edit_clip, allowed in the prompt -> the edited text.
+//  12. A Unify that lands while a numpad quick paste holds the clipboard: the
+//      check waits for the paste to end, so its restore cannot leave the old
+//      text there; the merged text arrives right after.
+//  13. Windows: Ctrl+C in the editor puts the note on the clipboard as CRLF (a
+//      page's copy), captured as its own clip; the next save still follows.
+//  14. An old version copied again and then deleted: an old edit link from that
+//      text is not "followed" (the clipboard keeps what the user copied).
+//  15. A clean editor left on a unified-away clip: opening the merged clip shows
+//      the merged text (the stale editor is replaced, not brought forward).
 //  10. An edit made on ANOTHER device (second sandbox, shared cloud folder) ->
 //      this device's clipboard follows once the edit syncs.
 //  11. The website demo: Unify and an edit of the clip the page copied write the
@@ -46,7 +55,12 @@ const T = {
   cBase: 'qa conflict base', cIncoming: 'qa conflict base + incoming',
   kBase: 'qa keepboth base', kIncoming: 'qa keepboth incoming', kBoth: 'qa keepboth base\nqa keepboth incoming',
   ai: 'qa ai clip', aiEdited: 'qa ai clip, edited by the AI',
+  q1: 'qa quick source', q2: 'qa quick partner', qMerged: 'qa quick source\nqa quick partner', macro: 'qa numpad macro',
+  w: 'qa crlf note\nsecond line', wEdited: 'qa crlf note\nsecond line\nthird line',
+  r: 'qa reborn text', rEdited: 'qa reborn text, edited',
+  v1: 'qa clean source', v2: 'qa clean partner', vMerged: 'qa clean source + partner',
 };
+const editorWindowCount = `__qa.electron.BrowserWindow.getAllWindows().filter((w) => !w.isDestroyed() && /editor\\.html/.test(w.webContents.getURL())).length`;
 
 // Real-app helpers on one sandbox.
 function helpers(sb) {
@@ -79,8 +93,11 @@ async function appScenarios() {
   const sb = await qa.launch({
     name: 'clipfollow',
     ai: true,
-    settings: { groups: ['AI'], diagnostics_enabled: true, max_age_days: 30, max_size_gb: 1, surface_style: 'solid' },
+    // A wide quick-paste restore window, so scenario 12 lands inside it.
+    settings: { groups: ['AI'], diagnostics_enabled: true, max_age_days: 30, max_size_gb: 1, surface_style: 'solid', quick_paste_restore_delay_ms: 1500 },
     history: [
+      txt(T.v2, 790), txt(T.v1, 800), txt(T.r, 810), txt(T.w, 820),
+      txt(T.macro, 830, { number: 5 }), txt(T.q2, 840), txt(T.q1, 850),
       txt(T.ai, 860, { groups: ['AI'] }),
       txt(T.kBase, 870), txt(T.cBase, 880),
       txt(T.e2, 890), txt(T.e1, 900),
@@ -213,6 +230,63 @@ async function appScenarios() {
     await modal.click('#allowOnce').catch(() => {});
     const res9 = await req.catch((e) => ({ error: e.message }));
     check('9. an AI edit you allow, of the clip on the clipboard: the edited text', await h.clipboardBecomes(T.aiEdited, 'AI edit followed'), JSON.stringify({ res: res9 && (res9.error || res9.ok), clip: (await h.clip()).text }));
+
+    // --- 12. A Unify during a numpad quick paste ----------------------------
+    await h.copyAs(T.q1);
+    page = await unifyWindow([qa.txtId(T.q1), qa.txtId(T.q2)]);
+    await unifyReady(page);
+    const pastesBefore = (await sb.events()).filter((e) => e.type === 'paste_blocked').length;
+    const quick = popup.eval('window.api.numpadPasteAndHide(5)').catch(() => null);
+    const inFlight = await h.clipboardBecomes(T.macro, 'quick paste holds the clipboard', 5000);
+    await page.eval(`window.editorApi.unifyStep({ text: ${JSON.stringify(T.qMerged)}, title: '' })`);
+    const during = (await h.clip()).text;
+    await quick;
+    const followed12 = await h.clipboardBecomes(T.qMerged, 'merged text after the quick paste', 8000);
+    const pasted = (await sb.events()).filter((e) => e.type === 'paste_blocked').length > pastesBefore;
+    await sleep(1200);
+    const settled = await h.clip();
+    check('12. Unify during a quick paste: nothing written mid-paste, the merged text once it ends (not the restored old text)',
+      inFlight && pasted && during === T.macro && followed12 && settled.text === T.qMerged,
+      JSON.stringify({ inFlight, pasted, during, settled: settled.text }));
+
+    // --- 13. Windows: a CRLF copy from the editor ---------------------------
+    const crlfEd = await openEditor(qa.txtId(T.w));
+    await editorReady(crlfEd);
+    await h.copyAs(T.w.replace(/\n/g, '\r\n'));
+    const crlfOn = await qa.waitFor(() => footerOn(crlfEd), 'footer on for the CRLF copy', 5000).then(() => true, () => false);
+    await typeAndSave(crlfEd, T.wEdited);
+    check('13. Ctrl+C in the editor as CRLF (Windows), then a save: the clipboard follows', crlfOn && await h.clipboardBecomes(T.wEdited, 'CRLF copy followed'), JSON.stringify({ crlfOn, clip: (await h.clip()).text }));
+    await crlfEd.eval('(window.editorApi.close(), true)').catch(() => {});
+
+    // --- 14. An old version copied again, then deleted ----------------------
+    const rEd = await openEditor(qa.txtId(T.r));
+    await editorReady(rEd);
+    await typeAndSave(rEd, T.rEdited); // lineage: r -> rEdited
+    await qa.waitFor(async () => !!(await h.byText(T.rEdited)), 'r edited', 5000);
+    await rEd.eval('(window.editorApi.close(), true)').catch(() => {});
+    await sleep(5600); // past the reborn slack: the copy below is a NEW copy of that text
+    await h.copyAs(T.r);
+    before = await h.clip();
+    const rItem = await h.byText(T.r);
+    await popup.eval(`window.api.deleteItems([{ id: ${JSON.stringify(rItem.id)}, rev: ${JSON.stringify(rItem.rev)} }])`);
+    await sleep(1200);
+    after = await h.clip();
+    const rGone = !(await h.items()).some((it) => it.text === T.r);
+    check('14. an old version copied again and then deleted: the clipboard keeps it (no stale edit followed)', rGone && after.text === T.r && after.writes === before.writes, JSON.stringify({ rGone, after }));
+
+    // --- 15. A clean editor left on a unified-away clip ---------------------
+    const vEd = await openEditor(qa.txtId(T.v1));
+    await editorReady(vEd);
+    page = await unifyWindow([qa.txtId(T.v1), qa.txtId(T.v2)]);
+    await unifyReady(page);
+    await page.eval(`window.editorApi.unifyStep({ text: ${JSON.stringify(T.vMerged)}, title: '' })`);
+    await sleep(600);
+    const fresh = await sb.newPage(/editor\.html/, () => popup.eval(`window.api.openEditor(${JSON.stringify(qa.txtId(T.vMerged))})`), { label: 'editor for the merged clip', timeoutMs: 8000 }).catch(() => null);
+    if (fresh) await editorReady(fresh);
+    const shows = fresh ? await fresh.eval(`document.querySelector('.bc-editor textarea').value`) : null;
+    const editorsLeft = await qa.waitFor(async () => ((await sb.mainEval(editorWindowCount)) === 1 ? 1 : null), 'stale editor closed', 8000).catch(() => sb.mainEval(editorWindowCount));
+    check('15. opening the merged clip while a clean editor shows a source: one editor, showing the merged text', shows === T.vMerged && editorsLeft === 1, JSON.stringify({ shows, editorsLeft }));
+    if (fresh) await fresh.eval('(window.editorApi.close(), true)').catch(() => {});
 
     const followErrors = sb.diagnostics().filter((e) => e.event === 'clipboard.follow_error');
     check('no clipboard.follow_error logged', followErrors.length === 0, JSON.stringify(followErrors[0]));

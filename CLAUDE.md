@@ -84,7 +84,8 @@
   whose `from` has a NEWER link into it is dropped (A is live again); a tombstone with `rev` or >5 s after
   the link is a real delete and runs `tombstoneSuppresses` even inside a lineage. A copy whose own
   mutation clock is >5 s NEWER than its outgoing link (that old text copied again, or pinned/titled after
-  the edit) is "reborn": no lineage, so it is not folded into the edited note (it used to vanish from
+  the edit) is "reborn" (`rebornAfterLink`, the one rule the clipboard follow uses too): no lineage, so it
+  is not folded into the edited note (it used to vanish from
   history on the next sync pass); its tombstone's version guard decides instead. Defence in depth: the
   LINEAGE TRIPWIRE at the end of `mergeHistories` keeps any local clip a merge would drop unless its own
   (or its lineage head's) tombstone is an explicit delete or a newer version of the same note survives
@@ -168,27 +169,36 @@
   there; do not add vanilla UI the migration would delete.
 - **The clipboard follows its clip: ONE rule for every replace (9 Nov 2026, owner: Unify left the old
   text on the clipboard; "the editor fix is a manifestation of the exact same rule")**: the clipboard
-  holds a clip (the poller's `lastText`, while it is a LIVE clip); when a change replaces that clip, its
-  newest version goes onto the clipboard unless it already shows that text (line endings ignored).
+  holds the LIVE clips of its text (the poller's `lastText`, as is and in LF / CRLF form: Chromium writes
+  a page's own copy, e.g. Ctrl+C in the editor, as CRLF on Windows, so it is captured as its own clip;
+  Electron's main-process `writeText` keeps LF); when a change replaces one, its newest version goes onto
+  the clipboard unless it already shows that text (line endings ignored).
   Replaces = editor saves, Unify, conflict resolve (Keep both too), an approved AI `edit_clip`, and edits
   SYNCED from another device (owner: following those too is the consistent choice; a paste must match the
   history). Every replace records lineage old id -> new id (`settings.supersedes`; Unify and a conflict
-  saved as a new clip via `addReplacementLinks`, which links only clips that are gone with nothing newer:
-  a link out of a live clip would fold it away on sync). Pure core `Core.createClipboardFollow` (hold /
-  check / shownText) in clipboard-ui-core.js, adapters: main's `checkClipboardFollow` (runs at the end of
-  `saveHistory`, after every poller capture and `writeJoinedText`; `newestClipVersion` follows the lineage;
-  a closed `pollGate` defers it to the next open poll, after a quick paste's restore) and the demo's
-  (`demoClipboardFollow`: stable ids, the clip the page copied, Unify recorded in `demoUnified`). Held only
-  while live, so an old version that is not a clip never gets "followed"; it re-reads the OS clipboard
-  before writing, so a copy the poller has not seen yet always wins; a plain delete leaves it alone. Writes
-  go through `writeFollowedText` (pollGate + lastText = no re-capture). The editor's footer ("On clipboard
-  - edits update it" / Copy) is `editorOnClipboard` on the same rule's `shownText` (no per-editor
-  follower: the old `lib/clipboard-follow.js` was deleted); its Copy is the popup's `copyClipToClipboard`
-  (copy + an immediate poll). An editor left open on a unified-away source gets the merge view on its
-  next save (the lineage), never a silent duplicate. QA: `node scripts/qa-clipboard-follow.js` (23 checks
-  on the sandbox's in-memory clipboard, incl. two sandboxes syncing through a shared cloud folder and the
-  demo; Unify's checks fail with its lineage removed), unit `test/clipboard-follow.test.js`. Never QA this
-  against the LIVE clipboard: the live app polls it and would capture QA text into real, synced history.
+  saved as a new clip via `addReplacementLinks`: never from a live clip, which the link would fold away on
+  sync; Unify always links its sources, the ledger keeping the newest link per clip). A link older than
+  the held clip's own mutation clock is NOT followed (`rebornAfterLink`, the model's one reborn rule, also
+  the merge's): an old version copied again and then deleted stays on the clipboard. A long synced note
+  whose text file has not arrived is `pending` (never its 1024-char preview), re-checked when
+  `syncRemoteAssets` pulls files in. Pure core `Core.createClipboardFollow` (hold / check / shownText) in
+  clipboard-ui-core.js, adapters: main's `checkClipboardFollow` (runs at the end of `saveHistory`, after
+  every poller capture and `writeJoinedText`; `newestClipVersion` follows the lineage; a closed `pollGate`
+  defers it to the next open poll, after a quick paste's restore) and the demo's (`demoClipboardFollow`:
+  stable ids, the clip the page copied, Unify recorded in `demoUnified`; a page cannot read the clipboard,
+  so window `focus` drops the hold and an edit never overwrites a copy made in another app). It re-reads
+  the OS clipboard before writing, so a copy the poller has not seen yet always wins; a plain delete leaves
+  it alone. Writes (follow, Copy all / Paste all joins) go through `writeUncapturedText`: lastText = what
+  the clipboard READS BACK, a blocked write returns false (no gate timer: it reopened pollGate mid quick
+  paste). The editor's footer ("On clipboard - edits update it" / Copy) is `editorOnClipboard` on the same
+  rule's `shownText` (no per-editor follower: the old `lib/clipboard-follow.js` was deleted); its Copy is
+  the popup's `copyClipToClipboard` (copy + an immediate poll). An editor left open on a unified-away
+  clip follows "Stale editor saves become a merge" (never a silent duplicate). QA:
+  `node scripts/qa-clipboard-follow.js` (27 checks on the sandbox's in-memory clipboard,
+  incl. two sandboxes syncing through a shared cloud folder, a Unify during a quick paste, a CRLF editor
+  copy, a stale link and the demo; checks 13-15 fail on a71efa3, 12 without the poller retry), unit
+  `test/clipboard-follow.test.js`. Never QA this against the LIVE clipboard: the live app polls it and
+  would capture QA text into real, synced history.
 
 ## Paste Simulation
 
@@ -404,6 +414,9 @@ Otherwise the key passes through so normal numpad typing works. Main thread call
   everywhere) has a Merge button -> `showConflict` (the editor already showing it, else a conflict
   window; `open-conflict` uses it too), (4) resolving an `editor` record writes into the NOTE and
   `foldForkInto` removes the fork (its groups / numpad key join the note, supersede link fork -> note).
+  (5) An editor showing a version replaced elsewhere (Unify, a synced or AI edit) with NOTHING unsaved is
+  just stale: `openEditor` on the note closes it and opens the newest version (9 Nov 2026; bringing it
+  forward showed the old text); with unsaved text it stays and its next save opens the merge view.
   QA: `node scripts/qa-edit-conflict.js` (15 checks; the sandbox keeps unshown notifications on
   `__qa.notifications` to emit their click).
 - **Search facets (2026-09-03)**: `len:` accepts ranges (`len:50-200`), plus `lines:`/`ln:` and
